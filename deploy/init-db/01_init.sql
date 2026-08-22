@@ -140,7 +140,7 @@ BEGIN
         ALTER TABLE chapters ADD CONSTRAINT fk_active_version_same_chapter 
         FOREIGN KEY (id, active_version_id) 
         REFERENCES chapter_versions(chapter_id, id) 
-        ON DELETE SET NULL;
+        ON DELETE SET NULL (active_version_id);
     END IF;
 END $$;
 

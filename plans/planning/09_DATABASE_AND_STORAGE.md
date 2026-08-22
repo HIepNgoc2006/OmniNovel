@@ -141,7 +141,7 @@ CREATE TABLE chapter_versions (
 ALTER TABLE chapters ADD CONSTRAINT fk_active_version_same_chapter 
 FOREIGN KEY (id, active_version_id) 
 REFERENCES chapter_versions(chapter_id, id) 
-ON DELETE SET NULL;
+ON DELETE SET NULL (active_version_id);
 
 -- 11. Tài nguyên Media (Trang ảnh Manga & Text Novel)
 CREATE TABLE media_assets (

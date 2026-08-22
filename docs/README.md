@@ -32,6 +32,9 @@ Chào mừng bạn đến với Cổng tài liệu đặc tả kỹ thuật và 
 ### 🗄️ 5. Cơ Sở Dữ Liệu & Lưu Trữ (Database & Storage)
 * [09. Database & Storage Schema](database/09_DATABASE_AND_STORAGE.md) – Lược đồ CSDL PostgreSQL 20+ bảng DDL & MinIO Storage.
 
+### 🏆 6. Cấp Độ, Điểm Thưởng & Danh Hiệu (Gamification & Progression)
+* [23. Gamification & Progression System](gamification/23_GAMIFICATION_AND_REWARDS.md) – Cấu trúc 3 lớp EXP/OmniCoin/Rank, Chuỗi điểm danh, Nhiệm vụ & Sổ cái giao dịch.
+
 ### 🤖 6. Động Cơ Dịch Truyện AI (AI Translation Engine)
 * [11. AI Translation Architecture](ai/11_AI_TRANSLATION_ARCHITECTURE.md) – Pipeline Manga/Novel OCR, Inpainting, Typesetting & State Machine 14 trạng thái.
 

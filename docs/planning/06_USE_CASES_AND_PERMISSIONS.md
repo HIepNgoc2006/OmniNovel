@@ -51,3 +51,23 @@ User Role (Global) ➔ Resource Ownership / Membership (Story Level)
   5. Khi hoàn tất 100%, hệ thống hiển thị màn hình Diff Preview và Popup 2 Lựa chọn.
   6. Uploader chọn (1) Ghi đè hoặc (2) Nhân bản và bấm "Xác nhận xuất bản".
 * **Postconditions:** ChapterVersion mới được tạo và gán trạng thái phù hợp.
+
+---
+
+### 📄 UC-03: UC-GAM-CHECKIN – Điểm Danh Hàng Ngày & Nhận Thưởng Chuỗi
+* **Primary Actor:** Reader / Translator / Creator.
+* **Preconditions:** Người dùng đã đăng nhập vào tài khoản hợp lệ.
+* **Trigger:** Người dùng nhấn nút "Điểm danh hôm nay" tại trang OmniCoin.
+* **Main Flow:**
+  1. Client gửi request `POST /api/v1/gamification/checkin`.
+  2. Server xác định ngày hiện tại theo timezone `Asia/Ho_Chi_Minh`.
+  3. Server kiểm tra trong bảng `daily_checkins` xem đã tồn tại bản ghi của user trong ngày chưa.
+  4. Server tính toán số ngày streak liên tiếp và phần thưởng tương ứng.
+  5. Trong 1 Database Transaction duy nhất (Atomic):
+     * Insert bản ghi `daily_checkins`.
+     * Cập nhật `user_progression` (tăng EXP, tăng streak, ghi nhận `last_checkin_date`).
+     * Insert bản ghi `wallet_transactions` với `idempotency_key = CHECKIN:USER_ID:YYYY-MM-DD`.
+     * Cập nhật `wallets.balance`.
+  6. Server kiểm tra nếu EXP vượt ngưỡng thì kích hoạt sự kiện `UserLevelUpEvent`.
+  7. Server trả về kết quả thành công và phát WebSocket Toast chúc mừng.
+* **Postconditions:** Số dư ví và chuỗi streak được cập nhật nhất quán và lưu vào sổ cái.

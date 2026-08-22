@@ -15,6 +15,12 @@ Tài liệu này cung cấp bảng tổng hợp bằng chứng kỹ thuật cụ
 
 ---
 
+
+* **Event-Driven Gamification Architecture:**
+  * *Observer Pattern:* `ChapterCompletedEvent`, `TranslationApprovedEvent` được phát ra bất đồng bộ và được `GamificationEventHandler` tiêu thụ để tính toán cấp độ mà không gây nghẽn luồng đọc.
+  * *Strategy Pattern:* `RewardRuleStrategy` xử lý linh hoạt nhiều loại phần thưởng (EXP, OmniCoin, Cosmetic, Badge) và dễ dàng mở rộng.
+  * *Transactional Consistency:* Đảm bảo tính toàn vẹn dữ liệu kép giữa Sổ cái giao dịch `wallet_transactions` và Số dư `wallets`.
+
 ## 2. MÔN 2: PHÁT TRIỂN ỨNG DỤNG DI ĐỘNG (FLUTTER)
 * **High Refresh Rate Rendering:** Tối ưu hóa đạt 60fps/120Hz trên màn hình ProMotion, Frame Budget $< 8.33ms$.
 * **Virtualized List Memory Eviction (LRU):** Quản lý bộ nhớ RAM $< 150MB$ khi cuộn 100+ ảnh 4K.

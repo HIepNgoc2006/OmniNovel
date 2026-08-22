@@ -55,3 +55,18 @@ Tài liệu này đặc tả chi tiết toàn bộ các Yêu Cầu Chức Năng 
   * *Validation Error State:* Nếu file ZIP chứa file không phải ảnh (ví dụ: file `.exe`, file text độc hại) $\rightarrow$ Báo lỗi *"Tệp tin chứa định dạng không được hỗ trợ"*.
   * *Queue Processing State:* Hiển thị thanh tiến trình % thực tế (Stage: OCR 15/30 pages $\rightarrow$ Overall: 45%).
   * *AI Failure State:* Nếu API AI bị lỗi quota/timeout $\rightarrow$ Hiển thị nút "Thử lại tác vụ" hoặc "Hủy bỏ giữ bản raw".
+
+---
+
+## 4. PHÂN HỆ TIẾN TRÌNH & GAMIFICATION (GAMIFICATION FRs)
+
+### FR-GAM-01: Điểm Danh Hàng Ngày & Chuỗi Streak (Atomic Transaction)
+* **Mô tả:** Người dùng nhấn nút "Điểm danh" trên trang OmniCoin để nhận phần thưởng theo ngày và tích lũy chuỗi streak.
+* **Tiêu chí nghiệm thu (Acceptance Criteria):**
+  * `Given` người dùng đã đăng nhập và chưa thực hiện điểm danh trong ngày hôm nay (tính theo múi giờ `Asia/Ho_Chi_Minh`),
+  * `When` người dùng gửi request `POST /api/v1/gamification/checkin`,
+  * `Then` hệ thống tạo bản ghi `daily_checkins`, cộng OmniCoin/EXP vào ví, tạo transaction trong sổ cái `wallet_transactions`, tăng `current_streak` thêm 1 và trả về `200 OK` kèm thông tin phần thưởng.
+* **Xử lý ngoại lệ (Duplicate Claim):**
+  * `Given` người dùng đã điểm danh hôm nay,
+  * `When` người dùng gửi lại request `POST /api/v1/gamification/checkin`,
+  * `Then` hệ thống từ chối an toàn với mã lỗi `CHECKIN_ALREADY_CLAIMED (400 Bad Request)` và không thay đổi bất kỳ số dư nào.

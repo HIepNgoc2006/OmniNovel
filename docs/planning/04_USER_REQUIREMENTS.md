@@ -98,3 +98,18 @@ Tài liệu này xác định toàn bộ các Yêu cầu Người Dùng (**User 
 | **UR-ADM-02** | Admin có thể quản lý danh sách người dùng, cấp quyền Uploader/Translator và khóa tài khoản vi phạm. | **Must Have** | **P0** |
 | **UR-ADM-03** | Admin có thể kiểm duyệt, ẩn hoặc xóa các nội dung truyện/bình luận vi phạm tiêu chuẩn cộng đồng. | **Must Have** | **P0** |
 | **UR-ADM-04** | Admin có thể xem dashboard thống kê lượt đọc, lưu lượng MinIO và lượng Token AI tiêu thụ. | **Should Have**| **P1** |
+
+---
+
+## 9. PHÂN HỆ TIẾN TRÌNH & ĐIỂM THƯỞNG (GAMIFICATION DOMAIN)
+
+| Mã UR | Yêu Cầu Người Dùng (User Requirement) | Ưu Tiên MoSCoW | Priority |
+| :--- | :--- | :--- | :---: |
+| **UR-GAM-01** | Độc giả có thể tích lũy EXP qua các hoạt động hợp lệ để tăng Level tài khoản. | **Must Have** | **P0** |
+| **UR-GAM-02** | Độc giả có thể điểm danh hàng ngày theo lịch tháng để nhận EXP và OmniCoin. | **Must Have** | **P0** |
+| **UR-GAM-03** | Độc giả có thể thực hiện và nhận thưởng từ Nhiệm vụ ngày/tuần. | **Should Have**| **P1** |
+| **UR-GAM-04** | Độc giả có thể chọn bộ chủ đề Cấp bậc (Rank Theme: Tu Tiên, Ma Vương, Magic...) hiển thị trên Profile. | **Must Have** | **P0** |
+| **UR-GAM-05** | Độc giả có thể nhận phần thưởng mở khóa tại các cột mốc Level nhất định (Level Rewards). | **Must Have** | **P0** |
+| **UR-GAM-06** | Độc giả có thể mở khóa và trưng bày Huy hiệu Thành tựu (Achievements & Badges) trên Profile. | **Should Have**| **P1** |
+| **UR-GAM-07** | Độc giả có thể xem lịch sử biến động số dư OmniCoin & EXP chi tiết (Ledger History). | **Must Have** | **P0** |
+| **UR-GAM-08** | Độc giả có thể sử dụng OmniCoin để đổi các vật phẩm trang trí (Cosmetics, Frames, Themes). | **Could Have** | **P2** |

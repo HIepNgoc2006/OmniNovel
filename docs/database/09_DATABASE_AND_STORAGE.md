@@ -212,6 +212,112 @@ CREATE TABLE chapter_reports (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+
+-- 14. Bảng Tiến Trình Cấp Độ Người Dùng (User Progression)
+CREATE TABLE user_progression (
+    user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    level INT NOT NULL DEFAULT 1 CHECK (level BETWEEN 1 AND 100),
+    current_exp BIGINT NOT NULL DEFAULT 0 CHECK (current_exp >= 0),
+    total_exp BIGINT NOT NULL DEFAULT 0 CHECK (total_exp >= 0),
+    rank_theme VARCHAR(30) DEFAULT 'DEFAULT' CHECK (rank_theme IN ('DEFAULT', 'CULTIVATION', 'FANTASY', 'DEMON_LORD', 'MAGIC', 'COSMIC')),
+    current_streak INT DEFAULT 0 CHECK (current_streak >= 0),
+    longest_streak INT DEFAULT 0 CHECK (longest_streak >= 0),
+    last_checkin_date DATE,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 15. Bảng Ngưỡng Cấp Độ Cấu Hình (Level Thresholds)
+CREATE TABLE level_thresholds (
+    level INT PRIMARY KEY CHECK (level BETWEEN 1 AND 100),
+    required_total_exp BIGINT NOT NULL,
+    reward_coin INT DEFAULT 0,
+    reward_title VARCHAR(100),
+    reward_frame_url VARCHAR(255)
+);
+
+-- 16. Bảng Ví Điểm Thưởng (Wallets)
+CREATE TABLE wallets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID UNIQUE NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    currency VARCHAR(20) DEFAULT 'OMNICOIN' CHECK (currency = 'OMNICOIN'),
+    balance INT NOT NULL DEFAULT 0 CHECK (balance >= 0),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 17. Sổ Cái Giao Dịch Bất Biến (Wallet Ledger Transactions)
+CREATE TABLE wallet_transactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    wallet_id UUID NOT NULL REFERENCES wallets(id) ON DELETE CASCADE,
+    amount INT NOT NULL,
+    transaction_type VARCHAR(30) NOT NULL CHECK (transaction_type IN ('REWARD', 'SPEND', 'REFUND', 'ADMIN_ADJUSTMENT')),
+    source_type VARCHAR(50) NOT NULL CHECK (source_type IN (
+        'DAILY_CHECKIN', 'MISSION_DAILY', 'MISSION_WEEKLY', 
+        'LEVEL_REWARD', 'ACHIEVEMENT', 'COSMETIC_PURCHASE', 'ADMIN_MANUAL'
+    )),
+    source_id VARCHAR(100),
+    idempotency_key VARCHAR(255) UNIQUE NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- 18. Lịch Sử Điểm Danh (Daily Check-ins)
+CREATE TABLE daily_checkins (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    checkin_date DATE NOT NULL,
+    streak_count INT NOT NULL DEFAULT 1,
+    reward_coin INT DEFAULT 1,
+    reward_exp INT DEFAULT 10,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(user_id, checkin_date)
+);
+
+-- 19. Nhiệm Vụ (Missions) & Tiến Trình Nhiệm Vụ
+CREATE TABLE missions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    mission_type VARCHAR(20) NOT NULL CHECK (mission_type IN ('DAILY', 'WEEKLY', 'TRANSLATOR', 'CREATOR')),
+    target_count INT NOT NULL DEFAULT 1,
+    reward_exp INT NOT NULL DEFAULT 10,
+    reward_coin INT NOT NULL DEFAULT 1,
+    is_active BOOLEAN DEFAULT TRUE
+);
+
+CREATE TABLE user_missions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    mission_id UUID NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+    period_date DATE NOT NULL,
+    current_progress INT DEFAULT 0,
+    status VARCHAR(20) DEFAULT 'IN_PROGRESS' CHECK (status IN ('IN_PROGRESS', 'COMPLETED', 'CLAIMED')),
+    completed_at TIMESTAMP WITH TIME ZONE,
+    claimed_at TIMESTAMP WITH TIME ZONE,
+    UNIQUE(user_id, mission_id, period_date)
+);
+
+-- 20. Thành Tựu & Huy Hiệu (Achievements & Badges)
+CREATE TABLE achievements (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    code VARCHAR(50) UNIQUE NOT NULL,
+    name VARCHAR(100) NOT NULL,
+    description TEXT,
+    badge_icon_url VARCHAR(255) NOT NULL,
+    category VARCHAR(30) DEFAULT 'READER' CHECK (category IN ('READER', 'TRANSLATOR', 'CREATOR', 'COMMUNITY', 'SPECIAL')),
+    reward_exp INT DEFAULT 50,
+    reward_coin INT DEFAULT 10
+);
+
+CREATE TABLE user_achievements (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    achievement_id UUID NOT NULL REFERENCES achievements(id) ON DELETE CASCADE,
+    is_showcased BOOLEAN DEFAULT FALSE,
+    unlocked_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE(user_id, achievement_id)
+);
+
 -- CÁC CHỈ MỤC TỐI ƯU HÓA TRUY VẤN (INDEXES)
 CREATE INDEX idx_stories_slug ON stories(slug);
 CREATE INDEX idx_stories_views ON stories(views_count DESC);

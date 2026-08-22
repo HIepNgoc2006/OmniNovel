@@ -34,10 +34,10 @@ Tài liệu này cung cấp ma trận truy vết khép kín 100% hai chiều (**
 | **UR-AI-05** | FR-AI-03 | UC-STUD-04 | WEB-014 / Studio | `POST /api/v1/ai/jobs/:id/apply`| `chapters.active_version_id`| TC-AI-02 |
 | **UR-AI-06** | FR-AI-03 | UC-STUD-04 | WEB-014 / Studio | `POST /api/v1/ai/jobs/:id/apply`| `chapter_versions` | TC-AI-02 |
 | **UR-ADM-01** | FR-ADM-01 | UC-ADM-01 | WEB-015 / Admin | `PATCH /api/v1/admin/reports/:id/resolve`| `chapter_error_reports` | TC-ADM-01 |
-| **UR-ADM-02** | FR-ADM-02 | UC-ADM-02 | WEB-015 / Admin | `PATCH /api/v1/admin/users/:id/role`| `users` | TC-ADM-01 |
-| **UR-ADM-03** | FR-ADM-03 | UC-ADM-03 | WEB-015 / Admin | `PATCH /api/v1/stories/:id/visibility`| `stories` | TC-ADM-01 |
-| **UR-GAM-01** | FR-GAM-02 | UC-GAM-02 | WEB-008 / MOB-010 | Event-Driven Reader Hook | `user_progression`, `reward_transactions`| TC-GAM-01 |
+| **UR-ADM-02** | FR-ADM-02 | UC-ADM-02 | WEB-015 / Admin | `PATCH /api/v1/admin/users/:id/role`| `users` | TC-ADM-02 |
+| **UR-ADM-03** | FR-ADM-03 | UC-ADM-03 | WEB-015 / Admin | `PATCH /api/v1/stories/:id/visibility`| `stories` | TC-ADM-03 |
+| **UR-GAM-01** | FR-GAM-02 | UC-GAM-02 | WEB-008 / MOB-010 | Event-Driven Reader Hook | `user_progression`, `reward_transactions`| TC-GAM-03 |
 | **UR-GAM-02** | FR-GAM-01 | UC-GAM-01 | WEB-009 / MOB-010 | `POST /api/v1/gamification/checkin` | `daily_checkins`, `reward_transactions` | TC-GAM-01 |
-| **UR-GAM-03** | FR-GAM-03 | UC-GAM-03 | WEB-008 / MOB-010 | `PATCH /api/v1/gamification/rank-theme`| `user_progression` | TC-GAM-01 |
-| **UR-GAM-04** | FR-GAM-04 | UC-GAM-04 | WEB-008 / MOB-010 | `POST /api/v1/gamification/rewards/claim`| `user_claimed_level_rewards`| TC-GAM-01 |
-| **UR-GAM-05** | FR-GAM-05 | UC-GAM-05 | WEB-010 / MOB-010 | `GET /api/v1/gamification/transactions`| `reward_transactions` | TC-GAM-01 |
+| **UR-GAM-03** | FR-GAM-03 | UC-GAM-03 | WEB-008 / MOB-010 | `PATCH /api/v1/gamification/rank-theme`| `user_progression` | TC-GAM-04 |
+| **UR-GAM-04** | FR-GAM-04 | UC-GAM-04 | WEB-008 / MOB-010 | `POST /api/v1/gamification/rewards/claim`| `user_claimed_level_rewards`| TC-GAM-05 |
+| **UR-GAM-05** | FR-GAM-05 | UC-GAM-05 | WEB-010 / MOB-010 | `GET /api/v1/gamification/transactions`| `reward_transactions` | TC-GAM-06 |

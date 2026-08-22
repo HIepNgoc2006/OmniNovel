@@ -44,7 +44,7 @@ Story (created_by)
                 └── MediaAsset (Trang ảnh WebP, Novel HTML, Illustration)
 ```
 
-* **`Story` (Entity):** Đại diện cho tác phẩm gốc (`id`, `title`, `slug`, `media_format: COMIC | NOVEL`, `publication_format`, `origin_country`, `summary`, `cover_url`, `created_by`, `visibility`).
+* **`Story` (Entity):** Đại diện cho tác phẩm gốc (`id`, `title`, `slug`, `media_format: COMIC | NOVEL`, `publication_format: MANGA | MANHWA | MANHUA | WEBTOON | LIGHT_NOVEL | WEB_NOVEL`, `origin_country`, `original_language`, `summary`, `cover_url`, `created_by`, `visibility: PUBLIC | UNLISTED | PRIVATE`).
 * **`StoryEdition` (Entity):** Đại diện cho một dòng xuất bản / nhóm phát hành (`id`, `story_id`, `edition_name`, `language: default language`, `is_default`).
 
 ### 2.3. Aggregate Root: `Chapter` & `ChapterVersion` (Publishing Domain)
@@ -54,7 +54,8 @@ Story (created_by)
 * **`MediaAsset` (Entity):** Tệp tin thành phần (`id`, `version_id`, `sort_order`, `asset_type: MANGA_PAGE | NOVEL_HTML | ILLUSTRATION`, `storage_key`, `file_size_bytes`).
 
 ### 2.4. Aggregate Root: `UserProgression` & `RewardTransaction` (Gamification Domain)
-* **`UserProgression`:** Hồ sơ tiến trình độc giả (`user_id`, `level: derived`, `total_exp: SSoT`, `omnicoin_balance`, `current_streak`, `rank_theme_id`).
+* **`UserProgression`:** Hồ sơ tiến trình độc giả (`user_id`, `level: Denormalized Cache`, `total_exp: SSoT`, `omnicoin_balance`, `current_streak`, `rank_theme_id`).
+  * **Quy tắc tính Level:** `total_exp` là Nguồn Sự Thật Duy Nhất. Trường `level` là giá trị cache phi chuẩn hóa (denormalized cached field) được tính toán đồng bộ trong cùng transaction CSDL mỗi khi có thay đổi EXP.
 * **`RewardTransaction` (Single-entry Immutable Ledger):** Sổ cái ghi nhận mọi giao dịch điểm (`id`, `user_id`, `reward_type: EXP | OMNICOIN`, `amount`, `balance_after`, `source_type: CHECKIN | READ_CHAPTER | LEVEL_REWARD`, `idempotency_key: UNIQUE NOT NULL`).
 
 ### 2.5. Aggregate Root: `AuditLog` (Moderation & Security Domain)
@@ -65,11 +66,12 @@ Story (created_by)
 ## 3. CÁC SỰ KIỆN MIỀN NGHIỆP VỤ (DOMAIN EVENTS)
 
 * `ChapterCreatedEvent`: Phát sinh khi một chương mới được khởi tạo trong một StoryEdition.
-* `RawMediaUploadedEvent`: Phát sinh khi uploader hoàn tất upload file ZIP/Text vào MinIO.
+* `RawMediaUploadedEvent`: Phát sinh khi uploader hoàn tất upload file ZIP/Text/EPUB vào MinIO.
 * `TranslationJobQueuedEvent`: Phát sinh khi tác vụ dịch AI được đưa vào hàng đợi BullMQ.
 * `TranslationProgressUpdatedEvent`: Phát sinh khi một trang/đoạn được xử lý xong để stream % qua WebSocket.
 * `TranslationJobCompletedEvent`: Phát sinh khi AI hoàn tất 100%, sẵn sàng cho màn hình Diff Preview.
-* `ChapterVersionActivatedEvent`: Phát sinh khi Editor/Owner chọn Ghi đè (trỏ `active_version_id` sang version mới) hoặc Nhân bản.
+* `ChapterVersionCreatedEvent`: Phát sinh khi **bất kỳ một `ChapterVersion` mới** được tạo ra (Raw, Duplicate, AI Translation, Human Edit).
+* `ChapterVersionActivatedEvent`: Phát sinh **chỉ khi con trỏ `chapter.active_version_id` thay đổi** (ví dụ: Editor/Owner chọn Ghi đè hoặc chuyển phiên bản hiển thị mặc định).
 * `ChapterReadingCompletedEvent`: Phát sinh khi độc giả đọc hoàn thành 1 chapter hợp lệ, kích hoạt logic tính Total EXP (Anti-farming check).
 * `DailyCheckinCompletedEvent`: Phát sinh khi độc giả điểm danh thành công trong ngày.
 * `UserLevelUpEvent`: Phát sinh khi Total EXP vượt ngưỡng lên cấp, mở khóa phần thưởng Level mới.

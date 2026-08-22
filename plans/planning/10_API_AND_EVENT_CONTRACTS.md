@@ -55,15 +55,15 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 | `GET` | `/api/v1/stories/rankings` | Query: `timeframe: daily \| weekly \| monthly` | `200 OK` + `{ rankings: [...] }` |
 | `GET` | `/api/v1/stories/search` | Query: `q` (từ khóa debounce 300ms) | `200 OK` + `{ results: [...] }` (Tối đa 10) |
 | `GET` | `/api/v1/stories/:slug` | Params: `slug` | `200 OK` + `{ story, editions, volumes, chapters }` |
-| `PATCH`| `/api/v1/stories/:id/visibility` | Auth: Owner/Admin, Body: `{ visibility: 'PUBLIC' \| 'PRIVATE' }` | `200 OK` + `{ storyId, visibility }` |
+| `PATCH`| `/api/v1/stories/:id/visibility` | Auth: Story Owner / Global Admin, Body: `{ visibility: 'PUBLIC' \| 'UNLISTED' \| 'PRIVATE' }` | `200 OK` + `{ storyId, visibility }` |
 
 ### 3.3. Phân Hệ Quản Trị Thành Viên Bộ Truyện (Story Members CRUD)
 | Method | Endpoint | Yêu Cầu Body / Header | Response Thành Công |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/v1/stories/:id/members` | Auth: Bearer Token | `200 OK` + `{ members: [...] }` |
-| `POST` | `/api/v1/stories/:id/members` | Auth: Story Owner, Body: `{ userId, role: 'EDITOR' \| 'TRANSLATOR' \| 'UPLOADER' }` | `201 Created` + `{ member }` |
-| `PATCH`| `/api/v1/stories/:id/members/:userId` | Auth: Story Owner, Body: `{ role }` | `200 OK` + `{ updatedMember }` |
-| `DELETE`| `/api/v1/stories/:id/members/:userId` | Auth: Story Owner | `200 OK` + `{ success: true }` |
+| `POST` | `/api/v1/stories/:id/members` | Auth: Story Owner / Admin, Body: `{ userId, role: 'EDITOR' \| 'TRANSLATOR' \| 'UPLOADER' }` | `201 Created` + `{ member }` |
+| `PATCH`| `/api/v1/stories/:id/members/:userId` | Auth: Story Owner / Admin, Body: `{ role }` | `200 OK` + `{ updatedMember }` |
+| `DELETE`| `/api/v1/stories/:id/members/:userId` | Auth: Story Owner / Admin | `200 OK` + `{ success: true }` |
 
 ### 3.4. Phân Hệ Trình Đọc & Tủ Sách (Reader & Library)
 | Method | Endpoint | Yêu Cầu Query / Body | Response Thành Công |
@@ -77,16 +77,16 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 ### 3.5. Phân Hệ Studio & Dịch Thuật AI (Studio & AI)
 | Method | Endpoint | Yêu Cầu Body / Header | Response Thành Công |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/studio/stories` | Auth: Translator/Owner/Admin | `200 OK` + `{ managedStories: [...] }` |
-| `POST` | `/api/v1/studio/stories` | Body: `{ title, mediaFormat, originCountry, summary, coverUrl }` | `201 Created` + `{ storyId }` |
-| `POST` | `/api/v1/studio/stories/:id/editions` | Body: `{ editionName, language, isDefault }` | `201 Created` + `{ editionId }` |
-| `POST` | `/api/v1/studio/editions/:id/volumes` | Body: `{ volumeNumber, title, coverUrl }` | `201 Created` + `{ volumeId }` |
-| `POST` | `/api/v1/studio/volumes/:id/chapters` | Body: `{ chapterNumber, title }` | `201 Created` + `{ chapterId }` |
-| `POST` | `/api/v1/uploads/sessions`| Body: `{ storyEditionId, chapterNumber, fileType: 'ZIP' \| 'TEXT', fileSize }` | `201 Created` + `{ uploadId, presignedUrls: [...] }` |
-| `POST` | `/api/v1/ai/jobs` | Header: `Idempotency-Key`, Body: `{ chapterVersionId, sourceLang, targetLang, provider }` | `202 Accepted` + `{ jobId, status: 'QUEUED' }` |
+| `GET` | `/api/v1/studio/stories` | Auth: Global Translator / Global Admin | `200 OK` + `{ managedStories: [...] }` |
+| `POST` | `/api/v1/studio/stories` | Auth: Global Translator / Admin, Body: `{ title, mediaFormat, publicationFormat, originCountry, originalLanguage, summary, coverUrl }` | `201 Created` + `{ storyId }` |
+| `POST` | `/api/v1/studio/stories/:id/editions` | Auth: Story Owner / Admin, Body: `{ editionName, language, isDefault }` | `201 Created` + `{ editionId }` |
+| `POST` | `/api/v1/studio/editions/:id/volumes` | Auth: Story Editor / Owner / Admin, Body: `{ volumeNumber, title, coverUrl }` | `201 Created` + `{ volumeId }` |
+| `POST` | `/api/v1/studio/volumes/:id/chapters` | Auth: Story Editor / Owner / Admin, Body: `{ chapterNumber, title }` | `201 Created` + `{ chapterId }` |
+| `POST` | `/api/v1/uploads/sessions`| Auth: Story Uploader / Translator / Editor / Owner, Body: `{ storyEditionId, chapterNumber, fileType: 'ZIP' \| 'TEXT' \| 'EPUB' \| 'MARKDOWN', fileSize }` | `201 Created` + `{ uploadId, presignedUrls: [...] }` |
+| `POST` | `/api/v1/ai/jobs` | Header: `Idempotency-Key`, Auth: Story Translator / Editor / Owner, Body: `{ chapterVersionId, sourceLang, targetLang, provider }` | `202 Accepted` + `{ jobId, status: 'QUEUED' }` |
 | `GET` | `/api/v1/ai/jobs/:id` | Params: `id` | `200 OK` + `{ job, segments, diffPreviewUrls }` |
-| `POST` | `/api/v1/ai/jobs/:id/apply` | Header: `Idempotency-Key`, Auth: Editor/Owner, Body: `{ mode: 'OVERWRITE_ACTIVE_VERSION' \| 'CREATE_ALTERNATE_VERSION' }` | `200 OK` + `{ chapterId, activeVersionId, versionNumber }` |
-| `GET/POST` | `/api/v1/ai/glossary` | Body (POST): `{ projectId, sourceTerm, targetTerm, category }` | `200 OK / 201 Created` + `{ glossaryTerm }` |
+| `POST` | `/api/v1/ai/jobs/:id/apply` | Header: `Idempotency-Key`, Auth: Story Editor / Story Owner / Global Admin, Body: `{ mode: 'OVERWRITE_ACTIVE_VERSION' \| 'CREATE_ALTERNATE_VERSION' }` | `200 OK` + `{ chapterId, activeVersionId, versionNumber }` |
+| `GET/POST` | `/api/v1/ai/glossary` | Auth: Story Translator / Editor / Owner, Body (POST): `{ projectId, sourceTerm, targetTerm, category }` | `200 OK / 201 Created` + `{ glossaryTerm }` |
 
 ### 3.6. Phân Hệ Gamification & Sổ Cái (Gamification)
 | Method | Endpoint | Yêu Cầu Header / Body | Response Thành Công |
@@ -100,9 +100,9 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 ### 3.7. Phân Hệ Quản Trị Hệ Thống (Admin)
 | Method | Endpoint | Yêu Cầu Header / Body | Response Thành Công |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/admin/reports` | Auth: Admin, Query: `status: PENDING \| RESOLVED` | `200 OK` + `{ reports: [...] }` |
-| `PATCH`| `/api/v1/admin/reports/:id/resolve`| Body: `{ resolutionNote }` | `200 OK` + `{ reportId, status: 'RESOLVED' }` |
-| `PATCH`| `/api/v1/admin/users/:id/role` | Body: `{ role: 'READER' \| 'TRANSLATOR' \| 'ADMIN' }` | `200 OK` + `{ userId, newRole }` |
+| `GET` | `/api/v1/admin/reports` | Auth: Global Admin, Query: `status: PENDING \| RESOLVED` | `200 OK` + `{ reports: [...] }` |
+| `PATCH`| `/api/v1/admin/reports/:id/resolve`| Auth: Global Admin, Body: `{ resolutionNote }` | `200 OK` + `{ reportId, status: 'RESOLVED' }` |
+| `PATCH`| `/api/v1/admin/users/:id/role` | Auth: Global Admin, Body: `{ role: 'READER' \| 'TRANSLATOR' \| 'ADMIN' }` | `200 OK` + `{ userId, newRole }` |
 
 ---
 

@@ -35,9 +35,15 @@ Tài liệu này xác định tháp kiểm thử phần mềm (**Testing Pyramid
 | **TC-STUD-01** | Tạo Story mới gán quyền Owner | Payload tạo truyện mới | Tạo bản ghi `stories` kèm `story_members(role='OWNER')` | Integration |
 | **TC-AI-01**   | Quét chống Zip Slip tệp tin tải lên | File ZIP chứa entry `../../etc/passwd` | Bị chặn ngay lập tức, trả về `400 Bad Request` | Unit |
 | **TC-AI-02**   | Dịch Manga có từ khóa Glossary | Ảnh chứa chữ "Rasengan" | Text tiếng Việt hiển thị chính xác "Loa Toàn Hoàn" | AI Integration |
-| **TC-GAM-01**  | Điểm danh nguyên tử lần đầu trong ngày | `POST /gamification/checkin` | +5 Coin, +10 Total EXP, Streak +1, tạo 2 bản ghi sổ cái ledger | Integration |
+| **TC-GAM-01**  | Điểm danh nguyên tử lần đầu trong ngày | `POST /api/v1/gamification/checkin` | +5 Coin, +10 Total EXP, Streak +1, tạo 2 bản ghi sổ cái ledger | Integration |
 | **TC-GAM-02**  | Chặn điểm danh lặp lại lần 2 | Gửi tiếp request checkin | Trả về `400 Bad Request` (`CHECKIN_ALREADY_CLAIMED`), balance giữ nguyên | Integration |
-| **TC-ADM-01**  | Quyền đóng báo cáo lỗi chương | Admin token gọi resolve report | Cập nhật `status = 'RESOLVED'`, gán `resolved_by = admin.id` | Integration |
+| **TC-GAM-03**  | Thưởng EXP khi đọc hoàn thành chapter | Gửi event đọc $\ge 45$s và $\ge 80\%$ | +5 Total EXP, tính lại level, kiểm soát trần tối đa 100 EXP/ngày | Integration |
+| **TC-GAM-04**  | Thay đổi Rank Theme hiển thị | `PATCH /api/v1/gamification/rank-theme` | Cập nhật `rank_theme_id`, profile hiển thị danh hiệu tương ứng | Integration |
+| **TC-GAM-05**  | Nhận thưởng mốc Level mới | `POST /api/v1/gamification/rewards/claim`| Ghi nhận `user_claimed_level_rewards`, cộng coin vào ví qua ledger | Integration |
+| **TC-GAM-06**  | Truy vấn lịch sử giao dịch sổ cái | `GET /api/v1/gamification/transactions` | Trả về danh sách lịch sử biến động số dư EXP và OmniCoin phân trang | Integration |
+| **TC-ADM-01**  | Xử lý đóng báo cáo lỗi chương | Admin token gọi resolve report | Cập nhật `status = 'RESOLVED'`, gán `resolved_by = admin.id` | Integration |
+| **TC-ADM-02**  | Phân quyền Global Role người dùng | Admin token gọi đổi role | Cập nhật `users.role = 'TRANSLATOR'`, xóa cache Redis tức thì | Integration |
+| **TC-ADM-03**  | Điều khiển trạng thái hiển thị truyện| Admin token gọi đổi visibility | Cập nhật `stories.visibility = 'UNLISTED'`, ẩn khỏi feed công khai | Integration |
 
 ---
 

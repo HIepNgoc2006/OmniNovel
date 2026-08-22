@@ -209,11 +209,11 @@ Tài liệu này đặc tả toàn bộ các Yêu Cầu Chức Năng (**Function
   * `Then` hệ thống cập nhật quyền trong CSDL, xóa cache phân quyền của user trong Redis và áp dụng quyền mới ngay lập tức.
 
 ### FR-ADM-03: Chuyển Đổi Trạng Thái Hiển Thị Tác Phẩm (Story Visibility Control)
-* **Mô tả:** Ẩn hoặc chuyển trạng thái truyện sang `PRIVATE`/`PUBLIC` khi có tranh chấp bản quyền hoặc bảo trì.
+* **Mô tả:** Thay đổi trạng thái hiển thị của truyện (`PUBLIC` / `UNLISTED` / `PRIVATE`) khi có tranh chấp bản quyền, bảo trì hoặc phát hành thử nghiệm.
 * **Tiêu chí nghiệm thu:**
   * `Given` Admin hoặc Story Owner chuyển trạng thái bộ truyện,
-  * `When` gửi `PATCH /api/v1/stories/:id/visibility` với `visibility: PRIVATE`,
-  * `Then` bộ truyện lập tức bị ẩn khỏi kết quả tìm kiếm và feed công khai.
+  * `When` gửi `PATCH /api/v1/stories/:id/visibility` với `visibility: 'UNLISTED'` hoặc `'PRIVATE'`,
+  * `Then` bộ truyện được cập nhật trạng thái ngay lập tức, nếu là `PRIVATE` hoặc `UNLISTED` sẽ bị ẩn khỏi kết quả tìm kiếm và feed công khai.
 
 ---
 

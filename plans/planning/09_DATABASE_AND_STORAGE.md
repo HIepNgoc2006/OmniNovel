@@ -1,6 +1,6 @@
 # 🗄️ 09. Thiết Kế Cơ Sở Dữ Liệu PostgreSQL & MinIO Storage (Enterprise Schema)
 
-Tài liệu này cung cấp toàn bộ lược đồ CSDL quan hệ PostgreSQL 16 hoàn chỉnh với 24 bảng có đầy đủ ràng buộc (Constraints), chỉ mục (Indexes), Khóa ngoại (Foreign Keys), cơ chế ẩn danh hóa tài khoản và cấu trúc phân bổ MinIO Storage.
+Tài liệu này cung cấp toàn bộ lược đồ CSDL quan hệ PostgreSQL 16 hoàn chỉnh với **24 nhóm thực thể (gồm 27 bảng quan hệ)** có đầy đủ ràng buộc (Constraints), chỉ mục (Indexes), Khóa ngoại (Foreign Keys), cơ chế ẩn danh hóa tài khoản và cấu trúc phân bổ MinIO Storage.
 
 ---
 
@@ -74,7 +74,7 @@ CREATE TABLE story_members (
     UNIQUE(story_id, user_id)
 );
 
--- 6. Thể loại truyện
+-- 6. Thể loại truyện (2 Bảng: genres & story_genres)
 CREATE TABLE genres (
     id SERIAL PRIMARY KEY,
     name VARCHAR(50) UNIQUE NOT NULL,
@@ -253,7 +253,7 @@ CREATE TABLE translation_segments (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 19. Hệ Thống Chủ Đề Cấp Bậc (Data-driven Rank Themes & Levels)
+-- 19. Hệ Thống Chủ Đề Cấp Bậc (2 Bảng: rank_themes & rank_levels)
 CREATE TABLE rank_themes (
     id VARCHAR(30) PRIMARY KEY, -- e.g. 'DEFAULT', 'TU_TIEN', 'GAME', 'DEMON_KING', 'MAGICIAN'
     name VARCHAR(100) NOT NULL,
@@ -271,10 +271,10 @@ CREATE TABLE rank_levels (
     UNIQUE(theme_id, min_level)
 );
 
--- 20. Hồ Sơ Tiến Trình Người Dùng (User Progression - Total EXP SSoT)
+-- 20. Hồ Sơ Tiến Trình Người Dùng (User Progression - Total EXP SSoT & Denormalized Level)
 CREATE TABLE user_progression (
     user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    level INT DEFAULT 1 CHECK (level >= 1 AND level <= 100), -- Được tính toán dẫn xuất từ total_exp
+    level INT DEFAULT 1 CHECK (level >= 1 AND level <= 100), -- Denormalized Cache tính đồng bộ từ total_exp
     total_exp BIGINT DEFAULT 0 CHECK (total_exp >= 0), -- Nguồn sự thật duy nhất về EXP
     omnicoin_balance BIGINT DEFAULT 0 CHECK (omnicoin_balance >= 0),
     current_streak INT DEFAULT 0 CHECK (current_streak >= 0),
@@ -309,7 +309,7 @@ CREATE TABLE reward_transactions (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
--- 23. Phần Thưởng Mốc Level (Level Rewards)
+-- 23. Phần Thưởng Mốc Level (2 Bảng: level_rewards & user_claimed_level_rewards)
 CREATE TABLE level_rewards (
     id SERIAL PRIMARY KEY,
     milestone_level INT UNIQUE NOT NULL CHECK (milestone_level >= 1),
@@ -359,7 +359,7 @@ Nhằm tuân thủ quyền riêng tư (Privacy) nhưng vẫn **bảo vệ tính 
 2. Ràng buộc đối với Story Owner:
    * Nếu người dùng là `OWNER` duy nhất của một bộ truyện đang `PUBLIC`, trước khi xóa tài khoản phải:
      * (a) Chuyển giao quyền Owner cho thành viên khác trong `story_members`, HOẶC
-     * (b) Chuyển trạng thái bộ truyện sang `PRIVATE` / `ARCHIVED`.
+     * (b) Chuyển trạng thái bộ truyện sang `PRIVATE`.
 
 ---
 

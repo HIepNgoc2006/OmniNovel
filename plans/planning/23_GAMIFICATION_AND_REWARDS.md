@@ -29,7 +29,7 @@ Tài liệu này đặc tả chi tiết toàn bộ phân hệ **Gamification** c
 * **Quy tắc 2 (Giới hạn trần theo ngày):** Giới hạn tối đa **100 EXP/ngày** từ hoạt động đọc truyện thông thường để ngăn chặn bot tự động cuộn trang.
 
 ### 2.3. Công Thức Tính Level Dẫn Xuất (Derived Level):
-Hàm tính toán Level từ `total_exp`:
+* **Tính toán đồng bộ (Denormalized Cache):** `total_exp` là Nguồn Sự Thật Duy Nhất. Trường `user_progression.level` là trường cache phi chuẩn hóa được tính toán và cập nhật đồng bộ trong cùng database transaction mỗi khi có giao dịch cộng Total EXP, ngăn ngừa triệt để sai lệch (drift).
 * Cột mốc tích lũy để đạt Level $L$:
 $$\text{TotalEXP}_{\text{required}}(L) = \sum_{i=1}^{L-1} \lfloor 100 \times i^{1.5} \rfloor$$
 * API trả về định dạng rõ ràng:

@@ -31,19 +31,19 @@ Tài liệu này xác định đầy đủ danh mục **35 Use Cases** của h�
 
 ## 2. MA TRẬN PHÂN QUYỀN SỞ HỮU DỰA TRÊN DỮ LIỆU (OWNERSHIP RBAC MATRIX)
 
-Quyền hạn được xác định qua 2 tầng: **Global Role** (`users.role`) và **Story Member Role** (`story_members.role`):
+Quyền hạn được phân tách rõ ràng giữa **Global System Role** (`users.role`) và **Story Member Role** (`story_members.role`):
 
-| Hành Động Nghiệp Vụ (Action) | Guest | Global READER | Story UPLOADER | Story TRANSLATOR | Story EDITOR | Story OWNER | Global ADMIN |
+| Hành Động Nghiệp Vụ (Action) | Guest | Global READER | Global TRANSLATOR | Story UPLOADER | Story TRANSLATOR | Story EDITOR | Story OWNER | Global ADMIN |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Đọc truyện công khai (Public Read)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Đánh dấu theo dõi & Lưu tiến độ đọc**| ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Điểm danh & Tích lũy EXP/OmniCoin**  | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Tạo bộ truyện mới (Create Story)**   | ❌ | ❌ (Cần apply) | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Tải lên tập raw (Upload ZIP/Text)**  | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Kích hoạt Task Dịch AI**             | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
-| **Xuất bản / Ghi đè Active Version**   | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
-| **Chỉnh sửa Metadata & Quản lý Member**| ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
-| **Khóa tài khoản & Điều khiển Ẩn/Hiện**| ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Đọc truyện công khai (Public Read)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Đánh dấu theo dõi & Lưu tiến độ đọc**| ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Điểm danh & Tích lũy EXP/OmniCoin**  | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Tạo bộ truyện mới (Create Story)**   | ❌ | ❌ (Cần apply) | ✅ | N/A | N/A | N/A | N/A | ✅ |
+| **Tải lên tập raw (Upload ZIP/Text)**  | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| **Kích hoạt Task Dịch AI**             | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
+| **Xuất bản / Ghi đè Active Version**   | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
+| **Chỉnh sửa Metadata & Quản lý Member**| ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
+| **Khóa tài khoản & Điều khiển Ẩn/Hiện**| ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 ---
 
@@ -104,9 +104,9 @@ Quyền hạn được xác định qua 2 tầng: **Global Role** (`users.role`)
 ---
 
 ### 📄 UC-06 (UC-STUD-01): Tạo Bộ Truyện Mới & Thiết Lập Ấn Bản (StoryEdition)
-* **Primary Actor:** Global Translator / Story Owner.
+* **Primary Actor:** Global Translator / Global Admin.
 * **Main Flow:**
-  1. Thành viên vào `/studio/stories/new`, nhập Tên truyện, Thể loại, Tóm tắt và Upload ảnh bìa.
+  1. Thành viên vào `/studio/stories/new`, nhập Tên truyện, Media Format, Publication Format, Quốc gia, Thể loại, Tóm tắt và Upload ảnh bìa.
   2. Server lưu bản ghi vào `stories`, gán `created_by = user.id` và tự động tạo `story_members` với `role = 'OWNER'`.
   3. Thành viên tạo thêm ấn bản `story_editions` (ví dụ: "Bản Dịch Tiếng Việt", language: 'vi').
 
@@ -125,7 +125,7 @@ Quyền hạn được xác định qua 2 tầng: **Global Role** (`users.role`)
 ---
 
 ### 📄 UC-08 (UC-STUD-04): Xem Trước So Sánh (Diff) & Áp Dụng Xuất Bản
-* **Primary Actor:** **Story Editor / Story Owner / Global Admin** *(Translator không có quyền này)*.
+* **Primary Actor:** **Story Editor / Story Owner / Global Admin** *(Translator/Uploader không có quyền này)*.
 * **Preconditions:** `TranslationJob` đã hoàn tất 100% (trạng thái `READY_FOR_REVIEW`).
 * **Main Flow:**
   1. Giao diện Studio hiển thị thanh trượt Diff so sánh ảnh raw gốc và ảnh sau khi dịch AI.

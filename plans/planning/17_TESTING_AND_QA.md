@@ -1,21 +1,47 @@
-# 🧪 17. Chiến Lược Kiểm Thử Toàn Diện & Bộ Dữ Liệu Benchmark AI (Testing & QA)
+# 🧪 17. Chiến Lược Kiểm Thử Toàn Diện, Test Case Catalog & Bộ Benchmark AI (Testing & QA)
 
-Tài liệu này xác định chiến lược kiểm thử đa tầng từ Unit Test, Integration Test, Playwright E2E, Flutter Driver đến Bộ dữ liệu đánh giá chất lượng AI.
-
----
-
-## 1. MA TRẬN KIM TỰ THÁP KIỂM THỬ (TESTING PYRAMID)
-
-* **Unit Tests (Jest / PyTest):** Đạt độ bao phủ (Coverage) $> 80\%$ cho Domain Entities, Use Cases và Thuật toán AI.
-* **Integration Tests (Supertest + Testcontainers):** Kiểm thử tương tác giữa NestJS, PostgreSQL 16 và Redis.
-* **Web E2E Tests (Playwright):** Kiểm thử tự động toàn bộ luồng từ Đăng nhập $\rightarrow$ Đọc Manga cuộn $\rightarrow$ Đổi server CDN.
-* **Mobile Integration Tests (Flutter Driver):** Đo lường Frame Rate (120Hz) và dung lượng RAM khi cuộn 100 trang ảnh.
-* **Load Testing (K6):** Mô phỏng 500 độc giả đọc truyện đồng thời và 20 tác vụ dịch AI chạy song song.
+Tài liệu này xác định tháp kiểm thử phần mềm (**Testing Pyramid**), danh mục mã ca kiểm thử chuẩn (**Test Case Catalog `TC-*`**) và tiêu chí đánh giá chất lượng mô hình AI.
 
 ---
 
-## 2. BỘ DỮ LIỆU ĐÁNH GIÁ CHẤT LƯỢNG AI (AI BENCHMARK DATASET)
+## 1. THÁP KIỂM THỬ PHẦN MỀM (TESTING PYRAMID)
 
-Xây dựng bộ dữ liệu chuẩn (**Ground Truth Benchmark**):
-* **50 trang Manga Nhật/Hàn tiêu chuẩn:** Đo lường độ chính xác OCR (Character Error Rate $< 5\%$) và tỷ lệ nhận diện bóng thoại (Recall $> 95\%$).
-* **20 đoạn văn bản Light Novel phức tạp:** Đo lường mức độ nhất quán thuật ngữ Glossary ($100\%$) và độ tự nhiên của văn phong tiếng Việt.
+```
+       / \
+      / E2E \       --> Playwright (Web) & Flutter Driver (Mobile) [10% Coverage]
+     /-------\
+    / Integr. \     --> Supertest + Testcontainers PostgreSQL & Redis [30% Coverage]
+   /-----------\
+  /  Unit Tests \   --> Jest (NestJS) & Dart Test (Flutter) & Pytest (AI) [60% Coverage]
+ /---------------\
+```
+
+---
+
+## 2. DANH MỤC CA KIỂM THỬ CHUẨN (TEST CASE CATALOG `TC-*`)
+
+| Mã Test Case | Hạng Mục Kiểm Thử | Dữ Liệu Đầu Vào (Input) | Kết Quả Kỳ Vọng (Expected Output) | Loại Test |
+| :--- | :--- | :--- | :--- | :---: |
+| **TC-AUTH-01** | Đăng ký tài khoản hợp lệ | Email mới, password 8+ ký tự | Trả về `201 Created`, user được lưu với password băm Argon2id | Integration |
+| **TC-AUTH-02** | Đăng nhập sai mật khẩu | Đúng email, sai password | Trả về `401 Unauthorized` (`AUTH_INVALID_CREDENTIALS`) | Integration |
+| **TC-DISC-01** | Tìm kiếm truyện có dấu tiếng Việt | `q = "đại quản gia"` | Trả về danh sách truyện khớp với điểm tương đồng trigram cao nhất | Unit |
+| **TC-MANGA-01**| Cuộn Webtoon 50 trang không rò rỉ RAM | 50 ảnh 2K WebP cuộn nhanh | Khung hình duy trì $\ge 90$ FPS, RAM duy trì $< 150MB$ | Mobile E2E |
+| **TC-NOVEL-01**| Đổi font và lưu vị trí đọc theo block | Chỉnh cỡ 22px, nhảy `block-42` | Vị trí đọc được lưu chính xác, mở lại thiết bị khác trỏ đúng block | Mobile E2E |
+| **TC-AI-01**   | Quét chống Zip Slip tệp tin tải lên | File ZIP chứa entry `../../etc/passwd` | Bị chặn ngay lập tức, trả về `400 Bad Request` | Unit |
+| **TC-AI-02**   | Dịch Manga có từ khóa Glossary | Ảnh chứa chữ "Rasengan" | Text tiếng Việt hiển thị chính xác "Loa Toàn Hoàn" | AI Integration |
+| **TC-GAM-01**  | Điểm danh nguyên tử lần đầu trong ngày | `POST /gamification/checkin` | +5 Coin, +10 EXP, Streak +1, tạo 2 bản ghi sổ cái ledger | Integration |
+| **TC-GAM-02**  | Chặn điểm danh lặp lại lần 2 | Gửi tiếp request checkin | Trả về `400 Bad Request` (`CHECKIN_ALREADY_CLAIMED`), balance giữ nguyên | Integration |
+| **TC-ADM-01**  | Quyền đóng báo cáo lỗi chương | Admin token gọi resolve report | Cập nhật `status = 'RESOLVED'`, gán `resolved_by = admin.id` | Integration |
+
+---
+
+## 3. KHUNG TIÊU CHÍ ĐÁNH GIÁ CHẤT LƯỢNG DỊCH AI (HUMAN EVALUATION RUBRIC)
+
+Đánh giá chất lượng bản dịch AI theo thang điểm 1 đến 5 trên bộ dữ liệu kiểm chuẩn (Benchmark Ground Truth Dataset gồm 10 chapter mẫu):
+
+| Tiêu Chí | Thang Điểm 1 (Kém) | Thang Điểm 3 (Chấp Nhận Được) | Thang Điểm 5 (Xuất Sắc) |
+| :--- | :--- | :--- | :--- |
+| **1. Độ chính xác ngữ nghĩa (Accuracy)** | Sai lệch hoàn toàn ý nghĩa gốc | Đúng ý chính, còn sót vài chi tiết nhỏ | Dịch sát nghĩa gốc 100%, không bịa đặt |
+| **2. Độ mượt mà văn phong (Naturalness)** | Giọng văn máy móc thô cứng (Google Dịch cũ) | Văn phong dễ hiểu, đôi chỗ lặp từ | Câu thoại tự nhiên, đúng ngữ cảnh truyện |
+| **3. Tuân thủ Thuật ngữ (Terminology)** | Dịch lung tung tên nhân vật/chiêu thức | Đúng 80% thuật ngữ quan trọng | Tuân thủ 100% từ điển Glossary |
+| **4. Thẩm mỹ Tẩy xóa & Dàn chữ (Visual)** | Nền tranh bị lem nhem, chữ tràn khung | Tẩy sạch chữ, font chữ vừa vặn | Tranh phục hồi hoàn hảo, font chữ mỹ thuật đẹp mắt |

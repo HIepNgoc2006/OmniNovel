@@ -1,27 +1,46 @@
-# 💰 20. Ma Trận Quản Trị 16 Rủi Ro (Risk Register) & Mô Hình Dự Toán Chi Phí Chi Tiết
+# ⚠️ 20. Ma Trận Quản Trị 16 Rủi Ro (R1 - R16) & Mô Hình Chi Phí Vận Hành (Risk & Cost Model)
 
-Tài liệu này xác định 16 rủi ro tiềm ẩn kèm biện pháp ứng phó và mô hình kinh tế đơn vị (**Unit Economics Cost Model**).
-
----
-
-## 1. MA TRẬN 16 RỦI RO DỰ ÁN (RISK REGISTER R1 - R16)
-
-| Mã | Tên Rủi Ro | Mức Độ | Người Phụ Trách | Dấu Hiệu Kích Hoạt (Trigger) | Biện Pháp Phòng Ngừa & Ứng Phó |
-| :--- | :--- | :---: | :--- | :--- | :--- |
-| **R1** | AI dịch sai ngữ cảnh / tràn text | Cao | AI Lead | Tỷ lệ user báo lỗi $> 5\%$ | Cung cấp Studio Diff Preview cho phép edit thủ công trước khi xuất bản |
-| **R2** | Nghẽn băng thông do ảnh Manga | Cao | DevOps Lead | CPU Nginx $> 80\%$ | Tự động nén WebP + Nginx Image Cache 30 ngày giảm 80% tải MinIO |
-| **R3** | Ứng dụng di động tràn RAM (OOM) | Cao | Mobile Lead | RAM App $> 200MB$ | Virtualized List Windowing, giải phóng trang cũ theo thuật toán LRU |
-| **R4** | Bị bot cào trộm kho truyện | Trung bình | Security Lead | Request IP $> 60/min$ | Rate Limiting 60 req/min + HMAC-SHA256 Signed URLs thời hạn 30p |
-| **R5** | File upload chứa mã độc / Zip Bomb | Cao | Backend Lead | Tỷ lệ nén $> 100$ | Kiểm tra Magic Bytes nhị phân + Re-encoding làm sạch metadata EXIF |
-| **R6** | Máy chủ AI Worker bị quá tải queue | Trung bình | Backend Lead | Queue backlog $> 20$ jobs | BullMQ điều phối 5 jobs song song, tự động retry Exponential Backoff |
-| **R7** | Phình đại phạm vi (Scope Creep) | Cao | Project Manager | Chậm tiến độ Sprint $> 3$ ngày | Khóa chặt Out-of-Scope (không làm payment/live chat), ưu tiên P0 |
+Tài liệu này xác định ma trận 16 rủi ro trọng yếu phân loại theo các nhóm (Kỹ thuật, An toàn thông tin, AI, Pháp lý bản quyền, Quản trị dự án) và mô hình dự toán chi phí vận hành (**Unit Economics**).
 
 ---
 
-## 2. MÔ HÌNH KINH TẾ ĐƠN VỊ (UNIT ECONOMICS COST MODEL)
+## 1. MA TRẬN 16 RỦI RO TRỌNG YẾU (RISK MATRIX R1 - R16)
 
-* **Chi phí Cố Định (Fixed Cost):** Máy chủ VPS (4 Core, 8GB RAM, 160GB SSD) $\approx 15$ - $20$/tháng; Domain $\approx 10$/năm.
-* **Chi phí Biến Đổi (Variable Cost):**
-  * Lưu trữ MinIO S3: $0$ (Self-hosted) hoặc Cloudflare R2 ($0.015$/GB/tháng, $0$ egress bandwidth).
-  * Chi phí AI Dịch thuật (GPT-4o-mini): $\approx 0.002$/chương truyện 30 trang ($pprox 2$ cho 1.000 chương truyện).
-* **Đơn giá phục vụ 1.000 độc giả hoạt động hàng ngày:** $\approx 0.50$/tháng.
+| Mã Rủi Ro | Mô Tả Rủi Ro Cụ Thể | Mức Độ | Biện Pháp Giảm Thiểu & Kế Hoạch Ứng Phó (Mitigation Plan) |
+| :--- | :--- | :---: | :--- |
+| **R1** | Tràn bộ nhớ RAM trên điện thoại khi cuộn Webtoon dài 100 trang ảnh 2K. | **Cao** | Áp dụng Virtualized List giải phóng trang ảnh ngoài viewport; nén WebP $< 200KB$/trang. |
+| **R2** | Bot lậu cào trộm toàn bộ kho ảnh Manga qua link trực tiếp. | **Cao** | Sử dụng Dynamic HMAC Signed URLs thời hạn 15 phút + Nginx Rate Limiting theo IP. |
+| **R3** | Lỗi tấn công Zip Slip / Zip Bomb khi người dùng upload file nén độc hại. | **Cao** | Quét magic bytes, chuẩn hóa đường dẫn loại bỏ `../`, giới hạn tỷ lệ nén tối đa $100:1$. |
+| **R4** | Độc giả spam script reload để cày farm EXP lên Level nhanh. | **Trung bình**| Áp dụng Anti-farming gate: Chỉ tính EXP 1 lần / chapter / user; giới hạn tối đa 100 EXP/ngày. |
+| **R5** | Sai lệch số dư OmniCoin khi nhiều request điểm danh gửi đồng thời. | **Cao** | Sử dụng CSDL Transaction nguyên tử (ACID) + Single-Entry Immutable Ledger + Idempotency Key. |
+| **R6** | Chi phí gọi API AI (OpenAI GPT-4o-mini) tăng đột biến do người dùng dịch liên tục. | **Trung bình**| Giới hạn 2 tác vụ dịch đồng thời/user + Caching bản dịch phân đoạn + Adapter hỗ trợ Local LLM. |
+| **R7** | Trôi lệch kế hoạch đồ án (Schedule Overrun) vượt quá thời hạn 8 tuần. | **Cao** | Đưa Offline Mode và Inline Comments sang V1 Scope; cố định phạm vi MVP tối thiểu (P0). |
+| **R8** | Khiếu nại bản quyền tác phẩm (Copyright Dispute / Takedown Request). | **Cao** | Áp dụng Takedown Workflow: Tạm ẩn `visibility = 'PRIVATE'` trong 48h xác minh giấy phép. |
+| **R9** | Sự cố gián đoạn dịch vụ AI Provider (OpenAI / DeepL API Outage). | **Trung bình**| Kiến trúc Adapter tự động fallback sang mô hình phụ trợ hoặc Local LLM nội bộ. |
+| **R10**| Mất mát dữ liệu do sự cố phần cứng máy chủ (Data Loss Disaster). | **Cao** | Thiết lập Cronjob tự động backup CSDL PostgreSQL và MinIO sang vùng lưu trữ dự phòng mỗi ngày. |
+| **R11**| Rò rỉ thông tin nhạy cảm qua file cấu hình hoặc biến môi trường. | **Cao** | Đặt toàn bộ secrets trong `.env`, commit file `.gitignore` nghiêm ngặt và quét Secret qua CI/CD. |
+| **R12**| Lỗi xung đột tiến độ đọc khi người dùng đọc đồng thời trên 2 thiết bị. | **Thấp** | Cập nhật theo cơ chế Last-Write-Wins dựa trên `updated_at` timestamp chuẩn UTC. |
+| **R13**| Bản dịch AI bị lỗi chính tả hoặc dịch sai thuật ngữ quan trọng. | **Trung bình**| Tích hợp bắt buộc bảng Từ Điển Thuật Ngữ (`Glossary`) và hiển thị Diff Preview cho người duyệt. |
+| **R14**| Đứt kết nối mạng trong lúc đang xử lý tác vụ dịch AI dài. | **Thấp** | Áp dụng mô hình WebSocket Reconnect-Aware kèm REST API query trạng thái từ Redis. |
+| **R15**| Xung đột phiên bản khi nhiều người cùng chỉnh sửa một chapter. | **Trung bình**| Mô hình `ChapterVersion` bất biến ngăn chặn ghi đè vật lý; lưu trữ phiên bản độc lập. |
+| **R16**| Hiệu năng tìm kiếm bị chậm khi số lượng truyện lên đến hàng chục nghìn bộ. | **Trung bình**| Sử dụng PostgreSQL GIN Trigram Index kết hợp bộ nhớ đệm Redis L2 Caching cho từ khóa HOT. |
+
+---
+
+## 2. MÔ HÌNH CHI PHÍ VẬN HÀNH & ĐƠN GIÁ (UNIT ECONOMICS & COST MODEL)
+
+### Các giả định định lượng (Assumptions):
+1. **Dung lượng ảnh Manga:** Trung bình 30 trang/chapter $\times$ 180 KB/trang (WebP) $\approx$ **5.4 MB / chapter**.
+2. **Chi phí Dịch AI (OpenAI GPT-4o-mini):**
+   * Trung bình 30 khung thoại/chapter $\approx$ 1,500 Input Tokens + 1,200 Output Tokens.
+   * Đơn giá: \$0.15 / 1M input tokens + \$0.60 / 1M output tokens.
+   * Chi phí AI cho 1 chapter $\approx$ **\$0.00095 USD / chapter** (chưa đến 25 VNĐ/chapter).
+3. **Băng thông phân phối (CDN Bandwidth):** Giả định mỗi độc giả đọc 10 chapters/ngày $\approx$ 54 MB/ngày $\rightarrow$ 1,000 DAU tiêu thụ $\approx$ 54 GB/ngày.
+
+### Bảng dự toán chi phí cơ sở hạ tầng (Mô phỏng 1,000 DAU):
+| Hạng Mục Hạ Tầng | Cấu Hình Kỹ Thuật | Chi Phí Ước Tính / Tháng |
+| :--- | :--- | :---: |
+| **Máy chủ VPS Cơ sở** | 4 vCPU, 8GB RAM, 160GB SSD (Chạy 7 Containers Docker) | **\$15 - \$20 USD** (~400.000 VNĐ) |
+| **Băng thông & Lưu trữ MinIO** | Lưu trữ 100GB dữ liệu truyện + Egress Traffic qua Cloudflare | **\$0 USD** (Tận dụng Free Tier / Local) |
+| **Chi phí AI Translation Tokens** | Xử lý dịch 1,000 chapters mới/tháng qua GPT-4o-mini | **\$1.00 - \$2.00 USD** (~50.000 VNĐ) |
+| **TỔNG CHI PHÍ VẬN HÀNH** | **Hoàn toàn khả thi và tiết kiệm tối đa cho môi trường học tập** | **$\approx$ \$20 USD / tháng** |

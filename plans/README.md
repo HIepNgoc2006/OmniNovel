@@ -24,7 +24,7 @@ Toàn bộ 24 tài liệu đặc tả kỹ thuật và theo dõi tiến độ th
 | **13** | [13_ARCHITECTURE_DECISIONS.md](planning/13_ARCHITECTURE_DECISIONS.md) | **ADRs:** Tuyển tập 10 quyết định kiến trúc chuẩn MADR. |
 | **14** | [14_NON_FUNCTIONAL_REQUIREMENTS.md](planning/14_NON_FUNCTIONAL_REQUIREMENTS.md) | **NFRs:** Yêu cầu Phi chức năng định lượng (120Hz, RAM < 150MB, SLAs). |
 | **15** | [15_SECURITY_THREAT_MODEL.md](planning/15_SECURITY_THREAT_MODEL.md) | **Security:** Mô hình đe dọa STRIDE, Anti-Leech & File Sanitization. |
-| **16** | [16_PRIVACY_CONTENT_AND_RIGHTS.md](planning/16_PRIVACY_CONTENT_AND_RIGHTS.md) | **Privacy & Rights:** Quyền sở hữu nội dung, DMCA & Takedown Workflow. |
+| **16** | [16_PRIVACY_CONTENT_AND_RIGHTS.md](planning/16_PRIVACY_CONTENT_AND_RIGHTS.md) | **Privacy & Rights:** Quyền sở hữu nội dung, Takedown Workflow & Quyền riêng tư. |
 | **17** | [17_TESTING_AND_QA.md](planning/17_TESTING_AND_QA.md) | **QA:** Chiến lược kiểm thử đa tầng & Bộ dữ liệu Benchmark AI Ground Truth. |
 | **18** | [18_DEVOPS_OBSERVABILITY_DR.md](planning/18_DEVOPS_OBSERVABILITY_DR.md) | **DevOps:** Cấu hình 7 Container, Nginx, CI/CD, Prometheus & Kế hoạch DR. |
 | **19** | [19_PROJECT_MANAGEMENT.md](planning/19_PROJECT_MANAGEMENT.md) | **PM:** Lịch trình Scrum 4 Sprint, WBS 4 Cấp & Definition of Done. |

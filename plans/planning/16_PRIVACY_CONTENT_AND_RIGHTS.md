@@ -1,6 +1,6 @@
 # ⚖️ 16. Quyền Riêng Tư, Bản Quyền Tác Giả & Quy Trình Xử Lý Khiếu Nại (Copyright & Takedown)
 
-Tài liệu này xác định chính sách bảo vệ quyền riêng tư người dùng, các cấp độ hiển thị tác phẩm, quy định minh bạch khi gọi AI bên thứ ba và quy trình kỹ thuật tiếp nhận, xử lý khiếu nại bản quyền (**Copyright & Content Takedown Workflow**).
+Tài liệu này xác định chính sách bảo vệ quyền riêng tư người dùng, quy trình ẩn danh hóa tài khoản (**Account Anonymization**), các cấp độ hiển thị tác phẩm, quy định minh bạch khi gọi AI bên thứ ba và quy trình kỹ thuật tiếp nhận, xử lý khiếu nại bản quyền (**Copyright & Content Takedown Workflow**).
 
 ---
 
@@ -38,10 +38,15 @@ Tài liệu này xác định chính sách bảo vệ quyền riêng tư ngườ
 
 ---
 
-## 3. CHÍNH SÁCH BẢO VỆ DỮ LIỆU CÁ NHÂN & MINH BẠCH AI (PRIVACY & THIRD-PARTY AI)
+## 3. CHÍNH SÁCH BẢO VỆ DỮ LIỆU CÁ NHÂN & ẨN DANH HÓA (PRIVACY & ANONYMIZATION)
 
+* **Cơ Chế Ẩn Danh Hóa Tài Khoản (Account Anonymization):**
+  * Nhằm bảo vệ **tính bất biến của Sổ cái giao dịch (`reward_transactions`)** và **quyền tác giả của các bản dịch (`chapter_versions`)**, hệ thống áp dụng cơ chế Soft Deletion & Anonymization.
+  * Thông tin định danh cá nhân (Email, Mật khẩu, Avatar, Họ tên) được xóa sạch; `username` đổi thành `deleted_user_<id>`.
+  * UUID nội bộ được giữ nguyên để bảo vệ toàn vẹn dữ liệu kế toán và nhật ký kiểm toán `audit_logs`.
+* **Ràng Buộc Chuyển Giao Quyền Sở Hữu:**
+  * Chủ sở hữu duy nhất của bộ truyện `PUBLIC` bắt buộc phải chuyển giao quyền `OWNER` hoặc chuyển truyện sang `PRIVATE` trước khi thực hiện xóa/ẩn danh hóa tài khoản.
 * **Minh Bạch Xử Lý Dữ Liệu AI Ngoài (Third-Party AI Disclosure & Consent):**
   * Trước khi gửi nội dung text/ảnh qua các API ngoài (OpenAI/DeepL), hệ thống yêu cầu sự đồng ý rõ ràng của người dùng (User Consent).
   * Các tệp tin raw ở chế độ `PRIVATE` được cam kết không công khai và không được sử dụng để huấn luyện mô hình bên ngoài trái phép.
-* **Xóa tài khoản (Account Deletion):** Người dùng có quyền yêu cầu xóa vĩnh viễn tài khoản. Toàn bộ thông tin email, password hash và thông tin cá nhân sẽ được xóa sạch khỏi `users`, các bản dịch/truyện đã xuất bản sẽ được chuyển sang quyền sở hữu ẩn danh (`created_by = NULL`).
-* **Lưu vết Logs (Log Retention):** Toàn bộ access logs và audit logs được lưu trữ bảo mật trong 30 ngày phục vụ điều tra sự cố trước khi được tự động dọn dẹp (Auto-purge).
+* **Lưu Vết Logs (Audit Log Retention):** Toàn bộ nhật ký kiểm toán trong `audit_logs` được lưu trữ bảo mật tối thiểu 30 ngày phục vụ điều tra sự cố.

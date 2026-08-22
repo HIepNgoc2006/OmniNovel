@@ -1,10 +1,18 @@
 # 🚀 18. Hạ Tầng Triển Khai Docker, CI/CD, Giám Sát & Kế Hoạch Ứng Cứu Sự Cố (DevOps, Observability & DR)
 
-Tài liệu này đặc tả cấu hình triển khai cụm 7 Container với Docker Compose, pipeline CI/CD GitHub Actions, hệ thống giám sát Prometheus/Grafana và kế hoạch sao lưu phục hồi dữ liệu (**Disaster Recovery**).
+Tài liệu này đặc tả cấu hình triển khai cụm Container theo từng Profile, pipeline CI/CD GitHub Actions, hệ thống giám sát Prometheus/Grafana và kế hoạch sao lưu phục hồi dữ liệu (**Disaster Recovery**).
 
 ---
 
-## 1. CỤM HẠ TẦNG DOCKER COMPOSE ĐA CONTAINER (7 SERVICES)
+## 1. CÁC HỒ SƠ TRIỂN KHAI HẠ TẦNG (DEPLOYMENT PROFILES)
+
+1. **Local Development Profile:** Chạy đồng bộ **7 Containers** trên máy lập trình viên (bao gồm cả `ai-worker` xử lý giả lập/cục bộ).
+2. **Academic Deployment Profile:** Chạy **6 Containers Cốt Lõi** trên VPS Linux (Web, API, Postgres, Redis, MinIO, Nginx), riêng `ai-worker` chạy trên **Máy tính phát triển cục bộ có GPU (hoặc GPU Server rời)** kết nối qua API.
+3. **Production Scale Profile:** Cụm Multi-Node High Availability với Load Balancer độc lập và GPU Worker Cluster.
+
+---
+
+## 2. CẤU HÌNH DOCKER COMPOSE MÔI TRƯỜNG PHÁT TRIỂN (LOCAL DEV 7 SERVICES)
 
 ```yaml
 version: '3.8'
@@ -32,7 +40,8 @@ services:
     container_name: omninovel-web
     environment:
       - NODE_ENV=production
-      - NEXT_PUBLIC_API_URL=http://api:8000
+      - NEXT_PUBLIC_API_URL=/api # Đường dẫn trình duyệt gọi qua Nginx
+      - API_INTERNAL_URL=http://api:8000 # Đường dẫn Next.js Server-Side gọi nội bộ
     restart: unless-stopped
 
   # 3. Core Backend API (NestJS)
@@ -123,7 +132,7 @@ volumes:
 
 ---
 
-## 2. PIPELINE CI/CD TỰ ĐỘNG HÓA (GITHUB ACTIONS)
+## 3. PIPELINE CI/CD TỰ ĐỘNG HÓA (GITHUB ACTIONS)
 
 ```
 [Push code / PR vào main]
@@ -146,7 +155,7 @@ volumes:
 
 ---
 
-## 3. GIÁM SÁT HỆ THỐNG & METRICS (OBSERVABILITY BASELINE)
+## 4. GIÁM SÁT HỆ THỐNG & METRICS (OBSERVABILITY BASELINE)
 
 * **Prometheus Metrics Endpoints:**
   * `http_requests_total`: Số lượng request theo mã trạng thái HTTP (2xx, 4xx, 5xx).
@@ -156,12 +165,14 @@ volumes:
 
 ---
 
-## 4. KẾ HOẠCH SAO LƯU & PHỤC HỒI DỮ LIỆU (DISASTER RECOVERY & BACKUP)
+## 5. KẾ HOẠCH SAO LƯU & PHỤC HỒI DỮ LIỆU (DISASTER RECOVERY & BACKUP)
 
-### 4.1. Mục Tiêu Phục Hồi Thực Tế Cho Đồ Án (Academic Demo Disaster Recovery):
-* **RPO (Recovery Point Objective):** **$\le 24$ giờ** (với kịch bản sao lưu CSDL hàng ngày).
+### 5.1. Mục Tiêu Phục Hồi Thực Tế Cho Đồ Án (Academic Demo Disaster Recovery):
+* **RPO (Recovery Point Objective):** **$\le 24$ giờ** (với kịch bản sao lưu CSDL và MinIO hàng ngày).
 * **RTO (Recovery Time Objective):** **$\le 4$ giờ** (khôi phục từ bản dump và khởi động lại container).
-* **Kịch bản Sao lưu:** Cronjob chạy mỗi ngày lúc 02:00 sáng tự động dump CSDL: `pg_dump -U postgres omninovel_db | gzip > /backups/db_$(date +%F).sql.gz`.
+* **Kịch bản Sao lưu Kép (Database + MinIO Objects):**
+  * Cronjob chạy mỗi ngày lúc 02:00 sáng tự động dump CSDL: `pg_dump -U postgres omninovel_db | gzip > /backups/db_$(date +%F).sql.gz`.
+  * Đồng bộ sao lưu kho lưu trữ MinIO qua công cụ mirror: `mc mirror minio/ remote-backup/minio_$(date +%F)/`.
 
-### 4.2. Mục Tiêu Thiết Kế Mở Rộng (Production Target):
-* Sử dụng PostgreSQL WAL Archiving / Streaming Replication hướng tới RPO $\le 1$ giờ và RTO $\le 15$ phút.
+### 5.2. Mục Tiêu Thiết Kế Mở Rộng (Production Target):
+* Sử dụng PostgreSQL WAL Archiving / Streaming Replication và S3 Cross-Region Replication hướng tới RPO $\le 1$ giờ và RTO $\le 15$ phút.

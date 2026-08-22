@@ -14,10 +14,11 @@ Tài liệu này xác định các ranh giới miền (Bounded Contexts / Subdom
 │ • User           │ • Story          │ • ReadingSession │ • LibraryEntry   │ • TranslationProject│
 │ • Role (Global)  │ • StoryEdition   │ • ProgressAnchor │ • Bookmark       │ • TranslationJob    │
 │ • StoryMember    │ • Volume/Chapter │ • ViewCounter    │ • OfflineBundle  │ • Segment & Glossary│
+│ • Anonymization  │                  │                  │                  │                     │
 ├──────────────────┼──────────────────┼──────────────────┼──────────────────┼─────────────────────┤
 │ 6. PUBLISHING    │ 7. GAMIFICATION  │ 8. MODERATION    │ 9. COMMUNITY(V1) │ 10. NOTIFICATION(V1)│
 │ • ChapterVersion │ • UserProgression│ • ErrorReport    │ • StoryReview    │ • SystemAlert       │
-│ • MediaAsset     │ • RewardLedger   │ • ContentTakedown│ • ChapterComment │ • PushNotification  │
+│ • MediaAsset     │ • RewardLedger   │ • StoryVisibility│ • ChapterComment │ • PushNotification  │
 │ • ActivePointer  │ • DailyCheckin   │ • AuditLog       │ • PanelComment   │ • InAppNotice       │
 └──────────────────┴──────────────────┴──────────────────┴──────────────────┴─────────────────────┘
 ```
@@ -26,7 +27,12 @@ Tài liệu này xác định các ranh giới miền (Bounded Contexts / Subdom
 
 ## 2. CÁC THỰC THỂ CỐT LÕI & CẤU TRÚC AGGREGATES (CORE AGGREGATES)
 
-### 2.1. Aggregate Root: `Story` & `StoryEdition` (Catalog Domain)
+### 2.1. Aggregate Root: `User` & `StoryMember` (Identity Domain)
+* **`User` (Entity):** Quản lý thông tin xác thực (`id`, `username`, `email`, `password_hash`, `role`, `is_active`, `is_deleted`, `deleted_at`).
+  * **Vòng đời Ẩn danh hóa (Account Anonymization):** Khi xóa tài khoản, hệ thống chuyển trạng thái `is_deleted = TRUE`, ẩn danh hóa email/username nhưng **giữ nguyên UUID nội bộ** để bảo vệ toàn vẹn lịch sử Sổ cái Ledger và quyền tác giả.
+* **`StoryMember` (Canonical Entity):** **Nguồn sự thật duy nhất về quyền sở hữu và phân quyền bộ truyện** (`id`, `story_id`, `user_id`, `role: OWNER | EDITOR | TRANSLATOR | UPLOADER`).
+
+### 2.2. Aggregate Root: `Story` & `StoryEdition` (Catalog Domain)
 ```
 Story (created_by)
 ├── StoryMember (Canonical Ownership & Permissions: OWNER, EDITOR, TRANSLATOR, UPLOADER)
@@ -38,26 +44,21 @@ Story (created_by)
                 └── MediaAsset (Trang ảnh WebP, Novel HTML, Illustration)
 ```
 
-* **`Story` (Entity):** Đại diện cho tác phẩm gốc (`id`, `title`, `slug`, `media_format: COMIC | NOVEL`, `publication_format`, `origin_country`, `summary`, `cover_url`, `created_by`).
-* **`StoryMember` (Canonical Entity):** **Nguồn sự thật duy nhất về quyền sở hữu và phân quyền bộ truyện** (`id`, `story_id`, `user_id`, `role: OWNER | EDITOR | TRANSLATOR | UPLOADER`).
+* **`Story` (Entity):** Đại diện cho tác phẩm gốc (`id`, `title`, `slug`, `media_format: COMIC | NOVEL`, `publication_format`, `origin_country`, `summary`, `cover_url`, `created_by`, `visibility`).
 * **`StoryEdition` (Entity):** Đại diện cho một dòng xuất bản / nhóm phát hành (`id`, `story_id`, `edition_name`, `language: default language`, `is_default`).
-* **`StoryCreator` (Join Entity):** Liên kết tác phẩm với tác giả/họa sĩ (`story_id`, `creator_id`, `role: AUTHOR | ARTIST | ILLUSTRATOR`).
 
-### 2.2. Aggregate Root: `Chapter` & `ChapterVersion` (Publishing Domain)
+### 2.3. Aggregate Root: `Chapter` & `ChapterVersion` (Publishing Domain)
 * **`Chapter` (Entity):** Container logic chứa các bản phát hành (`id`, `story_edition_id`, `volume_id`, `chapter_number`, `title`, `active_version_id`).
 * **`ChapterVersion` (Immutable Entity):** Bản phát hành cụ thể (`id`, `chapter_id`, `version_number`, `version_type: RAW_ORIGINAL | AI_TRANSLATED | HUMAN_EDITED`, `language`, `is_published`).
   * **Quy tắc bất biến (Invariance Rule):** Bản ghi `ChapterVersion` khi đã tạo thì không được sửa đổi nội dung tệp tin media; nếu có thay đổi bắt buộc phải sinh `version_number` mới.
 * **`MediaAsset` (Entity):** Tệp tin thành phần (`id`, `version_id`, `sort_order`, `asset_type: MANGA_PAGE | NOVEL_HTML | ILLUSTRATION`, `storage_key`, `file_size_bytes`).
 
-### 2.3. Aggregate Root: `TranslationProject` & `TranslationJob` (AI Domain)
-* **`TranslationProject`:** Dự án dịch thuật (`id`, `story_edition_id`, `source_lang`, `target_lang`).
-* **`TranslationJob`:** Một phiên dịch cụ thể cho 1 ChapterVersion (`id`, `project_id`, `source_version_id`, `target_version_id`, `status: 14 states`, `progress_percentage`).
-* **`TranslationSegment`:** Từng khung thoại / đoạn văn (`id`, `job_id`, `sort_order`, `bbox`, `raw_text`, `translated_text`, `confidence`).
-* **`GlossaryTerm`:** Cặp từ vựng cố định (`id`, `project_id`, `source_term`, `target_term`, `category`).
-
 ### 2.4. Aggregate Root: `UserProgression` & `RewardTransaction` (Gamification Domain)
 * **`UserProgression`:** Hồ sơ tiến trình độc giả (`user_id`, `level: derived`, `total_exp: SSoT`, `omnicoin_balance`, `current_streak`, `rank_theme_id`).
 * **`RewardTransaction` (Single-entry Immutable Ledger):** Sổ cái ghi nhận mọi giao dịch điểm (`id`, `user_id`, `reward_type: EXP | OMNICOIN`, `amount`, `balance_after`, `source_type: CHECKIN | READ_CHAPTER | LEVEL_REWARD`, `idempotency_key: UNIQUE NOT NULL`).
+
+### 2.5. Aggregate Root: `AuditLog` (Moderation & Security Domain)
+* **`AuditLog` (Entity):** Nhật ký kiểm toán bảo mật và hành động nhạy cảm (`id`, `actor_user_id`, `action`, `resource_type`, `resource_id`, `ip_address`, `metadata_json`, `created_at`).
 
 ---
 
@@ -72,3 +73,4 @@ Story (created_by)
 * `ChapterReadingCompletedEvent`: Phát sinh khi độc giả đọc hoàn thành 1 chapter hợp lệ, kích hoạt logic tính Total EXP (Anti-farming check).
 * `DailyCheckinCompletedEvent`: Phát sinh khi độc giả điểm danh thành công trong ngày.
 * `UserLevelUpEvent`: Phát sinh khi Total EXP vượt ngưỡng lên cấp, mở khóa phần thưởng Level mới.
+* `UserAccountAnonymizedEvent`: Phát sinh khi người dùng yêu cầu xóa tài khoản, kích hoạt luồng ẩn danh hóa và chuyển quyền sở hữu truyện.

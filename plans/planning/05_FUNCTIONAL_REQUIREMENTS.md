@@ -202,7 +202,7 @@ Tài liệu này đặc tả toàn bộ các Yêu Cầu Chức Năng (**Function
   * `Then` hệ thống cập nhật trạng thái `chapter_error_reports.status = 'RESOLVED'` và ghi nhận `resolved_by`.
 
 ### FR-ADM-02: Quản Lý Người Dùng & Phân Quyền Toàn Cục
-* **Mô tả:** Admin cấp quyền Translator, Moderator hoặc khóa tài khoản vi phạm.
+* **Mô tả:** Admin cấp quyền Translator hoặc khóa tài khoản vi phạm.
 * **Tiêu chí nghiệm thu:**
   * `Given` Admin thực hiện cập nhật role cho một user,
   * `When` Admin gửi `PATCH /api/v1/admin/users/:id/role` với `role: TRANSLATOR`,

@@ -24,8 +24,13 @@ Tài liệu này xác định tháp kiểm thử phần mềm (**Testing Pyramid
 | :--- | :--- | :--- | :--- | :---: |
 | **TC-AUTH-01** | Đăng ký tài khoản hợp lệ | Email mới, password 8+ ký tự | Trả về `201 Created`, user được lưu với password băm Argon2id | Integration |
 | **TC-AUTH-02** | Đăng nhập sai mật khẩu | Đúng email, sai password | Trả về `401 Unauthorized` (`AUTH_INVALID_CREDENTIALS`) | Integration |
-| **TC-DISC-01** | Tìm kiếm truyện có dấu tiếng Việt | `q = "đại quản gia"` | Trả về danh sách truyện khớp với điểm tương đồng trigram cao nhất | Unit |
-| **TC-MANGA-01**| Cuộn Webtoon 50 trang không rò rỉ RAM | 50 ảnh 2K WebP cuộn nhanh | Khung hình duy trì $\ge 90$ FPS, RAM duy trì $< 150MB$ | Mobile E2E |
+| **TC-AUTH-03** | Đăng xuất & Thu hồi Token | Gửi token hợp lệ tới logout | Trả về `200 OK`, xóa Refresh Token trên Redis, thu hồi phiên | Integration |
+| **TC-DISC-01** | Lấy danh sách Featured Feed | `GET /api/v1/stories/featured`| Trả về `200 OK` chứa slider HOT và banner mới nhất từ Redis cache | Integration |
+| **TC-DISC-02** | Tìm kiếm truyện có dấu tiếng Việt | `q = "đại quản gia"` | Trả về danh sách truyện khớp với điểm tương đồng trigram cao nhất | Unit |
+| **TC-DISC-03** | Lọc truyện đa tiêu chí | `genre=action&format=COMIC` | Trả về danh sách truyện đúng bộ lọc kèm phân trang chuẩn | Integration |
+| **TC-DISC-04** | Lấy Bảng xếp hạng Top Views | `timeframe=weekly` | Trả về danh sách truyện top view tuần từ Redis Sorted Sets | Integration |
+| **TC-DISC-05** | Lấy Cây mục lục chi tiết truyện| `GET /api/v1/stories/:slug` | Trả về chi tiết Story, Editions, Volumes và Chapters kèm active version | Integration |
+| **TC-MANGA-01**| Cuộn Webtoon 50 trang không rò rỉ RAM | 50 ảnh 2K WebP cuộn nhanh | Khung hình Target 120Hz (Acceptance $\ge 90$ FPS, Jank $< 1\%$), RAM $< 150MB$ | Mobile E2E |
 | **TC-NOVEL-01**| Đổi font và lưu vị trí đọc theo block | Chỉnh cỡ 22px, nhảy `block-42` | Vị trí đọc được lưu chính xác, mở lại thiết bị khác trỏ đúng block | Mobile E2E |
 | **TC-STUD-01** | Tạo Story mới gán quyền Owner | Payload tạo truyện mới | Tạo bản ghi `stories` kèm `story_members(role='OWNER')` | Integration |
 | **TC-AI-01**   | Quét chống Zip Slip tệp tin tải lên | File ZIP chứa entry `../../etc/passwd` | Bị chặn ngay lập tức, trả về `400 Bad Request` | Unit |

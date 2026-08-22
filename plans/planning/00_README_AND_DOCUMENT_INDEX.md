@@ -22,7 +22,8 @@ Tài liệu này là **Nguồn Sự Thật Duy Nhất (Single Source of Truth - 
 | **Total EXP** | **Nguồn Sự Thật Duy Nhất về Điểm Kinh Nghiệm** tích lũy vĩnh viễn của người dùng (`total_exp`). | Level được tính toán dẫn xuất (Derived) từ `total_exp` theo công thức cố định. Không bao giờ bị trừ hay đem tiêu dùng. |
 | **OmniCoin** | Đơn vị tiền thưởng ảo trong hệ thống nhận qua Điểm danh (Daily Check-in) và Nhiệm vụ. | Dùng để mở khóa quyền lợi, theme, vật phẩm; quản lý qua Sổ cái bất biến (Immutable Ledger). |
 | **Rank / Title** | Cấp bậc danh hiệu hiển thị trên Profile theo cấp Level (Tu Tiên, Game Thủ, Ma Vương, Pháp Sư, Tinh Không). | Lựa chọn theme hiển thị mà không ảnh hưởng tới Level và EXP thực tế. |
-| **High Refresh Rate (HRR)** | Khả năng đáp ứng tần số quét màn hình 90Hz / 120Hz / 144Hz. | Yêu cầu ngân sách khung hình $< 8.33ms$/frame trên Mobile Flutter. |
+| **Account Anonymization** | Cơ chế Xóa tài khoản bảo vệ toàn vẹn dữ liệu (Soft Deletion & Anonymization). | Ẩn danh hóa thông tin cá nhân nhưng giữ nguyên UUID để bảo vệ tính toàn vẹn của Sổ cái Ledger và quyền tác giả. |
+| **High Refresh Rate (HRR)** | Khả năng đáp ứng tần số quét màn hình 90Hz / 120Hz / 144Hz. | Yêu cầu ngân sách khung hình Target 120Hz ($< 8.33ms$/frame), Acceptance Minimum $\ge 90$ FPS trên Mobile Flutter. |
 
 ---
 
@@ -41,7 +42,7 @@ Tài liệu này là **Nguồn Sự Thật Duy Nhất (Single Source of Truth - 
 | **ADR-007** | Mô Hình WebSocket Reconnect-Aware | **Accepted** | Quản lý tiến trình dịch AI qua WebSocket kèm REST fallback query. |
 | **ADR-008** | Trừu Tượng Hóa Nhà Cung Cấp AI (Provider) | **Accepted** | Áp dụng Adapter Pattern cho OpenAI, DeepL và Local LLM. |
 | **ADR-009** | Bảo Vệ Bản Quyền Hình Ảnh (Anti-Leech) | **Accepted** | Sử dụng **Dynamic HMAC-SHA256 Signed URLs** thời hạn ngắn (15 phút) và Watermark ẩn danh. |
-| **ADR-010** | Mã Hóa Mật Khẩu Người Dùng | **Accepted** | Sử dụng thuật toán **Argon2id** với thông số an toàn chống tấn công GPU/ASIC. |
+| **ADR-010** | Mã Hóa Mật Khẩu Người Dùng & JWT HS256 | **Accepted** | Sử dụng **Argon2id** cho mật khẩu và ký JWT đối xứng bằng **`HS256`**. |
 
 ---
 
@@ -55,7 +56,7 @@ plans/planning/
 ├── 03_PERSONAS_JTBD_USER_JOURNEYS.md         # [Users] 5 Personas, Jobs To Be Done & 6 User Journeys
 ├── 04_USER_REQUIREMENTS.md                   # [Requirements] Bảng User Requirements (MoSCoW P0-P3)
 ├── 05_FUNCTIONAL_REQUIREMENTS.md             # [Specs] Full Functional Requirements kèm Given-When-Then
-├── 06_USE_CASES_AND_PERMISSIONS.md           # [Use Cases] Catalog 28 Use Cases, 10 Core Specs & RBAC
+├── 06_USE_CASES_AND_PERMISSIONS.md           # [Use Cases] Catalog 35 Use Cases, 10 Core Specs & RBAC
 ├── 07_INFORMATION_ARCHITECTURE.md            # [IA] Sitemap Web/Mobile, Navigation & Full Screen Inventory
 ├── 08_DOMAIN_MODEL.md                        # [Domain] Mô hình nghiệp vụ DDD, Aggregates & Domain Events
 ├── 09_DATABASE_AND_STORAGE.md                # [Database] Lược đồ CSDL PostgreSQL 20+ bảng & MinIO Storage
@@ -65,9 +66,9 @@ plans/planning/
 ├── 13_ARCHITECTURE_DECISIONS.md              # [ADRs] Toàn văn 10 quyết định kiến trúc chuẩn MADR
 ├── 14_NON_FUNCTIONAL_REQUIREMENTS.md         # [NFRs] Yêu cầu phi chức năng định lượng (120Hz, RAM, SLAs)
 ├── 15_SECURITY_THREAT_MODEL.md               # [Security] Mô hình đe dọa STRIDE, Anti-Leech & File Sanitization
-├── 16_PRIVACY_CONTENT_AND_RIGHTS.md          # [Privacy & Rights] Quyền riêng tư, Bản quyền tác giả & Takedown
+├── 16_PRIVACY_CONTENT_AND_RIGHTS.md          # [Privacy & Rights] Quyền riêng tư, Anonymization & Takedown
 ├── 17_TESTING_AND_QA.md                      # [QA] Chiến lược kiểm thử đa tầng, Test Case Catalog & Benchmarks
-├── 18_DEVOPS_OBSERVABILITY_DR.md             # [DevOps] Docker Compose 7 Containers, CI/CD, Nginx & Kế hoạch DR
+├── 18_DEVOPS_OBSERVABILITY_DR.md             # [DevOps] Docker Compose Profiles, CI/CD, Nginx & Kế hoạch DR
 ├── 19_PROJECT_MANAGEMENT.md                  # [PM] Quy trình Scrum 4 Sprint, WBS 4 Cấp, RACI & Definition of Done
 ├── 20_RISK_AND_COST.md                       # [Risk & Cost] Ma trận 16 rủi ro (R1-R16) & Mô hình Unit Economics
 ├── 21_REQUIREMENTS_TRACEABILITY.md           # [Traceability] Ma trận truy vết chuẩn UR ➔ FR ➔ UC ➔ API ➔ DB ➔ TC

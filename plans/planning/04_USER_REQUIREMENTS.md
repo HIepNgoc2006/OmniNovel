@@ -9,7 +9,7 @@ Tài liệu này xác định toàn bộ các Yêu Cầu Người Dùng (**User 
 1. **Global User Role (Vai trò Toàn cục trong Hệ thống):**
    * `READER`: Người dùng thông thường (Đọc truyện, Tủ sách cá nhân, Gamification).
    * `TRANSLATOR`: Thành viên được cấp quyền sử dụng Studio và AI Translation Hub.
-   * `ADMIN`: Quản trị viên tối cao (Quản lý người dùng, xử lý báo lỗi, kiểm duyệt nội dung).
+   * `ADMIN`: Quản trị viên tối cao (Quản lý người dùng, xử lý báo lỗi, điều khiển hiển thị truyện).
 2. **Story Membership Role (Vai trò Thành viên theo từng Bộ truyện cụ thể - `story_members`):**
    * `OWNER`: Người tạo bộ truyện hoặc được chuyển giao quyền sở hữu tối cao; quản lý thành viên và xóa truyện.
    * `EDITOR`: Có quyền chỉnh sửa metadata, tạo tập (Volume), duyệt xuất bản và thực hiện **Apply Overwrite / Duplicate Version**.
@@ -111,8 +111,9 @@ Tài liệu này xác định toàn bộ các Yêu Cầu Người Dùng (**User 
 | :--- | :--- | :---: | :--- | :---: |
 | **UR-ADM-01** | Admin có thể xem danh sách và xử lý các báo cáo lỗi chương truyện từ độc giả. | Admin | **Must Have** | **P0** |
 | **UR-ADM-02** | Admin có thể quản lý danh sách người dùng, cấp quyền Global Translator và khóa tài khoản vi phạm. | Admin | **Must Have** | **P0** |
-| **UR-ADM-03** | Admin có thể kiểm duyệt, ẩn hoặc xóa các nội dung truyện/bình luận vi phạm tiêu chuẩn cộng đồng. | Admin | **Must Have** | **P0** |
+| **UR-ADM-03** | Admin có thể thay đổi trạng thái hiển thị của tác phẩm (PUBLIC / UNLISTED / PRIVATE). | Admin | **Must Have** | **P0** |
 | **UR-ADM-04** | Admin có thể xem dashboard thống kê lượt đọc, lưu lượng MinIO và lượng Token AI tiêu thụ. | Admin | **Should Have**| **P1** |
+| **UR-ADM-05** | Admin có thể thực hiện kiểm duyệt toàn diện, xóa nội dung vi phạm tiêu chuẩn, xử lý takedown và kháng cáo.| Admin | **Should Have**| **P1** |
 
 ---
 

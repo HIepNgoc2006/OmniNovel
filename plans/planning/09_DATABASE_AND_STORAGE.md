@@ -1,6 +1,6 @@
 # 🗄️ 09. Thiết Kế Cơ Sở Dữ Liệu PostgreSQL & MinIO Storage (Enterprise Schema)
 
-Tài liệu này cung cấp toàn bộ lược đồ CSDL quan hệ PostgreSQL 16 hoàn chỉnh với 20+ bảng có đầy đủ ràng buộc (Constraints), chỉ mục (Indexes), Khóa ngoại (Foreign Keys) và cấu trúc phân bổ MinIO Storage.
+Tài liệu này cung cấp toàn bộ lược đồ CSDL quan hệ PostgreSQL 16 hoàn chỉnh với 24 bảng có đầy đủ ràng buộc (Constraints), chỉ mục (Indexes), Khóa ngoại (Foreign Keys), cơ chế ẩn danh hóa tài khoản và cấu trúc phân bổ MinIO Storage.
 
 ---
 
@@ -11,15 +11,17 @@ Tài liệu này cung cấp toàn bộ lược đồ CSDL quan hệ PostgreSQL 1
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 
--- 1. Người dùng & Phân quyền Toàn cục
+-- 1. Người dùng & Phân quyền Toàn cục (Hỗ trợ Account Anonymization)
 CREATE TABLE users (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     username VARCHAR(50) UNIQUE NOT NULL,
-    email VARCHAR(100) UNIQUE NOT NULL,
+    email VARCHAR(100) UNIQUE, -- Cho phép NULL khi tài khoản đã ẩn danh hóa (Deleted)
     password_hash VARCHAR(255) NOT NULL,
     role VARCHAR(20) DEFAULT 'READER' CHECK (role IN ('ADMIN', 'TRANSLATOR', 'READER')),
     avatar_url VARCHAR(255),
     is_active BOOLEAN DEFAULT TRUE,
+    is_deleted BOOLEAN DEFAULT FALSE,
+    deleted_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
@@ -297,7 +299,7 @@ CREATE TABLE daily_checkins (
 -- 22. Sổ Cái Biến Động Số Dư Bất Biến (Single-Entry Immutable Reward Transaction Ledger)
 CREATE TABLE reward_transactions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE RESTRICT, -- Tuyệt đối không xóa bản ghi sổ cái
     reward_type VARCHAR(20) NOT NULL CHECK (reward_type IN ('EXP', 'OMNICOIN')),
     amount INT NOT NULL, -- Dương là cộng, âm là trừ
     balance_after BIGINT NOT NULL,
@@ -323,6 +325,18 @@ CREATE TABLE user_claimed_level_rewards (
     PRIMARY KEY(user_id, reward_id)
 );
 
+-- 24. Nhật Ký Kiểm Toán Bảo Mật & Hoạt Động (Audit Logs)
+CREATE TABLE audit_logs (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    actor_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    action VARCHAR(100) NOT NULL, -- e.g. 'STORY_VISIBILITY_CHANGED', 'VERSION_APPLIED', 'USER_ROLE_UPDATED', 'ACCOUNT_ANONYMIZED'
+    resource_type VARCHAR(50) NOT NULL, -- e.g. 'STORY', 'CHAPTER_VERSION', 'USER'
+    resource_id VARCHAR(100) NOT NULL,
+    ip_address VARCHAR(45),
+    metadata_json JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- CHỈ MỤC TỐI ƯU HIỆU NĂNG (INDEXES)
 CREATE INDEX idx_stories_slug ON stories(slug);
 CREATE INDEX idx_stories_title_trgm ON stories USING gin (title gin_trgm_ops);
@@ -330,11 +344,26 @@ CREATE INDEX idx_chapters_story_edition ON chapters(story_edition_id, chapter_nu
 CREATE INDEX idx_media_assets_version ON media_assets(version_id, sort_order);
 CREATE INDEX idx_translation_jobs_status ON translation_jobs(status);
 CREATE INDEX idx_reward_transactions_user ON reward_transactions(user_id, created_at DESC);
+CREATE INDEX idx_audit_logs_actor ON audit_logs(actor_user_id);
+CREATE INDEX idx_audit_logs_resource ON audit_logs(resource_type, resource_id);
 ```
 
 ---
 
-## 2. CẤU TRÚC PHÂN BỔ ĐỐI TƯỢNG TRÊN MINIO STORAGE
+## 2. QUY TRÌNH ẨN DANH HÓA TÀI KHOẢN (ACCOUNT ANONYMIZATION LIFECYCLE)
+
+Nhằm tuân thủ quyền riêng tư (Privacy) nhưng vẫn **bảo vệ tính toàn vẹn tuyệt đối của Sổ cái bất biến (Immutable Ledger)** và quyền tác giả của các bản dịch:
+1. Khi người dùng bấm "Xóa tài khoản":
+   * Cập nhật `users`: `email = NULL`, `username = 'deleted_user_' || substring(id::text, 1, 8)`, `password_hash = 'INVALID'`, `avatar_url = NULL`, `is_active = FALSE`, `is_deleted = TRUE`, `deleted_at = NOW()`.
+   * Khóa ngoại (UUID) vẫn tồn tại nguyên vẹn $\rightarrow$ `reward_transactions`, `chapter_versions.created_by`, `audit_logs` **không bị phá vỡ ràng buộc Foreign Key**.
+2. Ràng buộc đối với Story Owner:
+   * Nếu người dùng là `OWNER` duy nhất của một bộ truyện đang `PUBLIC`, trước khi xóa tài khoản phải:
+     * (a) Chuyển giao quyền Owner cho thành viên khác trong `story_members`, HOẶC
+     * (b) Chuyển trạng thái bộ truyện sang `PRIVATE` / `ARCHIVED`.
+
+---
+
+## 3. CẤU TRÚC PHÂN BỔ ĐỐI TƯỢNG TRÊN MINIO STORAGE
 
 ```
 manga-media/

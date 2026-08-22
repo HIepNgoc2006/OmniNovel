@@ -1,16 +1,16 @@
-# 👥 06. Danh Mục 28 Use Cases & Ma Trận Phân Quyền Sở Hữu (Ownership-Based Authorization)
+# 👥 06. Danh Mục 35 Use Cases & Ma Trận Phân Quyền Sở Hữu (Ownership-Based Authorization)
 
-Tài liệu này xác định đầy đủ danh mục **28 Use Cases** của hệ thống OmniNovel, đặc tả chuyên sâu **10 Use Cases cốt lõi** và ma trận phân quyền sở hữu dựa trên CSDL (**Ownership-Based RBAC với `story_members`**).
+Tài liệu này xác định đầy đủ danh mục **35 Use Cases** của hệ thống OmniNovel, đặc tả chuyên sâu **10 Use Cases cốt lõi** và ma trận phân quyền sở hữu dựa trên CSDL (**Ownership-Based RBAC với `story_members`**).
 
 ---
 
-## 1. DANH MỤC ĐẦY ĐỦ 28 USE CASES CỦA OMNINOVEL
+## 1. DANH MỤC ĐẦY ĐỦ 35 USE CASES CỦA OMNINOVEL
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
-│                                  DANH MỤC 28 USE CASES HỆ THỐNG                                  │
+│                                  DANH MỤC 35 USE CASES HỆ THỐNG                                  │
 ├────────────────────┬────────────────────┬────────────────────┬──────────────────────────────────┤
-│ PHÂN HỆ AUTH       │ PHÂN HỆ KHÁM PHÁ   │ PHÂN HỆ TRÌNH ĐỌC  │ PHÂN HỆ TỦ SÁCH                  │
+│ PHÂN HỆ AUTH (4)   │ PHÂN HỆ KHÁM PHÁ (5│ PHÂN HỆ TRÌNH ĐỌC(6│ PHÂN HỆ TỦ SÁCH (4)              │
 │ • UC-AUTH-01: ĐK   │ • UC-DISC-01: Feed │ • UC-READ-01: M.120│ • UC-LIB-01: Sync Tiến Độ       │
 │ • UC-AUTH-02: ĐN   │ • UC-DISC-02: Search│ • UC-READ-02: M.Page│ • UC-LIB-02: Bookmark Truyện   │
 │ • UC-AUTH-03: ĐX   │ • UC-DISC-03: Filter│ • UC-READ-03: CDN  │ • UC-LIB-03: Tải Offline (V1)   │
@@ -18,10 +18,10 @@ Tài liệu này xác định đầy đủ danh mục **28 Use Cases** của h�
 │                    │ • UC-DISC-05: Detail│ • UC-READ-05: LN.Gal│                                  │
 │                    │                    │ • UC-READ-06: Switch│                                  │
 ├────────────────────┼────────────────────┼────────────────────┼──────────────────────────────────┤
-│ PHÂN HỆ STUDIO/AI  │ PHÂN HỆ GAMIFICATION│ PHÂN HỆ QUẢN TRỊ   │ PHÂN HỆ CỘNG ĐỒNG (V1)           │
+│ PHÂN HỆ STUDIO/AI(5│ PHÂN HỆ GAMIFY (5) │ PHÂN HỆ QUẢN TRỊ(3)│ PHÂN HỆ CỘNG ĐỒNG (3) (V1)       │
 │ • UC-STUD-01: Story│ • UC-GAM-01: Checkin│ • UC-ADM-01: Report│ • UC-COM-01: Bình Luận Chương    │
 │ • UC-STUD-02: Upload│ • UC-GAM-02: EXP   │ • UC-ADM-02: Users │ • UC-COM-02: Inline Panel Comment│
-│ • UC-STUD-03: AI Job│ • UC-GAM-03: Theme │ • UC-ADM-03: Rights│ • UC-COM-03: Đánh Giá Sao        │
+│ • UC-STUD-03: AI Job│ • UC-GAM-03: Theme │ • UC-ADM-03: Visib.│ • UC-COM-03: Đánh Giá Sao        │
 │ • UC-STUD-04: Apply│ • UC-GAM-04: Reward│                    │                                  │
 │ • UC-STUD-05: Gloss│ • UC-GAM-05: Ledger│                    │                                  │
 └────────────────────┴────────────────────┴────────────────────┴──────────────────────────────────┘
@@ -43,7 +43,7 @@ Quyền hạn được xác định qua 2 tầng: **Global Role** (`users.role`)
 | **Kích hoạt Task Dịch AI**             | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ | ✅ |
 | **Xuất bản / Ghi đè Active Version**   | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ | ✅ |
 | **Chỉnh sửa Metadata & Quản lý Member**| ❌ | ❌ | ❌ | ❌ | ❌ | ✅ | ✅ |
-| **Khóa tài khoản & Xử lý Khiếu nại**   | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
+| **Khóa tài khoản & Điều khiển Ẩn/Hiện**| ❌ | ❌ | ❌ | ❌ | ❌ | ❌ | ✅ |
 
 ---
 
@@ -51,7 +51,7 @@ Quyền hạn được xác định qua 2 tầng: **Global Role** (`users.role`)
 
 ### 📄 UC-01 (UC-AUTH-02): Đăng Nhập Tài Khoản & Cấp Phát Token Kép
 * **Primary Actor:** Reader / Translator / Admin.
-* **Preconditions:** Tài khoản đã đăng ký hợp lệ và đang ở trạng thái `is_active = TRUE`.
+* **Preconditions:** Tài khoản đã đăng ký hợp lệ và đang ở trạng thái `is_active = TRUE`, `is_deleted = FALSE`.
 * **Main Flow:**
   1. Người dùng nhập Email/Username và Mật khẩu $\rightarrow$ Bấm "Đăng nhập".
   2. Server kiểm tra mật khẩu bằng thuật toán **Argon2id**.

@@ -14,7 +14,7 @@ Toàn bộ 24 tài liệu đặc tả kỹ thuật và theo dõi tiến độ th
 | **03** | [03_PERSONAS_JTBD_USER_JOURNEYS.md](planning/03_PERSONAS_JTBD_USER_JOURNEYS.md) | **Users:** 5 Personas chi tiết, Jobs To Be Done & User Journeys. |
 | **04** | [04_USER_REQUIREMENTS.md](planning/04_USER_REQUIREMENTS.md) | **Requirements:** Bảng Yêu cầu Người Dùng theo MoSCoW & P0-P3. |
 | **05** | [05_FUNCTIONAL_REQUIREMENTS.md](planning/05_FUNCTIONAL_REQUIREMENTS.md) | **Specs:** Functional Requirements kèm Acceptance Criteria (Given-When-Then). |
-| **06** | [06_USE_CASES_AND_PERMISSIONS.md](planning/06_USE_CASES_AND_PERMISSIONS.md) | **Use Cases:** 28 Use Cases & Ma trận Phân quyền Sở hữu (Ownership RBAC). |
+| **06** | [06_USE_CASES_AND_PERMISSIONS.md](planning/06_USE_CASES_AND_PERMISSIONS.md) | **Use Cases:** 35 Use Cases & Ma trận Phân quyền Sở hữu (Ownership RBAC). |
 | **07** | [07_INFORMATION_ARCHITECTURE.md](planning/07_INFORMATION_ARCHITECTURE.md) | **IA:** Sitemap Web/Mobile, Screen Inventory & Luồng điều hướng. |
 | **08** | [08_DOMAIN_MODEL.md](planning/08_DOMAIN_MODEL.md) | **Domain:** Mô hình miền DDD, Aggregates & Domain Events. |
 | **09** | [09_DATABASE_AND_STORAGE.md](planning/09_DATABASE_AND_STORAGE.md) | **Database:** Lược đồ CSDL PostgreSQL 20+ bảng DDL & MinIO S3. |

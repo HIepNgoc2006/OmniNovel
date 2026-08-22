@@ -240,7 +240,8 @@ CREATE TABLE translation_jobs (
 CREATE TABLE translation_segments (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     job_id UUID NOT NULL REFERENCES translation_jobs(id) ON DELETE CASCADE,
-    page_number INT NOT NULL,
+    page_number INT, -- Nullable cho Light Novel / Text
+    anchor_block_id VARCHAR(100), -- Định danh đoạn văn bản trong Novel
     sort_order INT NOT NULL,
     bbox_x INT,
     bbox_y INT,

@@ -34,7 +34,7 @@ Tài liệu này xác định đầy đủ danh mục **35 Use Cases** của h�
 Quyền hạn được phân tách rõ ràng giữa **Global System Role** (`users.role`) và **Story Member Role** (`story_members.role`):
 
 | Hành Động Nghiệp Vụ (Action) | Guest | Global READER | Global TRANSLATOR | Story UPLOADER | Story TRANSLATOR | Story EDITOR | Story OWNER | Global ADMIN |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Đọc truyện công khai (Public Read)** | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Đánh dấu theo dõi & Lưu tiến độ đọc**| ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | **Điểm danh & Tích lũy EXP/OmniCoin**  | ❌ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |

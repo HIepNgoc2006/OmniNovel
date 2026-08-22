@@ -2,11 +2,19 @@
   "name": "@omninovel/shared",
   "version": "1.0.0",
   "description": "Shared types, DTOs, and constants for OmniNovel Monorepo",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
   "scripts": {
     "build": "tsc",
-    "clean": "rimraf dist"
+    "clean": "node -e \"const fs = require('fs'); fs.existsSync('dist') && fs.rmSync('dist', { recursive: true, force: true });\"",
+    "prebuild": "npm run clean"
   },
   "devDependencies": {
     "typescript": "^5.3.3"

@@ -71,8 +71,8 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 | `GET` | `/api/v1/chapters/:id` | Params: `id`, Query: `versionId` (optional) | `200 OK` + `{ chapter, activeVersion, pages/content }` |
 | `POST` | `/api/v1/chapters/:id/reports` | Auth: Reader, Body: `{ pageNumber, errorType, description }` | `201 Created` + `{ reportId }` |
 | `GET` | `/api/v1/library` | Auth: Bearer Token | `200 OK` + `{ bookmarks: [...], history: [...] }` |
-| `POST` | `/api/v1/library/progress` | Body: `{ storyId, chapterId, pageIndex, anchorBlockId, textOffset }` | `200 OK` + `{ syncedAt }` |
-| `POST` | `/api/v1/library/bookmarks`| Body: `{ storyId, isBookmarked: boolean }` | `200 OK` + `{ isBookmarked, followersCount }` |
+| `POST` | `/api/v1/library/progress` | Auth: Bearer Token, Body: `{ storyId, chapterId, pageIndex, anchorBlockId, textOffset }` | `200 OK` + `{ syncedAt }` |
+| `POST` | `/api/v1/library/bookmarks`| Auth: Bearer Token, Body: `{ storyId, isBookmarked: boolean }` | `200 OK` + `{ isBookmarked, followersCount }` |
 
 ### 3.5. Phân Hệ Studio & Dịch Thuật AI (Studio & AI)
 | Method | Endpoint | Yêu Cầu Body / Header | Response Thành Công |
@@ -92,10 +92,10 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 | Method | Endpoint | Yêu Cầu Header / Body | Response Thành Công |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/v1/gamification/progression` | Auth: Bearer Token | `200 OK` + `{ level: 12, totalExp: 8450, currentLevelExp: 450, nextLevelExp: 900, omnicoinBalance: 428, streak: 7, rankTitle: "Kim Đan Kỳ" }` |
-| `POST` | `/api/v1/gamification/checkin` | Header: `Idempotency-Key`, Auth: Bearer | `200 OK` + `{ coinsEarned: 5, expEarned: 10, newStreak: 7 }` |
-| `PATCH`| `/api/v1/gamification/rank-theme` | Body: `{ themeId: 'TU_TIEN' \| 'GAME' \| 'DEMON_KING' }` | `200 OK` + `{ activeTheme, rankTitle }` |
-| `POST` | `/api/v1/gamification/rewards/claim`| Header: `Idempotency-Key`, Body: `{ milestoneLevel: 10 }` | `200 OK` + `{ rewardCoins: 100, claimedAt }` |
-| `GET` | `/api/v1/gamification/transactions` | Query: `page`, `limit`, `rewardType: 'EXP' \| 'OMNICOIN'` | `200 OK` + `{ transactions: [...], pagination }` |
+| `POST` | `/api/v1/gamification/checkin` | Header: `Idempotency-Key`, Auth: Bearer Token | `200 OK` + `{ coinsEarned: 5, expEarned: 10, newStreak: 7 }` |
+| `PATCH`| `/api/v1/gamification/rank-theme` | Auth: Bearer Token, Body: `{ themeId: 'TU_TIEN' \| 'GAME' \| 'DEMON_KING' \| 'MAGICIAN' \| 'SCI_FI' }` | `200 OK` + `{ activeTheme, rankTitle }` |
+| `POST` | `/api/v1/gamification/rewards/claim`| Header: `Idempotency-Key`, Auth: Bearer Token, Body: `{ milestoneLevel: 10 }` | `200 OK` + `{ rewardCoins: 100, claimedAt }` |
+| `GET` | `/api/v1/gamification/transactions` | Auth: Bearer Token, Query: `page`, `limit`, `rewardType: 'EXP' \| 'OMNICOIN'` | `200 OK` + `{ transactions: [...], pagination }` |
 
 ### 3.7. Phân Hệ Quản Trị Hệ Thống (Admin)
 | Method | Endpoint | Yêu Cầu Header / Body | Response Thành Công |

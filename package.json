@@ -1,0 +1,20 @@
+{
+  "name": "omninovel-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "OmniNovel - Multimodal Manga & Light Novel Reader with AI Studio",
+  "scripts": {
+    "build:shared": "npm --prefix packages/shared run build",
+    "dev:infra": "docker compose -f deploy/docker-compose.dev.yml up -d",
+    "dev:infra:down": "docker compose -f deploy/docker-compose.dev.yml down",
+    "dev:infra:logs": "docker compose -f deploy/docker-compose.dev.yml logs -f"
+  },
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

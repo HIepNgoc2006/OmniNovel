@@ -122,7 +122,7 @@ CREATE TABLE chapters (
     UNIQUE(story_edition_id, chapter_number)
 );
 
--- 10. Phiên bản Chương (Chapter Versions - Immutable Model)
+-- 10. Phiên bản Chương (Chapter Versions - Immutable Model & Composite Invariant)
 CREATE TABLE chapter_versions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
@@ -133,11 +133,15 @@ CREATE TABLE chapter_versions (
     created_by UUID REFERENCES users(id) ON DELETE SET NULL,
     is_published BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    UNIQUE(chapter_id, version_number)
+    UNIQUE(chapter_id, version_number),
+    CONSTRAINT uq_chapter_version_pair UNIQUE (chapter_id, id)
 );
 
--- Thêm Foreign Key ràng buộc cho active_version_id của chapters
-ALTER TABLE chapters ADD CONSTRAINT fk_active_version FOREIGN KEY (active_version_id) REFERENCES chapter_versions(id) ON DELETE SET NULL;
+-- RÀNG BUỘC TOÀN VẸN: active_version_id của chapters bắt buộc phải thuộc CHÍNH CHAPTER ĐÓ
+ALTER TABLE chapters ADD CONSTRAINT fk_active_version_same_chapter 
+FOREIGN KEY (id, active_version_id) 
+REFERENCES chapter_versions(chapter_id, id) 
+ON DELETE SET NULL;
 
 -- 11. Tài nguyên Media (Trang ảnh Manga & Text Novel)
 CREATE TABLE media_assets (

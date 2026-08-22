@@ -4,10 +4,11 @@
 .env.*.local
 !.env.example
 
-# Dependencies
+# Dependencies & Build Outputs
 node_modules/
 .pnpm-store/
 vendor/
+dist/
 
 # Python & AI Worker
 __pycache__/

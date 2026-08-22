@@ -118,7 +118,7 @@ CREATE TABLE IF NOT EXISTS chapters (
     UNIQUE(story_edition_id, chapter_number)
 );
 
--- 10. Phiên bản Chương (Chapter Versions - Immutable Model)
+-- 10. Phiên bản Chương (Chapter Versions - Immutable Model & Composite Invariant)
 CREATE TABLE IF NOT EXISTS chapter_versions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
@@ -129,14 +129,18 @@ CREATE TABLE IF NOT EXISTS chapter_versions (
     created_by UUID REFERENCES users(id) ON DELETE SET NULL,
     is_published BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    UNIQUE(chapter_id, version_number)
+    UNIQUE(chapter_id, version_number),
+    CONSTRAINT uq_chapter_version_pair UNIQUE (chapter_id, id)
 );
 
--- Thêm Foreign Key ràng buộc cho active_version_id của chapters
+-- RÀNG BUỘC TOÀN VẸN: active_version_id của chapters bắt buộc phải thuộc CHÍNH CHAPTER ĐÓ
 DO $$
 BEGIN
-    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_active_version') THEN
-        ALTER TABLE chapters ADD CONSTRAINT fk_active_version FOREIGN KEY (active_version_id) REFERENCES chapter_versions(id) ON DELETE SET NULL;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'fk_active_version_same_chapter') THEN
+        ALTER TABLE chapters ADD CONSTRAINT fk_active_version_same_chapter 
+        FOREIGN KEY (id, active_version_id) 
+        REFERENCES chapter_versions(chapter_id, id) 
+        ON DELETE SET NULL;
     END IF;
 END $$;
 
@@ -349,16 +353,26 @@ CREATE INDEX IF NOT EXISTS idx_reward_transactions_user ON reward_transactions(u
 CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor_user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_resource ON audit_logs(resource_type, resource_id);
 
--- SEED RANK THEMES & INITIAL LEVELS
+-- SEED TOÀN BỘ 5 RANK THEMES & LEVEL TITLES (Khớp 100% 23_GAMIFICATION_AND_REWARDS.md)
 INSERT INTO rank_themes (id, name, description) VALUES
 ('DEFAULT', 'Mặc Định', 'Hệ thống cấp bậc tiêu chuẩn độc giả'),
 ('TU_TIEN', 'Tu Tiên', 'Hệ thống cảnh giới tu tiên cổ điển'),
 ('GAME', 'Game Thủ', 'Hệ thống danh hiệu RPG chiến binh'),
 ('DEMON_KING', 'Ma Vương', 'Hệ thống cấp bậc thế lực bóng tối'),
-('MAGICIAN', 'Pháp Sư', 'Hệ thống học viện pháp thuật huyền bí')
+('MAGICIAN', 'Pháp Sư', 'Hệ thống học viện pháp thuật huyền bí'),
+('SCI_FI', 'Tinh Không', 'Hệ thống quân hàm thám hiểm thiên hà')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO rank_levels (theme_id, min_level, max_level, rank_title) VALUES
+-- Default
+('DEFAULT', 1, 9, 'Độc Giả Sơ Cấp'),
+('DEFAULT', 10, 19, 'Độc Giả Trung Cấp'),
+('DEFAULT', 20, 39, 'Độc Giả Cao Cấp'),
+('DEFAULT', 40, 59, 'Độc Giả Tinh Anh'),
+('DEFAULT', 60, 79, 'Độc Giả Uyên Bác'),
+('DEFAULT', 80, 99, 'Đại Tông Sư Độc Giả'),
+('DEFAULT', 100, 100, 'Huyền Thoại Độc Giả'),
+-- Tu Tiên
 ('TU_TIEN', 1, 9, 'Luyện Khí Kỳ'),
 ('TU_TIEN', 10, 19, 'Trúc Cơ Kỳ'),
 ('TU_TIEN', 20, 39, 'Kim Đan Kỳ'),
@@ -366,11 +380,36 @@ INSERT INTO rank_levels (theme_id, min_level, max_level, rank_title) VALUES
 ('TU_TIEN', 60, 79, 'Hóa Thần Kỳ'),
 ('TU_TIEN', 80, 99, 'Độ Kiếp Kỳ'),
 ('TU_TIEN', 100, 100, 'Đại Thừa Viên Mãn'),
-('DEFAULT', 1, 9, 'Độc Giả Sơ Cấp'),
-('DEFAULT', 10, 19, 'Độc Giả Trung Cấp'),
-('DEFAULT', 20, 39, 'Độc Giả Cao Cấp'),
-('DEFAULT', 40, 59, 'Độc Giả Tinh Anh'),
-('DEFAULT', 60, 79, 'Độc Giả Uyên Bác'),
-('DEFAULT', 80, 99, 'Đại Tông Sư Độc Giả'),
-('DEFAULT', 100, 100, 'Huyền Thoại Độc Giả')
+-- Game Thủ
+('GAME', 1, 9, 'Tân Thủ (Novice)'),
+('GAME', 10, 19, 'Chiến Binh (Warrior)'),
+('GAME', 20, 39, 'Sát Thủ Bóng Đêm'),
+('GAME', 40, 59, 'Tông Sư (Master)'),
+('GAME', 60, 79, 'Huyền Thoại (Legend)'),
+('GAME', 80, 99, 'Tối Thượng (Ultimate)'),
+('GAME', 100, 100, 'Thần Thoại Vô Địch'),
+-- Ma Vương
+('DEMON_KING', 1, 9, 'Tiểu Quỷ (Imp)'),
+('DEMON_KING', 10, 19, 'Quỷ Binh (Fiend)'),
+('DEMON_KING', 20, 39, 'Kỵ Sĩ Hắc Ám'),
+('DEMON_KING', 40, 59, 'Lãnh Chúa Ma Vực'),
+('DEMON_KING', 60, 79, 'Ma Vương Bất Tử'),
+('DEMON_KING', 80, 99, 'Hư Không Ma Hoàng'),
+('DEMON_KING', 100, 100, 'Thần Ma Tối Cao'),
+-- Pháp Sư
+('MAGICIAN', 1, 9, 'Học Viên Phép Thuật'),
+('MAGICIAN', 10, 19, 'Pháp Sư Sơ Cấp'),
+('MAGICIAN', 20, 39, 'Đại Pháp Sư'),
+('MAGICIAN', 40, 59, 'Pháp Hoàng'),
+('MAGICIAN', 60, 79, 'Thánh Ma Đạo Sư'),
+('MAGICIAN', 80, 99, 'Ma Thần Thượng Cổ'),
+('MAGICIAN', 100, 100, 'Tối Cao Pháp Thần'),
+-- Tinh Không / Sci-Fi
+('SCI_FI', 1, 9, 'Thực Tập Phi Hành'),
+('SCI_FI', 10, 19, 'Thám Hiểm Không Gian'),
+('SCI_FI', 20, 39, 'Chỉ Huy Hạm Đội'),
+('SCI_FI', 40, 59, 'Thống Soái Thiên Hà'),
+('SCI_FI', 60, 79, 'Chúa Tể Tinh Cầu'),
+('SCI_FI', 80, 99, 'Đấng Sáng Tạo Vũ Trụ'),
+('SCI_FI', 100, 100, 'Đấng Toàn Tri Toàn Năng')
 ON CONFLICT (theme_id, min_level) DO NOTHING;

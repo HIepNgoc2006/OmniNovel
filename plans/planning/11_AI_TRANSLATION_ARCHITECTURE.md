@@ -1,12 +1,12 @@
 # 🤖 11. Kiến Trúc Pipeline Dịch Truyện AI & State Machine 14 Trạng Thái
 
-Tài liệu này đặc tả chi tiết toàn bộ thuật toán xử lý ảnh Manga, xử lý văn bản Light Novel, State Machine 14 trạng thái của AI Job, kiến trúc hàng đợi Worker và cơ chế trừu tượng hóa Provider (**TranslationProvider Abstraction**).
+Tài liệu này đặc tả chi tiết toàn bộ thuật toán xử lý ảnh Manga 10 bước, xử lý văn bản Light Novel 6 bước, State Machine 14 trạng thái của AI Job, kiến trúc hàng đợi Worker và cơ chế trừu tượng hóa Provider (**TranslationProvider Abstraction**).
 
 ---
 
-## 1. PIPELINE XỬ LÝ ẢNH TRUYỆN TRANH TOÀN DIỆN (MANGA CV/AI PIPELINE)
+## 1. PIPELINE XỬ LÝ ẢNH TRUYỆN TRANH TOÀN DIỆN (10 BƯỚC KHÉP KÍN)
 
-Quy trình tự động hóa xử lý 1 trang ảnh Manga gồm 11 bước khép kín:
+Quy trình tự động hóa xử lý 1 trang ảnh Manga gồm 10 bước chuẩn hóa:
 
 ```
 [1. Ingestion] ➔ [2. Preprocessing] ➔ [3. Text Detection] ➔ [4. Reading Order] ➔ [5. OCR Engine]
@@ -15,18 +15,20 @@ Quy trình tự động hóa xử lý 1 trang ảnh Manga gồm 11 bước khép
 [10. Visual QA] ◄── [9. Typesetting] ◄── [8. Inpainting] ◄── [7. LLM Translate] ◄── [6. Glossary]
 ```
 
-1. **Ingestion & Validation:** Tiếp nhận file ảnh WebP/PNG, kiểm tra magic bytes, độ phân giải tối đa (4096x4096px).
+1. **Ingestion & Validation:** Tiếp nhận file ảnh WebP/PNG, kiểm tra Magic Bytes, độ phân giải tối đa (4096x4096px).
 2. **Preprocessing (Tiền xử lý):** Tự động cân bằng độ tương phản (Auto-contrast), khử nhiễu và chuẩn hóa hệ tọa độ pixel.
 3. **Text Region Detection (Phát hiện bóng thoại):** Sử dụng mô hình Deep Learning (CRAFT / YOLO / OpenCV Connected Components) để xác định các khung chứa chữ (Bounding Boxes: $x, y, w, h$).
 4. **Reading Order Sorting (Sắp xếp thứ tự đọc):** Sắp xếp các bóng thoại theo quy chuẩn:
    * **Manga Nhật:** Từ Phải sang Trái, từ Trên xuống Dưới.
    * **Webtoon Hàn / Manhua Trung:** Từ Trên xuống Dưới theo luồng cuộn dọc.
-5. **OCR Engine (Nhận dạng chữ quang học):** Sử dụng **Manga-OCR** (Vision-Transformer chuyên biệt cho chữ tượng hình tiếng Nhật/Hàn/Trung) với ngưỡng độ tin cậy $Confidence \ge 0.85$.
+5. **OCR Engine (Nhận dạng chữ quang học):**
+   * *MVP Scope:* Sử dụng **Manga-OCR** (Vision-Transformer chuyên biệt tối ưu cho chữ tiếng Nhật).
+   * *V1 Modular Design:* Thiết kế OCR Adapter cho phép mở rộng sang PaddleOCR / Vision-LLM cho tiếng Hàn và tiếng Trung.
 6. **Context Building & Glossary Matching:** Ghép các bóng thoại liên tiếp thành ngữ cảnh hội thoại hoàn chỉnh và đối soát với bảng Từ Điển Thuật Ngữ (`translation_glossaries`) để cố định tên riêng/chiêu thức.
 7. **LLM Contextual Translation:** Gửi prompt có kèm ngữ cảnh và glossary tới Translation Adapter (OpenAI GPT-4o-mini / DeepL / Local LLM) để dịch sang tiếng Việt tự nhiên.
 8. **Inpainting / Text Removal (Tẩy chữ nền tranh):** Tạo mask phủ chữ cũ và sử dụng mô hình **LaMa (Large Mask Inpainting)** để tái tạo hoàn hảo nét vẽ và chi tiết nền tranh phía sau bóng thoại.
 9. **Typesetting & Text Rendering (Dàn chữ tự động):** Tự động tính toán kích thước font chữ, tự động xuống dòng (Auto-wrapping), thêm viền chữ (Stroke/Outline) và căn giữa trong khung bóng thoại bằng thư viện Pillow/Freetype.
-10. **Visual QA & Diff Preview:** Sinh ảnh kết quả bản dịch, tính toán chỉ số khác biệt (Diff Map) và lưu ảnh WebP vào MinIO phục vụ màn hình so sánh của uploader.
+10. **Visual QA & Diff Preview:** Sinh ảnh kết quả bản dịch, tính toán chỉ số khác biệt (Diff Map) và lưu ảnh WebP vào MinIO phục vụ màn hình so sánh của Editor/Owner.
 
 ---
 
@@ -67,24 +69,27 @@ Quy trình xử lý file truyện chữ (EPUB / Text / Markdown):
 ## 4. STATE MACHINE 14 TRẠNG THÁI CỦA TRANSLATION JOB
 
 ```
+                                  ┌───────────────────────────────┐
+                                  │      BẤT KỲ TRẠNG THÁI ACTIVE │
+                                  └───────┬──────────────┬────────┘
+                                          │              │
+                     (Lỗi quá 3 lần retry)▼              ▼ (User hủy / Quá 7 ngày)
+                                     [FAILED]       [CANCELED / EXPIRED]
+
 [CREATED] ➔ [VALIDATING] ➔ [QUEUED] ➔ [PREPROCESSING] ➔ [OCR] ➔ [TRANSLATING]
                                                                         │
                                                                         ▼
 [APPLIED] ◄── [READY_FOR_REVIEW] ◄── [QUALITY_CHECK] ◄── [TYPESETTING] ◄── [INPAINTING]
-    │
-    ├── [FAILED] (Tự động retry tối đa 3 lần với exponential backoff)
-    ├── [CANCELED] (Người dùng chủ động hủy bỏ)
-    └── [EXPIRED] (Quá hạn 7 ngày người dùng không bấm duyệt xuất bản)
 ```
 
 ### Các trường vận hành giám sát (Operational Fields):
 * `attempt_count` / `max_attempts`: Giám sát số lần retry tự động.
 * `heartbeat_at`: Worker gửi heartbeat mỗi 10 giây; nếu quá 60 giây không có heartbeat $\rightarrow$ Hệ thống tự động đánh dấu Job bị treo (Stalled) và cấp phát cho worker khác.
-* `started_at` / `completed_at` / `expires_at`: Theo dõi thời gian thực thi (SLA $< 120s$/chapter 30 trang).
+* `started_at` / `completed_at` / `expires_at`: Theo dõi thời gian thực thi (SLA $< 120s$/chapter 30 trang trên môi trường GPU).
 
 ---
 
-## 5. TRỪU TƯỢNG HÓA NHÀ CUNG CẤP AI (TRANSLATION PROVIDER ABSTRACTION)
+## 5. TRỪU TƯỢNG HÓA NHÀ CUNG CẤP AI & QUYỀN RIÊNG TƯ DỮ LIỆU
 
 ```typescript
 export interface ITranslationProvider {
@@ -93,6 +98,7 @@ export interface ITranslationProvider {
 }
 ```
 
+* **Quyền Riêng Tư & Xử Lý Dữ Liệu Ngoài (Third-party AI Disclosure):** Khi sử dụng các Provider bên ngoài (OpenAI/DeepL), hệ thống yêu cầu sự đồng ý rõ ràng của người dùng (Consent), chỉ truyền tải nội dung text bóng thoại cần dịch và không lưu trữ vĩnh viễn trên hạ tầng bên thứ ba.
 * **OpenAITranslationAdapter:** Gọi mô hình `gpt-4o-mini` qua Structured Outputs JSON.
 * **DeepLTranslationAdapter:** Gọi DeepL API với tùy chọn Formality và Glossary ID.
 * **LocalLLMTranslationAdapter:** Gọi Ollama / vLLM nội bộ (Mô hình Qwen2.5-7B).

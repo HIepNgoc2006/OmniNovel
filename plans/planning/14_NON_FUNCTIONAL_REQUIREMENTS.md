@@ -1,6 +1,6 @@
 # ⏱️ 14. Bảng Yêu Cầu Phi Chức Năng Đo Lường Được (Non-Functional Requirements)
 
-Tài liệu này xác định các chỉ số hiệu năng (Performance), khả năng mở rộng (Scalability), độ sẵn sàng (Availability) và tính tin cậy đo lường được bằng các đơn vị kỹ thuật chuẩn.
+Tài liệu này xác định các chỉ số hiệu năng (Performance), khả năng mở rộng (Scalability), độ sẵn sàng (Availability) và tính tin cậy đo lường được bằng các đơn vị kỹ thuật chuẩn, phân định rõ ràng giữa môi trường Demo đồ án và kiến trúc Production.
 
 ---
 
@@ -16,20 +16,21 @@ Tài liệu này xác định các chỉ số hiệu năng (Performance), khả 
 
 ---
 
-## 2. ĐỘ SẴN SÀNG & TÍNH KHẢ DỤNG (AVAILABILITY & SLA)
+## 2. HỒ SƠ TRIỂN KHAI & ĐỘ SẴN SÀNG (DEPLOYMENT PROFILES & SLAs)
 
-* **Môi Trường Demo Nghiệm Thu Đồ Án (Academic Demo Environment):**
-  * Triển khai mô hình đơn nút (Single-Node Docker Host) trên máy tính phát triển hoặc 1 máy chủ VPS Linux.
-  * Mục tiêu độ sẵn sàng đạt **99.5% Uptime** trong giai đoạn nghiệm thu kiểm thử.
-  * Tự động khởi động lại container khi gặp sự cố (`restart: unless-stopped`).
-* **Thiết Kế Kiến Trúc Sẵn Sàng Mở Rộng Sản Phẩm (Production Target Design):**
-  * Thiết kế hỗ trợ cụm Multi-Node High Availability (HA) với Nginx cân bằng tải, Redis Sentinel và PostgreSQL Replication hướng tới **SLA 99.9% Uptime**.
+### 2.1. Hồ Sơ Demo Đồ Án (Academic Demo Profile):
+* **Hạ Tầng Core Stack:** 1 VPS Linux cơ bản (4 vCPU, 8GB RAM, 160GB SSD) chạy các container: `nginx`, `web`, `api`, `postgres`, `redis`, `minio`.
+* **Hạ Tầng AI Compute:** Dịch vụ `ai-worker` chạy trên **Máy tính phát triển cục bộ có GPU (hoặc endpoint GPU rời)** để xử lý các mô hình nặng (Manga-OCR, LaMa Inpaint), kết nối về Core API.
+* **Mục Tiêu Độ Sẵn Sàng:** **99.5% Uptime** trong giai đoạn kiểm thử nghiệm thu đồ án.
+
+### 2.2. Hồ Sơ Mở Rộng Sản Phẩm (Production Scale Profile):
+* Cụm Multi-Node High Availability (HA) với Nginx cân bằng tải, Redis Sentinel, PostgreSQL Replication và cụm GPU Worker Node độc lập hướng tới **SLA 99.9% Uptime**.
 
 ---
 
 ## 3. TÍNH BẢO MẬT & TOÀN VẸN DỮ LIỆU (SECURITY & INTEGRITY)
 
 * **NFR-SEC-01 (Mật khẩu):** Băm mật khẩu bằng Argon2id (Memory 64MB, Iterations 3, Parallelism 4); thời gian băm trung bình $\approx 250ms$/lần để ngăn chặn brute-force.
-* **NFR-SEC-02 (Token Rotation):** Access Token có thời hạn sống tối đa **15 phút**; Refresh Token có thời hạn **7 ngày** và bị thu hồi ngay lập tức nếu phát hiện reuse token.
+* **NFR-SEC-02 (Token Rotation):** Access Token có thời hạn sống tối đa **15 phút**; Refresh Token có thời hạn **7 ngày** ký `HS256` và bị thu hồi ngay lập tức nếu phát hiện reuse token.
 * **NFR-SEC-03 (Anti-Leech):** Link ảnh Presigned URLs có chữ ký HMAC-SHA256 hết hạn sau **15 phút**.
 * **NFR-SEC-04 (Atomic Ledger):** Toàn bộ giao dịch cộng/trừ EXP và OmniCoin phải tuân thủ nghiêm ngặt tính ACID; sai số số dư ví đảm bảo bằng 0.

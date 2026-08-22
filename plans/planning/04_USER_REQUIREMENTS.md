@@ -1,21 +1,20 @@
 # 📋 04. Bảng Yêu Cầu Người Dùng Theo Phân Hệ Nghiệp Vụ (User Requirements)
 
-Tài liệu này xác định toàn bộ các Yêu cầu Người Dùng (**User Requirements - UR**) được phân bổ theo 9 phân hệ nghiệp vụ, phân loại mức độ ưu tiên theo chuẩn **MoSCoW (Must, Should, Could, Won't)** và mức độ ưu tiên kỹ thuật (**P0, P1, P2, P3**).
+Tài liệu này xác định toàn bộ các Yêu Cầu Người Dùng (**User Requirements - UR**) được phân bổ theo 9 phân hệ nghiệp vụ, phân loại mức độ ưu tiên theo chuẩn **MoSCoW (Must, Should, Could, Won't)** và mức độ ưu tiên kỹ thuật (**P0, P1, P2, P3**).
 
 ---
 
 ## 📌 QUY ƯỚC VAI TRÒ & PHÂN QUYỀN (ROLES & MEMBERSHIP DEFINITION)
 
-Để đảm bảo tính nhất quán trong toàn bộ hệ thống, OmniNovel phân biệt rõ 2 khái niệm:
 1. **Global User Role (Vai trò Toàn cục trong Hệ thống):**
    * `READER`: Người dùng thông thường (Đọc truyện, Tủ sách cá nhân, Gamification).
    * `TRANSLATOR`: Thành viên được cấp quyền sử dụng Studio và AI Translation Hub.
    * `ADMIN`: Quản trị viên tối cao (Quản lý người dùng, xử lý báo lỗi, kiểm duyệt nội dung).
 2. **Story Membership Role (Vai trò Thành viên theo từng Bộ truyện cụ thể - `story_members`):**
-   * `OWNER`: Người tạo bộ truyện, có toàn quyền cao nhất trên bộ truyện đó.
-   * `EDITOR`: Có quyền chỉnh sửa metadata, tạo tập (Volume), duyệt và xuất bản chương.
-   * `TRANSLATOR`: Có quyền tạo task dịch AI và tải lên các bản dịch mới trong bộ truyện.
-   * `UPLOADER`: Có quyền tải lên file raw và chương mới.
+   * `OWNER`: Người tạo bộ truyện hoặc được chuyển giao quyền sở hữu tối cao; quản lý thành viên và xóa truyện.
+   * `EDITOR`: Có quyền chỉnh sửa metadata, tạo tập (Volume), duyệt xuất bản và thực hiện **Apply Overwrite / Duplicate Version**.
+   * `TRANSLATOR`: Có quyền tạo task dịch AI, chỉnh sửa bản dịch nháp và tải lên các bản dịch mới trong bộ truyện.
+   * `UPLOADER`: Có quyền tải lên file raw chương mới.
 
 ---
 
@@ -68,12 +67,12 @@ Tài liệu này xác định toàn bộ các Yêu cầu Người Dùng (**User 
 
 ---
 
-## 5. PHÂN HỆ TỦ SÁCH & TIẾN ĐỘ ĐỌC (LIBRARY & OFFLINE DOMAIN)
+## 5. PHÂN HỆ TỦ SÁCH & TIẾN ĐỘ ĐỌC (LIBRARY DOMAIN)
 
 | Mã UR | Yêu Cầu Người Dùng (User Requirement) | Vai Trò Áp Dụng | Ưu Tiên MoSCoW | Priority |
 | :--- | :--- | :---: | :--- | :---: |
-| **UR-LIB-01** | Hệ thống tự động ghi nhớ và đồng bộ vị trí đọc dở (theo trang Manga hoặc anchor block Novel). | Reader | **Must Have** | **P0** |
-| **UR-LIB-02** | Độc giả có thể thêm bộ truyện vào danh sách Theo dõi (Follow / Bookmark) để nhận thông báo. | Reader | **Must Have** | **P0** |
+| **UR-LIB-01** | Hệ thống tự động ghi nhớ và đồng bộ vị trí đọc dở (theo trang Manga hoặc `anchor_block_id` Novel).| Reader | **Must Have** | **P0** |
+| **UR-LIB-02** | Độc giả có thể thêm bộ truyện vào danh sách Theo dõi (Follow / Bookmark) trong tủ sách cá nhân. | Reader | **Must Have** | **P0** |
 | **UR-LIB-03** | Độc giả có thể tải toàn bộ chương truyện tranh hoặc truyện chữ về máy để đọc khi mất mạng. | Reader | **Should Have**| **P1** |
 | **UR-LIB-04** | Độc giả có thể phân loại tủ sách cá nhân theo trạng thái: Đang đọc, Đã đọc xong, Dự định đọc. | Reader | **Could Have** | **P2** |
 
@@ -83,21 +82,22 @@ Tài liệu này xác định toàn bộ các Yêu cầu Người Dùng (**User 
 
 | Mã UR | Yêu Cầu Người Dùng (User Requirement) | Vai Trò Áp Dụng | Ưu Tiên MoSCoW | Priority |
 | :--- | :--- | :---: | :--- | :---: |
-| **UR-AI-01** | Thành viên có quyền có thể tạo bộ truyện, ấn bản (StoryEdition) và phân quyền StoryMember. | Translator/Owner| **Must Have** | **P0** |
-| **UR-AI-02** | Thành viên có thể tải lên tập truyện mới qua file ZIP ảnh Manga hoặc file Text/EPUB. | Uploader/Member | **Must Have** | **P0** |
-| **UR-AI-03** | Thành viên có thể kích hoạt dịch tự động bằng AI và theo dõi tiến trình xử lý thời gian thực. | Translator/Member| **Must Have** | **P0** |
-| **UR-AI-04** | Thành viên có thể xem màn hình so sánh (Diff Preview) giữa bản raw gốc và bản dịch tiếng Việt. | Translator/Member| **Must Have** | **P0** |
-| **UR-AI-05** | Thành viên có thể chọn **Phương án 1 (Ghi đè - Overwrite)** để trỏ `active_version_id` sang bản dịch mới. | Translator/Owner | **Must Have** | **P0** |
-| **UR-AI-06** | Thành viên có thể chọn **Phương án 2 (Nhân bản - Duplicate)** để tạo ChapterVersion mới độc lập. | Translator/Owner | **Must Have** | **P0** |
-| **UR-AI-07** | Thành viên có thể quản lý Từ điển thuật ngữ (Glossary) để ép AI dịch nhất quán tên riêng, chiêu thức. | Translator/Member| **Should Have**| **P1** |
-| **UR-AI-08** | Thành viên có thể chỉnh sửa trực tiếp text trong từng bóng thoại (Translation Editor) trước khi xuất bản. | Translator/Member| **Should Have**| **P1** |
+| **UR-AI-01** | Thành viên có thể tạo bộ truyện, ấn bản (`StoryEdition`) và quản lý phân quyền `story_members`. | Translator / Owner | **Must Have** | **P0** |
+| **UR-AI-02** | Thành viên có thể tải lên tập truyện mới qua file ZIP ảnh Manga hoặc file Text/EPUB. | Uploader / Member | **Must Have** | **P0** |
+| **UR-AI-03** | Thành viên có thể kích hoạt dịch tự động bằng AI và theo dõi tiến trình xử lý thời gian thực. | Translator / Member | **Must Have** | **P0** |
+| **UR-AI-04** | Thành viên có thể xem màn hình so sánh (Diff Preview) giữa bản raw gốc và bản dịch tiếng Việt. | Translator / Member | **Must Have** | **P0** |
+| **UR-AI-05** | Editor/Owner có thể chọn **Phương án 1 (Ghi đè - Overwrite)** để trỏ `active_version_id` sang bản dịch mới.| Editor / Owner | **Must Have** | **P0** |
+| **UR-AI-06** | Editor/Owner có thể chọn **Phương án 2 (Nhân bản - Duplicate)** để tạo ChapterVersion mới độc lập. | Editor / Owner | **Must Have** | **P0** |
+| **UR-AI-07** | Thành viên có thể quản lý Từ điển thuật ngữ (Glossary) để ép AI dịch nhất quán tên riêng, chiêu thức. | Translator / Member | **Should Have**| **P1** |
+| **UR-AI-08** | Thành viên có thể chỉnh sửa trực tiếp text trong từng bóng thoại (Translation Editor) trước khi xuất bản. | Translator / Member | **Should Have**| **P1** |
 
 ---
 
-## 7. PHÂN HỆ TƯƠNG TÁC CỘNG ĐỒNG (COMMUNITY DOMAIN)
+## 7. PHÂN HỆ TƯƠNG TÁC CỘNG ĐỒNG & THÔNG BÁO (COMMUNITY & NOTIFICATION DOMAIN)
 
 | Mã UR | Yêu Cầu Người Dùng (User Requirement) | Vai Trò Áp Dụng | Ưu Tiên MoSCoW | Priority |
 | :--- | :--- | :---: | :--- | :---: |
+| **UR-NOTIF-01**| Độc giả nhận thông báo đẩy khi bộ truyện theo dõi (`bookmarks`) có chương mới xuất bản. | Reader | **Should Have**| **P1** |
 | **UR-COM-01** | Độc giả có thể viết bình luận, phản hồi bình luận theo từng chương truyện. | Reader | **Should Have**| **P1** |
 | **UR-COM-02** | Độc giả có thể gắn thẻ `[spoiler]` để làm mờ nội dung bình luận tiết lộ trước cốt truyện. | Reader | **Should Have**| **P1** |
 | **UR-COM-03** | Độc giả có thể đánh giá điểm sao (1 đến 5 sao) cho bộ truyện. | Reader | **Should Have**| **P1** |
@@ -120,7 +120,7 @@ Tài liệu này xác định toàn bộ các Yêu cầu Người Dùng (**User 
 
 | Mã UR | Yêu Cầu Người Dùng (User Requirement) | Vai Trò Áp Dụng | Ưu Tiên MoSCoW | Priority |
 | :--- | :--- | :---: | :--- | :---: |
-| **UR-GAM-01** | Độc giả có thể tích lũy EXP qua các hoạt động đọc hợp lệ để tăng Level (chống farm reload). | Reader | **Must Have** | **P0** |
+| **UR-GAM-01** | Độc giả có thể tích lũy Total EXP qua hoạt động đọc hợp lệ để tăng Level (chống farm reload). | Reader | **Must Have** | **P0** |
 | **UR-GAM-02** | Độc giả có thể điểm danh hàng ngày theo lịch tháng để nhận EXP, OmniCoin và duy trì chuỗi streak. | Reader | **Must Have** | **P0** |
 | **UR-GAM-03** | Độc giả có thể chọn bộ chủ đề Cấp bậc (Rank Theme: Tu Tiên, Ma Vương, Magic...) hiển thị trên Profile. | Reader | **Must Have** | **P0** |
 | **UR-GAM-04** | Độc giả có thể nhận phần thưởng mở khóa tại các cột mốc Level nhất định (Level Rewards). | Reader | **Must Have** | **P0** |

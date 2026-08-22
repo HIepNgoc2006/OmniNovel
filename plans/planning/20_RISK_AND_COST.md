@@ -12,7 +12,7 @@ Tài liệu này xác định ma trận 16 rủi ro trọng yếu phân loại t
 | **R2** | Bot lậu cào trộm toàn bộ kho ảnh Manga qua link trực tiếp. | **Cao** | Sử dụng Dynamic HMAC Signed URLs thời hạn 15 phút + Nginx Rate Limiting theo IP. |
 | **R3** | Lỗi tấn công Zip Slip / Zip Bomb khi người dùng upload file nén độc hại. | **Cao** | Quét magic bytes, chuẩn hóa đường dẫn loại bỏ `../`, giới hạn tỷ lệ nén tối đa $100:1$. |
 | **R4** | Độc giả spam script reload để cày farm EXP lên Level nhanh. | **Trung bình**| Áp dụng Anti-farming gate: Chỉ tính EXP 1 lần / chapter / user; giới hạn tối đa 100 EXP/ngày. |
-| **R5** | Sai lệch số dư OmniCoin khi nhiều request điểm danh gửi đồng thời. | **Cao** | Sử dụng CSDL Transaction nguyên tử (ACID) + Single-Entry Immutable Ledger + Idempotency Key. |
+| **R5** | Sai lệch số dư OmniCoin khi nhiều request điểm danh gửi đồng thời. | **Cao** | CSDL Transaction ACID + Single-Entry Immutable Ledger + Idempotency Key (`CHECKIN:<user>:<date>:EXP`). |
 | **R6** | Chi phí gọi API AI (OpenAI GPT-4o-mini) tăng đột biến do người dùng dịch liên tục. | **Trung bình**| Giới hạn 2 tác vụ dịch đồng thời/user + Caching bản dịch phân đoạn + Adapter hỗ trợ Local LLM. |
 | **R7** | Trôi lệch kế hoạch đồ án (Schedule Overrun) vượt quá thời hạn 8 tuần. | **Cao** | Đưa Offline Mode và Inline Comments sang V1 Scope; cố định phạm vi MVP tối thiểu (P0). |
 | **R8** | Khiếu nại bản quyền tác phẩm (Copyright Dispute / Takedown Request). | **Cao** | Áp dụng Takedown Workflow: Tạm ẩn `visibility = 'PRIVATE'` trong 48h xác minh giấy phép. |
@@ -29,18 +29,19 @@ Tài liệu này xác định ma trận 16 rủi ro trọng yếu phân loại t
 
 ## 2. MÔ HÌNH CHI PHÍ VẬN HÀNH & ĐƠN GIÁ (UNIT ECONOMICS & COST MODEL)
 
-### Các giả định định lượng (Assumptions):
+### 2.1. Các giả định định lượng (Assumptions):
 1. **Dung lượng ảnh Manga:** Trung bình 30 trang/chapter $\times$ 180 KB/trang (WebP) $\approx$ **5.4 MB / chapter**.
-2. **Chi phí Dịch AI (OpenAI GPT-4o-mini):**
+2. **Chi phí Dịch AI (OpenAI GPT-4o-mini API):**
    * Trung bình 30 khung thoại/chapter $\approx$ 1,500 Input Tokens + 1,200 Output Tokens.
    * Đơn giá: \$0.15 / 1M input tokens + \$0.60 / 1M output tokens.
-   * Chi phí AI cho 1 chapter $\approx$ **\$0.00095 USD / chapter** (chưa đến 25 VNĐ/chapter).
+   * Chi phí AI Token cho 1 chapter $\approx$ **\$0.00095 USD / chapter** (chưa đến 25 VNĐ/chapter).
 3. **Băng thông phân phối (CDN Bandwidth):** Giả định mỗi độc giả đọc 10 chapters/ngày $\approx$ 54 MB/ngày $\rightarrow$ 1,000 DAU tiêu thụ $\approx$ 54 GB/ngày.
 
-### Bảng dự toán chi phí cơ sở hạ tầng (Mô phỏng 1,000 DAU):
+### 2.2. Phân Tách Chi Phí Hạ Tầng & AI Compute:
 | Hạng Mục Hạ Tầng | Cấu Hình Kỹ Thuật | Chi Phí Ước Tính / Tháng |
 | :--- | :--- | :---: |
-| **Máy chủ VPS Cơ sở** | 4 vCPU, 8GB RAM, 160GB SSD (Chạy 7 Containers Docker) | **\$15 - \$20 USD** (~400.000 VNĐ) |
-| **Băng thông & Lưu trữ MinIO** | Lưu trữ 100GB dữ liệu truyện + Egress Traffic qua Cloudflare | **\$0 USD** (Tận dụng Free Tier / Local) |
-| **Chi phí AI Translation Tokens** | Xử lý dịch 1,000 chapters mới/tháng qua GPT-4o-mini | **\$1.00 - \$2.00 USD** (~50.000 VNĐ) |
-| **TỔNG CHI PHÍ VẬN HÀNH** | **Hoàn toàn khả thi và tiết kiệm tối đa cho môi trường học tập** | **$\approx$ \$20 USD / tháng** |
+| **Hạ tầng Core VPS** | 4 vCPU, 8GB RAM, 160GB SSD (Chạy Web, API, Postgres, Redis, MinIO, Nginx) | **\$15 - \$20 USD** (~400.000 VNĐ) |
+| **Lưu trữ & Băng thông MinIO** | Lưu trữ 100GB dữ liệu truyện + Egress Traffic qua Cloudflare | **\$0 USD** (Tận dụng Free Tier / Local) |
+| **Chi phí AI Token API (GPT-4o-mini)**| Xử lý dịch 1,000 chapters mới/tháng qua GPT-4o-mini API | **\$1.00 - \$2.00 USD** (~50.000 VNĐ) |
+| **Chi phí AI GPU Worker Compute** | Chạy CV/ML Models (Manga-OCR, LaMa Inpaint) trên máy Local Dev có GPU | **\$0 USD** (Tận dụng phần cứng sẵn có) |
+| **TỔNG CHI PHÍ VẬN HÀNH DEMO** | **Hoàn toàn khả thi và tiết kiệm tối đa cho môi trường học tập** | **$\approx$ \$20 USD / tháng** |

@@ -8,18 +8,18 @@ Tài liệu này là **Nguồn Sự Thật Duy Nhất (Single Source of Truth - 
 
 | Thuật ngữ | Định nghĩa kỹ thuật chuẩn | Quy ước sử dụng trong toàn bộ dự án |
 | :--- | :--- | :--- |
-| **Work / Story** | Thực thể tác phẩm cao nhất (ví dụ: bộ truyện *One Piece*, tiểu thuyết *Re:Zero*). | Chứa metadata tổng quan (`id`, `title`, `slug`, `media_format`, `origin_country`). |
-| **StoryEdition** | Ấn bản của một tác phẩm theo ngôn ngữ hoặc nhóm phát hành (Original Japanese, Vietnamese Official, Fan Translation). | Phân cấp: `Story` $\rightarrow$ `StoryEdition` $\rightarrow$ `Volume` $\rightarrow$ `Chapter`. |
+| **Work / Story** | Thực thể tác phẩm cao nhất (ví dụ: bộ truyện *One Piece*, tiểu thuyết *Re:Zero*). | Chứa metadata tổng quan (`id`, `title`, `slug`, `media_format`, `origin_country`, `created_by`). |
+| **StoryEdition** | **Dòng xuất bản / Nhóm phát hành** của tác phẩm (ví dụ: *Bản Dịch Chính Thức*, *Bản Dịch Cộng Đồng OmniNovel*). | Phân cấp: `Story` $\rightarrow$ `StoryEdition` $\rightarrow$ `Volume` $\rightarrow$ `Chapter`. Ngôn ngữ của Edition đóng vai trò mặc định, nhưng từng `ChapterVersion` bên trong có thể mang ngôn ngữ/phiên bản cụ thể khác. |
 | **Volume** | Tập truyện / Hồi truyện (đặc biệt trong Light Novel). | Phân nhóm các chương truyện theo từng tập xuất bản. |
 | **Chapter** | Chương truyện logic cụ thể trong tác phẩm. | Là container logic chứa nhiều **ChapterVersions**, có con trỏ `active_version_id`. |
 | **ChapterVersion** | **Bản phát hành bất biến cụ thể của một Chapter** (Original Raw, AI Vietnamese v1, Human Edited v1). | **Quy tắc bất biến (Immutable):** Bản raw không bao giờ bị xóa. Ghi đè (Overwrite) = trỏ `active_version_id` sang version mới. Nhân bản (Duplicate) = tạo version mới giữ nguyên `active_version_id`. |
 | **MediaAsset** | Tệp tin đa phương tiện cụ thể (Trang ảnh Manga WebP, file Markdown/HTML Novel, ảnh minh họa). | Thuộc về một `ChapterVersion` cụ thể, lưu trữ trên MinIO theo thứ tự `sort_order`. |
-| **StoryMember** | Quyền thành viên theo từng bộ truyện (Story Ownership & Collaboration). | Gồm các vai trò: `OWNER`, `EDITOR`, `TRANSLATOR`, `UPLOADER`. |
-| **TranslationProject** | Không gian quản trị dịch thuật của một bộ truyện (chứa Cặp ngôn ngữ, Từ điển Glossary, Style Guide). | Dự án dịch lâu dài của nhóm dịch hoặc cá nhân. |
+| **StoryMember** | **Nguồn Sự Thật Duy Nhất (Single Source of Truth) về Quyền Sở Hữu & Phân Quyền Bộ Truyện**. | Gồm các vai trò: `OWNER` (toàn quyền), `EDITOR` (duyệt/xuất bản/apply), `TRANSLATOR` (dịch/tạo job), `UPLOADER` (tải raw). |
+| **TranslationProject** | Không gian quản trị dịch thuật của một ấn bản (`StoryEdition`). | Quản lý Cặp ngôn ngữ gốc - đích và Từ điển Glossary. |
 | **TranslationJob** | Một phiên xử lý dịch cho 1 ChapterVersion cụ thể. | Quản lý State Machine 14 trạng thái từ `CREATED` đến `APPLIED`. |
 | **TranslationSegment** | Đơn vị dịch thuật nhỏ nhất (Một bóng thoại tranh Manga hoặc một đoạn văn bản Light Novel). | Chứa tọa độ BBox, Text gốc, Text dịch, Confidence Score, Status. |
 | **GlossaryTerm** | Cặp từ vựng cố định trong từ điển (Tên nhân vật, chiêu thức, địa danh) để ép AI dịch nhất quán. | Áp dụng ưu tiên cao hơn kết quả sinh tự do của LLM. |
-| **EXP (Experience Points)** | Điểm kinh nghiệm tích lũy qua hoạt động đọc truyện và tương tác hợp lệ để tăng Level tài khoản. | Khác biệt hoàn toàn với OmniCoin. Có giới hạn chống cày farm reload (Anti-farming daily cap). |
+| **Total EXP** | **Nguồn Sự Thật Duy Nhất về Điểm Kinh Nghiệm** tích lũy vĩnh viễn của người dùng (`total_exp`). | Level được tính toán dẫn xuất (Derived) từ `total_exp` theo công thức cố định. Không bao giờ bị trừ hay đem tiêu dùng. |
 | **OmniCoin** | Đơn vị tiền thưởng ảo trong hệ thống nhận qua Điểm danh (Daily Check-in) và Nhiệm vụ. | Dùng để mở khóa quyền lợi, theme, vật phẩm; quản lý qua Sổ cái bất biến (Immutable Ledger). |
 | **Rank / Title** | Cấp bậc danh hiệu hiển thị trên Profile theo cấp Level (Tu Tiên, Game Thủ, Ma Vương, Pháp Sư, Tinh Không). | Lựa chọn theme hiển thị mà không ảnh hưởng tới Level và EXP thực tế. |
 | **High Refresh Rate (HRR)** | Khả năng đáp ứng tần số quét màn hình 90Hz / 120Hz / 144Hz. | Yêu cầu ngân sách khung hình $< 8.33ms$/frame trên Mobile Flutter. |
@@ -40,7 +40,7 @@ Tài liệu này là **Nguồn Sự Thật Duy Nhất (Single Source of Truth - 
 | **ADR-006** | Kiến Trúc Phân Tách Hàng Đợi AI Worker | **Accepted** | **NestJS BullMQ (Producer/Consumer)** $\rightarrow$ HTTP/gRPC $\rightarrow$ **Python FastAPI (Engine)**. |
 | **ADR-007** | Mô Hình WebSocket Reconnect-Aware | **Accepted** | Quản lý tiến trình dịch AI qua WebSocket kèm REST fallback query. |
 | **ADR-008** | Trừu Tượng Hóa Nhà Cung Cấp AI (Provider) | **Accepted** | Áp dụng Adapter Pattern cho OpenAI, DeepL và Local LLM. |
-| **ADR-009** | Bảo Vệ Bản Quyền Hình Ảnh (Anti-Leech) | **Accepted** | Sử dụng **Dynamic HMAC-SHA256 Signed URLs** thời hạn ngắn (15 phút) và Watermark. |
+| **ADR-009** | Bảo Vệ Bản Quyền Hình Ảnh (Anti-Leech) | **Accepted** | Sử dụng **Dynamic HMAC-SHA256 Signed URLs** thời hạn ngắn (15 phút) và Watermark ẩn danh. |
 | **ADR-010** | Mã Hóa Mật Khẩu Người Dùng | **Accepted** | Sử dụng thuật toán **Argon2id** với thông số an toàn chống tấn công GPU/ASIC. |
 
 ---

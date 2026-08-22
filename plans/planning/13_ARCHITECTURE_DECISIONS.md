@@ -95,21 +95,21 @@ Tài liệu này ghi nhận toàn văn 10 Quyết định Kiến trúc cốt lõ
 
 ---
 
-### ADR-009: Bảo Vệ Bản Quyền Hình Ảnh & Chống Cào Dữ Liệu (Anti-Leech URLs)
+### ADR-009: Bảo Vệ Bản Quyền Hình Ảnh & Giảm Thiểu Tình Trạng Cào Trộm Dữ Liệu (Anti-Leech URLs)
 * **Trạng thái (Status):** Accepted
-* **Bối cảnh (Context):** Các website truyện lậu thường xuyên dùng bot cào URL trực tiếp từ CDN/Storage làm hao tốn băng thông và vi phạm bản quyền nội dung.
-* **Quyết định (Decision):** Áp dụng **Dynamic HMAC-SHA256 Signed URLs** có thời hạn ngắn (15 phút) kèm ràng buộc User Session và gắn Watermark mờ ID độc giả trên từng khung hình.
+* **Bối cảnh (Context):** Các website truyện lậu thường xuyên dùng bot cào URL trực tiếp từ CDN/Storage để hotlink làm hao tốn băng thông và vi phạm bản quyền nội dung.
+* **Quyết định (Decision):** Áp dụng **Dynamic HMAC-SHA256 Signed URLs** có thời hạn ngắn (15 phút) kết hợp Nginx Rate Limiting nhằm giảm thiểu tối đa khả năng hotlink và scraping hàng loạt, kết hợp nhúng mã truy vết ẩn danh (Pseudonymous Trace Code) trên canvas đọc truyện.
 * **Các phương án thay thế (Alternatives Considered):**
   * *Public Static URLs:* Rất dễ bị leech toàn bộ kho truyện bằng script tải hàng loạt.
   * *Mã hóa toàn bộ file ảnh phía server và giải mã bằng WebAssembly trên browser:* Chi phí giải mã cao, gây giật lag trên thiết bị yếu.
-* **Hệ quả (Consequences):** Bot cào không thể tái sử dụng link ảnh; đáp ứng xuất sắc tiêu chí chấm điểm môn An toàn thông tin.
+* **Hệ quả (Consequences):** Giảm thiểu tối đa nguy cơ hotlink trực tiếp; đáp ứng xuất sắc tiêu chí chấm điểm môn An toàn thông tin.
 
 ---
 
-### ADR-010: Mã Hóa Mật Khẩu Người Dùng Bằng Argon2id
+### ADR-010: Mã Hóa Mật Khẩu Người Dùng Bằng Argon2id & Cấp Phát JWT HS256
 * **Trạng thái (Status):** Accepted
-* **Bối cảnh (Context):** Mật khẩu người dùng là dữ liệu nhạy cảm hàng đầu, cần được bảo vệ chống lại các hình thức tấn công vét cạn (Brute-force) và tấn công bằng phần cứng chuyên dụng (GPU/ASIC/FPGA).
-* **Quyết định (Decision):** Sử dụng thuật toán băm mật khẩu chuẩn quốc tế **Argon2id** (đạt giải Password Hashing Competition) với memory cost 64MB, time cost 3 iterations và parallelism 4 threads.
+* **Bối cảnh (Context):** Mật khẩu người dùng là dữ liệu nhạy cảm hàng đầu, cần được bảo vệ chống lại các hình thức tấn công vét cạn (Brute-force) và tấn công bằng phần cứng chuyên dụng (GPU/ASIC/FPGA). Token xác thực cần cơ chế ký gọn nhẹ và an toàn.
+* **Quyết định (Decision):** Sử dụng thuật toán băm mật khẩu chuẩn quốc tế **Argon2id** (memory cost 64MB, time cost 3 iterations, parallelism 4 threads) và cấp phát JWT ký đối xứng bằng **`HS256`** với secret key an toàn lưu trong biến môi trường `.env`.
 * **Các phương án thay thế (Alternatives Considered):**
   * *MD5 / SHA-256 thuần:* Rất yếu, bị giải mã trong vài mili-giây qua Rainbow Table.
   * *Bcrypt:* Tốt nhưng không có cơ chế chống tấn công bộ nhớ bằng GPU/FPGA mạnh mẽ như Argon2id.

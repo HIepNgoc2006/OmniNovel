@@ -1,10 +1,10 @@
-# 🔗 21. Ma Trận Truy Vết Yêu Cầu Kỹ Thuật (Requirements Traceability Matrix - RTM)
+# 🔗 21. Ma Trận Truy Vết Yêu Cầu Kỹ Thuật MVP P0 (P0 Requirements Traceability Matrix - P0-RTM)
 
-Tài liệu này cung cấp ma trận truy vết khép kín 100% hai chiều (**Bidirectional Traceability Matrix**) từ Yêu Cầu Người Dùng (**UR**) $\rightarrow$ Yêu Cầu Chức Năng (**FR**) $\rightarrow$ Ca Sử Dụng (**UC**) $\rightarrow$ Màn Hình (**Screen**) $\rightarrow$ API Endpoint $\rightarrow$ Bảng CSDL (**DB**) $\rightarrow$ Ca Kiểm Thử (**TC**).
+Tài liệu này cung cấp ma trận truy vết khép kín 100% hai chiều (**Bidirectional Traceability Matrix**) cho toàn bộ các Yêu Cầu Cốt Lõi MVP (**P0 Requirements**) từ Yêu Cầu Người Dùng (**UR**) $\rightarrow$ Yêu Cầu Chức Năng (**FR**) $\rightarrow$ Ca Sử Dụng (**UC**) $\rightarrow$ Màn Hình (**Screen**) $\rightarrow$ API Endpoint $\rightarrow$ Bảng CSDL (**DB**) $\rightarrow$ Ca Kiểm Thử (**TC**).
 
 ---
 
-## MA TRẬN TRUY VẾT KỸ THUẬT CHI TIẾT (CANONICAL RTM)
+## MA TRẬN TRUY VẾT KỸ THUẬT P0 CHI TIẾT (P0-RTM)
 
 | Mã UR | Mã FR | Mã UC | Màn Hình Web/App | API Endpoint Liên Quan | Bảng CSDL (DB) | Mã Test Case |
 | :--- | :--- | :--- | :---: | :--- | :--- | :---: |
@@ -14,6 +14,7 @@ Tài liệu này cung cấp ma trận truy vết khép kín 100% hai chiều (**
 | **UR-DISC-01** | FR-DISC-01 | UC-DISC-01 | WEB-001 / MOB-001 | `GET /api/v1/stories/featured` | `stories`, `volumes` | TC-DISC-01 |
 | **UR-DISC-02** | FR-DISC-02 | UC-DISC-02 | WEB-001 / MOB-002 | `GET /api/v1/stories/search` | `stories` (Trigram Index) | TC-DISC-01 |
 | **UR-DISC-03** | FR-DISC-03 | UC-DISC-03 | WEB-002 / MOB-001 | `GET /api/v1/stories` | `stories`, `genres` | TC-DISC-01 |
+| **UR-DISC-04** | FR-DISC-04 | UC-DISC-04 | WEB-001 / MOB-001 | `GET /api/v1/stories/rankings`| Redis Sorted Sets | TC-DISC-01 |
 | **UR-DISC-05** | FR-DISC-05 | UC-DISC-05 | WEB-003 / MOB-003 | `GET /api/v1/stories/:slug` | `stories`, `story_editions` | TC-DISC-01 |
 | **UR-MANGA-01**| FR-MANGA-01 | UC-READ-01 | WEB-004 / MOB-004 | `GET /api/v1/chapters/:id` | `media_assets` | TC-MANGA-01 |
 | **UR-MANGA-02**| FR-MANGA-02 | UC-READ-02 | WEB-004 / MOB-005 | `GET /api/v1/chapters/:id` | `media_assets` | TC-MANGA-01 |
@@ -21,16 +22,17 @@ Tài liệu này cung cấp ma trận truy vết khép kín 100% hai chiều (**
 | **UR-MANGA-05**| FR-MANGA-04 | UC-READ-06 | WEB-004 / MOB-004 | `GET /api/v1/chapters/:id` | `chapter_versions` | TC-MANGA-01 |
 | **UR-NOVEL-01**| FR-NOVEL-01 | UC-READ-04 | WEB-005 / MOB-006 | `GET /api/v1/chapters/:id` | `media_assets` | TC-NOVEL-01 |
 | **UR-NOVEL-02**| FR-NOVEL-01 | UC-READ-04 | WEB-005 / MOB-006 | LocalStorage / Settings | LocalStorage | TC-NOVEL-01 |
+| **UR-NOVEL-03**| FR-NOVEL-01 | UC-READ-04 | WEB-005 / MOB-006 | LocalStorage / Settings | LocalStorage | TC-NOVEL-01 |
 | **UR-NOVEL-04**| FR-NOVEL-02 | UC-READ-05 | WEB-005 / MOB-007 | `GET /api/v1/chapters/:id` | `media_assets` | TC-NOVEL-01 |
+| **UR-NOVEL-05**| FR-NOVEL-03 | UC-READ-04 | WEB-005 / MOB-006 | `GET /api/v1/stories/:slug` | `chapters`, `volumes` | TC-NOVEL-01 |
 | **UR-LIB-01** | FR-LIB-01 | UC-LIB-01 | WEB-007 / MOB-009 | `POST /api/v1/library/progress`| `reading_progress` | TC-NOVEL-01 |
 | **UR-LIB-02** | FR-LIB-02 | UC-LIB-02 | WEB-007 / MOB-009 | `POST /api/v1/library/bookmarks`| `bookmarks` | TC-DISC-01 |
-| **UR-AI-01** | FR-AI-01 | UC-STUD-01 | WEB-011 / Studio | `POST /api/v1/studio/stories` | `stories`, `story_members` | TC-AI-01 |
+| **UR-AI-01** | FR-STUD-01 | UC-STUD-01 | WEB-011 / Studio | `POST /api/v1/studio/stories` | `stories`, `story_members` | TC-STUD-01 |
 | **UR-AI-02** | FR-AI-01 | UC-STUD-02 | WEB-012 / Studio | `POST /api/v1/uploads/sessions`| `chapter_versions`, MinIO | TC-AI-01 |
 | **UR-AI-03** | FR-AI-02 | UC-STUD-03 | WEB-013 / Studio | `POST /api/v1/ai/jobs` | `translation_jobs`, BullMQ| TC-AI-02 |
 | **UR-AI-04** | FR-AI-03 | UC-STUD-04 | WEB-014 / Studio | `GET /api/v1/ai/jobs/:id` | `translation_segments` | TC-AI-02 |
 | **UR-AI-05** | FR-AI-03 | UC-STUD-04 | WEB-014 / Studio | `POST /api/v1/ai/jobs/:id/apply`| `chapters.active_version` | TC-AI-02 |
 | **UR-AI-06** | FR-AI-03 | UC-STUD-04 | WEB-014 / Studio | `POST /api/v1/ai/jobs/:id/apply`| `chapter_versions` | TC-AI-02 |
-| **UR-AI-07** | FR-AI-04 | UC-STUD-05 | WEB-011 / Studio | `POST /api/v1/ai/glossary` | `translation_glossaries` | TC-AI-02 |
 | **UR-ADM-01** | FR-ADM-01 | UC-ADM-01 | WEB-015 / Admin | `PATCH /admin/reports/:id` | `chapter_error_reports` | TC-ADM-01 |
 | **UR-ADM-02** | FR-ADM-02 | UC-ADM-02 | WEB-015 / Admin | `PATCH /admin/users/:id/role` | `users` | TC-ADM-01 |
 | **UR-ADM-03** | FR-ADM-03 | UC-ADM-03 | WEB-015 / Admin | `PATCH /stories/:id/visibility`| `stories.visibility` | TC-ADM-01 |

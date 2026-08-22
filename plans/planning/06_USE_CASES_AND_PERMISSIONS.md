@@ -55,7 +55,7 @@ Quyền hạn được xác định qua 2 tầng: **Global Role** (`users.role`)
 * **Main Flow:**
   1. Người dùng nhập Email/Username và Mật khẩu $\rightarrow$ Bấm "Đăng nhập".
   2. Server kiểm tra mật khẩu bằng thuật toán **Argon2id**.
-  3. Server sinh Access Token (15 phút) và Refresh Token (7 ngày).
+  3. Server sinh Access Token (15 phút) và Refresh Token (7 ngày) ký `HS256`.
   4. Server lưu hash của Refresh Token vào Redis kèm `userId` và trả về Access Token trong body, Refresh Token trong HttpOnly Cookie.
 * **Postconditions:** Người dùng đăng nhập thành công và client lưu phiên làm việc.
 
@@ -66,7 +66,7 @@ Quyền hạn được xác định qua 2 tầng: **Global Role** (`users.role`)
 * **Main Flow:**
   1. Độc giả gõ từ khóa vào thanh tìm kiếm (ví dụ: "Solo Leveling").
   2. Client tự động debounce 300ms và gửi request `GET /api/v1/stories/search?q=Solo`.
-  3. Server truy vấn Full-Text Search trong PostgreSQL và trả về danh sách tối đa 10 gợi ý.
+  3. Server truy vấn Full-Text Search trong PostgreSQL (Trigram Index) và trả về danh sách tối đa 10 gợi ý.
   4. Giao diện hiển thị dropdown danh sách truyện kèm ảnh bìa, tác giả và thể loại.
   5. Độc giả bấm vào một kết quả để chuyển hướng đến trang chi tiết.
 
@@ -79,7 +79,7 @@ Quyền hạn được xác định qua 2 tầng: **Global Role** (`users.role`)
   1. Độc giả mở một chapter truyện tranh trên điện thoại.
   2. App Flutter gọi `GET /api/v1/chapters/:id` nhận danh sách HMAC Signed URLs các trang ảnh WebP.
   3. Trình đọc nạp ảnh vào Virtualized List, tối ưu GPU Impeller để cuộn mượt 120Hz.
-  4. Nếu Server chính bị chậm, độc giả chọn "Server CDN 1" trên thanh điều khiển $\rightarrow$ URL ảnh tự động chuyển sang host dự phòng giữ nguyên vị trí trang đang đọc.
+  4. Nếu Server chính bị chậm, độc giả chọn "Server CDN 1" trên thanh điều khiển $\rightarrow$ URL ảnh tự động chuyển sang route dự phòng giữ nguyên vị trí trang đang đọc.
 
 ---
 
@@ -104,16 +104,16 @@ Quyền hạn được xác định qua 2 tầng: **Global Role** (`users.role`)
 ---
 
 ### 📄 UC-06 (UC-STUD-01): Tạo Bộ Truyện Mới & Thiết Lập Ấn Bản (StoryEdition)
-* **Primary Actor:** Translator / Story Owner.
+* **Primary Actor:** Global Translator / Story Owner.
 * **Main Flow:**
   1. Thành viên vào `/studio/stories/new`, nhập Tên truyện, Thể loại, Tóm tắt và Upload ảnh bìa.
-  2. Server lưu bản ghi vào `stories` và tự động tạo `story_members` với `role = 'OWNER'`.
+  2. Server lưu bản ghi vào `stories`, gán `created_by = user.id` và tự động tạo `story_members` với `role = 'OWNER'`.
   3. Thành viên tạo thêm ấn bản `story_editions` (ví dụ: "Bản Dịch Tiếng Việt", language: 'vi').
 
 ---
 
 ### 📄 UC-07 (UC-STUD-02/03): Tải Lên Raw & Khởi Chạy Tác Vụ Dịch AI
-* **Primary Actor:** Story Translator / Editor.
+* **Primary Actor:** Story Translator / Editor / Owner.
 * **Secondary Actor:** NestJS BullMQ, MinIO, Python AI Engine.
 * **Main Flow:**
   1. Thành viên kéo thả file ZIP 30 trang ảnh Manga vào Studio và tích chọn "Dịch tự động bằng AI".
@@ -125,13 +125,13 @@ Quyền hạn được xác định qua 2 tầng: **Global Role** (`users.role`)
 ---
 
 ### 📄 UC-08 (UC-STUD-04): Xem Trước So Sánh (Diff) & Áp Dụng Xuất Bản
-* **Primary Actor:** Story Translator / Editor / Owner.
+* **Primary Actor:** **Story Editor / Story Owner / Global Admin** *(Translator không có quyền này)*.
 * **Preconditions:** `TranslationJob` đã hoàn tất 100% (trạng thái `READY_FOR_REVIEW`).
 * **Main Flow:**
   1. Giao diện Studio hiển thị thanh trượt Diff so sánh ảnh raw gốc và ảnh sau khi dịch AI.
   2. Popup hiển thị 2 phương án:
-     * *(Phương án 1 - Ghi đè):* Thành viên chọn Ghi đè $\rightarrow$ Server cập nhật con trỏ `chapter.active_version_id = translated_version_id`. Bản raw cũ vẫn tồn tại bất biến trong CSDL.
-     * *(Phương án 2 - Nhân bản):* Thành viên chọn Nhân bản $\rightarrow$ Server giữ nguyên `active_version_id` cũ, tạo `ChapterVersion` mới và hiển thị trong menu chọn bản dịch.
+     * *(Phương án 1 - Ghi đè):* Editor/Owner chọn Ghi đè $\rightarrow$ Server cập nhật con trỏ `chapter.active_version_id = translated_version_id`. Bản raw cũ vẫn tồn tại bất biến trong CSDL.
+     * *(Phương án 2 - Nhân bản):* Editor/Owner chọn Nhân bản $\rightarrow$ Server giữ nguyên `active_version_id` cũ, tạo `ChapterVersion` mới và hiển thị trong menu chọn bản dịch.
   3. Chương truyện lập tức sẵn sàng phục vụ độc giả.
 
 ---
@@ -144,8 +144,8 @@ Quyền hạn được xác định qua 2 tầng: **Global Role** (`users.role`)
   3. Nếu chưa: Chạy transaction CSDL nguyên tử:
      * Thêm bản ghi `daily_checkins`.
      * Tăng `current_streak` thêm 1 (hoặc reset về 1 nếu ngắt chuỗi).
-     * Cộng 5 OmniCoin và 10 EXP vào `user_progression`.
-     * Ghi 2 dòng lịch sử vào sổ cái bất biến `reward_transactions`.
+     * Cộng 5 OmniCoin và 10 Total EXP vào `user_progression`.
+     * Ghi 2 dòng lịch sử vào sổ cái bất biến `reward_transactions` (`CHECKIN:<user>:<date>:EXP` và `CHECKIN:<user>:<date>:OMNICOIN`).
   4. Server trả về `200 OK` kèm số OmniCoin nhận được và chuỗi streak hiện tại.
 
 ---

@@ -27,9 +27,10 @@ Tài liệu này xác định tháp kiểm thử phần mềm (**Testing Pyramid
 | **TC-DISC-01** | Tìm kiếm truyện có dấu tiếng Việt | `q = "đại quản gia"` | Trả về danh sách truyện khớp với điểm tương đồng trigram cao nhất | Unit |
 | **TC-MANGA-01**| Cuộn Webtoon 50 trang không rò rỉ RAM | 50 ảnh 2K WebP cuộn nhanh | Khung hình duy trì $\ge 90$ FPS, RAM duy trì $< 150MB$ | Mobile E2E |
 | **TC-NOVEL-01**| Đổi font và lưu vị trí đọc theo block | Chỉnh cỡ 22px, nhảy `block-42` | Vị trí đọc được lưu chính xác, mở lại thiết bị khác trỏ đúng block | Mobile E2E |
+| **TC-STUD-01** | Tạo Story mới gán quyền Owner | Payload tạo truyện mới | Tạo bản ghi `stories` kèm `story_members(role='OWNER')` | Integration |
 | **TC-AI-01**   | Quét chống Zip Slip tệp tin tải lên | File ZIP chứa entry `../../etc/passwd` | Bị chặn ngay lập tức, trả về `400 Bad Request` | Unit |
 | **TC-AI-02**   | Dịch Manga có từ khóa Glossary | Ảnh chứa chữ "Rasengan" | Text tiếng Việt hiển thị chính xác "Loa Toàn Hoàn" | AI Integration |
-| **TC-GAM-01**  | Điểm danh nguyên tử lần đầu trong ngày | `POST /gamification/checkin` | +5 Coin, +10 EXP, Streak +1, tạo 2 bản ghi sổ cái ledger | Integration |
+| **TC-GAM-01**  | Điểm danh nguyên tử lần đầu trong ngày | `POST /gamification/checkin` | +5 Coin, +10 Total EXP, Streak +1, tạo 2 bản ghi sổ cái ledger | Integration |
 | **TC-GAM-02**  | Chặn điểm danh lặp lại lần 2 | Gửi tiếp request checkin | Trả về `400 Bad Request` (`CHECKIN_ALREADY_CLAIMED`), balance giữ nguyên | Integration |
 | **TC-ADM-01**  | Quyền đóng báo cáo lỗi chương | Admin token gọi resolve report | Cập nhật `status = 'RESOLVED'`, gán `resolved_by = admin.id` | Integration |
 

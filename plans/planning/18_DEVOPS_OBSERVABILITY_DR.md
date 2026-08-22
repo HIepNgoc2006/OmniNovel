@@ -158,9 +158,10 @@ volumes:
 
 ## 4. KẾ HOẠCH SAO LƯU & PHỤC HỒI DỮ LIỆU (DISASTER RECOVERY & BACKUP)
 
-* **Mục tiêu Khắc phục Sự cố:**
-  * **RPO (Recovery Point Objective):** $\le 1$ giờ (mất tối đa 1 giờ dữ liệu nếu thảm họa xảy ra).
-  * **RTO (Recovery Time Objective):** $\le 15$ phút (hệ thống phục hồi hoạt động trong 15 phút).
-* **Kịch bản Sao lưu Tự động:**
-  * Cronjob chạy mỗi ngày vào lúc 02:00 sáng tự động dump CSDL: `pg_dump -U postgres omninovel_db | gzip > /backups/db_$(date +%F).sql.gz`.
-  * Tự động đồng bộ file backup sang vùng lưu trữ phụ trợ an toàn.
+### 4.1. Mục Tiêu Phục Hồi Thực Tế Cho Đồ Án (Academic Demo Disaster Recovery):
+* **RPO (Recovery Point Objective):** **$\le 24$ giờ** (với kịch bản sao lưu CSDL hàng ngày).
+* **RTO (Recovery Time Objective):** **$\le 4$ giờ** (khôi phục từ bản dump và khởi động lại container).
+* **Kịch bản Sao lưu:** Cronjob chạy mỗi ngày lúc 02:00 sáng tự động dump CSDL: `pg_dump -U postgres omninovel_db | gzip > /backups/db_$(date +%F).sql.gz`.
+
+### 4.2. Mục Tiêu Thiết Kế Mở Rộng (Production Target):
+* Sử dụng PostgreSQL WAL Archiving / Streaming Replication hướng tới RPO $\le 1$ giờ và RTO $\le 15$ phút.

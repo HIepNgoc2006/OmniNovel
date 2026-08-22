@@ -7,7 +7,7 @@ Tài liệu này cung cấp toàn bộ lược đồ CSDL quan hệ PostgreSQL 1
 ## 1. LƯỢC ĐỒ CSDL POSTGRESQL HOÀN CHỈNH (CANONICAL DDL)
 
 ```sql
--- Kích hoạt extension UUID
+-- Kích hoạt extension UUID và Trigram
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
 CREATE EXTENSION IF NOT EXISTS "pg_trgm";
 
@@ -47,7 +47,7 @@ CREATE TABLE stories (
     status VARCHAR(20) DEFAULT 'ONGOING' CHECK (status IN ('ONGOING', 'COMPLETED', 'HIATUS', 'CANCELLED')),
     visibility VARCHAR(20) DEFAULT 'PUBLIC' CHECK (visibility IN ('PUBLIC', 'UNLISTED', 'PRIVATE')),
     summary TEXT,
-    owner_id UUID REFERENCES users(id) ON DELETE SET NULL,
+    created_by UUID REFERENCES users(id) ON DELETE SET NULL, -- Chỉ ghi nhận metadata người tạo ban đầu
     views_count BIGINT DEFAULT 0,
     followers_count INT DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -62,7 +62,7 @@ CREATE TABLE story_creators (
     PRIMARY KEY (story_id, creator_id, role)
 );
 
--- 5. Bảng Phân quyền Thành viên Bộ truyện (Story Members - Ownership RBAC)
+-- 5. Bảng Phân quyền Thành viên Bộ truyện (Story Members - CANONICAL OWNERSHIP & RBAC)
 CREATE TABLE story_members (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     story_id UUID NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
@@ -85,11 +85,11 @@ CREATE TABLE story_genres (
     PRIMARY KEY (story_id, genre_id)
 );
 
--- 7. Ấn bản Bộ truyện (Story Editions)
+-- 7. Ấn bản Bộ truyện (Story Editions - Dòng Xuất Bản)
 CREATE TABLE story_editions (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     story_id UUID NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
-    edition_name VARCHAR(100) NOT NULL, -- e.g. 'Original Japanese', 'Bản Dịch Tiếng Việt'
+    edition_name VARCHAR(100) NOT NULL, -- e.g. 'Bản Dịch Chính Thức', 'Bản Dịch Cộng Đồng'
     language VARCHAR(10) NOT NULL DEFAULT 'vi',
     is_default BOOLEAN DEFAULT FALSE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -269,11 +269,11 @@ CREATE TABLE rank_levels (
     UNIQUE(theme_id, min_level)
 );
 
--- 20. Hồ Sơ Tiến Trình Người Dùng (User Progression & Wallets)
+-- 20. Hồ Sơ Tiến Trình Người Dùng (User Progression - Total EXP SSoT)
 CREATE TABLE user_progression (
     user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    level INT DEFAULT 1 CHECK (level >= 1 AND level <= 100),
-    current_exp BIGINT DEFAULT 0 CHECK (current_exp >= 0),
+    level INT DEFAULT 1 CHECK (level >= 1 AND level <= 100), -- Được tính toán dẫn xuất từ total_exp
+    total_exp BIGINT DEFAULT 0 CHECK (total_exp >= 0), -- Nguồn sự thật duy nhất về EXP
     omnicoin_balance BIGINT DEFAULT 0 CHECK (omnicoin_balance >= 0),
     current_streak INT DEFAULT 0 CHECK (current_streak >= 0),
     max_streak INT DEFAULT 0 CHECK (max_streak >= 0),
@@ -303,7 +303,7 @@ CREATE TABLE reward_transactions (
     balance_after BIGINT NOT NULL,
     source_type VARCHAR(50) NOT NULL CHECK (source_type IN ('CHECKIN', 'READ_CHAPTER', 'LEVEL_REWARD', 'MISSION_DAILY', 'ADMIN_ADJUSTMENT')),
     source_id VARCHAR(100),
-    idempotency_key VARCHAR(100) UNIQUE,
+    idempotency_key VARCHAR(150) UNIQUE NOT NULL, -- Format: CHECKIN:<user>:<date>:EXP hoặc UUID
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

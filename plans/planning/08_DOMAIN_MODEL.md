@@ -15,7 +15,7 @@ Tài liệu này xác định các ranh giới miền (Bounded Contexts / Subdom
 │ • Role (Global)  │ • StoryEdition   │ • ProgressAnchor │ • Bookmark       │ • TranslationJob    │
 │ • StoryMember    │ • Volume/Chapter │ • ViewCounter    │ • OfflineBundle  │ • Segment & Glossary│
 ├──────────────────┼──────────────────┼──────────────────┼──────────────────┼─────────────────────┤
-│ 6. PUBLISHING    │ 7. GAMIFICATION  │ 8. MODERATION    │ 9. COMMUNITY(V1) │ 10. NOTIFICATION    │
+│ 6. PUBLISHING    │ 7. GAMIFICATION  │ 8. MODERATION    │ 9. COMMUNITY(V1) │ 10. NOTIFICATION(V1)│
 │ • ChapterVersion │ • UserProgression│ • ErrorReport    │ • StoryReview    │ • SystemAlert       │
 │ • MediaAsset     │ • RewardLedger   │ • ContentTakedown│ • ChapterComment │ • PushNotification  │
 │ • ActivePointer  │ • DailyCheckin   │ • AuditLog       │ • PanelComment   │ • InAppNotice       │
@@ -28,19 +28,19 @@ Tài liệu này xác định các ranh giới miền (Bounded Contexts / Subdom
 
 ### 2.1. Aggregate Root: `Story` & `StoryEdition` (Catalog Domain)
 ```
-Story
-├── StoryMember (OWNER, EDITOR, TRANSLATOR, UPLOADER)
+Story (created_by)
+├── StoryMember (Canonical Ownership & Permissions: OWNER, EDITOR, TRANSLATOR, UPLOADER)
 ├── StoryCreator (Author, Artist, Illustrator)
-└── StoryEdition (Ngôn ngữ / Ấn bản: Original Japanese, Vietnamese Official, Fan Translation)
+└── StoryEdition (Dòng Xuất Bản: Bản Dịch Chính Thức, Bản Dịch Cộng Đồng...)
     └── Volume (Tập 1, Tập 2...)
         └── Chapter (Chương 1, Chương 2...)
-            └── ChapterVersion (Immutable Versions)
+            └── ChapterVersion (Immutable Versions: Raw ja, AI vi, Edited vi)
                 └── MediaAsset (Trang ảnh WebP, Novel HTML, Illustration)
 ```
 
-* **`Story` (Entity):** Đại diện cho tác phẩm gốc (`id`, `title`, `slug`, `media_format: COMIC | NOVEL`, `publication_format`, `origin_country`, `summary`, `cover_url`).
-* **`StoryEdition` (Entity):** Đại diện cho một ấn bản theo ngôn ngữ hoặc nhóm dịch (`id`, `story_id`, `edition_name`, `language`, `is_default`).
-* **`StoryMember` (Entity):** Xác định quyền hạn cộng tác viên theo từng bộ truyện (`id`, `story_id`, `user_id`, `role: OWNER | EDITOR | TRANSLATOR | UPLOADER`).
+* **`Story` (Entity):** Đại diện cho tác phẩm gốc (`id`, `title`, `slug`, `media_format: COMIC | NOVEL`, `publication_format`, `origin_country`, `summary`, `cover_url`, `created_by`).
+* **`StoryMember` (Canonical Entity):** **Nguồn sự thật duy nhất về quyền sở hữu và phân quyền bộ truyện** (`id`, `story_id`, `user_id`, `role: OWNER | EDITOR | TRANSLATOR | UPLOADER`).
+* **`StoryEdition` (Entity):** Đại diện cho một dòng xuất bản / nhóm phát hành (`id`, `story_id`, `edition_name`, `language: default language`, `is_default`).
 * **`StoryCreator` (Join Entity):** Liên kết tác phẩm với tác giả/họa sĩ (`story_id`, `creator_id`, `role: AUTHOR | ARTIST | ILLUSTRATOR`).
 
 ### 2.2. Aggregate Root: `Chapter` & `ChapterVersion` (Publishing Domain)
@@ -56,8 +56,8 @@ Story
 * **`GlossaryTerm`:** Cặp từ vựng cố định (`id`, `project_id`, `source_term`, `target_term`, `category`).
 
 ### 2.4. Aggregate Root: `UserProgression` & `RewardTransaction` (Gamification Domain)
-* **`UserProgression`:** Hồ sơ tiến trình độc giả (`user_id`, `level`, `current_exp`, `omnicoin_balance`, `current_streak`, `rank_theme_id`).
-* **`RewardTransaction` (Single-entry Immutable Ledger):** Sổ cái ghi nhận mọi giao dịch điểm (`id`, `user_id`, `reward_type: EXP | OMNICOIN`, `amount`, `balance_after`, `source_type: CHECKIN | READ_CHAPTER | LEVEL_REWARD`, `idempotency_key`).
+* **`UserProgression`:** Hồ sơ tiến trình độc giả (`user_id`, `level: derived`, `total_exp: SSoT`, `omnicoin_balance`, `current_streak`, `rank_theme_id`).
+* **`RewardTransaction` (Single-entry Immutable Ledger):** Sổ cái ghi nhận mọi giao dịch điểm (`id`, `user_id`, `reward_type: EXP | OMNICOIN`, `amount`, `balance_after`, `source_type: CHECKIN | READ_CHAPTER | LEVEL_REWARD`, `idempotency_key: UNIQUE NOT NULL`).
 
 ---
 
@@ -68,7 +68,7 @@ Story
 * `TranslationJobQueuedEvent`: Phát sinh khi tác vụ dịch AI được đưa vào hàng đợi BullMQ.
 * `TranslationProgressUpdatedEvent`: Phát sinh khi một trang/đoạn được xử lý xong để stream % qua WebSocket.
 * `TranslationJobCompletedEvent`: Phát sinh khi AI hoàn tất 100%, sẵn sàng cho màn hình Diff Preview.
-* `ChapterVersionActivatedEvent`: Phát sinh khi người dùng chọn Ghi đè (trỏ `active_version_id` sang version mới) hoặc Nhân bản.
-* `ChapterReadingCompletedEvent`: Phát sinh khi độc giả đọc hoàn thành 1 chapter hợp lệ, kích hoạt logic tính EXP (Anti-farming check).
+* `ChapterVersionActivatedEvent`: Phát sinh khi Editor/Owner chọn Ghi đè (trỏ `active_version_id` sang version mới) hoặc Nhân bản.
+* `ChapterReadingCompletedEvent`: Phát sinh khi độc giả đọc hoàn thành 1 chapter hợp lệ, kích hoạt logic tính Total EXP (Anti-farming check).
 * `DailyCheckinCompletedEvent`: Phát sinh khi độc giả điểm danh thành công trong ngày.
-* `UserLevelUpEvent`: Phát sinh khi EXP vượt ngưỡng lên cấp, mở khóa phần thưởng Level mới.
+* `UserLevelUpEvent`: Phát sinh khi Total EXP vượt ngưỡng lên cấp, mở khóa phần thưởng Level mới.

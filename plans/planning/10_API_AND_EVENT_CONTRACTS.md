@@ -29,17 +29,9 @@ Toàn bộ các API khi gặp lỗi bắt buộc phải trả về định dạn
 
 ## 2. CHÍNH SÁCH XỬ LÝ KHÓA TRÙNG LẶP (IDEMPOTENCY POLICY)
 
-Đối với các endpoint có tính nhạy cảm về giao dịch điểm hoặc tác vụ nặng:
-* `POST /api/v1/gamification/checkin`
-* `POST /api/v1/gamification/rewards/claim`
-* `POST /api/v1/ai/jobs`
-* `POST /api/v1/ai/jobs/:id/apply`
-
-Client bắt buộc phải gửi kèm HTTP Header:
-```http
-Idempotency-Key: <UUID-v4-generated-by-client>
-```
-Hệ thống sử dụng Redis `SETNX` với TTL 120 giây để đảm bảo nếu mạng bị retry hoặc người dùng bấm 2 lần thì chỉ duy nhất một request đầu tiên được thực thi.
+Hệ thống phân biệt 2 cấp độ Idempotency:
+1. **HTTP Request Level Idempotency:** Client gửi header `Idempotency-Key: <UUID-v4>` cho các request nhạy cảm (`POST /gamification/checkin`, `POST /ai/jobs`, `POST /ai/jobs/:id/apply`). Redis lưu key với TTL 120s bằng lệnh `SETNX`.
+2. **Database Ledger Level Idempotency:** CSDL lưu chuỗi khóa duy nhất trong `reward_transactions.idempotency_key` (ví dụ: `CHECKIN:<user_id>:<date>:EXP` và `CHECKIN:<user_id>:<date>:OMNICOIN`) để bảo vệ tính toàn vẹn tuyệt đối ở tầng cơ sở dữ liệu.
 
 ---
 
@@ -59,39 +51,53 @@ Hệ thống sử dụng Redis `SETNX` với TTL 120 giây để đảm bảo n�
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/v1/stories` | Query: `genre`, `format`, `status`, `page`, `limit` | `200 OK` + `{ data: [...], pagination }` |
 | `GET` | `/api/v1/stories/featured` | None | `200 OK` + `{ hotStories: [...], banners: [...] }` |
-| `GET` | `/api/v1/stories/rankings` | Query: `timeframe: daily | weekly | monthly` | `200 OK` + `{ rankings: [...] }` |
+| `GET` | `/api/v1/stories/recent` | Query: `page`, `limit` | `200 OK` + `{ recentStories: [...] }` |
+| `GET` | `/api/v1/stories/rankings` | Query: `timeframe: daily \| weekly \| monthly` | `200 OK` + `{ rankings: [...] }` |
 | `GET` | `/api/v1/stories/search` | Query: `q` (từ khóa debounce 300ms) | `200 OK` + `{ results: [...] }` (Tối đa 10) |
 | `GET` | `/api/v1/stories/:slug` | Params: `slug` | `200 OK` + `{ story, editions, volumes, chapters }` |
+| `PATCH`| `/api/v1/stories/:id/visibility` | Auth: Owner/Admin, Body: `{ visibility: 'PUBLIC' \| 'PRIVATE' }` | `200 OK` + `{ storyId, visibility }` |
 
-### 3.3. Phân Hệ Trình Đọc & Tủ Sách (Reader & Library)
+### 3.3. Phân Hệ Quản Trị Thành Viên Bộ Truyện (Story Members CRUD)
+| Method | Endpoint | Yêu Cầu Body / Header | Response Thành Công |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/v1/stories/:id/members` | Auth: Bearer Token | `200 OK` + `{ members: [...] }` |
+| `POST` | `/api/v1/stories/:id/members` | Auth: Story Owner, Body: `{ userId, role: 'EDITOR' \| 'TRANSLATOR' \| 'UPLOADER' }` | `201 Created` + `{ member }` |
+| `PATCH`| `/api/v1/stories/:id/members/:userId` | Auth: Story Owner, Body: `{ role }` | `200 OK` + `{ updatedMember }` |
+| `DELETE`| `/api/v1/stories/:id/members/:userId` | Auth: Story Owner | `200 OK` + `{ success: true }` |
+
+### 3.4. Phân Hệ Trình Đọc & Tủ Sách (Reader & Library)
 | Method | Endpoint | Yêu Cầu Query / Body | Response Thành Công |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/v1/chapters/:id` | Params: `id`, Query: `versionId` (optional) | `200 OK` + `{ chapter, activeVersion, pages/content }` |
+| `POST` | `/api/v1/chapters/:id/reports` | Auth: Reader, Body: `{ pageNumber, errorType, description }` | `201 Created` + `{ reportId }` |
 | `GET` | `/api/v1/library` | Auth: Bearer Token | `200 OK` + `{ bookmarks: [...], history: [...] }` |
 | `POST` | `/api/v1/library/progress` | Body: `{ storyId, chapterId, pageIndex, anchorBlockId, textOffset }` | `200 OK` + `{ syncedAt }` |
 | `POST` | `/api/v1/library/bookmarks`| Body: `{ storyId, isBookmarked: boolean }` | `200 OK` + `{ isBookmarked, followersCount }` |
 
-### 3.4. Phân Hệ Studio & Dịch Thuật AI (Studio & AI)
+### 3.5. Phân Hệ Studio & Dịch Thuật AI (Studio & AI)
 | Method | Endpoint | Yêu Cầu Body / Header | Response Thành Công |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/studio/stories` | Auth: Translator/Admin | `200 OK` + `{ managedStories: [...] }` |
+| `GET` | `/api/v1/studio/stories` | Auth: Translator/Owner/Admin | `200 OK` + `{ managedStories: [...] }` |
 | `POST` | `/api/v1/studio/stories` | Body: `{ title, mediaFormat, originCountry, summary, coverUrl }` | `201 Created` + `{ storyId }` |
+| `POST` | `/api/v1/studio/stories/:id/editions` | Body: `{ editionName, language, isDefault }` | `201 Created` + `{ editionId }` |
+| `POST` | `/api/v1/studio/editions/:id/volumes` | Body: `{ volumeNumber, title, coverUrl }` | `201 Created` + `{ volumeId }` |
+| `POST` | `/api/v1/studio/volumes/:id/chapters` | Body: `{ chapterNumber, title }` | `201 Created` + `{ chapterId }` |
 | `POST` | `/api/v1/uploads/sessions`| Body: `{ storyEditionId, chapterNumber, fileType: 'ZIP' \| 'TEXT', fileSize }` | `201 Created` + `{ uploadId, presignedUrls: [...] }` |
 | `POST` | `/api/v1/ai/jobs` | Header: `Idempotency-Key`, Body: `{ chapterVersionId, sourceLang, targetLang, provider }` | `202 Accepted` + `{ jobId, status: 'QUEUED' }` |
 | `GET` | `/api/v1/ai/jobs/:id` | Params: `id` | `200 OK` + `{ job, segments, diffPreviewUrls }` |
-| `POST` | `/api/v1/ai/jobs/:id/apply` | Header: `Idempotency-Key`, Body: `{ mode: 'OVERWRITE_ACTIVE_VERSION' \| 'CREATE_ALTERNATE_VERSION' }` | `200 OK` + `{ chapterId, activeVersionId, versionNumber }` |
+| `POST` | `/api/v1/ai/jobs/:id/apply` | Header: `Idempotency-Key`, Auth: Editor/Owner, Body: `{ mode: 'OVERWRITE_ACTIVE_VERSION' \| 'CREATE_ALTERNATE_VERSION' }` | `200 OK` + `{ chapterId, activeVersionId, versionNumber }` |
 | `GET/POST` | `/api/v1/ai/glossary` | Body (POST): `{ projectId, sourceTerm, targetTerm, category }` | `200 OK / 201 Created` + `{ glossaryTerm }` |
 
-### 3.5. Phân Hệ Gamification & Sổ Cái (Gamification)
+### 3.6. Phân Hệ Gamification & Sổ Cái (Gamification)
 | Method | Endpoint | Yêu Cầu Header / Body | Response Thành Công |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/gamification/progression` | Auth: Bearer Token | `200 OK` + `{ level, currentExp, nextLevelExp, omnicoinBalance, streak, rankTitle }` |
+| `GET` | `/api/v1/gamification/progression` | Auth: Bearer Token | `200 OK` + `{ level: 12, totalExp: 8450, currentLevelExp: 450, nextLevelExp: 900, omnicoinBalance: 428, streak: 7, rankTitle: "Kim Đan Kỳ" }` |
 | `POST` | `/api/v1/gamification/checkin` | Header: `Idempotency-Key`, Auth: Bearer | `200 OK` + `{ coinsEarned: 5, expEarned: 10, newStreak: 7 }` |
 | `PATCH`| `/api/v1/gamification/rank-theme` | Body: `{ themeId: 'TU_TIEN' \| 'GAME' \| 'DEMON_KING' }` | `200 OK` + `{ activeTheme, rankTitle }` |
 | `POST` | `/api/v1/gamification/rewards/claim`| Header: `Idempotency-Key`, Body: `{ milestoneLevel: 10 }` | `200 OK` + `{ rewardCoins: 100, claimedAt }` |
 | `GET` | `/api/v1/gamification/transactions` | Query: `page`, `limit`, `rewardType: 'EXP' \| 'OMNICOIN'` | `200 OK` + `{ transactions: [...], pagination }` |
 
-### 3.6. Phân Hệ Quản Trị Hệ Thống (Admin)
+### 3.7. Phân Hệ Quản Trị Hệ Thống (Admin)
 | Method | Endpoint | Yêu Cầu Header / Body | Response Thành Công |
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/v1/admin/reports` | Auth: Admin, Query: `status: PENDING \| RESOLVED` | `200 OK` + `{ reports: [...] }` |

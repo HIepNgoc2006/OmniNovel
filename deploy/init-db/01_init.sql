@@ -413,3 +413,15 @@ INSERT INTO rank_levels (theme_id, min_level, max_level, rank_title) VALUES
 ('SCI_FI', 80, 99, 'Đấng Sáng Tạo Vũ Trụ'),
 ('SCI_FI', 100, 100, 'Đấng Toàn Tri Toàn Năng')
 ON CONFLICT (theme_id, min_level) DO NOTHING;
+
+-- SEED MỐC PHẦN THƯỞNG CẤP ĐỘ (LEVEL MILESTONE REWARDS)
+INSERT INTO level_rewards (milestone_level, reward_coins, reward_badge_id) VALUES
+(2, 20, 'BADGE_LVL_2'),
+(5, 50, 'BADGE_LVL_5'),
+(10, 100, 'BADGE_LVL_10'),
+(20, 200, 'BADGE_LVL_20'),
+(30, 300, 'BADGE_LVL_30'),
+(50, 500, 'BADGE_LVL_50'),
+(100, 1000, 'BADGE_LVL_100')
+ON CONFLICT (milestone_level) DO NOTHING;
+

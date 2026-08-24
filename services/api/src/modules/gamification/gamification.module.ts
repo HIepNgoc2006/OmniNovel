@@ -5,6 +5,7 @@ import { GamificationService } from './gamification.service';
 import { UserProgression } from '../users/entities/user-progression.entity';
 import { RankTheme } from '../users/entities/rank-theme.entity';
 import { RankLevel } from '../users/entities/rank-level.entity';
+import { Chapter } from '../chapters/entities/chapter.entity';
 import { RewardTransaction } from './entities/reward-transaction.entity';
 import { DailyCheckin } from './entities/daily-checkin.entity';
 import { LevelReward } from './entities/level-reward.entity';
@@ -17,6 +18,7 @@ import { RedisModule } from '../../redis/redis.module';
       UserProgression,
       RankTheme,
       RankLevel,
+      Chapter,
       RewardTransaction,
       DailyCheckin,
       LevelReward,

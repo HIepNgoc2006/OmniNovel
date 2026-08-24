@@ -918,19 +918,20 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(res.body.hasCheckedInToday).toBe(false);
       expect(res.body.activeTheme.id).toBe('DEFAULT');
       expect(res.body.activeTheme.rankTitle).toBe('Độc Giả Sơ Cấp');
-      expect(res.body.progress.expNeededForNextLevel).toBe(100);
+      expect(res.body.progress.nextLevelExp).toBe(100);
     });
 
-    it('POST /api/v1/gamification/check-in should award +10 EXP, +5 Omnicoin and record 2 immutable ledger transactions', async () => {
+    it('POST /api/v1/gamification/checkin should award +10 EXP, +5 Omnicoin in Asia/Ho_Chi_Minh and record 2 ledger txs', async () => {
       const res = await request(app.getHttpServer())
-        .post('/api/v1/gamification/check-in')
+        .post('/api/v1/gamification/checkin')
         .set('Authorization', `Bearer ${readerAccessToken}`)
+        .set('Idempotency-Key', 'test-checkin-idemp-001')
         .expect(200);
 
       expect(res.body.alreadyCheckedIn).toBe(false);
-      expect(res.body.streakCount).toBe(1);
-      expect(res.body.rewardExp).toBe(10);
-      expect(res.body.rewardCoins).toBe(5);
+      expect(res.body.newStreak).toBe(1);
+      expect(res.body.expEarned).toBe(10);
+      expect(res.body.coinsEarned).toBe(5);
       expect(res.body.totalExp.toString()).toBe('10');
       expect(res.body.omnicoinBalance.toString()).toBe('5');
 
@@ -948,9 +949,9 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(coinTx.amount).toBe(5);
     });
 
-    it('POST /api/v1/gamification/check-in a second time today should be idempotent (no duplicate rewards)', async () => {
+    it('POST /api/v1/gamification/checkin a second time today should be idempotent (no duplicate rewards)', async () => {
       const res = await request(app.getHttpServer())
-        .post('/api/v1/gamification/check-in')
+        .post('/api/v1/gamification/checkin')
         .set('Authorization', `Bearer ${readerAccessToken}`)
         .expect(200);
 
@@ -966,16 +967,49 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(txs.length).toBe(2);
     });
 
-    it('POST /api/v1/gamification/read-chapter should award +10 EXP and record unique idempotency_key', async () => {
+    it('POST /api/v1/gamification/read-chapter with non-existent chapter UUID should be rejected with 404 Not Found', async () => {
+      const fakeChapterUuid = 'a0000000-0000-4000-8000-000000000999';
+      await request(app.getHttpServer())
+        .post('/api/v1/gamification/read-chapter')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({
+          chapterId: fakeChapterUuid,
+          readingDurationSeconds: 60,
+          progressPercentage: 100,
+        })
+        .expect(404);
+    });
+
+    it('POST /api/v1/gamification/read-chapter with duration < 45s should reject EXP reward (CRITERIA_NOT_MET)', async () => {
       const res = await request(app.getHttpServer())
         .post('/api/v1/gamification/read-chapter')
         .set('Authorization', `Bearer ${readerAccessToken}`)
-        .send({ chapterId: chapterAId })
+        .send({
+          chapterId: chapterAId,
+          readingDurationSeconds: 20, // < 45s
+          progressPercentage: 100,
+        })
+        .expect(200);
+
+      expect(res.body.success).toBe(false);
+      expect(res.body.earnedExp).toBe(0);
+      expect(res.body.reason).toBe('CRITERIA_NOT_MET');
+    });
+
+    it('POST /api/v1/gamification/read-chapter with duration >= 45s and progress >= 80% should award +5 EXP', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/gamification/read-chapter')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({
+          chapterId: chapterAId,
+          readingDurationSeconds: 60,
+          progressPercentage: 90,
+        })
         .expect(200);
 
       expect(res.body.success).toBe(true);
-      expect(res.body.earnedExp).toBe(10);
-      expect(res.body.totalExp.toString()).toBe('20');
+      expect(res.body.earnedExp).toBe(5); // SSoT: +5 EXP
+      expect(res.body.totalExp.toString()).toBe('15'); // 10 (checkin) + 5 = 15
 
       // Kiểm tra Sổ Cái có dòng READ_CHAPTER với idempotency_key duy nhất
       const tx = await dataSource.query(
@@ -990,7 +1024,11 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       const res = await request(app.getHttpServer())
         .post('/api/v1/gamification/read-chapter')
         .set('Authorization', `Bearer ${readerAccessToken}`)
-        .send({ chapterId: chapterAId })
+        .send({
+          chapterId: chapterAId,
+          readingDurationSeconds: 60,
+          progressPercentage: 100,
+        })
         .expect(200);
 
       expect(res.body.success).toBe(true);
@@ -1006,32 +1044,78 @@ describe('OmniNovel Backend Core API (e2e)', () => {
     });
 
     it('POST /api/v1/gamification/read-chapter should enforce daily 100 EXP cap from reading', async () => {
-      // Giả lập reader đã cày 9 chương khác nhau (90 EXP thêm -> tổng hôm nay đạt 100 EXP)
-      for (let i = 1; i <= 9; i++) {
-        const fakeChapterId = `a0000000-0000-4000-8000-00000000000${i}`;
+      // Dọn dẹp state để test độc lập và có thể lặp lại nhiều lần
+      await dataSource.query(
+        `DELETE FROM reward_transactions WHERE user_id = $1 AND source_type = 'READ_CHAPTER' AND source_id != $2`,
+        [readerUserId, chapterAId],
+      );
+      await dataSource.query(
+        `DELETE FROM chapters WHERE story_edition_id = $1 AND chapter_number >= 100`,
+        [editionAId],
+      );
+      await dataSource.query(
+        `UPDATE user_progression SET total_exp = '15', level = 1 WHERE user_id = $1`,
+        [readerUserId],
+      );
+
+      // Tạo động 19 chapter thật trên Story Edition A để đọc nhận 19 * 5 = 95 EXP (+ 5 EXP trước đó = 100 EXP max cap)
+      for (let i = 2; i <= 20; i++) {
+        const chapterNum = (100 + i).toString();
+        const createChRes = await request(app.getHttpServer())
+          .post(`/api/v1/studio/editions/${editionAId}/chapters`)
+          .set('Authorization', `Bearer ${translatorAAccessToken}`)
+          .send({
+            chapterNumber: chapterNum,
+            title: `Cap Chapter ${chapterNum}`,
+            volumeId: volumeAId,
+          })
+          .expect(201);
+
+        const chId = createChRes.body.id;
+
         await request(app.getHttpServer())
           .post('/api/v1/gamification/read-chapter')
           .set('Authorization', `Bearer ${readerAccessToken}`)
-          .send({ chapterId: fakeChapterId })
+          .send({
+            chapterId: chId,
+            readingDurationSeconds: 50,
+            progressPercentage: 85,
+          })
           .expect(200);
       }
 
-      // Đọc chương thứ 11 -> Đã chạm mốc 100 EXP/ngày -> Bị chặn cấp thêm EXP
-      const chapter11Id = 'a0000000-0000-4000-8000-000000000011';
+      // Tạo chapter thứ 21 -> Đã chạm mốc 100 EXP/ngày -> Bị chặn cấp thêm EXP
+      const createCh21 = await request(app.getHttpServer())
+        .post(`/api/v1/studio/editions/${editionAId}/chapters`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          chapterNumber: '121',
+          title: 'Cap Chapter 121',
+          volumeId: volumeAId,
+        })
+        .expect(201);
+
       const capRes = await request(app.getHttpServer())
         .post('/api/v1/gamification/read-chapter')
         .set('Authorization', `Bearer ${readerAccessToken}`)
-        .send({ chapterId: chapter11Id })
+        .send({
+          chapterId: createCh21.body.id,
+          readingDurationSeconds: 60,
+          progressPercentage: 100,
+        })
         .expect(200);
 
       expect(capRes.body.earnedExp).toBe(0);
       expect(capRes.body.reason).toBe('DAILY_CAP_REACHED');
+      // Tổng EXP hiện tại = 10 (checkin) + 100 (read cap) = 110 EXP -> Đạt Level 2 (yêu cầu 100 EXP)
+      expect(capRes.body.level).toBe(2);
     });
 
-    it('POST /api/v1/gamification/themes/:themeId/equip should equip TU_TIEN theme and return Luyện Khí Kỳ title', async () => {
+    it('PATCH /api/v1/gamification/rank-theme should change theme to TU_TIEN and return Luyện Khí Kỳ title', async () => {
       const res = await request(app.getHttpServer())
-        .post('/api/v1/gamification/themes/TU_TIEN/equip')
+        .patch('/api/v1/gamification/rank-theme')
         .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({ themeId: 'TU_TIEN' })
         .expect(200);
 
       expect(res.body.activeTheme.id).toBe('TU_TIEN');
@@ -1039,21 +1123,31 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(res.body.activeTheme.rankTitle).toBe('Luyện Khí Kỳ');
     });
 
-    it('POST /api/v1/gamification/level-rewards/:milestoneLevel/claim should award coins when level requirement is met', async () => {
-      // Cấp độ hiện tại của reader là 2 (tổng 110 EXP > 100 EXP Level 2 threshold)
-      const res = await request(app.getHttpServer())
-        .post('/api/v1/gamification/level-rewards/2/claim')
+    it('POST /api/v1/gamification/rewards/claim with unconfigured milestone should return 404 Not Found', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/gamification/rewards/claim')
         .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({ milestoneLevel: 999 })
+        .expect(404);
+    });
+
+    it('POST /api/v1/gamification/rewards/claim for Level 2 milestone should award 20 Omnicoin and reject duplicate claim', async () => {
+      // Reader hiện đạt Level 2 (110 EXP >= 100 EXP)
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/gamification/rewards/claim')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .set('Idempotency-Key', 'test-claim-lvl2-001')
+        .send({ milestoneLevel: 2 })
         .expect(200);
 
-      expect(res.body.success).toBe(true);
-      expect(res.body.milestoneLevel).toBe(2);
-      expect(res.body.rewardCoins).toBe(20); // 2 * 10 = 20 coin
+      expect(res.body.rewardCoins).toBe(20);
+      expect(res.body.claimedAt).toBeDefined();
 
       // Claim lại lần 2 -> Bị từ chối 400 Bad Request (Đã nhận)
       await request(app.getHttpServer())
-        .post('/api/v1/gamification/level-rewards/2/claim')
+        .post('/api/v1/gamification/rewards/claim')
         .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({ milestoneLevel: 2 })
         .expect(400);
     });
 
@@ -1069,18 +1163,20 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(res.body.leaderboard[0].totalExp).toBeDefined();
     });
 
-    it('GET /api/v1/gamification/history should return paginated reward transactions ledger', async () => {
+    it('GET /api/v1/gamification/transactions should return paginated reward transactions ledger', async () => {
       const res = await request(app.getHttpServer())
-        .get('/api/v1/gamification/history?page=1&limit=10')
+        .get('/api/v1/gamification/transactions?page=1&limit=10&rewardType=EXP')
         .set('Authorization', `Bearer ${readerAccessToken}`)
         .expect(200);
 
-      expect(res.body.items).toBeDefined();
-      expect(res.body.total).toBeGreaterThan(0);
-      expect(res.body.items[0].idempotencyKey).toBeDefined();
-      expect(res.body.items[0].balanceAfter).toBeDefined();
+      expect(res.body.transactions).toBeDefined();
+      expect(res.body.pagination).toBeDefined();
+      expect(res.body.pagination.total).toBeGreaterThan(0);
+      expect(res.body.transactions[0].idempotencyKey).toBeDefined();
+      expect(res.body.transactions[0].rewardType).toBe('EXP');
     });
   });
 });
+
 
 

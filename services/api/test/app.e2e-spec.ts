@@ -822,4 +822,63 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(res.body.downloadUrl).toBeDefined();
     });
   });
+
+  // ==========================================
+  // 6. REDIS RATE LIMITING & ANTI-LEECH PROTECTION
+  // ==========================================
+  describe('6. Redis Rate Limiting & Anti-Leech Protection', () => {
+    it('GET /api/v1/chapters/:id should attach X-RateLimit headers', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/chapters/${chapterAId}`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(200);
+
+      expect(res.headers['x-ratelimit-limit']).toBe('60');
+      expect(res.headers['x-ratelimit-remaining']).toBeDefined();
+      expect(res.headers['x-ratelimit-reset']).toBeDefined();
+    });
+
+    it('Exceeding rate limit should trigger 429 Too Many Requests with Retry-After header', async () => {
+      // Giả lập gửi liên tục các request đăng nhập vượt quá giới hạn 30 req/phút của IP test
+      const testIp = '198.51.100.42';
+
+      // 30 requests đầu thành công hoặc trả về lỗi xác thực nhưng không bị 429
+      for (let i = 0; i < 30; i++) {
+        await request(app.getHttpServer())
+          .post('/api/v1/auth/login')
+          .set('X-Forwarded-For', testIp)
+          .send({
+            identifier: 'wrong_user@omninovel.com',
+            password: 'wrong_password',
+          });
+      }
+
+      // Request thứ 31 từ cùng IP -> Phải bị chặn với 429 Too Many Requests
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .set('X-Forwarded-For', testIp)
+        .send({
+          identifier: 'wrong_user@omninovel.com',
+          password: 'wrong_password',
+        })
+        .expect(429);
+
+      expect(res.headers['retry-after']).toBeDefined();
+      expect(res.body.error.code).toBe('TOO_MANY_REQUESTS');
+      expect(res.body.error.message).toContain('vượt quá giới hạn');
+    });
+
+    it('GET /api/v1/storage/media-url/:assetId should enforce rate limiting per IP/User to prevent mass scraping', async () => {
+      const scraperIp = '203.0.113.88';
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/storage/media-url/${testAssetId}`)
+        .set('X-Forwarded-For', scraperIp)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(200);
+
+      expect(res.headers['x-ratelimit-limit']).toBe('60');
+      expect(Number(res.headers['x-ratelimit-remaining'])).toBeLessThanOrEqual(59);
+    });
+  });
 });
+

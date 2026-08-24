@@ -11,9 +11,9 @@ import * as argon2 from 'argon2';
 import { v4 as uuidv4 } from 'uuid';
 import { User } from '../users/entities/user.entity';
 import { UserProgression } from '../users/entities/user-progression.entity';
-import { RedisService } from '../../redis/redis.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { RedisService } from '../../redis/redis.service';
 import { GlobalRole } from '@omninovel/shared';
 
 @Injectable()
@@ -35,21 +35,17 @@ export class AuthService {
     });
 
     if (existing) {
-      if (existing.email === dto.email) {
-        throw new ConflictException('Email này đã được sử dụng.');
-      }
-      throw new ConflictException('Tên người dùng này đã tồn tại.');
+      throw new ConflictException('Email hoặc tên người dùng đã tồn tại.');
     }
 
-    // Băm mật khẩu bằng Argon2id chuẩn OWASP
     const passwordHash = await argon2.hash(dto.password, {
       type: argon2.argon2id,
-      memoryCost: 65536, // 64MB
+      memoryCost: 65536, // 64 MB (OWASP Standard)
       timeCost: 3,
       parallelism: 4,
     });
 
-    // Thực thi trong Transaction đồng bộ User + UserProgression
+    // Tạo User & UserProgression trong 1 Transaction nguyên tử
     return this.dataSource.transaction(async (manager) => {
       const user = manager.create(User, {
         username: dto.username,
@@ -57,17 +53,18 @@ export class AuthService {
         passwordHash,
         role: GlobalRole.READER,
       });
+
       const savedUser = await manager.save(user);
 
       const progression = manager.create(UserProgression, {
         userId: savedUser.id,
         level: 1,
         totalExp: '0',
-        omnicoinBalance: '0',
-        currentStreak: 0,
-        maxStreak: 0,
-        rankThemeId: 'DEFAULT',
+        currentExp: '0',
+        streakDays: 0,
+        activeTheme: 'DEFAULT',
       });
+
       await manager.save(progression);
 
       return {
@@ -173,6 +170,35 @@ export class AuthService {
     return this.generateTokens(user, familyId);
   }
 
+  async getProfile(userId: string) {
+    const user = await this.userRepository.findOne({
+      where: { id: userId, isActive: true, isDeleted: false },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Tài khoản không tồn tại.');
+    }
+
+    const permissions = {
+      canCreateStory:
+        user.role === GlobalRole.TRANSLATOR || user.role === GlobalRole.ADMIN,
+      canModerate: user.role === GlobalRole.ADMIN,
+      isAdmin: user.role === GlobalRole.ADMIN,
+    };
+
+    return {
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role,
+        avatarUrl: user.avatarUrl,
+        createdAt: user.createdAt,
+      },
+      permissions,
+    };
+  }
+
   async logout(refreshToken?: string, userId?: string) {
     if (refreshToken) {
       try {
@@ -181,21 +207,18 @@ export class AuthService {
             'JWT_REFRESH_SECRET',
             'super_secret_refresh_jwt_key_2026',
           ),
-          ignoreExpiration: true,
         });
-
-        if (payload?.sub && payload?.jti) {
-          const sessionKey = `session:${payload.sub}:${payload.jti}`;
-          await this.redisService.del(sessionKey);
-          await this.redisService.set(
-            `revoked_token:${payload.sub}:${payload.jti}`,
-            payload.familyId || 'LOGOUT',
-            7 * 24 * 60 * 60,
-          );
+        const uid = payload.sub;
+        const jti = payload.jti;
+        const familyId = payload.familyId;
+        if (uid && jti) {
+          await this.redisService.del(`session:${uid}:${jti}`);
+          await this.redisService.set(`revoked_token:${uid}:${jti}`, familyId, 7 * 24 * 60 * 60);
         }
       } catch {}
-    } else if (userId) {
-      // Fallback: xóa toàn bộ session của user nếu không có refreshToken
+    }
+
+    if (userId) {
       const redis = this.redisService.getClient();
       const keys = await redis.keys(`session:${userId}:*`);
       if (keys.length > 0) {

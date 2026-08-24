@@ -2,6 +2,13 @@ import { Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 
+export interface RateLimitResult {
+  allowed: boolean;
+  remaining: number;
+  resetTime: number; // Unix epoch seconds
+  limit: number;
+}
+
 @Injectable()
 export class RedisService implements OnModuleInit, OnModuleDestroy {
   private client: Redis;
@@ -43,6 +50,51 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   async setnx(key: string, value: string, ttlSeconds: number): Promise<boolean> {
     const res = await this.client.set(key, value, 'EX', ttlSeconds, 'NX');
     return res === 'OK';
+  }
+
+  // Sliding Window Rate Limiting bằng Lua script nguyên tử
+  async checkRateLimit(
+    key: string,
+    limit: number,
+    windowSeconds: number,
+  ): Promise<RateLimitResult> {
+    const now = Date.now();
+    const windowMs = windowSeconds * 1000;
+
+    const luaScript = `
+      local key = KEYS[1]
+      local now = tonumber(ARGV[1])
+      local windowMs = tonumber(ARGV[2])
+      local limit = tonumber(ARGV[3])
+
+      local clearBefore = now - windowMs
+      redis.call('ZREMRANGEBYSCORE', key, '-inf', clearBefore)
+      local currentRequests = redis.call('ZCARD', key)
+
+      if currentRequests < limit then
+        redis.call('ZADD', key, now, now .. ':' .. math.random(10000, 99999))
+        redis.call('EXPIRE', key, math.ceil(windowMs / 1000) + 2)
+        return { 1, limit - currentRequests - 1, math.ceil((now + windowMs) / 1000) }
+      else
+        return { 0, 0, math.ceil((now + windowMs) / 1000) }
+      end
+    `;
+
+    const res = (await this.client.eval(
+      luaScript,
+      1,
+      key,
+      now.toString(),
+      windowMs.toString(),
+      limit.toString(),
+    )) as [number, number, number];
+
+    return {
+      allowed: res[0] === 1,
+      remaining: Math.max(0, res[1]),
+      resetTime: res[2],
+      limit,
+    };
   }
 
   async onModuleDestroy() {

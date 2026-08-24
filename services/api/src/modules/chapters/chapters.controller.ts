@@ -14,6 +14,8 @@ import { ChaptersService } from './chapters.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard';
 import { StoryMemberGuard } from '../../common/guards/story-member.guard';
+import { RateLimitGuard } from '../../common/guards/rate-limit.guard';
+import { RateLimit } from '../../common/decorators/rate-limit.decorator';
 import { RequireStoryRole } from '../../common/decorators/require-story-role.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { StoryMemberRole, ChapterVersionType } from '@omninovel/shared';
@@ -22,9 +24,10 @@ import { StoryMemberRole, ChapterVersionType } from '@omninovel/shared';
 export class ChaptersController {
   constructor(private chaptersService: ChaptersService) {}
 
-  // 1. Lấy nội dung chi tiết chương để đọc (Sử dụng OptionalJwtAuthGuard)
+  // 1. Lấy nội dung chi tiết chương để đọc (Có Anti-Leech Rate Limit + OptionalJwtAuthGuard)
   @Get('chapters/:id')
-  @UseGuards(OptionalJwtAuthGuard)
+  @UseGuards(OptionalJwtAuthGuard, RateLimitGuard)
+  @RateLimit({ limit: 60, ttlSeconds: 60, keyPrefix: 'chapter_read', scope: 'IP_AND_USER' })
   findById(
     @Param('id') chapterId: string,
     @Query('versionId') versionId?: string,
@@ -62,11 +65,7 @@ export class ChaptersController {
   createVersion(
     @Param('id') chapterId: string,
     @CurrentUser('id') userId: string,
-    @Body()
-    body: {
-      versionType: ChapterVersionType;
-      language?: string;
-    },
+    @Body() body: { versionType: ChapterVersionType; language?: string; sourceVersionId?: string },
   ) {
     return this.chaptersService.createVersion(
       chapterId,
@@ -76,11 +75,12 @@ export class ChaptersController {
     );
   }
 
-  // 4. Kích hoạt Active Version cho chapter (Chỉ Story EDITOR, OWNER hoặc Global ADMIN)
+  // 4. Kích hoạt Active Version cho Chapter (Story OWNER, EDITOR hoặc Global ADMIN)
   @Patch('studio/chapters/:id/active-version')
   @UseGuards(JwtAuthGuard, StoryMemberGuard)
   @RequireStoryRole(StoryMemberRole.OWNER, StoryMemberRole.EDITOR)
-  activateVersion(
+  @HttpCode(HttpStatus.OK)
+  setActiveVersion(
     @Param('id') chapterId: string,
     @Body('versionId') versionId: string,
   ) {

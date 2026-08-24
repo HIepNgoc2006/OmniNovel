@@ -5,12 +5,14 @@ services:
   postgres:
     image: postgres:16-alpine
     container_name: omninovel-dev-postgres
+    env_file:
+      - ../.env
     environment:
       POSTGRES_USER: ${DB_USER:-postgres}
       POSTGRES_PASSWORD: ${DB_PASSWORD:-postgres_password_secure}
       POSTGRES_DB: ${DB_NAME:-omninovel_db}
     ports:
-      - "${DB_PORT:-5432}:5432"
+      - "${DB_PORT:-5433}:5432"
     volumes:
       - postgres_dev_data:/var/lib/postgresql/data
       - ./init-db:/docker-entrypoint-initdb.d:ro
@@ -25,6 +27,8 @@ services:
   redis:
     image: redis:7-alpine
     container_name: omninovel-dev-redis
+    env_file:
+      - ../.env
     command: ["redis-server", "--appendonly", "yes"]
     ports:
       - "${REDIS_PORT:-6379}:6379"
@@ -41,6 +45,8 @@ services:
   minio:
     image: minio/minio:latest
     container_name: omninovel-dev-minio
+    env_file:
+      - ../.env
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
@@ -61,6 +67,8 @@ services:
   minio-init-buckets:
     image: minio/mc:latest
     container_name: omninovel-dev-minio-init
+    env_file:
+      - ../.env
     depends_on:
       minio:
         condition: service_healthy

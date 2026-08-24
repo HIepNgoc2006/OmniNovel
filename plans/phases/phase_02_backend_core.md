@@ -1,8 +1,8 @@
 # 📋 Phase 2: Core Backend API, Database Migrations, MinIO Storage & Security (phase_02_backend_core.md)
 
-- **Mục tiêu:** Xây dựng NestJS Core API, thiết lập Database Migration Layer (TypeORM - ADR-011), hệ thống Auth (Argon2id + JWT 15m + Refresh Rotation & Token Family Revocation trên Redis), phân quyền RBAC kép chống IDOR, bảo vệ Privacy/Hierarchy Invariants và MinIO Storage Upload Lifecycle an toàn (Quarantine -> Validate Magic Bytes -> Promote & Presigned URLs 15m).
+- **Mục tiêu:** Xây dựng NestJS Core API, thiết lập Database Migration Layer (TypeORM - ADR-011), hệ thống Auth (Argon2id + JWT 15m + Refresh Rotation & Token Family Revocation trên Redis), phân quyền RBAC kép chống IDOR, bảo vệ Privacy/Hierarchy Invariants, MinIO Storage Upload Lifecycle an toàn (Quarantine -> Validate Magic Bytes -> Promote & Presigned URLs 15m), và hệ thống Rate Limiting Anti-Leech bằng Redis Sliding Window.
 - **Tài liệu Kế hoạch Chi tiết:** Xem [plans/phases/phase_02_implementation_plan.md](file:///e:/Workspace%202/Doctruyen_project/plans/phases/phase_02_implementation_plan.md)
-- **Trạng thái:** [/] Đang thực hiện (Core API, Auth, RBAC, Privacy, Hierarchy & MinIO Storage 100% Verified qua 36 E2E Test Cases)
+- **Trạng thái:** [/] Đang thực hiện (Core API, Auth, RBAC, Privacy, Hierarchy, MinIO Storage Hardening & Redis Rate Limiting 100% Verified qua 42 E2E Test Cases)
 
 ---
 
@@ -18,11 +18,18 @@
 - [x] Bảo vệ Hierarchy & Concurrency Invariants: Kiểm tra tính trực thuộc giữa Volume và Edition (Hierarchy Invariant); Pessimistic lock khi cấp phát version number
 - [x] Core API Catalog & Publishing: `GET /stories`, `GET /stories/featured`, `GET /stories/rankings`, `GET /stories/:slug`, `POST /studio/stories` (Transactional: Story + Owner + Default Edition), `POST /studio/stories/:id/editions`, `POST /studio/editions/:id/volumes`, `POST /studio/editions/:id/chapters`, `POST /studio/chapters/:id/versions`, `PATCH /studio/chapters/:id/active-version`, `PATCH /stories/:id/visibility`
 - [x] Xây dựng Module Storage với MinIO (`services/api/src/modules/storage`):
-  - Buckets ở trạng thái **Strictly Private** (Anonymous GET bị từ chối 403)
-  - Quy trình upload an toàn: **Quarantine Prefix $\rightarrow$ Presigned PUT $\rightarrow$ Finalize Validation $\rightarrow$ Promote**
-  - Xác thực Magic Bytes thực tế (PNG, JPEG, WebP, ZIP, EPUB) chống giả mạo MIME type
-  - Quét an ninh ZIP chống Path Traversal / Zip Slip (`../`) và Zip Bomb (> 500MB)
+  - Buckets ở trạng thái **Private** (Anonymous GET bị từ chối 403)
+  - Quy trình upload: **Quarantine Prefix $\rightarrow$ Presigned PUT $\rightarrow$ Finalize Validation $\rightarrow$ Promote**
+  - **Khóa Atomic PENDING $\rightarrow$ VALIDATING** ngăn chặn triệt để Double-Finalize race condition
+  - **Khớp kích thước byte chính xác (exact `expectedSize`)** và giới hạn tối đa 100MB theo đúng Security SSoT
+  - Xác thực Magic Bytes thực tế (PNG, JPEG, WebP, ZIP, EPUB) giảm thiểu rủi ro giả mạo MIME type
+  - Quét an ninh ZIP chống Path Traversal / Zip Slip (`../`), kiểm tra tỷ lệ nén $< 100:1$ (chống Zip Bomb), và giới hạn $\le 500$ entries
+  - Xác thực cấu trúc chuẩn EPUB (`mimetype: application/epub+zip`, `META-INF/container.xml`) và quét Stored XSS trong Markdown (`<script>`, `<iframe>`)
+  - **Phân định rõ ràng**: File nén thô (ZIP/EPUB/MD) được lưu trữ làm Raw Source Package trong `upload_sessions` cho AI/Import pipeline, không ghi nhận sớm thành `MediaAsset` đơn lẻ render-ready
   - Cấp Presigned GET URL ngắn hạn 15 phút bảo vệ theo Privacy Model của Story & Chapter
-- [x] Chạy kiểm thử tự động toàn diện (`npm run test:e2e` - **36/36 test cases pass 100%**)
-- [ ] Tích hợp Redis Caching nâng cao cho Top Rankings và Rate Limiting Anti-Leech
+- [x] Xây dựng Module Rate Limiting Anti-Leech bằng Redis Sliding Window Lua script:
+  - Header chuẩn IETF: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset`
+  - Throttling `429 Too Many Requests` với `Retry-After` header khi vượt ngưỡng tần suất
+  - Bảo vệ Auth (30 req/min/IP), Uploads (15 req/min/User), Reader Content & Signed Media URLs (60 req/min/IP/User)
+- [x] Chạy kiểm thử tự động toàn diện (`npm run test:e2e` - **42/42 test cases pass 100%**)
 - [ ] Xây dựng Module Gamification & Sổ cái Bất biến Reward Ledger

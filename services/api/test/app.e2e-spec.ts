@@ -610,7 +610,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
           storyEditionId: editionAId,
           chapterVersionId: versionA2Id,
           fileType: AllowedUploadFileType.MANGA_IMAGE,
-          expectedSize: 1024,
+          expectedSize: 33, // Khớp chính xác 33 bytes của validPngBuffer
         })
         .expect(201);
 
@@ -622,7 +622,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
     });
 
     it('Presigned PUT Upload and Finalize Valid PNG Image should succeed and promote to MediaAsset', async () => {
-      // 1. Tạo buffer PNG thật với đúng Magic Bytes [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+      // 1. Tạo buffer PNG thật 33 bytes với đúng Magic Bytes [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
       const validPngBuffer = Buffer.from([
         0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
         0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
@@ -647,22 +647,46 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       testAssetId = finalizeRes.body.mediaAsset.id;
     });
 
-    it('Finalize with MIME Spoofing (Text bytes disguised as Image) should be rejected and purged from quarantine', async () => {
-      // Tạo session
+    it('Finalize with expectedSize mismatch should be rejected with 400 Bad Request', async () => {
       const sessRes = await request(app.getHttpServer())
         .post('/api/v1/uploads/sessions')
         .set('Authorization', `Bearer ${translatorAAccessToken}`)
         .send({
           storyEditionId: editionAId,
           fileType: AllowedUploadFileType.MANGA_IMAGE,
-          expectedSize: 50,
+          expectedSize: 5000, // Khai báo 5000 bytes
+        })
+        .expect(201);
+
+      // Nhưng chỉ upload 10 bytes
+      await axios.put(sessRes.body.uploadUrl, Buffer.from('1234567890'), {
+        headers: { 'Content-Type': 'image/png' },
+      });
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/uploads/sessions/${sessRes.body.sessionId}/finalize`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(400);
+
+      expect(res.body.error.message).toContain('không khớp với expectedSize');
+    });
+
+    it('Finalize with MIME Spoofing (Text bytes disguised as Image) should be rejected and purged from quarantine', async () => {
+      const fakePayload = Buffer.from('FAKE_MALICIOUS_SCRIPT_PAYLOAD_NOT_IMAGE_123456');
+      const sessRes = await request(app.getHttpServer())
+        .post('/api/v1/uploads/sessions')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          storyEditionId: editionAId,
+          fileType: AllowedUploadFileType.MANGA_IMAGE,
+          expectedSize: fakePayload.length,
         })
         .expect(201);
       spoofSessionId = sessRes.body.sessionId;
       spoofUploadUrl = sessRes.body.uploadUrl;
 
       // Upload payload độc hại giả mạo
-      await axios.put(spoofUploadUrl, Buffer.from('FAKE_MALICIOUS_SCRIPT_PAYLOAD_NOT_IMAGE'), {
+      await axios.put(spoofUploadUrl, fakePayload, {
         headers: { 'Content-Type': 'image/png' },
       });
 
@@ -676,23 +700,9 @@ describe('OmniNovel Backend Core API (e2e)', () => {
     });
 
     it('Finalize with Path Traversal / Zip Slip entry should be rejected', async () => {
-      const sessRes = await request(app.getHttpServer())
-        .post('/api/v1/uploads/sessions')
-        .set('Authorization', `Bearer ${translatorAAccessToken}`)
-        .send({
-          storyEditionId: editionAId,
-          fileType: AllowedUploadFileType.MANGA_ZIP,
-          expectedSize: 200,
-        })
-        .expect(201);
-      zipSlipSessionId = sessRes.body.sessionId;
-      zipSlipUploadUrl = sessRes.body.uploadUrl;
-
-      // Tạo Zip độc hại chứa path traversal "../../evil.txt"
       const zip = new AdmZip();
       zip.addFile('validfile.txt', Buffer.from('malicious payload'));
       let zipBuffer = zip.toBuffer();
-      // Thay thế tên file trong binary buffer bằng ../evil.txt để mô phỏng Zip Slip
       const searchTarget = Buffer.from('validfile.txt');
       const replaceWith = Buffer.from('../evil.txt');
       let idx = zipBuffer.indexOf(searchTarget);
@@ -700,6 +710,18 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         replaceWith.copy(zipBuffer, idx);
         idx = zipBuffer.indexOf(searchTarget, idx + 1);
       }
+
+      const sessRes = await request(app.getHttpServer())
+        .post('/api/v1/uploads/sessions')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          storyEditionId: editionAId,
+          fileType: AllowedUploadFileType.MANGA_ZIP,
+          expectedSize: zipBuffer.length,
+        })
+        .expect(201);
+      zipSlipSessionId = sessRes.body.sessionId;
+      zipSlipUploadUrl = sessRes.body.uploadUrl;
 
       await axios.put(zipSlipUploadUrl, zipBuffer, {
         headers: { 'Content-Type': 'application/zip' },
@@ -711,6 +733,62 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         .expect(400);
 
       expect(res.body.error.message).toContain('Zip Slip');
+    });
+
+    it('Finalize valid EPUB structure should succeed and mark as raw source package', async () => {
+      const epubZip = new AdmZip();
+      epubZip.addFile('mimetype', Buffer.from('application/epub+zip'));
+      epubZip.addFile(
+        'META-INF/container.xml',
+        Buffer.from('<?xml version="1.0"?><container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container"><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>'),
+      );
+      const epubBuffer = epubZip.toBuffer();
+
+      const sessRes = await request(app.getHttpServer())
+        .post('/api/v1/uploads/sessions')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          storyEditionId: editionAId,
+          fileType: AllowedUploadFileType.NOVEL_EPUB,
+          expectedSize: epubBuffer.length,
+        })
+        .expect(201);
+
+      await axios.put(sessRes.body.uploadUrl, epubBuffer, {
+        headers: { 'Content-Type': 'application/epub+zip' },
+      });
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/uploads/sessions/${sessRes.body.sessionId}/finalize`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(200);
+
+      expect(res.body.status).toBe('PROMOTED');
+      expect(res.body.isRawSourcePackage).toBe(true);
+    });
+
+    it('Finalize Markdown with dangerous script tags should be rejected (XSS Blocked)', async () => {
+      const maliciousMd = Buffer.from('# Chương 1\n<script>alert("XSS Attack");</script>\nNội dung truyện...');
+      const sessRes = await request(app.getHttpServer())
+        .post('/api/v1/uploads/sessions')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          storyEditionId: editionAId,
+          fileType: AllowedUploadFileType.NOVEL_MD,
+          expectedSize: maliciousMd.length,
+        })
+        .expect(201);
+
+      await axios.put(sessRes.body.uploadUrl, maliciousMd, {
+        headers: { 'Content-Type': 'text/markdown' },
+      });
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/uploads/sessions/${sessRes.body.sessionId}/finalize`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(400);
+
+      expect(res.body.error.message).toContain('XSS Blocked');
     });
 
     it('GET /api/v1/storage/media-url/:assetId should return Presigned GET URL for public reader', async () => {

@@ -32,6 +32,6 @@ export class CreateUploadSessionDto {
 
   @IsNumber()
   @Min(1, { message: 'Kích thước file phải lớn hơn 0 bytes.' })
-  @Max(524288000, { message: 'Kích thước file tối đa là 500MB.' }) // 500MB max limit
+  @Max(104857600, { message: 'Kích thước file tối đa là 100MB theo chuẩn an ninh Security SSoT.' }) // 100MB max limit
   expectedSize: number;
 }

@@ -62,7 +62,7 @@ export class StorageService {
         accessKeyId: accessKey,
         secretAccessKey: secretKey,
       },
-      forcePathStyle: true, // Bắt buộc đối với MinIO S3
+      forcePathStyle: true,
     });
   }
 
@@ -101,14 +101,13 @@ export class StorageService {
 
     await this.sessionRepository.save(session);
 
-    // Cấp Presigned PUT URL vào Quarantine Prefix
     const command = new PutObjectCommand({
       Bucket: bucket,
       Key: quarantineKey,
     });
 
     const uploadUrl = await getSignedUrl(this.s3Client, command, {
-      expiresIn: 900, // 15 phút
+      expiresIn: 900,
     });
 
     return {
@@ -120,17 +119,38 @@ export class StorageService {
     };
   }
 
-  // 2. FINALIZE, VALIDATE MAGIC BYTES & PROMOTE FILE
+  // 2. FINALIZE: ATOMIC VALIDATING LOCK, SIZE MATCHING & DEEP VALIDATION
   async finalizeUploadSession(sessionId: string, userId: string, userRole?: GlobalRole) {
-    const session = await this.sessionRepository.findOne({
-      where: { id: sessionId },
-    });
+    // 1. Chuyển trạng thái Atomic PENDING -> VALIDATING để chống Double-Finalize race condition
+    const transitionResult = await this.dataSource.query(
+      `UPDATE upload_sessions 
+       SET status = 'VALIDATING' 
+       WHERE id = $1 AND status = 'PENDING' 
+       RETURNING *`,
+      [sessionId],
+    );
 
+    const rows =
+      Array.isArray(transitionResult) && Array.isArray(transitionResult[0])
+        ? transitionResult[0]
+        : transitionResult;
+
+    if (!rows || rows.length === 0) {
+      const existing = await this.sessionRepository.findOne({ where: { id: sessionId } });
+      if (!existing) {
+        throw new NotFoundException('Không tìm thấy phiên tải lên.');
+      }
+      throw new BadRequestException(
+        `Phiên upload đang ở trạng thái ${existing.status} (Không thể finalize lại).`,
+      );
+    }
+
+    const session = await this.sessionRepository.findOne({ where: { id: sessionId } });
     if (!session) {
       throw new NotFoundException('Không tìm thấy phiên tải lên.');
     }
 
-    // Invariant 1: Kiểm tra quyền sở hữu phiên hoặc quyền Story Member / Admin
+    // 2. Kiểm tra quyền sở hữu phiên hoặc quyền Story Member / Admin
     if (session.userId !== userId && userRole !== GlobalRole.ADMIN) {
       const edition = await this.editionRepository.findOne({
         where: { id: session.storyEditionId },
@@ -141,26 +161,10 @@ export class StorageService {
           [edition.storyId, userId],
         );
         if (!isMember || isMember.length === 0) {
+          await this.failSession(session, 'Bạn không có quyền hoàn tất phiên tải lên này.');
           throw new ForbiddenException('Bạn không có quyền hoàn tất phiên tải lên này.');
         }
       }
-    }
-
-    // Invariant 2: Chống Double-Finalize
-    if (session.status !== UploadSessionStatus.PENDING) {
-      throw new BadRequestException(`Phiên upload đang ở trạng thái ${session.status} (Không thể finalize lại).`);
-    }
-
-    // Invariant 3: Kiểm tra hết hạn phiên
-    if (new Date() > new Date(session.expiresAt)) {
-      session.status = UploadSessionStatus.EXPIRED;
-      session.errorMessage = 'Phiên tải lên đã hết hạn 15 phút.';
-      await this.sessionRepository.save(session);
-      const isManga =
-        session.fileType === AllowedUploadFileType.MANGA_IMAGE ||
-        session.fileType === AllowedUploadFileType.MANGA_ZIP;
-      await this.deleteObject(isManga ? this.mangaBucket : this.novelBucket, session.quarantineKey);
-      throw new BadRequestException('Phiên tải lên đã hết hạn (Expired).');
     }
 
     const isManga =
@@ -168,7 +172,14 @@ export class StorageService {
       session.fileType === AllowedUploadFileType.MANGA_ZIP;
     const bucket = isManga ? this.mangaBucket : this.novelBucket;
 
-    // 1. Kiểm tra sự tồn tại của file trong Quarantine
+    // 3. Kiểm tra hết hạn phiên 15 phút
+    if (new Date() > new Date(session.expiresAt)) {
+      await this.failSession(session, 'Phiên tải lên đã hết hạn 15 phút.', UploadSessionStatus.EXPIRED);
+      await this.deleteObject(bucket, session.quarantineKey);
+      throw new BadRequestException('Phiên tải lên đã hết hạn (Expired).');
+    }
+
+    // 4. Kiểm tra sự tồn tại của file trong MinIO Quarantine
     let headData: any;
     try {
       headData = await this.s3Client.send(
@@ -178,59 +189,64 @@ export class StorageService {
         }),
       );
     } catch {
-      session.status = UploadSessionStatus.FAILED;
-      session.errorMessage = 'File chưa được tải lên MinIO quarantine.';
-      await this.sessionRepository.save(session);
+      await this.failSession(session, 'File chưa được tải lên MinIO quarantine.');
       throw new BadRequestException('Không tìm thấy file đã tải lên trong vùng cách ly (Quarantine).');
     }
 
     const actualSize = headData.ContentLength || 0;
-    if (actualSize === 0) {
+
+    // 5. Kiểm tra exact expectedSize match & 100MB limit theo Security SSoT
+    const expectedSizeBytes = Number(session.expectedSize);
+    if (actualSize !== expectedSizeBytes) {
+      await this.failSession(
+        session,
+        `Kích thước file thực tế (${actualSize} bytes) không khớp với expectedSize (${expectedSizeBytes} bytes).`,
+      );
       await this.deleteObject(bucket, session.quarantineKey);
-      session.status = UploadSessionStatus.FAILED;
-      session.errorMessage = 'File rỗng (0 bytes).';
-      await this.sessionRepository.save(session);
-      throw new BadRequestException('File tải lên rỗng.');
+      throw new BadRequestException(
+        `Kích thước file thực tế (${actualSize} bytes) không khớp với expectedSize đã khai báo (${expectedSizeBytes} bytes).`,
+      );
     }
 
-    if (actualSize > 524288000) { // 500MB
+    if (actualSize > 104857600) { // 100MB
+      await this.failSession(session, 'File tải lên vượt quá dung lượng tối đa 100MB.');
       await this.deleteObject(bucket, session.quarantineKey);
-      session.status = UploadSessionStatus.FAILED;
-      session.errorMessage = 'File tải lên vượt quá dung lượng tối đa 500MB.';
-      await this.sessionRepository.save(session);
-      throw new BadRequestException('File tải lên vượt quá giới hạn cho phép (500MB).');
+      throw new BadRequestException('File tải lên vượt quá giới hạn an toàn 100MB.');
     }
 
-    // 2. Đọc nội dung để xác thực Magic Bytes & Security Boundary
-    const getObj = await this.s3Client.send(
-      new GetObjectCommand({
-        Bucket: bucket,
-        Key: session.quarantineKey,
-      }),
-    );
-
-    const streamToBuffer = async (stream: any): Promise<Buffer> => {
-      const chunks: any[] = [];
-      for await (const chunk of stream) {
-        chunks.push(chunk);
-      }
-      return Buffer.concat(chunks);
-    };
-
-    const fileBuffer = await streamToBuffer(getObj.Body);
-
+    // 6. Deep Content Validation & Magic Bytes Check
     try {
-      this.validateFileContent(session.fileType as AllowedUploadFileType, fileBuffer);
+      if (session.fileType === AllowedUploadFileType.MANGA_IMAGE) {
+        const rangeEnd = Math.min(actualSize - 1, 16383);
+        const getHeaderObj = await this.s3Client.send(
+          new GetObjectCommand({
+            Bucket: bucket,
+            Key: session.quarantineKey,
+            Range: `bytes=0-${rangeEnd}`,
+          }),
+        );
+        const headerBuffer = await this.streamToBuffer(getHeaderObj.Body);
+        this.validateImageMagicBytes(headerBuffer);
+      } else {
+        const getFullObj = await this.s3Client.send(
+          new GetObjectCommand({
+            Bucket: bucket,
+            Key: session.quarantineKey,
+          }),
+        );
+        const fullBuffer = await this.streamToBuffer(getFullObj.Body);
+        this.validateArchiveOrDocument(session.fileType as AllowedUploadFileType, fullBuffer, actualSize);
+      }
     } catch (err: any) {
-      // Validation thất bại -> Xóa khỏi Quarantine và đánh dấu FAILED
+      await this.failSession(session, err.message);
       await this.deleteObject(bucket, session.quarantineKey);
-      session.status = UploadSessionStatus.FAILED;
-      session.errorMessage = err.message;
-      await this.sessionRepository.save(session);
-      throw err;
+      if (err instanceof BadRequestException || err instanceof ForbiddenException) {
+        throw err;
+      }
+      throw new BadRequestException(err.message || 'Lỗi xác thực dữ liệu file tải lên.');
     }
 
-    // 3. Promote: Chuyển từ Quarantine sang Final Key
+    // 7. Promote: Di chuyển từ Quarantine sang Final Key
     const fileExt = this.getFileExtension(session.fileType as AllowedUploadFileType);
     const finalKey = `media/editions/${session.storyEditionId}/${uuidv4()}${fileExt}`;
 
@@ -242,10 +258,10 @@ export class StorageService {
       }),
     );
 
-    // Xóa object trong Quarantine
+    // Xóa object trong Quarantine sau khi copy thành công
     await this.deleteObject(bucket, session.quarantineKey);
 
-    // 4. Transactional DB updates & Compensation
+    // 8. Transactional DB Update & Compensation
     let createdAsset: MediaAsset | null = null;
     try {
       await this.dataSource.transaction(async (manager) => {
@@ -254,16 +270,17 @@ export class StorageService {
         session.completedAt = new Date();
         await manager.save(session);
 
-        if (session.chapterVersionId) {
+        // Chỉ tạo MediaAsset render-ready đối với MANGA_IMAGE đơn lẻ
+        // Đối với MANGA_ZIP, NOVEL_EPUB, NOVEL_MD: giữ vai trò raw source package
+        if (session.chapterVersionId && session.fileType === AllowedUploadFileType.MANGA_IMAGE) {
           const assetCount = await manager.count(MediaAsset, {
             where: { versionId: session.chapterVersionId },
           });
 
-          const assetType = isManga ? MediaAssetType.MANGA_PAGE : MediaAssetType.NOVEL_HTML;
           const mediaAsset = manager.create(MediaAsset, {
             versionId: session.chapterVersionId,
             sortOrder: assetCount + 1,
-            assetType,
+            assetType: MediaAssetType.MANGA_PAGE,
             storageKey: finalKey,
             fileSizeBytes: actualSize.toString(),
           });
@@ -271,7 +288,6 @@ export class StorageService {
         }
       });
     } catch (err) {
-      // Compensation: xóa file promoted nếu DB transaction fail
       await this.deleteObject(bucket, finalKey);
       throw err;
     }
@@ -282,6 +298,7 @@ export class StorageService {
       finalKey,
       status: session.status,
       mediaAsset: createdAsset,
+      isRawSourcePackage: session.fileType !== AllowedUploadFileType.MANGA_IMAGE,
     };
   }
 
@@ -289,12 +306,15 @@ export class StorageService {
   async getMediaDownloadUrl(assetId: string, user?: any) {
     const asset = await this.mediaAssetRepository.findOne({
       where: { id: assetId },
-      relations: [
-        'chapterVersion',
-        'chapterVersion.chapter',
-        'chapterVersion.chapter.storyEdition',
-        'chapterVersion.chapter.storyEdition.story',
-      ],
+      relations: {
+        chapterVersion: {
+          chapter: {
+            storyEdition: {
+              story: true,
+            },
+          },
+        },
+      },
     });
 
     if (!asset) {
@@ -305,7 +325,6 @@ export class StorageService {
     const isManga = asset.assetType === MediaAssetType.MANGA_PAGE;
     const bucket = isManga ? this.mangaBucket : this.novelBucket;
 
-    // Kiểm tra Privacy Policy
     if (story && story.visibility === StoryVisibility.PRIVATE) {
       if (!user) {
         throw new ForbiddenException('Tài nguyên thuộc bộ truyện riêng tư. Vui lòng đăng nhập.');
@@ -321,7 +340,6 @@ export class StorageService {
       }
     }
 
-    // Cấp Presigned GET URL ngắn hạn 15 phút (900s)
     const command = new GetObjectCommand({
       Bucket: bucket,
       Key: asset.storageKey,
@@ -337,30 +355,36 @@ export class StorageService {
     };
   }
 
-  private validateFileContent(fileType: AllowedUploadFileType, buffer: Buffer) {
-    if (fileType === AllowedUploadFileType.MANGA_IMAGE) {
-      const isPNG =
-        buffer.length >= 8 &&
-        buffer[0] === 0x89 &&
-        buffer[1] === 0x50 &&
-        buffer[2] === 0x4e &&
-        buffer[3] === 0x47;
-      const isJPEG =
-        buffer.length >= 3 &&
-        buffer[0] === 0xff &&
-        buffer[1] === 0xd8 &&
-        buffer[2] === 0xff;
-      const isWebP =
-        buffer.length >= 12 &&
-        buffer.toString('utf8', 0, 4) === 'RIFF' &&
-        buffer.toString('utf8', 8, 12) === 'WEBP';
+  private validateImageMagicBytes(buffer: Buffer) {
+    const isPNG =
+      buffer.length >= 8 &&
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47;
+    const isJPEG =
+      buffer.length >= 3 &&
+      buffer[0] === 0xff &&
+      buffer[1] === 0xd8 &&
+      buffer[2] === 0xff;
+    const isWebP =
+      buffer.length >= 12 &&
+      buffer.toString('utf8', 0, 4) === 'RIFF' &&
+      buffer.toString('utf8', 8, 12) === 'WEBP';
 
-      if (!isPNG && !isJPEG && !isWebP) {
-        throw new BadRequestException(
-          'Magic bytes không khớp với định dạng ảnh hợp lệ (PNG, JPEG, WEBP). Giảm thiểu rủi ro giả mạo MIME type.',
-        );
-      }
-    } else if (fileType === AllowedUploadFileType.MANGA_ZIP) {
+    if (!isPNG && !isJPEG && !isWebP) {
+      throw new BadRequestException(
+        'Magic bytes không khớp với định dạng ảnh hợp lệ (PNG, JPEG, WEBP). Giảm thiểu rủi ro giả mạo MIME type.',
+      );
+    }
+  }
+
+  private validateArchiveOrDocument(
+    fileType: AllowedUploadFileType,
+    buffer: Buffer,
+    actualCompressedSize: number,
+  ) {
+    if (fileType === AllowedUploadFileType.MANGA_ZIP) {
       const isZip =
         buffer.length >= 4 &&
         buffer[0] === 0x50 &&
@@ -379,20 +403,29 @@ export class StorageService {
       }
 
       const entries = zip.getEntries();
-      if (entries.length > 1000) {
-        throw new BadRequestException('File ZIP chứa hơn 1000 entries (Vượt quá giới hạn an toàn).');
+      if (entries.length > 500) {
+        throw new BadRequestException('File ZIP chứa hơn 500 entries (Vượt quá giới hạn Security SSoT).');
       }
 
       let totalUncompressedSize = 0;
       for (const entry of entries) {
-        if (entry.entryName.includes('..') || entry.entryName.startsWith('/') || entry.entryName.startsWith('\\')) {
+        if (
+          entry.entryName.includes('..') ||
+          entry.entryName.startsWith('/') ||
+          entry.entryName.startsWith('\\')
+        ) {
           throw new BadRequestException('Phát hiện tấn công Path Traversal / Zip Slip trong file ZIP.');
         }
         totalUncompressedSize += entry.header.size;
       }
 
-      if (totalUncompressedSize > 500 * 1024 * 1024) {
-        throw new BadRequestException('Tổng dung lượng giải nén vượt quá 500MB (Phát hiện Zip Bomb).');
+      if (totalUncompressedSize > 104857600) { // 100MB
+        throw new BadRequestException('Tổng dung lượng giải nén vượt quá 100MB.');
+      }
+
+      const compressionRatio = totalUncompressedSize / Math.max(1, actualCompressedSize);
+      if (compressionRatio > 100) {
+        throw new BadRequestException('Tỷ lệ nén vượt quá 100:1 (Phát hiện tấn công Zip Bomb).');
       }
     } else if (fileType === AllowedUploadFileType.NOVEL_EPUB) {
       const isZip =
@@ -404,7 +437,85 @@ export class StorageService {
       if (!isZip) {
         throw new BadRequestException('Magic bytes không khớp với định dạng EPUB container hợp lệ.');
       }
+
+      let zip: any;
+      try {
+        zip = new AdmZip(buffer);
+      } catch {
+        throw new BadRequestException('File EPUB bị lỗi cấu trúc container ZIP.');
+      }
+
+      const entries = zip.getEntries();
+      if (entries.length > 500) {
+        throw new BadRequestException('File EPUB chứa quá nhiều entries (> 500).');
+      }
+
+      // Xác thực cấu trúc chuẩn EPUB
+      const mimetypeEntry = entries.find((e: any) => e.entryName === 'mimetype');
+      const containerEntry = entries.find(
+        (e: any) => e.entryName === 'META-INF/container.xml' || e.entryName === 'META-INF\\container.xml',
+      );
+
+      if (!mimetypeEntry || !containerEntry) {
+        throw new BadRequestException(
+          'File EPUB không đúng cấu trúc tiêu chuẩn (Thiếu mimetype hoặc META-INF/container.xml).',
+        );
+      }
+
+      const mimetypeContent = mimetypeEntry.getData().toString('utf8').trim();
+      if (!mimetypeContent.includes('application/epub+zip')) {
+        throw new BadRequestException('Mimetype trong file EPUB không phải application/epub+zip.');
+      }
+
+      let totalUncompressedSize = 0;
+      for (const entry of entries) {
+        if (
+          entry.entryName.includes('..') ||
+          entry.entryName.startsWith('/') ||
+          entry.entryName.startsWith('\\')
+        ) {
+          throw new BadRequestException('Phát hiện tấn công Path Traversal trong file EPUB.');
+        }
+        totalUncompressedSize += entry.header.size;
+      }
+
+      if (totalUncompressedSize > 104857600) {
+        throw new BadRequestException('Tổng dung lượng giải nén EPUB vượt quá 100MB.');
+      }
+    } else if (fileType === AllowedUploadFileType.NOVEL_MD) {
+      const text = buffer.toString('utf8');
+      const dangerousPatterns = [
+        /<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi,
+        /<iframe\b[^<]*(?:(?!<\/iframe>)<[^<]*)*<\/iframe>/gi,
+        /javascript:/gi,
+        /onerror\s*=/gi,
+        /onload\s*=/gi,
+      ];
+
+      for (const pattern of dangerousPatterns) {
+        if (pattern.test(text)) {
+          throw new BadRequestException('Nội dung Markdown chứa mã script hoặc iframe nguy hiểm (XSS Blocked).');
+        }
+      }
     }
+  }
+
+  private async failSession(
+    session: UploadSession,
+    errorMessage: string,
+    status = UploadSessionStatus.FAILED,
+  ) {
+    session.status = status;
+    session.errorMessage = errorMessage;
+    await this.sessionRepository.save(session);
+  }
+
+  private async streamToBuffer(stream: any): Promise<Buffer> {
+    const chunks: any[] = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk);
+    }
+    return Buffer.concat(chunks);
   }
 
   private async deleteObject(bucket: string, key: string) {

@@ -1,14 +1,17 @@
 # 📋 Phase 2: Core Backend API, Database Migrations, MinIO Storage, Security & Gamification (phase_02_backend_core.md)
 
-- **Mục tiêu:** Xây dựng NestJS Core API, thiết lập Database Migration Layer (TypeORM - ADR-011), hệ thống Auth (Argon2id + JWT 15m + Refresh Rotation & Token Family Revocation trên Redis), phân quyền RBAC kép chống IDOR, bảo vệ Privacy/Hierarchy Invariants, MinIO Storage Upload Lifecycle an toàn (Quarantine -> Validate Magic Bytes -> Promote & Presigned URLs 15m), hệ thống Rate Limiting Anti-Leech bằng Redis Sliding Window Lua script, và Hệ thống Gamification với Sổ Cái Bất Biến (Immutable Reward Ledger).
+- **Mục tiêu:** Xây dựng NestJS Core API, thiết lập Database Migration Layer (TypeORM - ADR-011), hệ thống Auth (Argon2id + JWT 15m + Refresh Rotation & Token Family Revocation trên Redis), phân quyền RBAC kép chống IDOR, bảo vệ Privacy/Hierarchy Invariants, MinIO Storage Upload Lifecycle an toàn (Quarantine -> Validate Magic Bytes -> Promote & Presigned URLs 15m), hệ thống Rate Limiting Anti-Leech bằng Redis Sliding Window Lua script, và Hệ thống Gamification với Sổ Cái Bất Biến (Immutable Reward Ledger) chuẩn 100% SSoT.
 - **Tài liệu Kế hoạch Chi tiết:** Xem [plans/phases/phase_02_implementation_plan.md](file:///e:/Workspace%202/Doctruyen_project/plans/phases/phase_02_implementation_plan.md)
-- **Trạng thái:** [x] Hoàn thành 100% (Core API, Auth, RBAC, Privacy, Hierarchy, MinIO Storage Hardening, Redis Rate Limiting & Gamification Immutable Ledger 100% Verified qua 52 E2E Test Cases)
+- **Trạng thái:** [x] Hoàn thành 100% (Core API, Auth, RBAC, Privacy, Hierarchy, MinIO Storage Hardening, Redis Rate Limiting & Gamification Immutable Ledger 100% Verified qua 56 E2E Test Cases)
 
 ---
 
 ### Danh Sách Đầu Việc (Checklist):
 - [x] Khởi tạo NestJS Core API skeleton (`services/api`) với ConfigModule (Zod strict validation chặn production default secret), CorrelationId (`x-request-id`), GlobalExceptionFilter (StandardErrorResponse JSON) và Health checks (`/health/live`, `/health/ready`)
-- [x] Thiết lập TypeORM Migration Layer (`synchronize: false` - ADR-011), migration khởi tạo `1700000000000-InitialDatabaseSchema.ts` (27 bảng) và migration mới `1700000000001-CreateUploadSessionsTable.ts` (`upload_sessions` table)
+- [x] Thiết lập TypeORM Migration Layer (`synchronize: false` - ADR-011):
+  - `1700000000000-InitialDatabaseSchema.ts` (27 bảng DDL ban đầu)
+  - `1700000000001-CreateUploadSessionsTable.ts` (`upload_sessions` table)
+  - `1700000000002-SeedLevelRewards.ts` (Seed mốc level rewards 2, 5, 10, 20, 30, 50, 100)
 - [x] Xây dựng Module Authentication: Mật khẩu băm bằng Argon2id, Access Token 15 phút, Refresh Token 7 ngày với Token Family Reuse Detection & Session Revocation thực tế trên Redis (kiểm thử 401 khi reuse / sau logout / whole family revocation)
 - [x] Xây dựng Module Users & Hồ sơ tiến trình độc giả (User Progression tạo atomic trong transaction khi đăng ký khớp chính xác SSoT)
 - [x] Xây dựng `OptionalJwtAuthGuard` chuẩn xác thực Passport JwtStrategy, kiểm tra trạng thái active/deleted mà không bypass security
@@ -32,12 +35,12 @@
   - Throttling `429 Too Many Requests` với `Retry-After` header khi vượt ngưỡng tần suất
   - Enforce đồng thời `IP_AND_USER` (cả IP bucket và User bucket) và ngăn chặn giả mạo IP `X-Forwarded-For`
   - Bảo vệ Auth (30 req/min/IP), Uploads (15 req/min/User), Reader Content & Signed Media URLs (60 req/min/IP/User)
-- [x] Xây dựng Module Gamification & Sổ Cái Bất Biến (Reward Ledger):
+- [x] Xây dựng Module Gamification & Sổ Cái Bất Biến (Reward Ledger) chuẩn SSoT:
   - **Sổ cái Bất biến `reward_transactions`**: Khóa trùng lặp `idempotency_key` duy nhất (`CHECKIN:userId:YYYY-MM-DD:EXP`, `READ:userId:chapterId:EXP`, `LEVEL_REWARD:userId:milestone:OMNICOIN`), không xóa/sửa dữ liệu ledger.
-  - **Điểm danh hàng ngày (`POST /gamification/check-in`)**: Quản lý chuỗi ngày liên tục (`current_streak`, `max_streak`), thưởng EXP/Omnicoin và thưởng bonus mốc chuỗi 7/30 ngày. Đảm bảo tính Idempotent nếu gọi lại trong ngày.
-  - **Thưởng EXP Đọc Truyện (`POST /gamification/read-chapter`)**: 1 reward/user/chapter, giới hạn trần chống cày farm 100 EXP/ngày.
-  - **Công thức Cấp độ SSoT**: Level $L$ yêu cầu $100 \times (L - 1)^2$ Total EXP.
-  - **Đổi Danh hiệu / Rank Themes (`POST /gamification/themes/:id/equip`)**: Hỗ trợ 5 chủ đề cấp bậc (Mặc Định, Tu Tiên, Game Thủ, Ma Vương, Pháp Sư, Tinh Không).
-  - **Phần thưởng mốc Cấp độ (`POST /gamification/level-rewards/:milestone/claim`)**: Nhận Omnicoin khi đạt mốc level.
-  - **Bảng xếp hạng Top độc giả (`GET /gamification/leaderboard`)** và **Lịch sử biến động sổ cái (`GET /gamification/history`)**.
-- [x] Chạy kiểm thử tự động toàn diện (`npm run test:e2e` - **52/52 test cases pass 100%**)
+  - **Công thức Cấp độ Canonical SSoT**: $\text{TotalEXP}_{\text{required}}(L) = \sum_{i=1}^{L-1} \lfloor 100 \times i^{1.5} \rfloor$.
+  - **Điểm danh hàng ngày (`POST /api/v1/gamification/checkin`)**: Tính theo múi giờ `Asia/Ho_Chi_Minh` (UTC+7). Quản lý chuỗi ngày liên tục (`current_streak`, `max_streak`), thưởng mặc định `+10 EXP, +5 Omnicoin` và thưởng bonus chuỗi **7 ngày (+50/+20), 14 ngày (+100/+50), 30 ngày (+300/+150 + Huy hiệu)**. Bấm lại lần 2 trả `400 Bad Request` (`CHECKIN_ALREADY_CLAIMED` - FR-GAM-01). Hỗ trợ Header `Idempotency-Key` với Redis TTL 120s.
+  - **Thưởng EXP Đọc Truyện (`POST /api/v1/gamification/read-chapter`)**: `+5 EXP` mỗi chapter đọc hoàn thành. Xác thực Chapter tồn tại & quyền truy cập (chặn Fake Chapter Farming và Private story unauthorized read). Ràng buộc Anti-Farm Gate: thời gian đọc $\ge 45$s và cuộn $\ge 80\%$. Giới hạn trần cứng chống cày farm **100 EXP/ngày** tính chuẩn xác theo biên ngày `Asia/Ho_Chi_Minh` (17:00 UTC hôm trước đến 17:00 UTC hôm nay).
+  - **Đổi Danh hiệu / Rank Themes (`PATCH /api/v1/gamification/rank-theme`)**: Hỗ trợ 5 chủ đề cấp bậc (Mặc Định, Tu Tiên, Game Thủ, Ma Vương, Pháp Sư, Tinh Không).
+  - **Phần thưởng mốc Cấp độ (`POST /api/v1/gamification/rewards/claim`)**: Data-driven từ bảng `level_rewards` (mốc không cấu hình trả `404 Not Found`, không tự động phát sinh reward). Hỗ trợ Header `Idempotency-Key` TTL 120s.
+  - **Bảng xếp hạng Top độc giả (`GET /api/v1/gamification/leaderboard`)** và **Lịch sử biến động sổ cái (`GET /api/v1/gamification/transactions`)**.
+- [x] Chạy kiểm thử tự động toàn diện (`npm run test:e2e` - **56/56 test cases pass 100%**)

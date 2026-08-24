@@ -89,7 +89,13 @@ export class StoryMemberGuard implements CanActivate {
     }
 
     // 2. From Edition ID
-    const editionId = params.editionId || body.editionId || query.editionId;
+    const editionId =
+      params.editionId ||
+      body.editionId ||
+      query.editionId ||
+      params.storyEditionId ||
+      body.storyEditionId ||
+      query.storyEditionId;
     if (editionId && this.isUUID(editionId)) {
       const edition = await this.dataSource.query(
         `SELECT story_id FROM story_editions WHERE id = $1`,
@@ -101,7 +107,11 @@ export class StoryMemberGuard implements CanActivate {
     }
 
     // 3. From Chapter ID (including generic :id in ChaptersController)
-    const chapterId = params.chapterId || params.id || body.chapterId || query.chapterId;
+    const chapterId =
+      params.chapterId ||
+      body.chapterId ||
+      query.chapterId ||
+      params.id;
     if (chapterId && this.isUUID(chapterId)) {
       const chapter = await this.dataSource.query(
         `SELECT se.story_id FROM chapters c 
@@ -129,7 +139,13 @@ export class StoryMemberGuard implements CanActivate {
     }
 
     // 5. From Version ID
-    const versionId = params.versionId || body.versionId || query.versionId;
+    const versionId =
+      params.versionId ||
+      body.versionId ||
+      query.versionId ||
+      params.chapterVersionId ||
+      body.chapterVersionId ||
+      query.chapterVersionId;
     if (versionId && this.isUUID(versionId)) {
       const version = await this.dataSource.query(
         `SELECT se.story_id FROM chapter_versions cv 

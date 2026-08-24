@@ -3,6 +3,8 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import * as request from 'supertest';
 import * as cookieParser from 'cookie-parser';
 import { DataSource } from 'typeorm';
+import axios from 'axios';
+const AdmZip = require('adm-zip');
 import { AppModule } from '../src/app.module';
 import { GlobalExceptionFilter } from '../src/common/filters/http-exception.filter';
 import {
@@ -13,6 +15,7 @@ import {
   ChapterVersionType,
   StoryMemberRole,
 } from '@omninovel/shared';
+import { AllowedUploadFileType } from '../src/modules/storage/dto/create-upload-session.dto';
 
 describe('OmniNovel Backend Core API (e2e)', () => {
   let app: INestApplication;
@@ -27,8 +30,6 @@ describe('OmniNovel Backend Core API (e2e)', () => {
 
   let translatorBAccessToken: string;
 
-  let adminAccessToken: string;
-
   // Resource IDs
   let storyAId: string;
   let storyASlug: string;
@@ -42,6 +43,8 @@ describe('OmniNovel Backend Core API (e2e)', () => {
   let editionBId: string;
   let volumeBId: string;
   let chapterBId: string;
+
+  let testAssetId: string;
 
   const testReader = {
     username: `reader_${Date.now()}`,
@@ -115,9 +118,9 @@ describe('OmniNovel Backend Core API (e2e)', () => {
   });
 
   // ==========================================
-  // 2. AUTHENTICATION & REFRESH ROTATION
+  // 2. AUTHENTICATION, REFRESH ROTATION & TOKEN FAMILY REVOCATION
   // ==========================================
-  describe('2. Authentication Module & Token Lifecycle', () => {
+  describe('2. Authentication Module, Token Lifecycle & Token Family Revocation', () => {
     it('POST /api/v1/auth/register should create user and user_progression in single transaction', async () => {
       const res = await request(app.getHttpServer())
         .post('/api/v1/auth/register')
@@ -180,14 +183,31 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(newCookies).toBeDefined();
       readerRefreshTokenCookie = (newCookies as unknown as string[])[0];
 
-      // Thử dùng lại refreshToken cũ -> Bị chặn với 401 Unauthorized do đã bị xoá session
+      // Thử dùng lại refreshToken cũ (Token A) -> Bị phát hiện reuse và thu hồi toàn bộ Token Family!
       await request(app.getHttpServer())
         .post('/api/v1/auth/refresh')
         .set('Cookie', oldCookie)
         .expect(401);
+
+      // CHỨNG MINH WHOLE TOKEN FAMILY REVOCATION:
+      // Thử dùng Token B (vừa được cấp mới ở trên) -> Phải bị 401 Unauthorized vì toàn bộ Family đã bị revoke!
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/refresh')
+        .set('Cookie', readerRefreshTokenCookie)
+        .expect(401);
     });
 
     it('GET /api/v1/auth/me should return reader profile and permissions', async () => {
+      // Đăng nhập lại để có active session
+      const loginRes = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({
+          identifier: testReader.email,
+          password: testReader.password,
+        });
+      readerAccessToken = loginRes.body.accessToken;
+      readerRefreshTokenCookie = (loginRes.headers['set-cookie'] as unknown as string[])[0];
+
       const res = await request(app.getHttpServer())
         .get('/api/v1/auth/me')
         .set('Authorization', `Bearer ${readerAccessToken}`)
@@ -199,13 +219,11 @@ describe('OmniNovel Backend Core API (e2e)', () => {
     });
 
     it('POST /api/v1/auth/logout should revoke session on Redis and subsequent refresh fails with 401', async () => {
-      // 1. Đăng xuất với cookie hiện tại
       await request(app.getHttpServer())
         .post('/api/v1/auth/logout')
         .set('Cookie', readerRefreshTokenCookie)
         .expect(200);
 
-      // 2. Thử refresh lại bằng chính cookie vừa đăng xuất -> phải bị 401 Unauthorized
       await request(app.getHttpServer())
         .post('/api/v1/auth/refresh')
         .set('Cookie', readerRefreshTokenCookie)
@@ -237,7 +255,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       });
       translatorBAccessToken = loginB.body.accessToken;
 
-      // Đăng nhập lại Reader để có valid token
+      // Đăng nhập lại Reader
       const readerLogin = await request(app.getHttpServer()).post('/api/v1/auth/login').send({
         identifier: testReader.email,
         password: testReader.password,
@@ -279,7 +297,6 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       storyASlug = res.body.slug;
       editionAId = res.body.defaultEditionId;
 
-      // Kiểm tra trong bảng story_members đã gán vai trò OWNER cho Translator A
       const members = await dataSource.query(
         `SELECT role FROM story_members WHERE story_id = $1`,
         [storyAId],
@@ -417,7 +434,6 @@ describe('OmniNovel Backend Core API (e2e)', () => {
     });
 
     it('POST /api/v1/studio/editions/:editionId/chapters should reject mismatched volumeId (Hierarchy Violation)', async () => {
-      // Cố tình truyền volumeBId (thuộc Edition B) vào Edition A
       await request(app.getHttpServer())
         .post(`/api/v1/studio/editions/${editionAId}/chapters`)
         .set('Authorization', `Bearer ${translatorAAccessToken}`)
@@ -468,7 +484,6 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       versionA1Id = res1.body.id;
       expect(res1.body.versionNumber).toBe(1);
 
-      // Tạo version 2
       const res2 = await request(app.getHttpServer())
         .post(`/api/v1/studio/chapters/${chapterAId}/versions`)
         .set('Authorization', `Bearer ${translatorAAccessToken}`)
@@ -483,7 +498,6 @@ describe('OmniNovel Backend Core API (e2e)', () => {
     });
 
     it('PATCH /api/v1/studio/chapters/:id/active-version should block Story TRANSLATOR from activating version (Must be EDITOR/OWNER)', async () => {
-      // Thêm User C làm Story Member với role TRANSLATOR
       const userC = {
         username: `transC_${Date.now()}`,
         email: `transC_${Date.now()}@omninovel.com`,
@@ -525,7 +539,6 @@ describe('OmniNovel Backend Core API (e2e)', () => {
     });
 
     it('PATCH /api/v1/studio/chapters/:id/active-version should reject version belonging to different chapter (Same-Chapter Invariant)', async () => {
-      // Tạo Chapter B trên Story B
       const chB = await request(app.getHttpServer())
         .post(`/api/v1/studio/editions/${editionBId}/chapters`)
         .set('Authorization', `Bearer ${translatorBAccessToken}`)
@@ -537,7 +550,6 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         .set('Authorization', `Bearer ${translatorBAccessToken}`)
         .send({ versionType: ChapterVersionType.RAW_ORIGINAL, language: 'vi' });
 
-      // Thử gán version của Chapter B vào Chapter A -> Bị từ chối với 400 Bad Request!
       await request(app.getHttpServer())
         .patch(`/api/v1/studio/chapters/${chapterAId}/active-version`)
         .set('Authorization', `Bearer ${translatorAAccessToken}`)
@@ -553,6 +565,183 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(res.body.chapter.id).toBe(chapterAId);
       expect(res.body.chapter.activeVersionId).toBe(versionA2Id);
       expect(res.body.activeVersion).toBeDefined();
+    });
+  });
+
+  // ==========================================
+  // 5. STORAGE MINIO: QUARANTINE -> VALIDATE -> PROMOTE & PRESIGNED ACCESS
+  // ==========================================
+  describe('5. MinIO Storage Security & Upload Lifecycle', () => {
+    let validSessionId: string;
+    let validUploadUrl: string;
+
+    let spoofSessionId: string;
+    let spoofUploadUrl: string;
+
+    let zipSlipSessionId: string;
+    let zipSlipUploadUrl: string;
+
+    it('MinIO direct anonymous access to media bucket should be rejected with 403 Forbidden', async () => {
+      try {
+        await axios.get('http://localhost:9000/manga-media/test.png');
+        fail('MinIO anonymous access should have failed!');
+      } catch (err: any) {
+        expect(err.response?.status).toBe(403);
+      }
+    });
+
+    it('POST /api/v1/uploads/sessions should block outsider with 403 Forbidden (IDOR Blocked)', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/uploads/sessions')
+        .set('Authorization', `Bearer ${translatorBAccessToken}`)
+        .send({
+          storyEditionId: editionAId, // Translator B cố tạo session trên Story A
+          fileType: AllowedUploadFileType.MANGA_IMAGE,
+          expectedSize: 1024,
+        })
+        .expect(403);
+    });
+
+    it('POST /api/v1/uploads/sessions should allow Story Member and return Presigned PUT URL in Quarantine', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/uploads/sessions')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          storyEditionId: editionAId,
+          chapterVersionId: versionA2Id,
+          fileType: AllowedUploadFileType.MANGA_IMAGE,
+          expectedSize: 1024,
+        })
+        .expect(201);
+
+      expect(res.body.sessionId).toBeDefined();
+      expect(res.body.uploadUrl).toBeDefined();
+      expect(res.body.quarantineKey).toContain('quarantine/editions/');
+      validSessionId = res.body.sessionId;
+      validUploadUrl = res.body.uploadUrl;
+    });
+
+    it('Presigned PUT Upload and Finalize Valid PNG Image should succeed and promote to MediaAsset', async () => {
+      // 1. Tạo buffer PNG thật với đúng Magic Bytes [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+      const validPngBuffer = Buffer.from([
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+        0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+        0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4, 0x89,
+      ]);
+
+      // Upload trực tiếp lên MinIO qua Presigned URL
+      const uploadRes = await axios.put(validUploadUrl, validPngBuffer, {
+        headers: { 'Content-Type': 'image/png' },
+      });
+      expect(uploadRes.status).toBe(200);
+
+      // 2. Finalize & Validate
+      const finalizeRes = await request(app.getHttpServer())
+        .post(`/api/v1/uploads/sessions/${validSessionId}/finalize`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(200);
+
+      expect(finalizeRes.body.status).toBe('PROMOTED');
+      expect(finalizeRes.body.finalKey).toContain('media/editions/');
+      expect(finalizeRes.body.mediaAsset).toBeDefined();
+      testAssetId = finalizeRes.body.mediaAsset.id;
+    });
+
+    it('Finalize with MIME Spoofing (Text bytes disguised as Image) should be rejected and purged from quarantine', async () => {
+      // Tạo session
+      const sessRes = await request(app.getHttpServer())
+        .post('/api/v1/uploads/sessions')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          storyEditionId: editionAId,
+          fileType: AllowedUploadFileType.MANGA_IMAGE,
+          expectedSize: 50,
+        })
+        .expect(201);
+      spoofSessionId = sessRes.body.sessionId;
+      spoofUploadUrl = sessRes.body.uploadUrl;
+
+      // Upload payload độc hại giả mạo
+      await axios.put(spoofUploadUrl, Buffer.from('FAKE_MALICIOUS_SCRIPT_PAYLOAD_NOT_IMAGE'), {
+        headers: { 'Content-Type': 'image/png' },
+      });
+
+      // Finalize -> Phải bị từ chối 400 Bad Request
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/uploads/sessions/${spoofSessionId}/finalize`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(400);
+
+      expect(res.body.error.message).toContain('Magic bytes không khớp');
+    });
+
+    it('Finalize with Path Traversal / Zip Slip entry should be rejected', async () => {
+      const sessRes = await request(app.getHttpServer())
+        .post('/api/v1/uploads/sessions')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          storyEditionId: editionAId,
+          fileType: AllowedUploadFileType.MANGA_ZIP,
+          expectedSize: 200,
+        })
+        .expect(201);
+      zipSlipSessionId = sessRes.body.sessionId;
+      zipSlipUploadUrl = sessRes.body.uploadUrl;
+
+      // Tạo Zip độc hại chứa path traversal "../../evil.txt"
+      const zip = new AdmZip();
+      zip.addFile('validfile.txt', Buffer.from('malicious payload'));
+      let zipBuffer = zip.toBuffer();
+      // Thay thế tên file trong binary buffer bằng ../evil.txt để mô phỏng Zip Slip
+      const searchTarget = Buffer.from('validfile.txt');
+      const replaceWith = Buffer.from('../evil.txt');
+      let idx = zipBuffer.indexOf(searchTarget);
+      while (idx !== -1) {
+        replaceWith.copy(zipBuffer, idx);
+        idx = zipBuffer.indexOf(searchTarget, idx + 1);
+      }
+
+      await axios.put(zipSlipUploadUrl, zipBuffer, {
+        headers: { 'Content-Type': 'application/zip' },
+      });
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/uploads/sessions/${zipSlipSessionId}/finalize`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(400);
+
+      expect(res.body.error.message).toContain('Zip Slip');
+    });
+
+    it('GET /api/v1/storage/media-url/:assetId should return Presigned GET URL for public reader', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/storage/media-url/${testAssetId}`)
+        .expect(200);
+
+      expect(res.body.downloadUrl).toBeDefined();
+      expect(res.body.expiresIn).toBe(900);
+
+      // Thử tải media qua presigned GET URL
+      const downloadRes = await axios.get(res.body.downloadUrl);
+      expect(downloadRes.status).toBe(200);
+    });
+
+    it('GET /api/v1/storage/media-url/:assetId on PRIVATE story should block anonymous and allow Story Owner', async () => {
+      // Đổi Story A sang PRIVATE
+      await dataSource.query(`UPDATE stories SET visibility = 'PRIVATE' WHERE id = $1`, [storyAId]);
+
+      // Anonymous -> Bị chặn 403 Forbidden
+      await request(app.getHttpServer())
+        .get(`/api/v1/storage/media-url/${testAssetId}`)
+        .expect(403);
+
+      // Story Owner -> Cấp URL 200 OK
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/storage/media-url/${testAssetId}`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(200);
+
+      expect(res.body.downloadUrl).toBeDefined();
     });
   });
 });

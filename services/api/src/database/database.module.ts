@@ -14,6 +14,7 @@ import { Volume } from '../modules/chapters/entities/volume.entity';
 import { Chapter } from '../modules/chapters/entities/chapter.entity';
 import { ChapterVersion } from '../modules/chapters/entities/chapter-version.entity';
 import { MediaAsset } from '../modules/chapters/entities/media-asset.entity';
+import { UploadSession } from '../modules/storage/entities/upload-session.entity';
 
 @Module({
   imports: [
@@ -42,6 +43,7 @@ import { MediaAsset } from '../modules/chapters/entities/media-asset.entity';
           Chapter,
           ChapterVersion,
           MediaAsset,
+          UploadSession,
         ],
         logging: config.get<string>('NODE_ENV') === 'development' ? ['error', 'warn'] : false,
       }),

@@ -6,7 +6,6 @@ import {
   Body,
   Param,
   Query,
-  Req,
   UseGuards,
   HttpCode,
   HttpStatus,
@@ -15,22 +14,17 @@ import { StoriesService } from './stories.service';
 import { CreateStoryDto } from './dto/create-story.dto';
 import { UpdateVisibilityDto } from './dto/update-visibility.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
+import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { StoryMemberGuard } from '../../common/guards/story-member.guard';
 import { Roles } from '../../common/decorators/roles.decorator';
 import { RequireStoryRole } from '../../common/decorators/require-story-role.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { GlobalRole, StoryMemberRole } from '@omninovel/shared';
-import { JwtService } from '@nestjs/jwt';
-import { ConfigService } from '@nestjs/config';
 
 @Controller()
 export class StoriesController {
-  constructor(
-    private storiesService: StoriesService,
-    private jwtService: JwtService,
-    private configService: ConfigService,
-  ) {}
+  constructor(private storiesService: StoriesService) {}
 
   // 1. Danh sách truyện công khai
   @Get('stories')
@@ -44,35 +38,20 @@ export class StoriesController {
     return this.storiesService.getFeatured();
   }
 
-  // 3. Rankings
+  // 3. Rankings feed
   @Get('stories/rankings')
   getRankings() {
     return this.storiesService.getRankings();
   }
 
-  // 4. Chi tiết truyện theo slug (Có kiểm tra Privacy nếu là PRIVATE)
+  // 4. Chi tiết truyện theo slug (Sử dụng OptionalJwtAuthGuard chuẩn xác thực tài khoản)
   @Get('stories/:slug')
-  async findBySlug(@Param('slug') slug: string, @Req() req: any) {
-    const authHeader = req.headers?.authorization;
-    let user: any = null;
-
-    if (authHeader && authHeader.startsWith('Bearer ')) {
-      try {
-        const token = authHeader.split(' ')[1];
-        user = this.jwtService.verify(token, {
-          secret: this.configService.get<string>(
-            'JWT_SECRET',
-            'super_secret_jwt_key_omninovel_2026',
-          ),
-        });
-        user.id = user.sub;
-      } catch {}
-    }
-
+  @UseGuards(OptionalJwtAuthGuard)
+  findBySlug(@Param('slug') slug: string, @CurrentUser() user?: any) {
     return this.storiesService.findBySlug(slug, user);
   }
 
-  // 5. Tạo bộ truyện mới trong Studio (Yêu cầu Global TRANSLATOR hoặc ADMIN)
+  // 5. Tạo bộ truyện mới trong Studio (Global TRANSLATOR hoặc Global ADMIN)
   @Post('studio/stories')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(GlobalRole.TRANSLATOR, GlobalRole.ADMIN)
@@ -84,11 +63,10 @@ export class StoriesController {
     return this.storiesService.create(userId, dto);
   }
 
-  // 6. Tạo Edition mới (Yêu cầu Story EDITOR hoặc OWNER)
+  // 6. Tạo Edition mới (Story OWNER hoặc Global ADMIN)
   @Post('studio/stories/:id/editions')
-  @UseGuards(JwtAuthGuard, RolesGuard, StoryMemberGuard)
-  @Roles(GlobalRole.TRANSLATOR, GlobalRole.ADMIN)
-  @RequireStoryRole(StoryMemberRole.OWNER, StoryMemberRole.EDITOR)
+  @UseGuards(JwtAuthGuard, StoryMemberGuard)
+  @RequireStoryRole(StoryMemberRole.OWNER)
   @HttpCode(HttpStatus.CREATED)
   createEdition(
     @Param('id') storyId: string,
@@ -101,10 +79,9 @@ export class StoriesController {
     );
   }
 
-  // 7. Tạo Volume mới (Yêu cầu Story EDITOR hoặc OWNER)
+  // 7. Tạo Volume mới (Story OWNER, EDITOR hoặc Global ADMIN)
   @Post('studio/editions/:editionId/volumes')
-  @UseGuards(JwtAuthGuard, RolesGuard, StoryMemberGuard)
-  @Roles(GlobalRole.TRANSLATOR, GlobalRole.ADMIN)
+  @UseGuards(JwtAuthGuard, StoryMemberGuard)
   @RequireStoryRole(StoryMemberRole.OWNER, StoryMemberRole.EDITOR)
   @HttpCode(HttpStatus.CREATED)
   createVolume(

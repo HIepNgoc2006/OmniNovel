@@ -52,7 +52,7 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return res === 'OK';
   }
 
-  // Sliding Window Rate Limiting bằng Lua script nguyên tử
+  // Sliding Window Rate Limiting bằng Lua script nguyên tử với resetTime tính theo request cũ nhất
   async checkRateLimit(
     key: string,
     limit: number,
@@ -74,9 +74,15 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
       if currentRequests < limit then
         redis.call('ZADD', key, now, now .. ':' .. math.random(10000, 99999))
         redis.call('EXPIRE', key, math.ceil(windowMs / 1000) + 2)
-        return { 1, limit - currentRequests - 1, math.ceil((now + windowMs) / 1000) }
+        local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+        local oldestScore = tonumber(oldest[2]) or now
+        local resetTime = math.ceil((oldestScore + windowMs) / 1000)
+        return { 1, limit - currentRequests - 1, resetTime }
       else
-        return { 0, 0, math.ceil((now + windowMs) / 1000) }
+        local oldest = redis.call('ZRANGE', key, 0, 0, 'WITHSCORES')
+        local oldestScore = tonumber(oldest[2]) or now
+        local resetTime = math.ceil((oldestScore + windowMs) / 1000)
+        return { 0, 0, resetTime }
       end
     `;
 

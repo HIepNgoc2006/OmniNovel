@@ -137,6 +137,12 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       );
       expect(prog.length).toBe(1);
       expect(prog[0].level).toBe(1);
+      expect(prog[0].total_exp.toString()).toBe('0');
+      expect(prog[0].omnicoin_balance.toString()).toBe('0');
+      expect(prog[0].current_streak).toBe(0);
+      expect(prog[0].max_streak).toBe(0);
+      expect(prog[0].last_checkin_date).toBeNull();
+      expect(prog[0].rank_theme_id).toBe('DEFAULT');
     });
 
     it('POST /api/v1/auth/register should return 409 Conflict on duplicate email/username', async () => {
@@ -635,7 +641,19 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       });
       expect(uploadRes.status).toBe(200);
 
-      // 2. Finalize & Validate
+      // Thử cố tình finalize bằng tài khoản không có quyền -> 403 Forbidden và session vẫn giữ nguyên PENDING
+      await request(app.getHttpServer())
+        .post(`/api/v1/uploads/sessions/${validSessionId}/finalize`)
+        .set('Authorization', `Bearer ${translatorBAccessToken}`)
+        .expect(403);
+
+      const checkPending = await dataSource.query(
+        `SELECT status FROM upload_sessions WHERE id = $1`,
+        [validSessionId],
+      );
+      expect(checkPending[0].status).toBe('PENDING');
+
+      // 2. Finalize & Validate hợp lệ bằng Story Owner
       const finalizeRes = await request(app.getHttpServer())
         .post(`/api/v1/uploads/sessions/${validSessionId}/finalize`)
         .set('Authorization', `Bearer ${translatorAAccessToken}`)

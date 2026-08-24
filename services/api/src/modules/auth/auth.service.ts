@@ -56,13 +56,16 @@ export class AuthService {
 
       const savedUser = await manager.save(user);
 
+      // Khởi tạo Hồ sơ Tiến trình chuẩn theo SSoT Gamification
       const progression = manager.create(UserProgression, {
         userId: savedUser.id,
         level: 1,
         totalExp: '0',
-        currentExp: '0',
-        streakDays: 0,
-        activeTheme: 'DEFAULT',
+        omnicoinBalance: '0',
+        currentStreak: 0,
+        maxStreak: 0,
+        lastCheckinDate: null,
+        rankThemeId: 'DEFAULT',
       });
 
       await manager.save(progression);

@@ -119,9 +119,38 @@ export class StorageService {
     };
   }
 
-  // 2. FINALIZE: ATOMIC VALIDATING LOCK, SIZE MATCHING & DEEP VALIDATION
+  // 2. FINALIZE: AUTH FIRST -> ATOMIC VALIDATING LOCK -> SIZE & DEEP VALIDATION -> PROMOTE
   async finalizeUploadSession(sessionId: string, userId: string, userRole?: GlobalRole) {
-    // 1. Chuyển trạng thái Atomic PENDING -> VALIDATING để chống Double-Finalize race condition
+    // Bước 1: Load session kiểm tra sự tồn tại
+    const session = await this.sessionRepository.findOne({ where: { id: sessionId } });
+    if (!session) {
+      throw new NotFoundException('Không tìm thấy phiên tải lên.');
+    }
+
+    // Bước 2: Kiểm tra hết hạn phiên 15 phút
+    if (new Date() > new Date(session.expiresAt)) {
+      throw new BadRequestException('Phiên tải lên đã hết hạn (Expired).');
+    }
+
+    // Bước 3: Kiểm tra quyền sở hữu phiên hoặc quyền Story Member / Admin TRƯỚC KHI chuyển trạng thái (Ngăn chặn Authorization-triggered DoS)
+    if (session.userId !== userId && userRole !== GlobalRole.ADMIN) {
+      const edition = await this.editionRepository.findOne({
+        where: { id: session.storyEditionId },
+      });
+      if (edition) {
+        const isMember = await this.dataSource.query(
+          `SELECT 1 FROM story_members WHERE story_id = $1 AND user_id = $2`,
+          [edition.storyId, userId],
+        );
+        if (!isMember || isMember.length === 0) {
+          throw new ForbiddenException('Bạn không có quyền hoàn tất phiên tải lên này.');
+        }
+      } else {
+        throw new ForbiddenException('Bạn không có quyền hoàn tất phiên tải lên này.');
+      }
+    }
+
+    // Bước 4: Chuyển trạng thái Atomic PENDING -> VALIDATING để chống Double-Finalize race condition
     const transitionResult = await this.dataSource.query(
       `UPDATE upload_sessions 
        SET status = 'VALIDATING' 
@@ -136,35 +165,10 @@ export class StorageService {
         : transitionResult;
 
     if (!rows || rows.length === 0) {
-      const existing = await this.sessionRepository.findOne({ where: { id: sessionId } });
-      if (!existing) {
-        throw new NotFoundException('Không tìm thấy phiên tải lên.');
-      }
+      const fresh = await this.sessionRepository.findOne({ where: { id: sessionId } });
       throw new BadRequestException(
-        `Phiên upload đang ở trạng thái ${existing.status} (Không thể finalize lại).`,
+        `Phiên upload đang ở trạng thái ${fresh?.status || 'UNKNOWN'} (Không thể finalize lại).`,
       );
-    }
-
-    const session = await this.sessionRepository.findOne({ where: { id: sessionId } });
-    if (!session) {
-      throw new NotFoundException('Không tìm thấy phiên tải lên.');
-    }
-
-    // 2. Kiểm tra quyền sở hữu phiên hoặc quyền Story Member / Admin
-    if (session.userId !== userId && userRole !== GlobalRole.ADMIN) {
-      const edition = await this.editionRepository.findOne({
-        where: { id: session.storyEditionId },
-      });
-      if (edition) {
-        const isMember = await this.dataSource.query(
-          `SELECT 1 FROM story_members WHERE story_id = $1 AND user_id = $2`,
-          [edition.storyId, userId],
-        );
-        if (!isMember || isMember.length === 0) {
-          await this.failSession(session, 'Bạn không có quyền hoàn tất phiên tải lên này.');
-          throw new ForbiddenException('Bạn không có quyền hoàn tất phiên tải lên này.');
-        }
-      }
     }
 
     const isManga =
@@ -172,14 +176,7 @@ export class StorageService {
       session.fileType === AllowedUploadFileType.MANGA_ZIP;
     const bucket = isManga ? this.mangaBucket : this.novelBucket;
 
-    // 3. Kiểm tra hết hạn phiên 15 phút
-    if (new Date() > new Date(session.expiresAt)) {
-      await this.failSession(session, 'Phiên tải lên đã hết hạn 15 phút.', UploadSessionStatus.EXPIRED);
-      await this.deleteObject(bucket, session.quarantineKey);
-      throw new BadRequestException('Phiên tải lên đã hết hạn (Expired).');
-    }
-
-    // 4. Kiểm tra sự tồn tại của file trong MinIO Quarantine
+    // Bước 5: Kiểm tra sự tồn tại của file trong MinIO Quarantine
     let headData: any;
     try {
       headData = await this.s3Client.send(
@@ -195,7 +192,7 @@ export class StorageService {
 
     const actualSize = headData.ContentLength || 0;
 
-    // 5. Kiểm tra exact expectedSize match & 100MB limit theo Security SSoT
+    // Bước 6: Kiểm tra exact expectedSize match & 100MB limit theo Security SSoT
     const expectedSizeBytes = Number(session.expectedSize);
     if (actualSize !== expectedSizeBytes) {
       await this.failSession(
@@ -214,7 +211,7 @@ export class StorageService {
       throw new BadRequestException('File tải lên vượt quá giới hạn an toàn 100MB.');
     }
 
-    // 6. Deep Content Validation & Magic Bytes Check
+    // Bước 7: Deep Content Validation & Magic Bytes Check
     try {
       if (session.fileType === AllowedUploadFileType.MANGA_IMAGE) {
         const rangeEnd = Math.min(actualSize - 1, 16383);
@@ -246,7 +243,7 @@ export class StorageService {
       throw new BadRequestException(err.message || 'Lỗi xác thực dữ liệu file tải lên.');
     }
 
-    // 7. Promote: Di chuyển từ Quarantine sang Final Key
+    // Bước 8: Promote: Di chuyển từ Quarantine sang Final Key
     const fileExt = this.getFileExtension(session.fileType as AllowedUploadFileType);
     const finalKey = `media/editions/${session.storyEditionId}/${uuidv4()}${fileExt}`;
 
@@ -261,7 +258,7 @@ export class StorageService {
     // Xóa object trong Quarantine sau khi copy thành công
     await this.deleteObject(bucket, session.quarantineKey);
 
-    // 8. Transactional DB Update & Compensation
+    // Bước 9: Transactional DB Update & Compensation
     let createdAsset: MediaAsset | null = null;
     try {
       await this.dataSource.transaction(async (manager) => {

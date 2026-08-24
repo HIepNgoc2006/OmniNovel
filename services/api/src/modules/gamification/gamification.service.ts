@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
@@ -29,6 +30,33 @@ for (let l = 2; l <= 100; l++) {
     sum += Math.floor(100 * Math.pow(i, 1.5));
   }
   LEVEL_THRESHOLDS[l] = sum;
+}
+
+// Helper: Tính toán chính xác biên ngày theo múi giờ Asia/Ho_Chi_Minh (UTC+7)
+export function getVietnamDayBoundaries(date = new Date()): {
+  startOfDay: Date;
+  startOfNextDay: Date;
+  todayVN: string;
+  yesterdayVN: string;
+} {
+  const todayVN = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date); // e.g. "2026-08-25"
+
+  const [y, m, d] = todayVN.split('-').map(Number);
+  const startOfDay = new Date(`${todayVN}T00:00:00+07:00`);
+
+  const nextDayDate = new Date(Date.UTC(y, m - 1, d + 1));
+  const nextDayStr = nextDayDate.toISOString().split('T')[0];
+  const startOfNextDay = new Date(`${nextDayStr}T00:00:00+07:00`);
+
+  const yesterdayDate = new Date(Date.UTC(y, m - 1, d - 1));
+  const yesterdayVN = yesterdayDate.toISOString().split('T')[0];
+
+  return { startOfDay, startOfNextDay, todayVN, yesterdayVN };
 }
 
 @Injectable()
@@ -88,24 +116,11 @@ export class GamificationService {
 
   // 2. ĐIỂM DANH HÀNG NGÀY THEO MÚI GIỜ ASIA/HO_CHI_MINH (UTC+7)
   async checkIn(userId: string, idempotencyKeyHeader?: string) {
-    const todayVN = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Ho_Chi_Minh',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(new Date());
+    const { todayVN, yesterdayVN } = getVietnamDayBoundaries();
 
-    const yesterdayDate = new Date(Date.now() - 24 * 60 * 60 * 1000);
-    const yesterdayVN = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Ho_Chi_Minh',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(yesterdayDate);
-
-    // Redis SETNX để chống concurrent requests từ client
+    // Redis SETNX với TTL 120s theo đúng contract chống duplicate concurrent requests
     const redisLockKey = `idempotency:checkin:${userId}:${idempotencyKeyHeader || todayVN}`;
-    const acquired = await this.redisService.setnx(redisLockKey, '1', 60);
+    const acquired = await this.redisService.setnx(redisLockKey, '1', 120);
     if (!acquired && idempotencyKeyHeader) {
       throw new BadRequestException('Yêu cầu điểm danh trùng lặp đang được xử lý.');
     }
@@ -120,22 +135,13 @@ export class GamificationService {
         throw new NotFoundException('Không tìm thấy hồ sơ tiến trình độc giả.');
       }
 
-      // Kiểm tra đã điểm danh hôm nay chưa
+      // Kiểm tra đã điểm danh hôm nay chưa (FR-GAM-01)
       const existingCheckin = await manager.findOne(DailyCheckin, {
         where: { userId, checkinDate: todayVN },
       });
 
       if (existingCheckin) {
-        return {
-          alreadyCheckedIn: true,
-          message: 'Bạn đã điểm danh ngày hôm nay rồi.',
-          coinsEarned: 0,
-          expEarned: 0,
-          newStreak: progression.currentStreak,
-          totalExp: progression.totalExp,
-          omnicoinBalance: progression.omnicoinBalance,
-          level: progression.level,
-        };
+        throw new BadRequestException('CHECKIN_ALREADY_CLAIMED: Bạn đã điểm danh ngày hôm nay rồi.');
       }
 
       // Tính Chuỗi Streak
@@ -152,10 +158,12 @@ export class GamificationService {
       // 30 ngày: +300 EXP, +150 Coin
       let rewardExp = 10;
       let rewardCoins = 5;
+      let earnedBadgeId: string | null = null;
 
       if (streak === 30 || (streak > 30 && streak % 30 === 0)) {
         rewardExp += 300;
         rewardCoins += 150;
+        earnedBadgeId = 'BADGE_DILIGENT_READER_30D';
       } else if (streak === 14 || (streak > 14 && streak % 14 === 0)) {
         rewardExp += 100;
         rewardCoins += 50;
@@ -216,6 +224,7 @@ export class GamificationService {
         expEarned: rewardExp,
         newStreak: streak,
         maxStreak,
+        earnedBadgeId,
         totalExp: newTotalExp,
         omnicoinBalance: newBalance,
         level: progression.level,
@@ -223,15 +232,27 @@ export class GamificationService {
     });
   }
 
-  // 3. THƯỞNG ĐỌC CHƯƠNG TRUYỆN: +5 EXP, KIỂM TRA CHAPTER THỰC TẾ, ĐIỀU KIỆN >=45s & >=80%, TRẦN 100 EXP/NGÀY
+  // 3. THƯỞNG ĐỌC CHƯƠNG TRUYỆN: +5 EXP, KIỂM TRA CHAPTER THỰC TẾ & ACCESS, ĐIỀU KIỆN >=45s & >=80%, TRẦN 100 EXP/NGÀY VN
   async rewardReadChapter(userId: string, dto: ReadChapterRewardDto) {
-    // 1. Xác thực Chương Truyện có thực sự tồn tại trong DB (Chống Fake Chapter Farming)
+    // 1. Xác thực Chương Truyện có thực sự tồn tại trong DB và kiểm tra quyền truy cập
     const chapter = await this.chapterRepository.findOne({
       where: { id: dto.chapterId },
+      relations: { storyEdition: { story: true } },
     });
 
     if (!chapter) {
       throw new NotFoundException('Chương truyện không tồn tại.');
+    }
+
+    // Nếu Story là PRIVATE -> Yêu cầu phải là thành viên Story hoặc Admin
+    if (chapter.storyEdition?.story?.visibility === 'PRIVATE') {
+      const isMember = await this.dataSource.query(
+        `SELECT 1 FROM story_members WHERE story_id = $1 AND user_id = $2 LIMIT 1`,
+        [chapter.storyEdition.story.id, userId],
+      );
+      if (!isMember || isMember.length === 0) {
+        throw new ForbiddenException('Bạn không có quyền truy cập truyện riêng tư này.');
+      }
     }
 
     // 2. Xác thực điều kiện đọc hợp lệ (Thời gian đọc >= 45s và cuộn >= 80%)
@@ -272,17 +293,17 @@ export class GamificationService {
         };
       }
 
-      // 4. Kiểm tra Trần Tối Đa 100 EXP/ngày từ việc đọc truyện
-      const startOfDayVN = new Date();
-      startOfDayVN.setUTCHours(0, 0, 0, 0);
+      // 4. Kiểm tra Trần Tối Đa 100 EXP/ngày chuẩn xác theo biên ngày Asia/Ho_Chi_Minh (UTC+7)
+      const { startOfDay, startOfNextDay } = getVietnamDayBoundaries();
 
       const sumRes = await manager.query(
         `SELECT COALESCE(SUM(amount), 0) AS total 
          FROM reward_transactions 
          WHERE user_id = $1 
            AND source_type = 'READ_CHAPTER' 
-           AND created_at >= $2`,
-        [userId, startOfDayVN.toISOString()],
+           AND created_at >= $2 
+           AND created_at < $3`,
+        [userId, startOfDay.toISOString(), startOfNextDay.toISOString()],
       );
 
       const todayEarnedExp = Number(sumRes[0].total);
@@ -353,12 +374,7 @@ export class GamificationService {
     const badgeIcon = matchingRank[0]?.badge_icon || null;
 
     const progress = this.getExpProgress(progression.totalExp);
-    const todayVN = new Intl.DateTimeFormat('en-CA', {
-      timeZone: 'Asia/Ho_Chi_Minh',
-      year: 'numeric',
-      month: '2-digit',
-      day: '2-digit',
-    }).format(new Date());
+    const { todayVN } = getVietnamDayBoundaries();
 
     return {
       userId: progression.userId,
@@ -429,7 +445,7 @@ export class GamificationService {
   // 6. NHẬN THƯỞNG MỐC LEVEL ĐÃ CẤU HÌNH (POST /gamification/rewards/claim)
   async claimLevelReward(userId: string, milestoneLevel: number, idempotencyKeyHeader?: string) {
     const redisLockKey = `idempotency:claim:${userId}:${idempotencyKeyHeader || milestoneLevel}`;
-    const acquired = await this.redisService.setnx(redisLockKey, '1', 60);
+    const acquired = await this.redisService.setnx(redisLockKey, '1', 120);
     if (!acquired && idempotencyKeyHeader) {
       throw new BadRequestException('Yêu cầu nhận thưởng trùng lặp đang được xử lý.');
     }
@@ -493,6 +509,7 @@ export class GamificationService {
 
       return {
         rewardCoins: reward.rewardCoins,
+        rewardBadgeId: reward.rewardBadgeId,
         claimedAt: claim.claimedAt,
       };
     });

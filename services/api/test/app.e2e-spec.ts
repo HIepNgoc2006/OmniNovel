@@ -906,6 +906,9 @@ describe('OmniNovel Backend Core API (e2e)', () => {
   // ==========================================
   describe('7. Gamification Module & Sổ Cái Bất Biến (Reward Ledger)', () => {
     it('GET /api/v1/gamification/progression should return initial Reader level 1 and active theme DEFAULT', async () => {
+      // Đảm bảo Story A là PUBLIC cho reader truy cập
+      await dataSource.query(`UPDATE stories SET visibility = 'PUBLIC' WHERE id = $1`, [storyAId]);
+
       const res = await request(app.getHttpServer())
         .get('/api/v1/gamification/progression')
         .set('Authorization', `Bearer ${readerAccessToken}`)
@@ -949,15 +952,13 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(coinTx.amount).toBe(5);
     });
 
-    it('POST /api/v1/gamification/checkin a second time today should be idempotent (no duplicate rewards)', async () => {
+    it('POST /api/v1/gamification/checkin a second time today should be rejected with 400 Bad Request (FR-GAM-01)', async () => {
       const res = await request(app.getHttpServer())
         .post('/api/v1/gamification/checkin')
         .set('Authorization', `Bearer ${readerAccessToken}`)
-        .expect(200);
+        .expect(400);
 
-      expect(res.body.alreadyCheckedIn).toBe(true);
-      expect(res.body.totalExp.toString()).toBe('10');
-      expect(res.body.omnicoinBalance.toString()).toBe('5');
+      expect(res.body.error.message).toContain('CHECKIN_ALREADY_CLAIMED');
 
       // Số dòng ledger CHECKIN của reader vẫn giữ nguyên là 2
       const txs = await dataSource.query(
@@ -978,6 +979,35 @@ describe('OmniNovel Backend Core API (e2e)', () => {
           progressPercentage: 100,
         })
         .expect(404);
+    });
+
+    it('POST /api/v1/gamification/read-chapter on PRIVATE story chapter by unauthorized reader should be rejected with 403 Forbidden', async () => {
+      // Story B là PRIVATE và reader không phải thành viên
+      await dataSource.query(`UPDATE stories SET visibility = 'PRIVATE' WHERE id = $1`, [storyBId]);
+      const edB = await dataSource.query(`SELECT id FROM story_editions WHERE story_id = $1 LIMIT 1`, [storyBId]);
+      const editionBId = edB[0].id;
+
+      // Xóa chapter test cũ nếu có trên Story B
+      await dataSource.query(`DELETE FROM chapters WHERE story_edition_id = $1 AND chapter_number = 99`, [editionBId]);
+
+      const chBRes = await request(app.getHttpServer())
+        .post(`/api/v1/studio/editions/${editionBId}/chapters`)
+        .set('Authorization', `Bearer ${translatorBAccessToken}`)
+        .send({
+          chapterNumber: '99',
+          title: 'Private Chapter B99',
+        })
+        .expect(201);
+
+      await request(app.getHttpServer())
+        .post('/api/v1/gamification/read-chapter')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({
+          chapterId: chBRes.body.id,
+          readingDurationSeconds: 60,
+          progressPercentage: 100,
+        })
+        .expect(403);
     });
 
     it('POST /api/v1/gamification/read-chapter with duration < 45s should reject EXP reward (CRITERIA_NOT_MET)', async () => {

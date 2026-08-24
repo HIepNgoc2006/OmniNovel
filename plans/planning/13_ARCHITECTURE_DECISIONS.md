@@ -114,3 +114,22 @@ Tài liệu này ghi nhận toàn văn 10 Quyết định Kiến trúc cốt lõ
   * *MD5 / SHA-256 thuần:* Rất yếu, bị giải mã trong vài mili-giây qua Rainbow Table.
   * *Bcrypt:* Tốt nhưng không có cơ chế chống tấn công bộ nhớ bằng GPU/FPGA mạnh mẽ như Argon2id.
 * **Hệ quả (Consequences):** Đảm bảo an toàn tối đa cho mật khẩu người dùng, tuân thủ các khuyến nghị bảo mật khắt khe nhất của OWASP.
+
+---
+
+### ADR-011: Chiến Lược Quản Lý Schema CSDL và Migration Bằng TypeORM (ORM & Migration Strategy)
+* **Trạng thái (Status):** Accepted
+* **Bối cảnh (Context):** Trong Phase 1, file `01_init.sql` được dùng để bootstrap nhanh CSDL 27 bảng cục bộ. Tuy nhiên, khi hệ thống bước vào giai đoạn phát triển Backend Core API (Phase 2) và môi trường CI/CD/Production, việc chỉnh sửa trực tiếp file SQL init không thể theo dõi lịch sử thay đổi (versioning) và dễ dẫn đến tình trạng sai lệch schema (drift).
+* **Quyết định (Decision):** 
+  * Chọn **NestJS + TypeORM** làm ORM chính thức cho Backend Core API.
+  * Từ Phase 2, **TypeORM Migrations trở thành Nguồn Sự Thật Duy Nhất (SSoT)** cho việc phát triển và cập nhật Schema CSDL.
+  * Cấu hình bắt buộc: **`synchronize: false`** trên toàn bộ môi trường (kể cả Local Dev và Staging/Production). Mọi thay đổi schema đều phải thông qua migration files timestamped (`npm run migration:run`, `npm run migration:revert`).
+  * File `01_init.sql` chỉ giữ vai trò là bản snapshot bootstrap ban đầu cho Docker dev database.
+* **Các phương án thay thế (Alternatives Considered):**
+  * *TypeORM synchronize=true:* Tự động sửa cấu trúc bảng khi sửa Entity, nhưng có rủi ro cực cao làm mất dữ liệu hoặc sửa đổi ngoài tầm kiểm soát trên Staging/Production.
+  * *Prisma ORM:* Sinh query tốt nhưng việc custom các raw constraints nâng cao của PostgreSQL 16 (như `ON DELETE SET NULL (col)` hoặc Trigram GIN indexes phức tạp) bị hạn chế hơn so với TypeORM migration raw SQL runner.
+  * *Raw SQL script thủ công:* Khó tích hợp trực tiếp vào quy trình CI/CD tự động và lifecycle của NestJS.
+* **Hệ quả (Consequences):** 
+  * Bảo đảm tính kỷ luật tuyệt đối trong quản lý cơ sở dữ liệu.
+  * Dễ dàng rollback khi có sự cố và kiểm soát 100% các câu lệnh DDL được thực thi trên PostgreSQL 16.
+

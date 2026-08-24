@@ -21,7 +21,7 @@ Toàn bộ 24 tài liệu đặc tả kỹ thuật và theo dõi tiến độ th
 | **10** | [10_API_AND_EVENT_CONTRACTS.md](planning/10_API_AND_EVENT_CONTRACTS.md) | **API:** Đặc tả RESTful API Endpoints /api/v1, WebSocket & Chuẩn Error JSON. |
 | **11** | [11_AI_TRANSLATION_ARCHITECTURE.md](planning/11_AI_TRANSLATION_ARCHITECTURE.md) | **AI Engine:** Pipeline Manga/Novel OCR, Inpaint & State Machine 14 trạng thái. |
 | **12** | [12_SYSTEM_ARCHITECTURE.md](planning/12_SYSTEM_ARCHITECTURE.md) | **Architecture:** Kiến trúc tổng thể Monorepo & Ranh giới Module NestJS. |
-| **13** | [13_ARCHITECTURE_DECISIONS.md](planning/13_ARCHITECTURE_DECISIONS.md) | **ADRs:** Tuyển tập 10 quyết định kiến trúc chuẩn MADR. |
+| **13** | [13_ARCHITECTURE_DECISIONS.md](planning/13_ARCHITECTURE_DECISIONS.md) | **ADRs:** Tuyển tập 11 quyết định kiến trúc chuẩn MADR (bổ sung ADR-011 TypeORM Migrations). |
 | **14** | [14_NON_FUNCTIONAL_REQUIREMENTS.md](planning/14_NON_FUNCTIONAL_REQUIREMENTS.md) | **NFRs:** Yêu cầu Phi chức năng định lượng (120Hz, RAM < 150MB, SLAs). |
 | **15** | [15_SECURITY_THREAT_MODEL.md](planning/15_SECURITY_THREAT_MODEL.md) | **Security:** Mô hình đe dọa STRIDE, Anti-Leech & File Sanitization. |
 | **16** | [16_PRIVACY_CONTENT_AND_RIGHTS.md](planning/16_PRIVACY_CONTENT_AND_RIGHTS.md) | **Privacy & Rights:** Quyền sở hữu nội dung, Takedown Workflow & Quyền riêng tư. |
@@ -37,8 +37,9 @@ Toàn bộ 24 tài liệu đặc tả kỹ thuật và theo dõi tiến độ th
 
 ## 📋 2. KHU VỰC THEO DÕI TIẾN ĐỘ THI CÔNG (plans/phases/)
 
-* [Phase 1: Setup & Architecture Baseline](phases/phase_01_setup.md) `[/] Đang thực hiện`
-* [Phase 2: Core Backend API & Security](phases/phase_02_backend_core.md) `[ ] Chưa bắt đầu`
+* [Phase 1: Setup & Architecture Baseline](phases/phase_01_setup.md) `[x] Đã hoàn thành (100%)`
+* [Phase 2: Core Backend API & Security](phases/phase_02_backend_core.md) `[/] Đang thực hiện`
+  * [Kế hoạch Kỹ thuật Chi tiết Phase 2](phases/phase_02_implementation_plan.md)
 * [Phase 3: AI Translation Worker & Upload Queue](phases/phase_03_ai_worker.md) `[ ] Chưa bắt đầu`
 * [Phase 4: Web Client (TruyenQQ & DocLN)](phases/phase_04_web_client.md) `[ ] Chưa bắt đầu`
 * [Phase 5: Mobile App (Flutter 120Hz & Offline)](phases/phase_05_mobile_app.md) `[ ] Chưa bắt đầu`

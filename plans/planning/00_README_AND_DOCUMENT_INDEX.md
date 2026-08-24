@@ -43,6 +43,7 @@ Tài liệu này là **Nguồn Sự Thật Duy Nhất (Single Source of Truth - 
 | **ADR-008** | Trừu Tượng Hóa Nhà Cung Cấp AI (Provider) | **Accepted** | Áp dụng Adapter Pattern cho OpenAI, DeepL và Local LLM. |
 | **ADR-009** | Bảo Vệ Bản Quyền Hình Ảnh (Anti-Leech) | **Accepted** | Sử dụng **Dynamic HMAC-SHA256 Signed URLs** thời hạn ngắn (15 phút) và Watermark ẩn danh. |
 | **ADR-010** | Mã Hóa Mật Khẩu Người Dùng & JWT HS256 | **Accepted** | Sử dụng **Argon2id** cho mật khẩu và ký JWT đối xứng bằng **`HS256`**. |
+| **ADR-011** | Chiến Lược ORM & TypeORM Database Migrations | **Accepted** | Sử dụng **NestJS + TypeORM**, quy định **`synchronize: false`** và lấy migration làm SSoT. |
 
 ---
 

@@ -9,6 +9,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { StoriesModule } from './modules/stories/stories.module';
 import { ChaptersModule } from './modules/chapters/chapters.module';
 import { StorageModule } from './modules/storage/storage.module';
+import { GamificationModule } from './modules/gamification/gamification.module';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 
 @Module({
@@ -26,6 +27,7 @@ import { CorrelationIdMiddleware } from './common/middleware/correlation-id.midd
     StoriesModule,
     ChaptersModule,
     StorageModule,
+    GamificationModule,
   ],
 })
 export class AppModule implements NestModule {

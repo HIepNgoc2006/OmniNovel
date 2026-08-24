@@ -15,6 +15,10 @@ import { Chapter } from '../modules/chapters/entities/chapter.entity';
 import { ChapterVersion } from '../modules/chapters/entities/chapter-version.entity';
 import { MediaAsset } from '../modules/chapters/entities/media-asset.entity';
 import { UploadSession } from '../modules/storage/entities/upload-session.entity';
+import { RewardTransaction } from '../modules/gamification/entities/reward-transaction.entity';
+import { DailyCheckin } from '../modules/gamification/entities/daily-checkin.entity';
+import { LevelReward } from '../modules/gamification/entities/level-reward.entity';
+import { UserClaimedLevelReward } from '../modules/gamification/entities/user-claimed-level-reward.entity';
 
 @Module({
   imports: [
@@ -44,6 +48,10 @@ import { UploadSession } from '../modules/storage/entities/upload-session.entity
           ChapterVersion,
           MediaAsset,
           UploadSession,
+          RewardTransaction,
+          DailyCheckin,
+          LevelReward,
+          UserClaimedLevelReward,
         ],
         logging: config.get<string>('NODE_ENV') === 'development' ? ['error', 'warn'] : false,
       }),

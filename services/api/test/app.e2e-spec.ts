@@ -22,6 +22,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
   let dataSource: DataSource;
 
   // Tokens & Cookies
+  let readerUserId: string;
   let readerAccessToken: string;
   let readerRefreshTokenCookie: string;
 
@@ -130,6 +131,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(res.body.user).toBeDefined();
       expect(res.body.user.username).toBe(testReader.username);
       expect(res.body.user.role).toBe(GlobalRole.READER);
+      readerUserId = res.body.user.id;
 
       const prog = await dataSource.query(
         `SELECT * FROM user_progression WHERE user_id = $1`,
@@ -898,5 +900,187 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(Number(res.headers['x-ratelimit-remaining'])).toBeLessThanOrEqual(59);
     });
   });
+
+  // ==========================================
+  // 7. GAMIFICATION MODULE & SỔ CÁI BẤT BIẾN (REWARD LEDGER)
+  // ==========================================
+  describe('7. Gamification Module & Sổ Cái Bất Biến (Reward Ledger)', () => {
+    it('GET /api/v1/gamification/progression should return initial Reader level 1 and active theme DEFAULT', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/gamification/progression')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .expect(200);
+
+      expect(res.body.level).toBe(1);
+      expect(res.body.totalExp.toString()).toBe('0');
+      expect(res.body.omnicoinBalance.toString()).toBe('0');
+      expect(res.body.currentStreak).toBe(0);
+      expect(res.body.hasCheckedInToday).toBe(false);
+      expect(res.body.activeTheme.id).toBe('DEFAULT');
+      expect(res.body.activeTheme.rankTitle).toBe('Độc Giả Sơ Cấp');
+      expect(res.body.progress.expNeededForNextLevel).toBe(100);
+    });
+
+    it('POST /api/v1/gamification/check-in should award +10 EXP, +5 Omnicoin and record 2 immutable ledger transactions', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/gamification/check-in')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .expect(200);
+
+      expect(res.body.alreadyCheckedIn).toBe(false);
+      expect(res.body.streakCount).toBe(1);
+      expect(res.body.rewardExp).toBe(10);
+      expect(res.body.rewardCoins).toBe(5);
+      expect(res.body.totalExp.toString()).toBe('10');
+      expect(res.body.omnicoinBalance.toString()).toBe('5');
+
+      // Kiểm tra 2 dòng ledger trong bảng reward_transactions cho reader hiện tại
+      const txs = await dataSource.query(
+        `SELECT * FROM reward_transactions WHERE user_id = $1 AND source_type = 'CHECKIN' ORDER BY created_at ASC`,
+        [readerUserId],
+      );
+      expect(txs.length).toBe(2);
+      const expTx = txs.find((t: any) => t.reward_type === 'EXP');
+      const coinTx = txs.find((t: any) => t.reward_type === 'OMNICOIN');
+      expect(expTx).toBeDefined();
+      expect(expTx.amount).toBe(10);
+      expect(coinTx).toBeDefined();
+      expect(coinTx.amount).toBe(5);
+    });
+
+    it('POST /api/v1/gamification/check-in a second time today should be idempotent (no duplicate rewards)', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/gamification/check-in')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .expect(200);
+
+      expect(res.body.alreadyCheckedIn).toBe(true);
+      expect(res.body.totalExp.toString()).toBe('10');
+      expect(res.body.omnicoinBalance.toString()).toBe('5');
+
+      // Số dòng ledger CHECKIN của reader vẫn giữ nguyên là 2
+      const txs = await dataSource.query(
+        `SELECT * FROM reward_transactions WHERE user_id = $1 AND source_type = 'CHECKIN'`,
+        [readerUserId],
+      );
+      expect(txs.length).toBe(2);
+    });
+
+    it('POST /api/v1/gamification/read-chapter should award +10 EXP and record unique idempotency_key', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/gamification/read-chapter')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({ chapterId: chapterAId })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.earnedExp).toBe(10);
+      expect(res.body.totalExp.toString()).toBe('20');
+
+      // Kiểm tra Sổ Cái có dòng READ_CHAPTER với idempotency_key duy nhất
+      const tx = await dataSource.query(
+        `SELECT * FROM reward_transactions WHERE source_type = 'READ_CHAPTER' AND source_id = $1`,
+        [chapterAId],
+      );
+      expect(tx.length).toBe(1);
+      expect(tx[0].idempotency_key).toBe(`READ:${readerUserId}:${chapterAId}:EXP`);
+    });
+
+    it('POST /api/v1/gamification/read-chapter for the same chapter should return ALREADY_REWARDED (Idempotent)', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/gamification/read-chapter')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({ chapterId: chapterAId })
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.earnedExp).toBe(0);
+      expect(res.body.reason).toBe('ALREADY_REWARDED');
+
+      // Không ghi thêm dòng transaction nào
+      const tx = await dataSource.query(
+        `SELECT * FROM reward_transactions WHERE source_type = 'READ_CHAPTER' AND source_id = $1`,
+        [chapterAId],
+      );
+      expect(tx.length).toBe(1);
+    });
+
+    it('POST /api/v1/gamification/read-chapter should enforce daily 100 EXP cap from reading', async () => {
+      // Giả lập reader đã cày 9 chương khác nhau (90 EXP thêm -> tổng hôm nay đạt 100 EXP)
+      for (let i = 1; i <= 9; i++) {
+        const fakeChapterId = `a0000000-0000-4000-8000-00000000000${i}`;
+        await request(app.getHttpServer())
+          .post('/api/v1/gamification/read-chapter')
+          .set('Authorization', `Bearer ${readerAccessToken}`)
+          .send({ chapterId: fakeChapterId })
+          .expect(200);
+      }
+
+      // Đọc chương thứ 11 -> Đã chạm mốc 100 EXP/ngày -> Bị chặn cấp thêm EXP
+      const chapter11Id = 'a0000000-0000-4000-8000-000000000011';
+      const capRes = await request(app.getHttpServer())
+        .post('/api/v1/gamification/read-chapter')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({ chapterId: chapter11Id })
+        .expect(200);
+
+      expect(capRes.body.earnedExp).toBe(0);
+      expect(capRes.body.reason).toBe('DAILY_CAP_REACHED');
+    });
+
+    it('POST /api/v1/gamification/themes/:themeId/equip should equip TU_TIEN theme and return Luyện Khí Kỳ title', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/gamification/themes/TU_TIEN/equip')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .expect(200);
+
+      expect(res.body.activeTheme.id).toBe('TU_TIEN');
+      expect(res.body.activeTheme.name).toBe('Tu Tiên');
+      expect(res.body.activeTheme.rankTitle).toBe('Luyện Khí Kỳ');
+    });
+
+    it('POST /api/v1/gamification/level-rewards/:milestoneLevel/claim should award coins when level requirement is met', async () => {
+      // Cấp độ hiện tại của reader là 2 (tổng 110 EXP > 100 EXP Level 2 threshold)
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/gamification/level-rewards/2/claim')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .expect(200);
+
+      expect(res.body.success).toBe(true);
+      expect(res.body.milestoneLevel).toBe(2);
+      expect(res.body.rewardCoins).toBe(20); // 2 * 10 = 20 coin
+
+      // Claim lại lần 2 -> Bị từ chối 400 Bad Request (Đã nhận)
+      await request(app.getHttpServer())
+        .post('/api/v1/gamification/level-rewards/2/claim')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .expect(400);
+    });
+
+    it('GET /api/v1/gamification/leaderboard should return top reader rankings sorted by total_exp DESC', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/gamification/leaderboard?limit=10')
+        .expect(200);
+
+      expect(res.body.leaderboard).toBeDefined();
+      expect(res.body.leaderboard.length).toBeGreaterThan(0);
+      expect(res.body.leaderboard[0].rank).toBe(1);
+      expect(res.body.leaderboard[0].username).toBeDefined();
+      expect(res.body.leaderboard[0].totalExp).toBeDefined();
+    });
+
+    it('GET /api/v1/gamification/history should return paginated reward transactions ledger', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/gamification/history?page=1&limit=10')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .expect(200);
+
+      expect(res.body.items).toBeDefined();
+      expect(res.body.total).toBeGreaterThan(0);
+      expect(res.body.items[0].idempotencyKey).toBeDefined();
+      expect(res.body.items[0].balanceAfter).toBeDefined();
+    });
+  });
 });
+
 

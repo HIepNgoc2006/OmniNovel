@@ -67,7 +67,7 @@ coverage/
 playwright-report/
 test-results/
 
-# Temporary storage & media
-uploads/
-temp/
-storage/
+# Temporary storage & media (Root runtime only)
+/uploads/
+/temp/
+/storage/

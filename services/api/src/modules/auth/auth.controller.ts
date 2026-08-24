@@ -78,14 +78,15 @@ export class AuthController {
   }
 
   @Post('logout')
-  @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async logout(
-    @CurrentUser('id') userId: string,
-    @CurrentUser('jti') jti: string,
+    @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
+    @Body('refreshToken') bodyRefreshToken?: string,
   ) {
-    await this.authService.logout(userId, jti);
+    const refreshToken = req.cookies?.refreshToken || bodyRefreshToken;
+    const userId = (req as any).user?.id;
+    await this.authService.logout(refreshToken, userId);
     res.clearCookie('refreshToken', { path: '/api/v1/auth' });
     return { success: true, message: 'Đăng xuất thành công.' };
   }

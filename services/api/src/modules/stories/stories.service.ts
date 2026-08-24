@@ -2,13 +2,14 @@ import {
   Injectable,
   NotFoundException,
   ForbiddenException,
-  ConflictException,
+  BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Repository, DataSource } from 'typeorm';
 import { Story } from './entities/story.entity';
 import { StoryMember } from './entities/story-member.entity';
 import { StoryEdition } from './entities/story-edition.entity';
+import { Volume } from '../chapters/entities/volume.entity';
 import { CreateStoryDto } from './dto/create-story.dto';
 import {
   GlobalRole,
@@ -26,50 +27,54 @@ export class StoriesService {
     private storyMemberRepository: Repository<StoryMember>,
     @InjectRepository(StoryEdition)
     private editionRepository: Repository<StoryEdition>,
+    @InjectRepository(Volume)
+    private volumeRepository: Repository<Volume>,
     private redisService: RedisService,
+    private dataSource: DataSource,
   ) {}
 
   async create(userId: string, dto: CreateStoryDto) {
     const slug = this.generateSlug(dto.title);
-
     const existingSlug = await this.storyRepository.findOne({ where: { slug } });
     const finalSlug = existingSlug ? `${slug}-${Date.now().toString().slice(-4)}` : slug;
 
-    const story = this.storyRepository.create({
-      ...dto,
-      slug: finalSlug,
-      createdBy: userId,
-      visibility: StoryVisibility.PUBLIC,
+    // Transaction bảo toàn tính toàn vẹn của Story + Owner Member + Default Edition
+    return this.dataSource.transaction(async (manager) => {
+      const story = manager.create(Story, {
+        ...dto,
+        slug: finalSlug,
+        createdBy: userId,
+        visibility: StoryVisibility.PUBLIC,
+      });
+      const savedStory = await manager.save(story);
+
+      // Gán người tạo làm Story OWNER
+      const member = manager.create(StoryMember, {
+        storyId: savedStory.id,
+        userId,
+        role: StoryMemberRole.OWNER,
+      });
+      await manager.save(member);
+
+      // Tạo Default Edition
+      const defaultEdition = manager.create(StoryEdition, {
+        storyId: savedStory.id,
+        editionName: 'Bản Tiếng Việt Chuẩn',
+        language: 'vi',
+        isDefault: true,
+      });
+      const savedEdition = await manager.save(defaultEdition);
+
+      await this.redisService.del('stories:featured');
+      await this.redisService.del('stories:rankings');
+
+      return {
+        storyId: savedStory.id,
+        title: savedStory.title,
+        slug: savedStory.slug,
+        defaultEditionId: savedEdition.id,
+      };
     });
-
-    const savedStory = await this.storyRepository.save(story);
-
-    // Gán người tạo làm Story OWNER trong bảng story_members (Canonical Ownership)
-    const member = this.storyMemberRepository.create({
-      storyId: savedStory.id,
-      userId,
-      role: StoryMemberRole.OWNER,
-    });
-    await this.storyMemberRepository.save(member);
-
-    // Tạo default StoryEdition (Dòng xuất bản mặc định)
-    const defaultEdition = this.editionRepository.create({
-      storyId: savedStory.id,
-      editionName: 'Bản Tiếng Việt Chuẩn',
-      language: 'vi',
-      isDefault: true,
-    });
-    await this.editionRepository.save(defaultEdition);
-
-    // Xóa cache featured & list
-    await this.redisService.del('stories:featured');
-
-    return {
-      storyId: savedStory.id,
-      title: savedStory.title,
-      slug: savedStory.slug,
-      defaultEditionId: defaultEdition.id,
-    };
   }
 
   async findAll(query: { page?: number; limit?: number; format?: string }) {
@@ -101,7 +106,7 @@ export class StoriesService {
     };
   }
 
-  async findBySlug(slug: string) {
+  async findBySlug(slug: string, user?: any) {
     const story = await this.storyRepository.findOne({
       where: { slug },
       relations: [
@@ -115,6 +120,27 @@ export class StoriesService {
 
     if (!story) {
       throw new NotFoundException('Không tìm thấy bộ truyện yêu cầu.');
+    }
+
+    // Bảo vệ Privacy Policy
+    if (story.visibility === StoryVisibility.PRIVATE) {
+      if (!user) {
+        throw new ForbiddenException(
+          'Bộ truyện này đang ở chế độ riêng tư (PRIVATE). Vui lòng đăng nhập.',
+        );
+      }
+
+      if (user.role !== GlobalRole.ADMIN) {
+        const isMember = await this.storyMemberRepository.findOne({
+          where: { storyId: story.id, userId: user.id },
+        });
+
+        if (!isMember) {
+          throw new ForbiddenException(
+            'Bạn không có quyền truy cập vào bộ truyện riêng tư này.',
+          );
+        }
+      }
     }
 
     return story;
@@ -141,9 +167,72 @@ export class StoriesService {
       banners: hotStories.slice(0, 5),
     };
 
-    // Cache 5 phút
     await this.redisService.set(cacheKey, JSON.stringify(result), 300);
     return result;
+  }
+
+  async getRankings() {
+    const cacheKey = 'stories:rankings';
+    const cached = await this.redisService.get(cacheKey);
+
+    if (cached) {
+      try {
+        return JSON.parse(cached);
+      } catch {}
+    }
+
+    const topComics = await this.storyRepository.find({
+      where: { visibility: StoryVisibility.PUBLIC, mediaFormat: 'COMIC' as any },
+      order: { viewsCount: 'DESC' },
+      take: 10,
+    });
+
+    const topNovels = await this.storyRepository.find({
+      where: { visibility: StoryVisibility.PUBLIC, mediaFormat: 'NOVEL' as any },
+      order: { viewsCount: 'DESC' },
+      take: 10,
+    });
+
+    const result = { topComics, topNovels };
+    await this.redisService.set(cacheKey, JSON.stringify(result), 300);
+    return result;
+  }
+
+  async createEdition(storyId: string, editionName: string, language = 'vi') {
+    const existing = await this.editionRepository.findOne({
+      where: { storyId, editionName },
+    });
+
+    if (existing) {
+      throw new BadRequestException(`Ấn bản '${editionName}' đã tồn tại.`);
+    }
+
+    const edition = this.editionRepository.create({
+      storyId,
+      editionName,
+      language,
+      isDefault: false,
+    });
+
+    return this.editionRepository.save(edition);
+  }
+
+  async createVolume(storyEditionId: string, volumeNumber: number, title: string) {
+    const existing = await this.volumeRepository.findOne({
+      where: { storyEditionId, volumeNumber },
+    });
+
+    if (existing) {
+      throw new BadRequestException(`Tập số ${volumeNumber} đã tồn tại trong ấn bản này.`);
+    }
+
+    const volume = this.volumeRepository.create({
+      storyEditionId,
+      volumeNumber,
+      title,
+    });
+
+    return this.volumeRepository.save(volume);
   }
 
   async updateVisibility(
@@ -157,7 +246,6 @@ export class StoriesService {
       throw new NotFoundException('Bộ truyện không tồn tại.');
     }
 
-    // Kiểm tra quyền: Admin hoặc Story Owner
     if (userRole !== GlobalRole.ADMIN) {
       const membership = await this.storyMemberRepository.findOne({
         where: { storyId, userId, role: StoryMemberRole.OWNER },
@@ -174,6 +262,7 @@ export class StoriesService {
     await this.storyRepository.save(story);
 
     await this.redisService.del('stories:featured');
+    await this.redisService.del('stories:rankings');
 
     return {
       storyId: story.id,

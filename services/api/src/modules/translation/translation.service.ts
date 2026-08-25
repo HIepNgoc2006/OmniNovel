@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
+import * as crypto from 'crypto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import {
@@ -96,6 +97,7 @@ export class TranslationService {
         return {
           id: existingJob.id,
           status: existingJob.status,
+          inputManifest: existingJob.inputManifest,
           isDuplicate: true,
         };
       }
@@ -190,7 +192,56 @@ export class TranslationService {
       }
     }
 
-    // 6. Tạo TranslationJob ở trạng thái VALIDATING (Dual-write mitigation)
+    // 6. Kiểm tra External Provider Consent và Snapshot Glossary
+    const provider = dto.provider || 'MOCK';
+    const isExternalProvider =
+      provider !== 'MOCK' && provider !== 'LOCAL' && provider !== 'LOCAL_LLM';
+    if (isExternalProvider && dto.externalConsent !== true) {
+      throw new BadRequestException(
+        'EXTERNAL_PROVIDER_CONSENT_REQUIRED: Dịch vụ yêu cầu sự đồng ý (externalConsent = true) trước khi gửi văn bản sang nhà cung cấp bên thứ ba.',
+      );
+    }
+
+    const liveGlossaries = await this.glossaryRepo.find({
+      where: { projectId: project.id },
+    });
+
+    const sortedGlossary = liveGlossaries
+      .map((g) => ({
+        sourceTerm: g.sourceTerm.trim(),
+        targetTerm: g.targetTerm.trim(),
+        category: g.category || 'CHARACTER_NAME',
+      }))
+      .sort((a, b) => {
+        const cmpSource = a.sourceTerm.localeCompare(b.sourceTerm, 'ja');
+        if (cmpSource !== 0) return cmpSource;
+        const cmpTarget = a.targetTerm.localeCompare(b.targetTerm, 'vi');
+        if (cmpTarget !== 0) return cmpTarget;
+        return a.category.localeCompare(b.category);
+      });
+
+    const canonicalJson = JSON.stringify(sortedGlossary);
+    const glossaryHash = `sha256:${crypto.createHash('sha256').update(canonicalJson, 'utf8').digest('hex')}`;
+    const modelName = provider === 'OPENAI' ? 'gpt-4o-mini' : 'mock-model-v1';
+    const promptVersion = 'manga-ja-vi-v1';
+
+    const inputManifest = {
+      sourceLang: dto.sourceLang,
+      targetLang: dto.targetLang,
+      provider,
+      model: modelName,
+      promptVersion,
+      glossarySnapshot: sortedGlossary,
+      glossaryHash,
+      externalConsent: {
+        consented: dto.externalConsent === true,
+        consentedAt:
+          dto.externalConsent === true ? new Date().toISOString() : null,
+        provider,
+      },
+    };
+
+    // 7. Tạo TranslationJob ở trạng thái VALIDATING (Dual-write mitigation)
     const job = this.jobRepo.create({
       projectId: project.id,
       sourceVersionId: sourceVersion.id,
@@ -198,7 +249,10 @@ export class TranslationService {
       createdBy: user.id,
       idempotencyKey: idempotencyKey || null,
       status: TranslationJobStatus.VALIDATING,
-      provider: dto.provider || 'OPENAI',
+      provider,
+      modelName,
+      promptVersion,
+      inputManifest,
       attemptCount: 0,
       maxAttempts: 3,
       lastSequence: 0,
@@ -215,7 +269,12 @@ export class TranslationService {
         const existing = await this.jobRepo.findOneOrFail({
           where: { createdBy: user.id, idempotencyKey },
         });
-        return { id: existing.id, status: existing.status, isDuplicate: true };
+        return {
+          id: existing.id,
+          status: existing.status,
+          inputManifest: existing.inputManifest,
+          isDuplicate: true,
+        };
       }
       throw err;
     }
@@ -787,6 +846,15 @@ export class TranslationService {
         return null;
       }
 
+      if (!job.inputManifest) {
+        this.logger.error(
+          `[BullMQ] TranslationJob ${job.id} thiếu snapshot input_manifest. Fail-closed.`,
+        );
+        throw new Error(
+          `MISSING_INPUT_MANIFEST: TranslationJob ${job.id} không có snapshot input hợp lệ.`,
+        );
+      }
+
       job.attemptCount = attemptNumber;
       job.lastSequence = 0; // Reset sequence mỗi attempt mới
       job.status = TranslationJobStatus.PREPROCESSING;
@@ -824,8 +892,9 @@ export class TranslationService {
         attemptNumber: job.attemptCount,
         sourceDownloadUrl,
         mediaFormat: story?.mediaFormat || 'COMIC',
-        sourceLang: job.project.sourceLanguage,
-        targetLang: job.project.targetLanguage,
+        sourceLang: job.inputManifest.sourceLang || job.project.sourceLanguage,
+        targetLang: job.inputManifest.targetLang || job.project.targetLanguage,
+        inputManifest: job.inputManifest,
       };
     });
   }

@@ -210,4 +210,96 @@ describe('Translation Queue Lifecycle, Cancel & Watchdog Suite (Integration)', (
     expect(jobDb[0].status).toBe(TranslationJobStatus.READY_FOR_REVIEW);
     expect(jobDb[0].error_trace).toBeNull();
   });
+
+  it('External provider OPENAI without externalConsent=true should throw BadRequestException', async () => {
+    await expect(
+      service.createJob(
+        ownerUser,
+        {
+          chapterVersionId: versionId,
+          sourceLang: 'ja',
+          targetLang: 'vi',
+          provider: 'OPENAI',
+          externalConsent: false,
+        },
+        `consent-test-${Date.now()}`,
+      ),
+    ).rejects.toThrow('EXTERNAL_PROVIDER_CONSENT_REQUIRED');
+  });
+
+  it('Idempotency should preserve immutable inputManifest snapshot across glossary updates', async () => {
+    // 1. Tạo glossary ban đầu: ルフィ -> Luffy
+    const pRes = await dataSource.query(
+      `SELECT id FROM translation_projects WHERE story_edition_id = $1 LIMIT 1`,
+      [editionId],
+    );
+    const projId = pRes[0].id;
+    await dataSource.query(
+      `INSERT INTO translation_glossaries (project_id, source_term, target_term, category)
+       VALUES ($1, 'ルフィ', 'Luffy', 'CHARACTER_NAME')
+       ON CONFLICT (project_id, source_term) DO UPDATE SET target_term = 'Luffy'`,
+      [projId],
+    );
+
+    const idempKey = `idemp-glossary-snap-${Date.now()}`;
+    const job1 = await service.createJob(
+      ownerUser,
+      {
+        chapterVersionId: versionId,
+        sourceLang: 'ja',
+        targetLang: 'vi',
+        provider: 'MOCK',
+      },
+      idempKey,
+    );
+
+    const job1Db = await dataSource.query(
+      `SELECT input_manifest FROM translation_jobs WHERE id = $1`,
+      [job1.id],
+    );
+    const initialManifest = job1Db[0].input_manifest;
+    expect(initialManifest.glossarySnapshot[0].targetTerm).toBe('Luffy');
+    expect(initialManifest.glossaryHash).toMatch(/^sha256:/);
+
+    // 2. Editor sửa glossary: ルフィ -> Ruffy
+    await dataSource.query(
+      `UPDATE translation_glossaries SET target_term = 'Ruffy' WHERE project_id = $1 AND source_term = 'ルフィ'`,
+      [projId],
+    );
+
+    // 3. Replay createJob cùng idempotencyKey
+    const job2 = await service.createJob(
+      ownerUser,
+      {
+        chapterVersionId: versionId,
+        sourceLang: 'ja',
+        targetLang: 'vi',
+        provider: 'MOCK',
+      },
+      idempKey,
+    );
+
+    expect(job2.id).toBe(job1.id);
+    expect(job2.isDuplicate).toBe(true);
+    // Invariant: Snapshot và Hash giữ nguyên bản gốc lúc tạo job (Luffy), không bị ghi đè thành Ruffy
+    expect(job2.inputManifest.glossarySnapshot[0].targetTerm).toBe('Luffy');
+    expect(job2.inputManifest.glossaryHash).toBe(initialManifest.glossaryHash);
+  });
+
+  it('startAttempt should fail closed if input_manifest is missing/null', async () => {
+    const jobRes = await service.createJob(
+      ownerUser,
+      { chapterVersionId: versionId, sourceLang: 'ja', targetLang: 'vi', provider: 'MOCK' },
+      `fail-closed-${Date.now()}`,
+    );
+    // Cố tình đặt status = 'QUEUED', attempt_count = 0 và input_manifest = NULL
+    await dataSource.query(
+      `UPDATE translation_jobs SET status = 'QUEUED', attempt_count = 0, input_manifest = NULL WHERE id = $1`,
+      [jobRes.id],
+    );
+
+    await expect(service.startAttempt(jobRes.id, 1)).rejects.toThrow(
+      'MISSING_INPUT_MANIFEST',
+    );
+  });
 });

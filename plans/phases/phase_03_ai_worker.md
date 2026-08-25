@@ -40,8 +40,8 @@
     - 80/80 Core API E2E Lifecycle Tests (`app.e2e-spec.ts`)
     - 9/9 Python FastAPI Pytest Cases (`test_endpoints.py`)
   - [x] **VERTICAL SLICE 1: FROZEN & 100% HOÀN TẤT**
-- [/] **Vertical Slice 2: Japanese Manga-OCR & AI Processing Engine (PyTorch & Inpainting)**
-  - [x] **Vertical Slice 2A: Japanese Manga-OCR Foundation (100% HOÀN TẤT):**
+- [/] **Vertical Slice 2: Japanese Manga-OCR & AI Processing Engine (PyTorch, Translation & Inpainting)**
+  - [x] **Vertical Slice 2A: Japanese Manga-OCR Foundation (100% HOÀN TẤT & FROZEN):**
     - [x] Core Migration 0004: Drop default `confidence`, hỗ trợ nullable semantics cho OCR segments.
     - [x] Core API validation: `WorkerSegmentDto` kiểm tra toạ độ pixel (`INT >= 0`) và `confidence` nullable.
     - [x] Local Environment & Cache: Thiết lập tuyệt đối `HF_HOME` và `TORCH_HOME` vào `services/ai-worker/.cache/`.
@@ -51,10 +51,20 @@
     - [x] ProgressSink & Heartbeat Emitter: Standalone execution không làm corrupt production TranslationJob, periodic keep-alive.
     - [x] MangaOcrEngine Singleton: Concurrency guard (`asyncio.Semaphore(1)`), lazy loading, thread-safe.
     - [x] Debug Preview Generator: Xuất ảnh WebP hiển thị bounding box và nhãn `#1`, `#2` (không phụ thuộc font hệ điều hành).
-    - [x] Test Pyramid: 144/144 tests passing (117 NestJS Core + 27 Python Pytest bao gồm Real HuggingFace Model test).
-  - [ ] **Vertical Slice 2B: Inpainting & Typesetting:**
+    - [x] Test Pyramid: 150/150 tests passing (119 NestJS Core + 31 Python Pytest bao gồm Real HuggingFace Model test).
+  - [x] **Vertical Slice 2B: Contextual Translation & Glossary Engine (100% HOÀN TẤT):**
+    - [x] Core Migration 0005: Thêm `input_manifest JSONB` vào `translation_jobs` để snapshot cố định tham số và glossary cho toàn bộ retry lifecycle.
+    - [x] Core Service & DTO: Bổ sung `externalConsent` enforce cho external providers (HTTP 400 `EXTERNAL_PROVIDER_CONSENT_REQUIRED`), canonical glossary hashing (`sha256`), bảo toàn `inputManifest` qua idempotency replay, và fail-closed khi `input_manifest IS NULL`.
+    - [x] Prompt Registry: Quản lý versioned system prompts (`manga-ja-vi-v1`), phân định ranh giới Prompt Injection.
+    - [x] Glossary Engine: Khớp từ điển Shadow String NFKC (nhận diện half-width/full-width `ＡＢＣ` vs `ABC`), Longest-match-first, bảo toàn tính bất biến của `rawText`.
+    - [x] Context Builder: Sinh và validate `segmentKey` duy nhất (`p{page:04d}-s{sort:04d}`), phát hiện va chạm collision, xây dựng sliding window context theo trang và batching theo ngân sách ký tự.
+    - [x] Translation Providers & Strict Validation: `MockTranslationProvider` và `OpenAICompatibleTranslationProvider` với fail-fast error handling (401/429/500), xác thực 1:1 segmentKey `set(output) == set(input)` không cho phép thiếu/thừa/trùng key.
+    - [x] Manga Translation Pipeline: Kết nối OCR result, glossary snapshot, translation batching và phát progress/heartbeats ở stage `TRANSLATING`.
+    - [x] Test Pyramid: 175/175 tests green (103 E2E/Integration + 22 Unit NestJS Core + 50 Pytest AI Worker).
+  - [ ] **Vertical Slice 2C: Inpainting & Typesetting:**
     - [ ] Inpainting xóa thoại nguyên bản bằng LaMa / OpenCV inpaint.
     - [ ] Typesetting tự động: Wrap text tiếng Việt, chọn font Manga, tự động co giãn font theo khung bóng thoại.
+    - [ ] Nối full pipeline từ PREPROCESSING đến READY_FOR_REVIEW.
 - [ ] **Vertical Slice 3: Light Novel Pipeline Slice**
   - [ ] Text chunking & Segment alignment
   - [ ] Khớp từ điển thuật ngữ (`glossaries` table) chống sai lệch tên riêng/chiêu thức

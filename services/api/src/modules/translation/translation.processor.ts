@@ -93,6 +93,7 @@ export class TranslationProcessor extends WorkerHost {
           outputPrefix: `ai/jobs/${translationJobId}/attempt-${attemptNumber}/`,
           sourceLang: jobContext.sourceLang,
           targetLang: jobContext.targetLang,
+          inputManifest: jobContext.inputManifest,
         }),
         signal: abortController.signal,
       });

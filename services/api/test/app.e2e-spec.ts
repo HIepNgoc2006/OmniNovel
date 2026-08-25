@@ -1364,6 +1364,23 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       await dataSource.query(`DELETE FROM upload_sessions WHERE id = $1`, [secondSession[0].id]);
     });
 
+    it('POST /api/v1/ai/jobs with provider OPENAI without externalConsent should return 400 Bad Request', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/ai/jobs')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .set('Idempotency-Key', 'a0000000-0000-4000-a000-000000000000')
+        .send({
+          chapterVersionId: versionA1Id,
+          sourceLang: 'ja',
+          targetLang: 'vi',
+          provider: 'OPENAI',
+          externalConsent: false,
+        })
+        .expect(400);
+
+      expect(res.body.error.message).toContain('EXTERNAL_PROVIDER_CONSENT_REQUIRED');
+    });
+
     it('POST /api/v1/ai/jobs with valid payload should pin source artifact, create job in QUEUED and return 202 Accepted', async () => {
       const idempotencyKey = 'a0000000-0000-4000-a000-000000000001';
       const res = await request(app.getHttpServer())
@@ -1375,6 +1392,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
           sourceLang: 'ja',
           targetLang: 'vi',
           provider: 'OPENAI',
+          externalConsent: true,
         })
         .expect(202);
 
@@ -1405,6 +1423,8 @@ describe('OmniNovel Backend Core API (e2e)', () => {
           chapterVersionId: versionA1Id,
           sourceLang: 'ja',
           targetLang: 'vi',
+          provider: 'OPENAI',
+          externalConsent: true,
         })
         .expect(202);
 
@@ -1421,6 +1441,8 @@ describe('OmniNovel Backend Core API (e2e)', () => {
           chapterVersionId: versionA1Id,
           sourceLang: 'ja',
           targetLang: 'vi',
+          provider: 'OPENAI',
+          externalConsent: true,
         })
         .expect(202);
 

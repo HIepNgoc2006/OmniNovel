@@ -90,6 +90,9 @@ export class TranslationJob {
   @Column({ name: 'prompt_version', length: 20, default: 'v1.0' })
   promptVersion: string;
 
+  @Column({ name: 'input_manifest', type: 'jsonb', nullable: true })
+  inputManifest: Record<string, any> | null;
+
   @Column({ name: 'result_manifest', type: 'jsonb', nullable: true })
   resultManifest: Record<string, any> | null;
 

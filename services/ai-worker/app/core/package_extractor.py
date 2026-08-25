@@ -162,6 +162,10 @@ def extract_chapter_package(zip_path: Path, output_dir: Path) -> List[ExtractedP
             try:
                 with Image.open(target_path) as img:
                     width, height = img.size
+                    if width > settings.MAX_IMAGE_AXIS_DIMENSION or height > settings.MAX_IMAGE_AXIS_DIMENSION:
+                        raise ValueError(
+                            f"Image dimensions {width}x{height} exceed max axis limit ({settings.MAX_IMAGE_AXIS_DIMENSION}px)"
+                        )
                     if width * height > settings.MAX_IMAGE_PIXELS:
                         raise ValueError(
                             f"Image dimensions {width}x{height} exceed max pixel limit ({settings.MAX_IMAGE_PIXELS})"

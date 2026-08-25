@@ -1,3 +1,5 @@
+import asyncio
+import shutil
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,12 +48,13 @@ class MangaOcrResult:
 class MangaOcrPipeline:
     """
     Vertical Slice 2A: Standalone Japanese Manga-OCR Pipeline:
-    1. Extract ZIP an toàn với Zip-Bomb / Traversal / PIL Limits
-    2. OpenCV Bubble & Text Region Detection
+    1. Extract ZIP an toàn với Zip-Bomb / Traversal / PIL Limits (chạy to_thread)
+    2. OpenCV Bubble & Text Region Detection (chạy to_thread)
     3. Deterministic RTL + TTB Reading Order Heuristic
     4. Manga-OCR Inference dưới concurrency lock & cache cô lập
-    5. WebP OCR Debug Preview Generation
+    5. WebP OCR Debug Preview Generation (chạy to_thread)
     6. Heartbeat & Progress Emitter độc lập qua ProgressSink
+    7. Tự động dọn dẹp thư mục giải nén tạm trong finally block
     """
 
     def __init__(
@@ -69,16 +72,19 @@ class MangaOcrPipeline:
         zip_path: Path,
         work_dir: Path,
         generate_previews: bool = True,
+        cleanup_extracted: bool = True,
     ) -> MangaOcrResult:
         start_time = time.perf_counter()
         emitter = HeartbeatEmitter(self.sink, stage="OCR", interval_seconds=15.0)
         emitter.start()
+        extracted_dir = work_dir / "extracted"
 
         try:
-            # 1. Giải nén an toàn
+            # 1. Giải nén an toàn trong threadpool
             await self.sink.emit_progress(progress=10, stage="OCR", message="Extracting source ZIP archive")
-            extracted_dir = work_dir / "extracted"
-            extracted_pages: List[ExtractedPageRef] = extract_chapter_package(zip_path, extracted_dir)
+            extracted_pages: List[ExtractedPageRef] = await asyncio.to_thread(
+                extract_chapter_package, zip_path, extracted_dir
+            )
 
             total_pages = len(extracted_pages)
             page_results: List[MangaOcrPageResult] = []
@@ -104,8 +110,10 @@ class MangaOcrPipeline:
                 if full_img is None:
                     raise ValueError(f"Failed to read image from {page.file_path}")
 
-                # Phát hiện vùng thoại
-                detected_regions = self.detector.detect_regions(page.file_path)
+                # Phát hiện vùng thoại trong threadpool
+                detected_regions = await asyncio.to_thread(
+                    self.detector.detect_regions, page.file_path
+                )
 
                 # Sắp xếp thứ tự đọc Manga RTL / TTB
                 ordered_regions = sort_manga_reading_order(
@@ -136,11 +144,13 @@ class MangaOcrPipeline:
                     page_segments.append(seg_result)
                     preview_items.append(SegmentPreviewItem(sort_order=s_idx, region=r))
 
-                # Tạo WebP Debug Preview
+                # Tạo WebP Debug Preview trong threadpool
                 preview_path: Optional[Path] = None
                 if generate_previews:
                     preview_file = preview_dir / f"page_{page.page_number:04d}_preview.webp"
-                    generate_ocr_debug_preview(page.file_path, preview_items, preview_file)
+                    await asyncio.to_thread(
+                        generate_ocr_debug_preview, page.file_path, preview_items, preview_file
+                    )
                     preview_path = preview_file
 
                 all_segments_count += len(page_segments)
@@ -166,3 +176,6 @@ class MangaOcrPipeline:
 
         finally:
             await emitter.stop()
+            # Dọn dẹp thư mục giải nén tạm
+            if cleanup_extracted and extracted_dir.exists():
+                shutil.rmtree(extracted_dir, ignore_errors=True)

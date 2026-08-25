@@ -1,5 +1,6 @@
+import uuid
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 import httpx
 from app.core.config import settings
 
@@ -44,18 +45,25 @@ class RecordingProgressSink(ProgressSink):
 
 
 class CoreCallbackProgressSink(ProgressSink):
-    """Sink chuyển tiếp event lên NestJS Core API Callback Endpoint."""
+    """Sink chuyển tiếp event lên NestJS Core API Callback Endpoint theo đúng Contract Slice 1."""
 
-    def __init__(self, job_id: str, attempt_number: int, sequence_start: int = 1):
+    def __init__(
+        self,
+        job_id: str,
+        attempt_number: int,
+        sequence_start: int = 1,
+        client: Optional[httpx.AsyncClient] = None,
+    ):
         self.job_id = job_id
         self.attempt_number = attempt_number
         self.sequence = sequence_start
+        self._client = client
 
     async def emit_progress(
         self, progress: int, stage: str, heartbeat: bool = False, message: str = ""
     ) -> None:
         payload = {
-            "eventId": f"{self.job_id}-{self.attempt_number}-{self.sequence}",
+            "eventId": str(uuid.uuid4()),
             "attemptNumber": self.attempt_number,
             "sequence": self.sequence,
             "stage": stage,
@@ -64,9 +72,13 @@ class CoreCallbackProgressSink(ProgressSink):
         }
         self.sequence += 1
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            await client.post(
-                f"{settings.CORE_API_INTERNAL_URL}/api/v1/internal/ai/jobs/{self.job_id}/events",
-                json=payload,
-                headers={"X-Worker-Secret": settings.AI_WORKER_SECRET},
-            )
+        url = f"{settings.CORE_API_INTERNAL_URL}/internal/v1/ai/jobs/{self.job_id}/events"
+        headers = {"X-Internal-Service-Key": settings.AI_WORKER_SECRET}
+
+        if self._client is not None:
+            response = await self._client.post(url, json=payload, headers=headers)
+            response.raise_for_status()
+        else:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, json=payload, headers=headers)
+                response.raise_for_status()

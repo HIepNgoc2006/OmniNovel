@@ -1,6 +1,7 @@
 from pathlib import Path
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
 from app.pipeline.detector import MangaBubbleDetector
 
 
@@ -36,6 +37,30 @@ def test_detector_finds_bubbles(tmp_path: Path):
         assert isinstance(r.bbox_h, int) and r.bbox_h > 0
         assert r.bbox_x + r.bbox_w <= 1000
         assert r.bbox_y + r.bbox_h <= 1500
+
+
+def test_detector_detects_vertical_text_bubble(tmp_path: Path):
+    # Tạo trang Manga chứa bong bóng thoại dọc chuẩn Manga Nhật (Vertical layout)
+    pil_img = Image.new("RGB", (800, 1200), (255, 255, 255))
+    draw = ImageDraw.Draw(pil_img)
+
+    # Khung thoại dọc: x=550, y=100, w=150, h=400
+    draw.ellipse([(550, 100), (700, 500)], outline=(0, 0, 0), width=3)
+
+    # Vẽ chuỗi ký tự dọc dạng nét
+    for y_offset in range(150, 450, 60):
+        draw.rectangle([(610, y_offset), (640, y_offset + 40)], fill=(0, 0, 0))
+
+    test_img_path = tmp_path / "vertical_page.png"
+    pil_img.save(test_img_path)
+
+    detector = MangaBubbleDetector(min_area=500, min_dim=20)
+    regions = detector.detect_regions(test_img_path)
+
+    assert len(regions) >= 1
+    vert_region = [r for r in regions if r.bbox_x >= 500 and r.bbox_y >= 80][0]
+    assert vert_region.bbox_h > vert_region.bbox_w  # Chiều cao lớn hơn chiều rộng (dọc)
+    assert vert_region.bbox_x >= 0 and vert_region.bbox_y >= 0
 
 
 def test_detector_handles_blank_image(tmp_path: Path):

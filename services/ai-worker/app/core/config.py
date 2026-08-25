@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     COMPRESSION_RATIO_LIMIT: float = 100.0  # 100:1
     MAX_ZIP_ENTRIES: int = 500
     MAX_MANGA_PAGES: int = 200
+    MAX_IMAGE_AXIS_DIMENSION: int = 4096
     MAX_IMAGE_PIXELS: int = 4096 * 4096  # 16MP per page
 
     model_config = SettingsConfigDict(

@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { Interval } from '@nestjs/schedule';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, LessThan, In } from 'typeorm';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -20,8 +21,9 @@ export class TranslationWatchdogService {
   ) {}
 
   /**
-   * 1. Reconcile các job bị kẹt ở VALIDATING do lỗi enqueue ban đầu
+   * 1. Reconcile các job bị kẹt ở VALIDATING do lỗi enqueue ban đầu (Mỗi 60s)
    */
+  @Interval(60000)
   async reconcileValidatingJobs() {
     const thirtySecondsAgo = new Date(Date.now() - 30 * 1000);
     const stuckJobs = await this.jobRepo.find({
@@ -59,8 +61,9 @@ export class TranslationWatchdogService {
   }
 
   /**
-   * 2. Kiểm tra heartbeat của các job đang xử lý (heartbeat > 60s)
+   * 2. Kiểm tra heartbeat của các job đang xử lý (heartbeat > 60s) (Mỗi 30s)
    */
+  @Interval(30000)
   async checkStalledJobs() {
     const sixtySecondsAgo = new Date(Date.now() - 60 * 1000);
     const activeStatuses = [
@@ -83,8 +86,8 @@ export class TranslationWatchdogService {
       this.logger.warn(
         `[Watchdog] Phát hiện TranslationJob ${job.id} bị mất heartbeat quá 60s (Lần heartbeat cuối: ${job.heartbeatAt}). Kích hoạt abort attempt hiện tại để BullMQ xử lý retry.`,
       );
-      // Abort attempt hiện tại -> Processor catch lỗi -> BullMQ retry theo chu trình chuẩn
-      this.processor.abortAttempt(job.id);
+      // Abort attempt hiện tại do stalled -> Processor catch lỗi -> BullMQ retry theo chu trình chuẩn
+      this.processor.abortAttempt(job.id, 'STALLED');
     }
   }
 }

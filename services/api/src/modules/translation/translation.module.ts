@@ -1,6 +1,9 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { BullModule } from '@nestjs/bullmq';
+import { JwtModule } from '@nestjs/jwt';
+import { StorageModule } from '../storage/storage.module';
 import { TranslationJob } from './entities/translation-job.entity';
 import { TranslationProject } from './entities/translation-project.entity';
 import { TranslationGlossary } from './entities/translation-glossary.entity';
@@ -33,6 +36,18 @@ import { InternalServiceKeyGuard } from '../../common/guards/internal-service-ke
     ]),
     BullModule.registerQueue({
       name: 'translation',
+    }),
+    StorageModule,
+    JwtModule.registerAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        secret:
+          configService.get<string>('JWT_SECRET') ||
+          'super_secret_jwt_key_omninovel_2026',
+        signOptions: {
+          expiresIn: configService.get<string>('JWT_EXPIRATION') || '15m',
+        },
+      }),
     }),
   ],
   controllers: [TranslationController, InternalAiController],

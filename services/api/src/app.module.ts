@@ -1,5 +1,6 @@
 import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { BullModule } from '@nestjs/bullmq';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
@@ -19,8 +20,9 @@ import { CorrelationIdMiddleware } from './common/middleware/correlation-id.midd
     ConfigModule.forRoot({
       isGlobal: true,
       validate: validateEnv,
-      envFilePath: ['../../.env', '.env'],
+      envFilePath: ['../../.env', '../.env', '.env'],
     }),
+    ScheduleModule.forRoot(),
     DatabaseModule,
     RedisModule,
     BullModule.forRootAsync({

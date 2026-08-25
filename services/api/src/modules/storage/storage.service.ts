@@ -540,4 +540,49 @@ export class StorageService {
         return '.bin';
     }
   }
+
+  // 4. INTERNAL HELPER METHODS CHO TRANSLATION VÀ AI WORKER PIPELINE
+  getInternalBucket(isManga = true): string {
+    return isManga ? this.mangaBucket : this.novelBucket;
+  }
+
+  async createInternalDownloadUrl(key: string, isManga = true, expiresInSeconds = 900): Promise<string> {
+    const bucket = this.getInternalBucket(isManga);
+    const command = new GetObjectCommand({
+      Bucket: bucket,
+      Key: key,
+    });
+    return await getSignedUrl(this.s3Client, command, { expiresIn: expiresInSeconds });
+  }
+
+  async createInternalUploadUrl(
+    key: string,
+    contentType = 'image/webp',
+    isManga = true,
+    expiresInSeconds = 900,
+  ): Promise<string> {
+    const bucket = this.getInternalBucket(isManga);
+    const command = new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      ContentType: contentType,
+    });
+    return await getSignedUrl(this.s3Client, command, { expiresIn: expiresInSeconds });
+  }
+
+  async headInternalObject(key: string, isManga = true): Promise<boolean> {
+    const bucket = this.getInternalBucket(isManga);
+    try {
+      await this.s3Client.send(
+        new HeadObjectCommand({
+          Bucket: bucket,
+          Key: key,
+        }),
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
 }
+

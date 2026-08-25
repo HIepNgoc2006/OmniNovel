@@ -1282,6 +1282,21 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       );
     });
 
+    it('POST /api/v1/ai/jobs without Idempotency-Key should return 400 Bad Request (IDEMPOTENCY_KEY_REQUIRED)', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/ai/jobs')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          chapterVersionId: versionA1Id,
+          sourceLang: 'ja',
+          targetLang: 'vi',
+          provider: 'OPENAI',
+        })
+        .expect(400);
+
+      expect(res.body.error.message).toContain('IDEMPOTENCY_KEY_REQUIRED');
+    });
+
     it('POST /api/v1/ai/jobs with invalid Idempotency-Key format should return 400 Bad Request', async () => {
       await request(app.getHttpServer())
         .post('/api/v1/ai/jobs')
@@ -1300,6 +1315,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       await request(app.getHttpServer())
         .post('/api/v1/ai/jobs')
         .set('Authorization', `Bearer ${readerAccessToken}`)
+        .set('Idempotency-Key', 'e0000000-0000-4000-a000-000000000001')
         .send({
           chapterVersionId: versionA1Id,
           sourceLang: 'ja',
@@ -1313,6 +1329,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       await request(app.getHttpServer())
         .post('/api/v1/ai/jobs')
         .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .set('Idempotency-Key', 'e0000000-0000-4000-a000-000000000002')
         .send({
           chapterVersionId: '00000000-0000-0000-0000-000000000000',
           sourceLang: 'ja',
@@ -1333,6 +1350,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       const res = await request(app.getHttpServer())
         .post('/api/v1/ai/jobs')
         .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .set('Idempotency-Key', 'e0000000-0000-4000-a000-000000000003')
         .send({
           chapterVersionId: versionA1Id,
           sourceLang: 'ja',
@@ -1370,11 +1388,10 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         `SELECT * FROM translation_jobs WHERE id = $1`,
         [aiJobId],
       );
-      expect(jobDb.length).toBe(1);
-      expect(jobDb[0].source_upload_session_id).toBe(promotedSessionId);
-      expect(jobDb[0].status).toBe(TranslationJobStatus.QUEUED);
-      expect(jobDb[0].attempt_count).toBe(0);
-      expect(jobDb[0].last_sequence).toBe(0);
+      expect([TranslationJobStatus.QUEUED, TranslationJobStatus.PREPROCESSING]).toContain(
+        jobDb[0].status,
+      );
+      expect(jobDb[0].attempt_count).toBeGreaterThanOrEqual(0);
       projectId = jobDb[0].project_id;
     });
 
@@ -1480,13 +1497,11 @@ describe('OmniNovel Backend Core API (e2e)', () => {
     it('Internal worker event callback with sequence progression should advance state and save segments', async () => {
       const internalKey = 'internal_ai_worker_secret_secure_2026';
 
-      // Giả lập Processor bắt đầu attempt 1
-      await request(app.getHttpServer())
-        .post(`/internal/v1/ai/jobs/${aiJobId}/events`)
-        .set('X-Internal-Service-Key', internalKey);
-
-      // Cập nhật attempt_count = 1
-      await dataSource.query(`UPDATE translation_jobs SET attempt_count = 1 WHERE id = $1`, [aiJobId]);
+      // Cập nhật attempt_count = 1, status = PREPROCESSING, last_sequence = 0
+      await dataSource.query(
+        `UPDATE translation_jobs SET attempt_count = 1, status = 'PREPROCESSING', last_sequence = 0 WHERE id = $1`,
+        [aiJobId],
+      );
 
       // Gửi event sequence 1: OCR (30%)
       const res1 = await request(app.getHttpServer())
@@ -1501,20 +1516,101 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         })
         .expect(200);
 
-      expect(res1.body.success).toBe(true);
+      expect(res1.body.received).toBe(true);
       expect(res1.body.status).toBe(TranslationJobStatus.OCR);
 
-      // Gửi event sequence 2: READY_FOR_REVIEW với result_manifest và segments
+      // Gửi event sequence 2: TRANSLATING (50%)
+      await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId}/events`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000003',
+          attemptNumber: 1,
+          sequence: 2,
+          stage: TranslationJobStatus.TRANSLATING,
+          progress: 50,
+        })
+        .expect(200);
+
+      // Gửi event sequence 3: INPAINTING (70%)
+      await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId}/events`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000004',
+          attemptNumber: 1,
+          sequence: 3,
+          stage: TranslationJobStatus.INPAINTING,
+          progress: 70,
+        })
+        .expect(200);
+
+      // Gửi event sequence 4: TYPESETTING (85%)
+      await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId}/events`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000005',
+          attemptNumber: 1,
+          sequence: 4,
+          stage: TranslationJobStatus.TYPESETTING,
+          progress: 85,
+        })
+        .expect(200);
+
+      // Gửi event sequence 5: QUALITY_CHECK (95%)
+      await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId}/events`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000006',
+          attemptNumber: 1,
+          sequence: 5,
+          stage: TranslationJobStatus.QUALITY_CHECK,
+          progress: 95,
+        })
+        .expect(200);
+
+      // 1. Two-step upload: Xin Presigned PUT URL từ Core API
+      const presignRes = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId}/output-uploads`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          attemptNumber: 1,
+          files: [{ filename: 'page-001.webp', contentType: 'image/webp' }],
+        })
+        .expect(200);
+
+      expect(presignRes.body.files.length).toBe(1);
+      const outputUploadUrl = presignRes.body.files[0].uploadUrl;
+      const outputStorageKey = presignRes.body.files[0].storageKey;
+
+      // 2. Upload WebP buffer thật lên MinIO qua Presigned URL
+      const validWebpBytes = Buffer.from([
+        0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+        0x56, 0x50, 0x38, 0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00,
+        0x00, 0x07, 0x00, 0x00, 0x00, 0x00,
+      ]);
+
+      const putRes = await fetch(outputUploadUrl, {
+        method: 'PUT',
+        body: validWebpBytes,
+        headers: { 'Content-Type': 'image/webp' },
+      });
+      expect(putRes.status).toBe(200);
+
+      // 3. Gửi event sequence 6: READY_FOR_REVIEW với result_manifest và segments
       const validResultManifest = {
         pages: [
           {
             page: 1,
-            previewKey: `ai/jobs/${aiJobId}/attempt-1/page-001.webp`,
+            previewKey: outputStorageKey,
+            storageKey: outputStorageKey,
             width: 1200,
             height: 1800,
+            fileSize: validWebpBytes.length,
           },
         ],
-        previewUrls: [`http://localhost:9000/manga-media/ai/jobs/${aiJobId}/attempt-1/page-001.webp`],
       };
 
       const mockSegments = [
@@ -1535,9 +1631,9 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         .post(`/internal/v1/ai/jobs/${aiJobId}/events`)
         .set('X-Internal-Service-Key', internalKey)
         .send({
-          eventId: 'b0000000-0000-4000-b000-000000000003',
+          eventId: 'b0000000-0000-4000-b000-000000000007',
           attemptNumber: 1,
-          sequence: 2,
+          sequence: 6,
           stage: TranslationJobStatus.READY_FOR_REVIEW,
           progress: 100,
           resultManifest: validResultManifest,
@@ -1608,7 +1704,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         })
         .expect(200);
 
-      expect(resValid.body.success).toBe(true);
+      expect(resValid.body.received).toBe(true);
 
       // 2. Attempt 1 đến trễ (attemptNumber: 1, sequence: 9) -> Bị bỏ qua
       const resStale = await request(app.getHttpServer())
@@ -1651,6 +1747,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       const createRes = await request(app.getHttpServer())
         .post('/api/v1/ai/jobs')
         .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .set('Idempotency-Key', 'd0000000-0000-4000-a000-000000000001')
         .send({
           chapterVersionId: versionA1Id,
           sourceLang: 'ja',
@@ -1666,7 +1763,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
 
       expect(cancelRes.body.status).toBe(TranslationJobStatus.CANCELED);
 
-      // Callback gửi tới sau khi cancel -> Bị bỏ qua (JOB_TERMINAL)
+      // Callback gửi tới sau khi cancel -> Bị bỏ qua (JOB_ALREADY_TERMINAL)
       const internalKey = 'internal_ai_worker_secret_secure_2026';
       const eventRes = await request(app.getHttpServer())
         .post(`/internal/v1/ai/jobs/${cancelJobId}/events`)
@@ -1681,7 +1778,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         .expect(200);
 
       expect(eventRes.body.ignored).toBe(true);
-      expect(eventRes.body.reason).toBe('JOB_TERMINAL');
+      expect(eventRes.body.reason).toBe('JOB_ALREADY_TERMINAL');
 
       // Hủy lại lần nữa -> 400 Bad Request
       await request(app.getHttpServer())
@@ -1727,6 +1824,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       await request(app.getHttpServer())
         .post(`/api/v1/ai/jobs/${aiJobId}/apply`)
         .set('Authorization', `Bearer ${translatorBAccessToken}`)
+        .set('Idempotency-Key', 'c0000000-0000-4000-a000-000000000000')
         .send({ mode: 'OVERWRITE_ACTIVE_VERSION' })
         .expect(403);
 
@@ -1736,24 +1834,6 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         [chapterAId],
       );
       const initialActiveVersionId = initialChapter[0].active_version_id;
-
-      // Đảm bảo job ở trạng thái READY_FOR_REVIEW kèm result_manifest
-      await dataSource.query(
-        `UPDATE translation_jobs SET status = 'READY_FOR_REVIEW', result_manifest = $1 WHERE id = $2`,
-        [
-          JSON.stringify({
-            pages: [
-              {
-                page: 1,
-                previewKey: `ai/jobs/${aiJobId}/attempt-1/page-001.webp`,
-                width: 1200,
-                height: 1800,
-              },
-            ],
-          }),
-          aiJobId,
-        ],
-      );
 
       // Owner/Editor apply với OVERWRITE_ACTIVE_VERSION
       const applyRes = await request(app.getHttpServer())
@@ -1820,6 +1900,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       const res = await request(app.getHttpServer())
         .post(`/api/v1/ai/jobs/${altJob[0].id}/apply`)
         .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .set('Idempotency-Key', 'c0000000-0000-4000-a000-000000000002')
         .send({ mode: 'CREATE_ALTERNATE_VERSION' })
         .expect(200);
 

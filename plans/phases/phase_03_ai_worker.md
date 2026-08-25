@@ -16,16 +16,25 @@
 ---
 
 ### Danh Sách Đầu Việc (Checklist):
-- [x] **Vertical Slice 1: Khởi tạo Hạ tầng & Orchestration Contract**
+- [x] **Vertical Slice 1: Khởi tạo Hạ tầng, Orchestration Contract & Toàn Diện Hardening**
   - [x] Thiết lập môi trường cục bộ cô lập `services/ai-worker` (`.venv` Python 3.10+ / requirements.txt / FastAPI skeleton)
   - [x] Migration 0003: TypeORM Migration thêm orchestration metadata, idempotency & fencing sequence
   - [x] Xây dựng BullMQ Producer & Consumer trong NestJS Core API (`services/api/src/modules/translation`) quản lý đúng 14 trạng thái của `TranslationJob`
   - [x] Xây dựng REST Worker Contract hai chiều giữa NestJS và Python FastAPI (`/internal/v1/ai/jobs/:id/events` có fencing token và safe buffer `timingSafeEqual`)
-  - [x] Tích hợp Watchdog Reconciler (khôi phục `VALIDATING` stalled) và Heartbeat Watchdog (abort HTTP connection khi worker treo)
-  - [x] Xây dựng WebSocket Gateway (`/ws/ai`) thông báo tiến trình đa kênh (`job_progress`, `job_ready_for_review`, `job_failed`, `job_canceled`)
-  - [x] Xây dựng API Huỷ Job (`POST /api/v1/ai/jobs/:id/cancel`)
-  - [x] Xây dựng 2 chiến lược xuất bản chuẩn immutable (`OVERWRITE_ACTIVE_VERSION` & `CREATE_ALTERNATE_VERSION`)
-  - [x] Viết và hoàn thiện 21 E2E test cases (Describe 8) + 3 Python pytest cases (100% Green).
+  - [x] Hardening State Machine: Enforce chặt 14 trạng thái, cho phép heartbeat progress `same-state`, chặn nhảy cóc bất hợp pháp
+  - [x] Hardening Pessimistic Locking & Fencing: Lock `FOR UPDATE` trong giao dịch DB, kiểm tra HEAD MinIO non-blocking ngoài transaction
+  - [x] Hardening Retry & Cancel Lifecycle: `abortAttempt` với reason `STALLED` / `CANCELED`, anti-resurrection guard chặn tái kích hoạt job đã hủy
+  - [x] Two-Step Presigned Output Upload: Core API cấp Presigned PUT URLs, Worker upload WebP thật lên MinIO, Core verify object tồn tại trước khi duyệt `READY_FOR_REVIEW`
+  - [x] WebSocket Security & RBAC: Socket.IO Middleware xác thực JWT nguyên tử, RBAC IDOR StoryMember check cho `subscribe_job`
+  - [x] Test Pyramid Toàn Diện Đạt 100% Green:
+    - 19/19 Unit Tests (`state-machine.spec.ts`, `fencing.spec.ts`)
+    - 4/4 WebSocket Security E2E Tests (`translation-websocket.e2e-spec.ts`)
+    - DB Concurrency Integration Tests (`translation-db.integration-spec.ts`)
+    - BullMQ Lifecycle & Watchdog Integration Tests (`translation-queue.integration-spec.ts`)
+    - Migration Integration Tests (`migration-0003.integration-spec.ts`)
+    - 21/21 Core API Orchestration E2E Tests (`app.e2e-spec.ts` Describe 8)
+    - 5/5 Python FastAPI Pytest Cases (`test_endpoints.py`)
+  - [x] **VERTICAL SLICE 1: FROZEN & 100% HOÀN TẤT**
 - [ ] **Vertical Slice 2: Japanese Manga-OCR & AI Processing Engine (PyTorch & Inpainting)**
   - [ ] Tải package an toàn từ `upload_sessions.final_key` trong MinIO
   - [ ] Text Bubble Detection (Contour / Bounding Box)

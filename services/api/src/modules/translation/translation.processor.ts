@@ -1,6 +1,6 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Job } from 'bullmq';
-import { Logger, Injectable } from '@nestjs/common';
+import { Logger, Injectable, Inject, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { TranslationService } from './translation.service';
 
@@ -10,8 +10,11 @@ export class TranslationProcessor extends WorkerHost {
   private readonly logger = new Logger(TranslationProcessor.name);
   public readonly activeAbortControllers: Map<string, AbortController> =
     new Map();
+  public readonly abortReasons: Map<string, 'STALLED' | 'CANCELED'> =
+    new Map();
 
   constructor(
+    @Inject(forwardRef(() => TranslationService))
     private readonly translationService: TranslationService,
     private readonly configService: ConfigService,
   ) {
@@ -19,14 +22,18 @@ export class TranslationProcessor extends WorkerHost {
   }
 
   /**
-   * Cho phép Watchdog hủy attempt đang chạy khi heartbeat quá 60s
+   * Cho phép Watchdog hoặc User Cancel hủy attempt đang chạy.
    */
-  abortAttempt(translationJobId: string): boolean {
+  abortAttempt(
+    translationJobId: string,
+    reason: 'STALLED' | 'CANCELED' = 'STALLED',
+  ): boolean {
     const controller = this.activeAbortControllers.get(translationJobId);
     if (controller) {
       this.logger.warn(
-        `Watchdog aborting active worker attempt for TranslationJob ${translationJobId}`,
+        `[BullMQ] Aborting active worker attempt for TranslationJob ${translationJobId} (Reason: ${reason})`,
       );
+      this.abortReasons.set(translationJobId, reason);
       controller.abort();
       this.activeAbortControllers.delete(translationJobId);
       return true;
@@ -43,8 +50,18 @@ export class TranslationProcessor extends WorkerHost {
       `[BullMQ] Bắt đầu xử lý TranslationJob ${translationJobId} (Attempt ${attemptNumber}/${maxAttempts})`,
     );
 
-    // 1. Reset sequence = 0 và cập nhật attemptCount trong DB
-    await this.translationService.startAttempt(translationJobId, attemptNumber);
+    // 1. Reset sequence = 0 và cập nhật attemptCount trong DB qua anti-resurrection guard
+    const jobContext = await this.translationService.startAttempt(
+      translationJobId,
+      attemptNumber,
+    );
+
+    if (!jobContext) {
+      this.logger.warn(
+        `[BullMQ] TranslationJob ${translationJobId} đã ở trạng thái Terminal/CANCELED. Dừng xử lý attempt ${attemptNumber}.`,
+      );
+      return { skipped: true, reason: 'JOB_TERMINAL_OR_CANCELED' };
+    }
 
     // 2. Tạo AbortController cho attempt hiện tại
     const abortController = new AbortController();
@@ -54,30 +71,34 @@ export class TranslationProcessor extends WorkerHost {
       'AI_WORKER_BASE_URL',
       'http://localhost:8001',
     );
-    const aiWorkerSecret = this.configService.get<string>(
-      'AI_WORKER_SECRET',
-      'internal_ai_worker_secret_secure_2026',
-    );
+    const aiWorkerSecret = this.configService.get<string>('AI_WORKER_SECRET');
+
+    // Dynamic routing: Manga vs Novel
+    const endpoint =
+      jobContext.mediaFormat === 'NOVEL'
+        ? `${aiWorkerBaseUrl}/internal/v1/jobs/process-novel`
+        : `${aiWorkerBaseUrl}/internal/v1/jobs/process-manga`;
 
     try {
-      const response = await fetch(
-        `${aiWorkerBaseUrl}/internal/v1/jobs/process-manga`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Internal-Service-Key': aiWorkerSecret,
-          },
-          body: JSON.stringify({
-            jobId: translationJobId,
-            attemptNumber,
-            outputPrefix: `ai/jobs/${translationJobId}/attempt-${attemptNumber}/`,
-          }),
-          signal: abortController.signal,
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Internal-Service-Key': aiWorkerSecret || '',
         },
-      );
+        body: JSON.stringify({
+          jobId: translationJobId,
+          attemptNumber,
+          sourceDownloadUrl: jobContext.sourceDownloadUrl,
+          outputPrefix: `ai/jobs/${translationJobId}/attempt-${attemptNumber}/`,
+          sourceLang: jobContext.sourceLang,
+          targetLang: jobContext.targetLang,
+        }),
+        signal: abortController.signal,
+      });
 
       this.activeAbortControllers.delete(translationJobId);
+      this.abortReasons.delete(translationJobId);
 
       if (!response.ok) {
         const errBody = await response.text().catch(() => '');
@@ -93,6 +114,17 @@ export class TranslationProcessor extends WorkerHost {
       return result;
     } catch (err: any) {
       this.activeAbortControllers.delete(translationJobId);
+      const reason = this.abortReasons.get(translationJobId);
+      this.abortReasons.delete(translationJobId);
+
+      // Nếu bị hủy bởi User Cancel -> Không retry, không ghi đè FAILED
+      if (reason === 'CANCELED') {
+        this.logger.warn(
+          `[BullMQ] TranslationJob ${translationJobId} đã bị hủy bởi người dùng. Bỏ qua retry.`,
+        );
+        return { canceled: true };
+      }
+
       this.logger.error(
         `[BullMQ] Lỗi khi xử lý TranslationJob ${translationJobId} ở attempt ${attemptNumber}: ${err.message}`,
       );

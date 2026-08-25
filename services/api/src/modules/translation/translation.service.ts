@@ -5,6 +5,8 @@ import {
   ConflictException,
   BadRequestException,
   Logger,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
@@ -27,7 +29,9 @@ import {
   UploadSessionStatus,
 } from '../storage/entities/upload-session.entity';
 import { StoryMember } from '../stories/entities/story-member.entity';
+import { StorageService } from '../storage/storage.service';
 import { TranslationGateway } from './translation.gateway';
+import { TranslationProcessor } from './translation.processor';
 import { CreateTranslationJobDto } from './dto/create-translation-job.dto';
 import {
   ApplyTranslationJobDto,
@@ -35,6 +39,13 @@ import {
 } from './dto/apply-translation-job.dto';
 import { CreateGlossaryDto } from './dto/create-glossary.dto';
 import { WorkerEventCallbackDto } from './dto/worker-event-callback.dto';
+import {
+  assertWorkerReportableState,
+  assertTransitionAllowed,
+  canBeginRetryAttempt,
+  SYSTEM_TERMINAL_STATES,
+  WORKER_REPORTABLE_ACTIVE_STATES,
+} from './translation-state-machine';
 
 @Injectable()
 export class TranslationService {
@@ -61,8 +72,11 @@ export class TranslationService {
     private storyMemberRepo: Repository<StoryMember>,
     @InjectQueue('translation')
     private translationQueue: Queue,
+    private storageService: StorageService,
     private dataSource: DataSource,
     private gateway: TranslationGateway,
+    @Inject(forwardRef(() => TranslationProcessor))
+    private processor: TranslationProcessor,
   ) {}
 
   /**
@@ -165,7 +179,7 @@ export class TranslationService {
       try {
         project = await this.projectRepo.save(project);
       } catch (err: any) {
-        // Concurrency safe: Nếu request song song đã tạo project trước
+        // Concurrency conflict fallback
         project = await this.projectRepo.findOneOrFail({
           where: {
             storyEditionId: edition.id,
@@ -176,8 +190,8 @@ export class TranslationService {
       }
     }
 
-    // 6. DB Creation: Tạo TranslationJob ở trạng thái VALIDATING (Dual-write mitigation)
-    let job = this.jobRepo.create({
+    // 6. Tạo TranslationJob ở trạng thái VALIDATING (Dual-write mitigation)
+    const job = this.jobRepo.create({
       projectId: project.id,
       sourceVersionId: sourceVersion.id,
       sourceUploadSessionId,
@@ -186,17 +200,17 @@ export class TranslationService {
       status: TranslationJobStatus.VALIDATING,
       provider: dto.provider || 'OPENAI',
       attemptCount: 0,
-      lastSequence: 0,
       maxAttempts: 3,
+      lastSequence: 0,
       progressPercentage: 0,
     });
 
     try {
-      job = await this.jobRepo.save(job);
+      await this.jobRepo.save(job);
     } catch (err: any) {
       if (
         idempotencyKey &&
-        (err.code === '23505' || err.message?.includes('uq_translation_job_user_idemp'))
+        (err.code === '23505' || err.message?.includes('duplicate key'))
       ) {
         const existing = await this.jobRepo.findOneOrFail({
           where: { createdBy: user.id, idempotencyKey },
@@ -269,6 +283,24 @@ export class TranslationService {
       ]);
     }
 
+    // Generate Presigned GET URLs cho diff previews (thời hạn 15 phút)
+    const diffPreviewUrls: string[] = [];
+    if (job.resultManifest?.pages && Array.isArray(job.resultManifest.pages)) {
+      for (const page of job.resultManifest.pages) {
+        const key = page.previewKey || page.storageKey;
+        if (key) {
+          try {
+            const url = await this.storageService.createInternalDownloadUrl(
+              key,
+              true,
+              900,
+            );
+            diffPreviewUrls.push(url);
+          } catch {}
+        }
+      }
+    }
+
     return {
       job: {
         id: job.id,
@@ -290,7 +322,65 @@ export class TranslationService {
         createdAt: job.createdAt,
       },
       segments: job.segments || [],
-      diffPreviewUrls: job.resultManifest?.previewUrls || [],
+      diffPreviewUrls,
+    };
+  }
+
+  /**
+   * Cấp danh sách Presigned PUT URLs cho Worker (Two-step upload protocol)
+   */
+  async createOutputUploadUrls(
+    id: string,
+    attemptNumber: number,
+    files: Array<{ filename: string; contentType?: string }>,
+  ) {
+    if (!files || !Array.isArray(files) || files.length === 0) {
+      throw new BadRequestException('Danh sách files yêu cầu không được rỗng.');
+    }
+    if (files.length > 200) {
+      throw new BadRequestException(
+        'Vượt quá giới hạn số lượng files tối đa (tối đa 200 pages).',
+      );
+    }
+
+    const job = await this.jobRepo.findOne({ where: { id } });
+    if (!job) {
+      throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
+    }
+
+    if (SYSTEM_TERMINAL_STATES.includes(job.status)) {
+      throw new BadRequestException(
+        `Job đã ở trạng thái Terminal (${job.status}), không thể cấp URL upload mới.`,
+      );
+    }
+
+    if (attemptNumber !== job.attemptCount) {
+      throw new BadRequestException(
+        `Attempt ${attemptNumber} không khớp với attempt hiện tại của job (${job.attemptCount}).`,
+      );
+    }
+
+    const presignedOutputs = [];
+    for (const f of files) {
+      const sanitizedFilename = f.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
+      const storageKey = `ai/jobs/${id}/attempt-${attemptNumber}/${sanitizedFilename}`;
+      const uploadUrl = await this.storageService.createInternalUploadUrl(
+        storageKey,
+        f.contentType || 'image/webp',
+        true,
+        1800,
+      );
+      presignedOutputs.push({
+        filename: f.filename,
+        storageKey,
+        uploadUrl,
+      });
+    }
+
+    return {
+      jobId: id,
+      attemptNumber,
+      files: presignedOutputs,
     };
   }
 
@@ -432,85 +522,89 @@ export class TranslationService {
   }
 
   /**
-   * Hủy tác vụ dịch
+   * Hủy tác vụ dịch (Full Lifecycle: Lock DB, Remove Queue, Abort HTTP)
    */
   async cancelJob(id: string, user: any) {
-    const job = await this.jobRepo.findOne({
-      where: { id },
-      relations: ['project', 'project.storyEdition', 'project.storyEdition.story'],
+    let canceledJobId: string;
+
+    await this.dataSource.transaction(async (manager) => {
+      await manager.query(
+        `SELECT id FROM translation_jobs WHERE id = $1 FOR UPDATE`,
+        [id],
+      );
+
+      const job = await manager.findOne(TranslationJob, {
+        where: { id },
+        relations: [
+          'project',
+          'project.storyEdition',
+          'project.storyEdition.story',
+        ],
+      });
+
+      if (!job) {
+        throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
+      }
+
+      const storyId = job.project?.storyEdition?.story?.id;
+      if (storyId) {
+        await this.checkStoryPermission(storyId, user, [
+          'OWNER',
+          'EDITOR',
+          'TRANSLATOR',
+        ]);
+      }
+
+      if (SYSTEM_TERMINAL_STATES.includes(job.status)) {
+        throw new BadRequestException(
+          `Không thể hủy job đã ở trạng thái kết thúc (${job.status}).`,
+        );
+      }
+
+      job.status = TranslationJobStatus.CANCELED;
+      job.completedAt = new Date();
+      await manager.save(TranslationJob, job);
+      canceledJobId = job.id;
     });
 
-    if (!job) {
-      throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
+    // 1. Xóa job khỏi BullMQ Queue nếu đang waiting/delayed
+    try {
+      const queueJob = await this.translationQueue.getJob(id);
+      if (queueJob) {
+        const state = await queueJob.getState();
+        if (['waiting', 'delayed', 'paused'].includes(state)) {
+          await queueJob.remove();
+        }
+      }
+    } catch (qErr: any) {
+      this.logger.warn(`Không thể remove BullMQ job ${id}: ${qErr.message}`);
     }
 
-    const storyId = job.project?.storyEdition?.story?.id;
-    if (storyId) {
-      await this.checkStoryPermission(storyId, user, [
-        'OWNER',
-        'EDITOR',
-        'TRANSLATOR',
-      ]);
-    }
+    // 2. Abort attempt đang chạy nếu có (với reason CANCELED để processor không retry)
+    this.processor.abortAttempt(id, 'CANCELED');
 
-    const terminalStatuses = [
-      TranslationJobStatus.READY_FOR_REVIEW,
-      TranslationJobStatus.APPLIED,
-      TranslationJobStatus.FAILED,
-      TranslationJobStatus.CANCELED,
-      TranslationJobStatus.EXPIRED,
-    ];
-
-    if (terminalStatuses.includes(job.status)) {
-      throw new BadRequestException(
-        `Không thể hủy job đã ở trạng thái kết thúc (${job.status}).`,
-      );
-    }
-
-    job.status = TranslationJobStatus.CANCELED;
-    await this.jobRepo.save(job);
-
-    this.gateway.broadcastJobCanceled(job.id);
+    // 3. Broadcast WebSocket event
+    this.gateway.broadcastJobCanceled(id);
 
     return {
-      id: job.id,
+      id: canceledJobId!,
       status: TranslationJobStatus.CANCELED,
     };
   }
 
   /**
-   * Xử lý Fenced Callback từ Python Worker
+   * Xử lý Fenced Callback từ Python Worker (Atomic DB Lock & Non-blocking MinIO Verification)
    */
   async handleWorkerEvent(jobId: string, eventDto: WorkerEventCallbackDto) {
-    const job = await this.jobRepo.findOne({ where: { id: jobId } });
-    if (!job) {
-      throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${jobId}`);
-    }
+    // 1. Kiểm tra stage hợp lệ từ worker
+    assertWorkerReportableState(eventDto.stage);
 
-    // 1. Fencing: Bỏ qua nếu job đã terminal
-    const terminalStatuses = [
-      TranslationJobStatus.APPLIED,
-      TranslationJobStatus.FAILED,
-      TranslationJobStatus.CANCELED,
-      TranslationJobStatus.EXPIRED,
-    ];
-    if (terminalStatuses.includes(job.status)) {
-      return { ignored: true, reason: 'JOB_TERMINAL' };
-    }
-
-    // 2. Fencing: Bỏ qua nếu callback từ attempt cũ
-    if (eventDto.attemptNumber !== job.attemptCount) {
-      return { ignored: true, reason: 'STALE_ATTEMPT' };
-    }
-
-    // 3. Fencing: Bỏ qua nếu sequence bị out-of-order
-    if (eventDto.sequence <= job.lastSequence) {
-      return { ignored: true, reason: 'OUT_OF_ORDER_SEQUENCE' };
-    }
-
-    // 4. Validate result_manifest storage keys
-    if (eventDto.resultManifest?.pages && Array.isArray(eventDto.resultManifest.pages)) {
-      const allowedPrefix = `ai/jobs/${jobId}/attempt-${job.attemptCount}/`;
+    // 2. Validate prefix jail trên result_manifest
+    if (
+      eventDto.resultManifest?.pages &&
+      Array.isArray(eventDto.resultManifest.pages)
+    ) {
+      const allowedPrefix = `ai/jobs/${jobId}/attempt-${eventDto.attemptNumber}/`;
       for (const page of eventDto.resultManifest.pages) {
         const key = page.previewKey || page.storageKey;
         if (key && !key.startsWith(allowedPrefix)) {
@@ -519,89 +613,251 @@ export class TranslationService {
           );
         }
       }
-      job.resultManifest = eventDto.resultManifest;
     }
 
-    // 5. Lưu segments nếu có
-    if (eventDto.segments && eventDto.segments.length > 0) {
-      for (const seg of eventDto.segments) {
-        const segmentEntity = this.segmentRepo.create({
-          jobId: job.id,
-          pageNumber: seg.pageNumber || null,
-          anchorBlockId: seg.anchorBlockId || null,
-          sortOrder: seg.sortOrder,
-          bboxX: seg.bboxX || null,
-          bboxY: seg.bboxY || null,
-          bboxW: seg.bboxW || null,
-          bboxH: seg.bboxH || null,
-          rawText: seg.rawText,
-          translatedText: seg.translatedText || null,
-          confidence: seg.confidence || 0.95,
-        });
-        await this.segmentRepo.save(segmentEntity);
+    // 3. Nếu là READY_FOR_REVIEW -> Xác thực file thật trong MinIO NGOÀI Transaction DB
+    if (eventDto.stage === TranslationJobStatus.READY_FOR_REVIEW) {
+      if (
+        eventDto.resultManifest?.pages &&
+        Array.isArray(eventDto.resultManifest.pages)
+      ) {
+        for (const page of eventDto.resultManifest.pages) {
+          const key = page.previewKey || page.storageKey;
+          if (key) {
+            const exists = await this.storageService.headInternalObject(
+              key,
+              true,
+            );
+            if (!exists) {
+              throw new BadRequestException(
+                `ARTIFACT_NOT_FOUND_IN_STORAGE: Object ${key} không tồn tại trong MinIO storage.`,
+              );
+            }
+          }
+        }
       }
     }
 
-    // 6. Cập nhật state & sequence
-    job.status = eventDto.stage;
-    job.progressPercentage = eventDto.progress;
-    job.lastSequence = eventDto.sequence;
-    job.heartbeatAt = new Date();
+    // 4. Mở DB Transaction có pessimistic write lock bảo vệ fencing
+    const result = await this.dataSource.transaction(async (manager) => {
+      await manager.query(
+        `SELECT id FROM translation_jobs WHERE id = $1 FOR UPDATE`,
+        [jobId],
+      );
 
-    if (eventDto.errorTrace) {
-      job.errorTrace = eventDto.errorTrace;
+      const job = await manager.findOne(TranslationJob, {
+        where: { id: jobId },
+      });
+
+      if (!job) {
+        throw new NotFoundException(
+          `Không tìm thấy TranslationJob với ID: ${jobId}`,
+        );
+      }
+
+      // Fencing: Bỏ qua nếu job đã terminal
+      if (SYSTEM_TERMINAL_STATES.includes(job.status)) {
+        return { received: true, ignored: true, reason: 'JOB_ALREADY_TERMINAL' };
+      }
+
+      // Fencing: Bỏ qua nếu callback từ attempt cũ
+      if (eventDto.attemptNumber !== job.attemptCount) {
+        return { received: true, ignored: true, reason: 'STALE_ATTEMPT' };
+      }
+
+      // Fencing: Bỏ qua nếu sequence bị out-of-order
+      if (eventDto.sequence <= job.lastSequence) {
+        return {
+          received: true,
+          ignored: true,
+          reason: 'OUT_OF_ORDER_SEQUENCE',
+        };
+      }
+
+      // State Machine Transition Check
+      assertTransitionAllowed(job.status, eventDto.stage);
+
+      // Lưu segments nếu có
+      if (eventDto.segments && eventDto.segments.length > 0) {
+        for (const seg of eventDto.segments) {
+          const segmentEntity = manager.create(TranslationSegment, {
+            jobId: job.id,
+            pageNumber: seg.pageNumber || null,
+            anchorBlockId: seg.anchorBlockId || null,
+            sortOrder: seg.sortOrder,
+            bboxX: seg.bboxX || null,
+            bboxY: seg.bboxY || null,
+            bboxW: seg.bboxW || null,
+            bboxH: seg.bboxH || null,
+            rawText: seg.rawText,
+            translatedText: seg.translatedText || null,
+            confidence: seg.confidence || 0.95,
+          });
+          await manager.save(TranslationSegment, segmentEntity);
+        }
+      }
+
+      // Cập nhật state & sequence atomically
+      job.status = eventDto.stage;
+      job.progressPercentage = eventDto.progress;
+      job.lastSequence = eventDto.sequence;
+      job.heartbeatAt = new Date();
+
+      if (eventDto.errorTrace) {
+        job.errorTrace = eventDto.errorTrace;
+      }
+      if (eventDto.resultManifest) {
+        job.resultManifest = eventDto.resultManifest;
+      }
+
+      await manager.save(TranslationJob, job);
+
+      return {
+        received: true,
+        status: job.status,
+        sequence: job.lastSequence,
+        manifest: job.resultManifest,
+      };
+    });
+
+    if (result.ignored) {
+      return result;
     }
 
-    await this.jobRepo.save(job);
-
-    // 7. Phát tán WebSocket
-    if (job.status === TranslationJobStatus.READY_FOR_REVIEW) {
-      this.gateway.broadcastJobReady(job.id, {
-        resultManifest: job.resultManifest,
+    // 5. Phát tán WebSocket sau khi commit thành công
+    if (result.status === TranslationJobStatus.READY_FOR_REVIEW) {
+      this.gateway.broadcastJobReady(jobId, {
+        resultManifest: result.manifest,
       });
     } else {
-      this.gateway.broadcastJobProgress(job.id, {
-        stage: job.status,
-        progress: job.progressPercentage,
-        heartbeatAt: job.heartbeatAt,
+      this.gateway.broadcastJobProgress(jobId, {
+        stage: result.status,
+        progress: eventDto.progress,
+        heartbeatAt: new Date(),
       });
     }
 
     return {
-      success: true,
-      status: job.status,
-      sequence: job.lastSequence,
+      received: true,
+      status: result.status,
+      sequence: result.sequence,
     };
   }
 
   /**
-   * Bắt đầu một BullMQ attempt mới (Reset last_sequence = 0)
+   * Bắt đầu một BullMQ attempt mới (Anti-resurrection & State guard)
    */
   async startAttempt(jobId: string, attemptNumber: number) {
-    const job = await this.jobRepo.findOne({ where: { id: jobId } });
-    if (!job) return;
+    return await this.dataSource.transaction(async (manager) => {
+      await manager.query(
+        `SELECT id FROM translation_jobs WHERE id = $1 FOR UPDATE`,
+        [jobId],
+      );
 
-    job.attemptCount = attemptNumber;
-    job.lastSequence = 0; // Reset sequence mỗi attempt mới
-    job.status = TranslationJobStatus.PREPROCESSING;
-    job.startedAt = new Date();
-    job.heartbeatAt = new Date();
-    await this.jobRepo.save(job);
+      const job = await manager.findOne(TranslationJob, {
+        where: { id: jobId },
+        relations: [
+          'project',
+          'project.storyEdition',
+          'project.storyEdition.story',
+          'sourceVersion',
+          'sourceVersion.chapter',
+          'sourceVersion.chapter.storyEdition',
+          'sourceVersion.chapter.storyEdition.story',
+        ],
+      });
+
+      if (!job) return null;
+
+      // Anti-resurrection guard: Bỏ qua nếu job đã CANCELED hoặc terminal
+      if (
+        job.status === TranslationJobStatus.CANCELED ||
+        SYSTEM_TERMINAL_STATES.includes(job.status)
+      ) {
+        return null;
+      }
+
+      // Retry transition check
+      if (
+        attemptNumber > 1 &&
+        !canBeginRetryAttempt(
+          job.status,
+          job.attemptCount,
+          attemptNumber,
+          job.maxAttempts,
+        )
+      ) {
+        return null;
+      }
+
+      job.attemptCount = attemptNumber;
+      job.lastSequence = 0; // Reset sequence mỗi attempt mới
+      job.status = TranslationJobStatus.PREPROCESSING;
+      job.startedAt = job.startedAt || new Date();
+      job.heartbeatAt = new Date();
+      await manager.save(TranslationJob, job);
+
+      let sourceDownloadUrl = '';
+      if (job.sourceUploadSessionId) {
+        const session = await manager.findOne(UploadSession, {
+          where: { id: job.sourceUploadSessionId },
+        });
+        if (session?.finalKey) {
+          sourceDownloadUrl =
+            await this.storageService.createInternalDownloadUrl(
+              session.finalKey,
+              true,
+              3600,
+            );
+        }
+      }
+
+      const story =
+        job.project?.storyEdition?.story ||
+        job.sourceVersion?.chapter?.storyEdition?.story;
+
+      return {
+        jobId: job.id,
+        attemptNumber: job.attemptCount,
+        sourceDownloadUrl,
+        mediaFormat: story?.mediaFormat || 'COMIC',
+        sourceLang: job.project.sourceLanguage,
+        targetLang: job.project.targetLanguage,
+      };
+    });
   }
 
   /**
    * Đánh dấu Job thất bại khi hết số lần retry BullMQ
    */
   async handleJobFailure(jobId: string, errorTrace: string) {
-    const job = await this.jobRepo.findOne({ where: { id: jobId } });
-    if (!job) return;
+    await this.dataSource.transaction(async (manager) => {
+      await manager.query(
+        `SELECT id FROM translation_jobs WHERE id = $1 FOR UPDATE`,
+        [jobId],
+      );
 
-    job.status = TranslationJobStatus.FAILED;
-    job.errorTrace = errorTrace;
-    job.completedAt = new Date();
-    await this.jobRepo.save(job);
+      const job = await manager.findOne(TranslationJob, {
+        where: { id: jobId },
+      });
 
-    this.gateway.broadcastJobFailed(job.id, { errorTrace });
+      if (!job) return;
+
+      // Không đổi sang FAILED nếu job đã CANCELED hoặc APPLIED
+      if (
+        job.status === TranslationJobStatus.CANCELED ||
+        job.status === TranslationJobStatus.APPLIED
+      ) {
+        return;
+      }
+
+      job.status = TranslationJobStatus.FAILED;
+      job.errorTrace = errorTrace;
+      job.completedAt = new Date();
+      await manager.save(TranslationJob, job);
+
+      this.gateway.broadcastJobFailed(job.id, { errorTrace });
+    });
   }
 
   /**
@@ -671,27 +927,23 @@ export class TranslationService {
   }
 
   /**
-   * Helper kiểm tra Story Member RBAC
+   * Phân quyền nội bộ Story Member
    */
   private async checkStoryPermission(
     storyId: string,
     user: any,
-    allowedRoles: string[],
+    requiredRoles: string[],
   ) {
-    if (user.globalRole === 'ADMIN' || user.role === 'ADMIN') {
-      return true;
-    }
+    if (user.role === 'ADMIN') return;
 
-    const member = await this.storyMemberRepo.findOne({
+    const membership = await this.storyMemberRepo.findOne({
       where: { storyId, userId: user.id },
     });
 
-    if (!member || !allowedRoles.includes(member.role)) {
+    if (!membership || !requiredRoles.includes(membership.role)) {
       throw new ForbiddenException(
-        'Bạn không có quyền thực hiện thao tác này trên truyện được yêu cầu.',
+        'Bạn không có quyền thực hiện thao tác dịch thuật trên tác phẩm này.',
       );
     }
-
-    return true;
   }
 }

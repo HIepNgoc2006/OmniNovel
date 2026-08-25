@@ -34,7 +34,12 @@ export class TranslationController {
     @Body() dto: CreateTranslationJobDto,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    if (idempotencyKey && !UUID_V4_REGEX.test(idempotencyKey)) {
+    if (!idempotencyKey) {
+      throw new BadRequestException(
+        'IDEMPOTENCY_KEY_REQUIRED: Header Idempotency-Key là bắt buộc theo chuẩn API Contract.',
+      );
+    }
+    if (!UUID_V4_REGEX.test(idempotencyKey)) {
       throw new BadRequestException('Idempotency-Key phải là UUID-v4 hợp lệ.');
     }
 
@@ -63,7 +68,12 @@ export class TranslationController {
     @CurrentUser() user: any,
     @Headers('idempotency-key') idempotencyKey?: string,
   ) {
-    if (idempotencyKey && !UUID_V4_REGEX.test(idempotencyKey)) {
+    if (!idempotencyKey) {
+      throw new BadRequestException(
+        'IDEMPOTENCY_KEY_REQUIRED: Header Idempotency-Key là bắt buộc theo chuẩn API Contract.',
+      );
+    }
+    if (!UUID_V4_REGEX.test(idempotencyKey)) {
       throw new BadRequestException('Idempotency-Key phải là UUID-v4 hợp lệ.');
     }
 

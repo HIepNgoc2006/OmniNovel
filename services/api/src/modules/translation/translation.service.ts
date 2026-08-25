@@ -846,11 +846,23 @@ export class TranslationService {
 
       if (!job) return;
 
-      // Không đổi sang FAILED nếu job đã CANCELED hoặc APPLIED
-      if (
-        job.status === TranslationJobStatus.CANCELED ||
-        job.status === TranslationJobStatus.APPLIED
-      ) {
+      // Không đổi sang FAILED nếu job đã READY_FOR_REVIEW hoặc ở các Terminal States (CANCELED, APPLIED, EXPIRED, FAILED)
+      const allowedFailureOriginStates = [
+        TranslationJobStatus.CREATED,
+        TranslationJobStatus.VALIDATING,
+        TranslationJobStatus.QUEUED,
+        TranslationJobStatus.PREPROCESSING,
+        TranslationJobStatus.OCR,
+        TranslationJobStatus.TRANSLATING,
+        TranslationJobStatus.INPAINTING,
+        TranslationJobStatus.TYPESETTING,
+        TranslationJobStatus.QUALITY_CHECK,
+      ];
+
+      if (!allowedFailureOriginStates.includes(job.status)) {
+        this.logger.warn(
+          `[BullMQ] Bỏ qua handleJobFailure cho TranslationJob ${job.id}: Job đang ở trạng thái ${job.status}, không thể chuyển sang FAILED.`,
+        );
         return;
       }
 

@@ -139,9 +139,11 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
       `e0000000-0000-4000-a000-${Date.now().toString(16).padStart(12, '0').substring(0, 12)}`,
     );
     const testJobId = created.id;
-
-    // Start attempt 1
-    await service.startAttempt(testJobId, 1);
+    // Set trạng thái ban đầu là OCR attempt 1 sequence 0 để kiểm tra concurrent callbacks
+    await dataSource.query(
+      `UPDATE translation_jobs SET status = 'OCR', attempt_count = 1, last_sequence = 0 WHERE id = $1`,
+      [testJobId],
+    );
 
     // Gửi đồng thời 4 callback cùng một lúc (Same-stage heartbeat progression)
     const events = [

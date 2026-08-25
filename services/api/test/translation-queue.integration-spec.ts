@@ -183,4 +183,31 @@ describe('Translation Queue Lifecycle, Cancel & Watchdog Suite (Integration)', (
     expect(jobDb[0].status).toBe(TranslationJobStatus.READY_FOR_REVIEW);
     expect(jobDb[0].attempt_count).toBe(1);
   });
+
+  it('Job in READY_FOR_REVIEW should NOT be marked FAILED when handleJobFailure is called (Worker-Final Failure Invariant)', async () => {
+    const jobRes = await service.createJob(
+      ownerUser,
+      { chapterVersionId: versionId, sourceLang: 'ja', targetLang: 'vi' },
+      `c5000000-0000-4000-a000-${Date.now().toString(16).padStart(12, '0').substring(0, 12)}`,
+    );
+    const testJobId = jobRes.id;
+
+    // Giả lập attempt 3: callback READY_FOR_REVIEW đã commit vào DB thành công
+    await service.startAttempt(testJobId, 3);
+    await dataSource.query(
+      `UPDATE translation_jobs SET status = 'READY_FOR_REVIEW', attempt_count = 3 WHERE id = $1`,
+      [testJobId],
+    );
+
+    // Giả lập sau callback: HTTP connection giữa Worker và Nest bị reset, BullMQ processor gọi handleJobFailure ở attempt 3
+    await service.handleJobFailure(testJobId, 'Worker returned 502 connection reset after READY callback');
+
+    // Kiểm tra DB: Trạng thái READY_FOR_REVIEW vẫn được bảo toàn nguyên vẹn, không bị chuyển sang FAILED
+    const jobDb = await dataSource.query(
+      `SELECT status, error_trace FROM translation_jobs WHERE id = $1`,
+      [testJobId],
+    );
+    expect(jobDb[0].status).toBe(TranslationJobStatus.READY_FOR_REVIEW);
+    expect(jobDb[0].error_trace).toBeNull();
+  });
 });

@@ -40,7 +40,7 @@ class GlossaryEngine:
                 for e in raw_entries
                 if e.source_term and e.source_term.strip()
             ],
-            key=lambda x: (-len(x.source_term), x.source_term, x.target_term, x.category),
+            key=lambda x: (-len(unicodedata.normalize("NFKC", x.source_term)), x.source_term, x.target_term, x.category),
         )
 
     def find_constraints(self, raw_text: str) -> List[GlossaryConstraint]:

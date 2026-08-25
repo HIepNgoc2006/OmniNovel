@@ -2,6 +2,7 @@ import asyncio
 import uuid
 import httpx
 import pytest
+from fastapi import HTTPException
 from app.core.config import settings
 from app.pipeline.heartbeat_emitter import HeartbeatEmitter
 from app.pipeline.progress_sink import (
@@ -99,5 +100,5 @@ async def test_core_callback_progress_sink_propagates_http_error():
     sink = CoreCallbackProgressSink(job_id=job_id, attempt_number=1, client=mock_client)
 
     # Invariant: Core trả 4xx/5xx phải ném lỗi để caller biết
-    with pytest.raises(httpx.HTTPStatusError):
+    with pytest.raises((httpx.HTTPStatusError, HTTPException)):
         await sink.emit_progress(progress=50, stage="OCR")

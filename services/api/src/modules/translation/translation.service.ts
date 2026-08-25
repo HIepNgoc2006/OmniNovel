@@ -736,23 +736,37 @@ export class TranslationService {
       // State Machine Transition Check
       assertTransitionAllowed(job.status, eventDto.stage);
 
-      // Lưu segments nếu có
-      if (eventDto.segments && eventDto.segments.length > 0) {
-        for (const seg of eventDto.segments) {
-          const segmentEntity = manager.create(TranslationSegment, {
-            jobId: job.id,
-            pageNumber: seg.pageNumber ?? null,
-            anchorBlockId: seg.anchorBlockId ?? null,
-            sortOrder: seg.sortOrder,
-            bboxX: seg.bboxX ?? null,
-            bboxY: seg.bboxY ?? null,
-            bboxW: seg.bboxW ?? null,
-            bboxH: seg.bboxH ?? null,
-            rawText: seg.rawText,
-            translatedText: seg.translatedText ?? null,
-            confidence: seg.confidence ?? null,
-          });
-          await manager.save(TranslationSegment, segmentEntity);
+      // Invariant P0: Intermediate callbacks tuyệt đối không được gửi segments
+      if (
+        eventDto.stage !== TranslationJobStatus.READY_FOR_REVIEW &&
+        eventDto.segments &&
+        eventDto.segments.length > 0
+      ) {
+        throw new BadRequestException(
+          'INTERMEDIATE_SEGMENTS_FORBIDDEN: Chỉ được phép gửi segments tại trạng thái READY_FOR_REVIEW.',
+        );
+      }
+
+      // Lưu segments atomic & idempotent khi READY_FOR_REVIEW
+      if (eventDto.stage === TranslationJobStatus.READY_FOR_REVIEW) {
+        await manager.delete(TranslationSegment, { jobId: job.id });
+        if (eventDto.segments && eventDto.segments.length > 0) {
+          for (const seg of eventDto.segments) {
+            const segmentEntity = manager.create(TranslationSegment, {
+              jobId: job.id,
+              pageNumber: seg.pageNumber ?? null,
+              anchorBlockId: seg.anchorBlockId ?? null,
+              sortOrder: seg.sortOrder,
+              bboxX: seg.bboxX ?? null,
+              bboxY: seg.bboxY ?? null,
+              bboxW: seg.bboxW ?? null,
+              bboxH: seg.bboxH ?? null,
+              rawText: seg.rawText,
+              translatedText: seg.translatedText ?? null,
+              confidence: seg.confidence ?? null,
+            });
+            await manager.save(TranslationSegment, segmentEntity);
+          }
         }
       }
 

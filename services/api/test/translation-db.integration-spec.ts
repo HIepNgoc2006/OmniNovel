@@ -139,41 +139,41 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
       `e0000000-0000-4000-a000-${Date.now().toString(16).padStart(12, '0').substring(0, 12)}`,
     );
     const testJobId = created.id;
-    // Set trạng thái ban đầu là OCR attempt 1 sequence 0 để kiểm tra concurrent callbacks
+    // Set trạng thái ban đầu là QUALITY_CHECK attempt 1 sequence 0 để kiểm tra concurrent callbacks chuyển sang READY_FOR_REVIEW
     await dataSource.query(
-      `UPDATE translation_jobs SET status = 'OCR', attempt_count = 1, last_sequence = 0 WHERE id = $1`,
+      `UPDATE translation_jobs SET status = 'QUALITY_CHECK', attempt_count = 1, last_sequence = 0 WHERE id = $1`,
       [testJobId],
     );
 
-    // Gửi đồng thời 4 callback cùng một lúc (Same-stage heartbeat progression)
+    // Gửi đồng thời 4 callback cùng một lúc (Same-stage heartbeat progression -> READY_FOR_REVIEW)
     const events = [
       {
         eventId: 'f0000000-0000-4000-a000-000000000001',
         attemptNumber: 1,
         sequence: 1,
-        stage: TranslationJobStatus.OCR,
-        progress: 25,
+        stage: TranslationJobStatus.QUALITY_CHECK,
+        progress: 95,
       },
       {
         eventId: 'f0000000-0000-4000-a000-000000000002',
         attemptNumber: 1,
         sequence: 2,
-        stage: TranslationJobStatus.OCR,
-        progress: 35,
+        stage: TranslationJobStatus.QUALITY_CHECK,
+        progress: 96,
       },
       {
         eventId: 'f0000000-0000-4000-a000-000000000003',
         attemptNumber: 1,
         sequence: 3,
-        stage: TranslationJobStatus.OCR,
-        progress: 45,
+        stage: TranslationJobStatus.QUALITY_CHECK,
+        progress: 97,
       },
       {
         eventId: 'f0000000-0000-4000-a000-000000000004',
         attemptNumber: 1,
         sequence: 4,
-        stage: TranslationJobStatus.OCR,
-        progress: 55,
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progress: 100,
         segments: [
           {
             pageNumber: 1,
@@ -199,8 +199,8 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
     );
 
     expect(finalJob[0].last_sequence).toBe(4);
-    expect(finalJob[0].status).toBe(TranslationJobStatus.OCR);
-    expect(finalJob[0].progress_percentage).toBe(55);
+    expect(finalJob[0].status).toBe(TranslationJobStatus.READY_FOR_REVIEW);
+    expect(finalJob[0].progress_percentage).toBe(100);
 
     // Xác minh PostgreSQL lưu đúng bbox_x = 0, bbox_y = 0 và confidence IS NULL (không bị fallback 0.95 hay NULL)
     const savedSegments = await dataSource.query(

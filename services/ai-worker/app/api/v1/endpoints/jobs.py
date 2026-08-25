@@ -18,10 +18,11 @@ VALID_MOCK_WEBP_BYTES = bytes([
 class ProcessJobRequest(BaseModel):
     jobId: str
     attemptNumber: int
-    outputPrefix: str
+    outputPrefix: Optional[str] = None
     sourceDownloadUrl: Optional[str] = None
     sourceLang: Optional[str] = "ja"
     targetLang: Optional[str] = "vi"
+    inputManifest: Optional[Dict[str, Any]] = None
 
 class HealthResponse(BaseModel):
     status: str
@@ -104,7 +105,7 @@ async def send_callback_event(
         "progress": progress,
         "heartbeat": True,
         "resultManifest": result_manifest,
-        "segments": segments or [],
+        "segments": segments if segments is not None else [],
     }
     headers = {
         "Content-Type": "application/json",
@@ -126,15 +127,54 @@ async def send_callback_event(
 @router.post("/process-manga", dependencies=[Depends(verify_internal_key)])
 async def process_manga_job(req: ProcessJobRequest):
     """
-    Pipeline cho Manga Translation (Fail-Fast Orchestration):
-    1. Xác thực nguồn và xin Presigned PUT URLs qua Two-Step Protocol
-    2. Upload WebP buffer thật lên MinIO
-    3. Gửi chuỗi sequential callback: PREPROCESSING -> OCR -> TRANSLATING -> INPAINTING -> TYPESETTING -> QUALITY_CHECK -> READY_FOR_REVIEW
+    Pipeline cho Manga Translation (Fail-Fast Production Engine):
+    - Nếu có sourceDownloadUrl: Kích hoạt FullMangaPipeline thực tế (Extract -> OCR -> Translate -> Inpaint -> Typeset -> QA -> Upload -> READY).
+    - Nếu không có sourceDownloadUrl: Fallback sang Mock protocol cho backward compatibility trong test cũ.
     """
     job_id = req.jobId
     attempt_num = req.attemptNumber
 
-    # 1. Xin Presigned PUT URL từ Core API cho trang output
+    # Nếu có sourceDownloadUrl, thực thi FullMangaPipeline thật
+    if req.sourceDownloadUrl:
+        import os
+        from app.pipeline.attempt_coordinator import AttemptProgressCoordinator
+        from app.pipeline.full_manga_pipeline import FullMangaPipeline
+        from app.pipeline.progress_sink import CoreCallbackProgressSink
+        from app.translation.manga_translator import MangaTranslationPipeline
+        from app.translation.providers.mock_provider import MockTranslationProvider
+
+        sink = CoreCallbackProgressSink(job_id=job_id, attempt_number=attempt_num)
+        coordinator = AttemptProgressCoordinator(sink=sink)
+
+        # Trong test mode, dùng MockTranslationProvider để test chạy nhanh mà không cần gọi OpenAI ngoài
+        if os.environ.get("AI_WORKER_TEST_MODE") == "true":
+            trans_pipe = MangaTranslationPipeline(provider=MockTranslationProvider())
+        else:
+            trans_pipe = MangaTranslationPipeline()
+
+        pipeline = FullMangaPipeline(
+            coordinator=coordinator,
+            translation_pipeline=trans_pipe,
+            upload_urls_requester=request_output_upload_urls,
+            uploader_func=upload_file_to_presigned_url,
+        )
+
+        try:
+            return await pipeline.execute(
+                job_id=job_id,
+                attempt_number=attempt_num,
+                source_download_url=req.sourceDownloadUrl,
+                input_manifest=req.inputManifest,
+            )
+        except Exception as e:
+            # Dừng coordinator và ném 502 Fail-Fast
+            await coordinator.stop()
+            raise HTTPException(
+                status_code=502,
+                detail=f"Full Manga Pipeline execution failed: {str(e)}"
+            ) from e
+
+    # Fallback cho mock isolation
     uploaded_files = await request_output_upload_urls(job_id, attempt_num, ["page-001.webp"])
     manifest_pages = []
 
@@ -149,7 +189,6 @@ async def process_manga_job(req: ProcessJobRequest):
             "fileSize": len(VALID_MOCK_WEBP_BYTES),
         })
 
-    # 2. Sequential callbacks
     stages = [
         ("PREPROCESSING", 10),
         ("OCR", 30),
@@ -161,10 +200,9 @@ async def process_manga_job(req: ProcessJobRequest):
 
     seq = 1
     for stage_name, prog in stages:
-        await send_callback_event(job_id, attempt_num, seq, stage_name, prog)
+        await send_callback_event(job_id, attempt_num, seq, stage_name, prog, segments=[])
         seq += 1
 
-    # 3. Stage cuối cùng: READY_FOR_REVIEW với result_manifest và segments
     result_manifest = {
         "pages": manifest_pages,
     }
@@ -179,17 +217,6 @@ async def process_manga_job(req: ProcessJobRequest):
             "rawText": "オレは海賊王になる男だ！",
             "translatedText": "Tôi là người sẽ trở thành Vua Hải Tặc!",
             "confidence": 0.98,
-        },
-        {
-            "pageNumber": 1,
-            "sortOrder": 2,
-            "bboxX": 500,
-            "bboxY": 600,
-            "bboxW": 250,
-            "bboxH": 90,
-            "rawText": "行くぞ、野郎ども！",
-            "translatedText": "Đi thôi, các anh em!",
-            "confidence": 0.96,
         },
     ]
 

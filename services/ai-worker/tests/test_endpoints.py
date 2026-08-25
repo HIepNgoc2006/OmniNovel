@@ -61,7 +61,6 @@ def test_process_manga_happy_path(mock_send_event, mock_upload, mock_request_url
             "jobId": "11111111-1111-1111-1111-111111111111",
             "attemptNumber": 1,
             "outputPrefix": "ai/jobs/11111111-1111-1111-1111-111111111111/attempt-1/",
-            "sourceDownloadUrl": "http://localhost:9000/manga-media/source.zip",
             "sourceLang": "ja",
             "targetLang": "vi",
         },

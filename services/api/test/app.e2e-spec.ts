@@ -1516,6 +1516,29 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         .expect(404);
     });
 
+    it('Intermediate callback with segments should return 400 Bad Request (INTERMEDIATE_SEGMENTS_FORBIDDEN)', async () => {
+      const internalKey = 'internal_ai_worker_secret_secure_2026';
+      await dataSource.query(
+        `UPDATE translation_jobs SET attempt_count = 1, status = 'PREPROCESSING', last_sequence = 0 WHERE id = $1`,
+        [aiJobId],
+      );
+
+      const res = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId}/events`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000009',
+          attemptNumber: 1,
+          sequence: 1,
+          stage: TranslationJobStatus.OCR,
+          progress: 30,
+          segments: [{ sortOrder: 1, rawText: 'test' }],
+        })
+        .expect(400);
+
+      expect(res.body.error.message).toContain('INTERMEDIATE_SEGMENTS_FORBIDDEN');
+    });
+
     it('Internal worker event callback with sequence progression should advance state and save segments', async () => {
       const internalKey = 'internal_ai_worker_secret_secure_2026';
 

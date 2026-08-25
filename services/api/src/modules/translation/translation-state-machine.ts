@@ -118,7 +118,7 @@ export function assertTransitionAllowed(
   current: TranslationJobStatus,
   target: TranslationJobStatus,
 ): void {
-  // 1. Same-state update (Heartbeat / Progress report): Hợp lệ nếu stage đang active
+  // 1. Same-state update (Heartbeat / Progress report): Chỉ hợp lệ cho các active worker states
   if (current === target && WORKER_REPORTABLE_ACTIVE_STATES.includes(target)) {
     return;
   }
@@ -130,9 +130,11 @@ export function assertTransitionAllowed(
     );
   }
 
-  // 3. READY_FOR_REVIEW không thể chuyển ngược lại các bước worker
+  // 3. READY_FOR_REVIEW là worker-final, không nhận thêm bất kỳ worker mutation/same-state callback nào
   if (current === TranslationJobStatus.READY_FOR_REVIEW && current === target) {
-    return;
+    throw new BadRequestException(
+      `INVALID_STATE_TRANSITION: TranslationJob đã ở trạng thái READY_FOR_REVIEW, không nhận thêm callback cùng trạng thái.`,
+    );
   }
 
   // 4. Forward transitions
@@ -146,7 +148,9 @@ export function assertTransitionAllowed(
 
 /**
  * System transition: Bắt đầu một retry attempt mới từ BullMQ processor.
- * Cho phép chuyển từ bất kỳ active state nào hoặc QUEUED/VALIDATING về PREPROCESSING.
+ * - Attempt 1: Chỉ cho phép từ QUEUED hoặc VALIDATING.
+ * - Attempt 2..N: Chỉ cho phép từ các active worker states (PREPROCESSING, OCR, TRANSLATING, INPAINTING, TYPESETTING, QUALITY_CHECK).
+ * - Tuyệt đối không cho phép retry trên Terminal States (APPLIED, CANCELED, FAILED, EXPIRED) hoặc Worker-Final (READY_FOR_REVIEW).
  */
 export function canBeginRetryAttempt(
   currentStatus: TranslationJobStatus,
@@ -154,11 +158,27 @@ export function canBeginRetryAttempt(
   newAttemptNumber: number,
   maxAttempts = 3,
 ): boolean {
-  if (SYSTEM_TERMINAL_STATES.includes(currentStatus)) {
+  // 1. Chặn Terminal States và Worker-Final (READY_FOR_REVIEW)
+  if (
+    SYSTEM_TERMINAL_STATES.includes(currentStatus) ||
+    currentStatus === TranslationJobStatus.READY_FOR_REVIEW
+  ) {
     return false;
   }
+
+  // 2. Attempt number phải tăng đơn điệu và <= maxAttempts
   if (newAttemptNumber <= currentAttempt || newAttemptNumber > maxAttempts) {
     return false;
   }
-  return true;
+
+  // 3. Attempt 1: Chỉ chấp nhận QUEUED / VALIDATING
+  if (newAttemptNumber === 1) {
+    return (
+      currentStatus === TranslationJobStatus.QUEUED ||
+      currentStatus === TranslationJobStatus.VALIDATING
+    );
+  }
+
+  // 4. Attempt 2+: Chỉ chấp nhận các trạng thái active worker
+  return WORKER_REPORTABLE_ACTIVE_STATES.includes(currentStatus);
 }

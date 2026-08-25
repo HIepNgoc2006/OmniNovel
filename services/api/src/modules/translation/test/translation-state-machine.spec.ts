@@ -163,6 +163,15 @@ describe('Translation State Machine (Unit Tests)', () => {
       ).toThrow(BadRequestException);
     });
 
+    it('should reject same-state transition on READY_FOR_REVIEW (Worker-final invariant)', () => {
+      expect(() =>
+        assertTransitionAllowed(
+          TranslationJobStatus.READY_FOR_REVIEW,
+          TranslationJobStatus.READY_FOR_REVIEW,
+        ),
+      ).toThrow(BadRequestException);
+    });
+
     it('should reject any transition originating from a Terminal state', () => {
       for (const terminal of SYSTEM_TERMINAL_STATES) {
         expect(() =>
@@ -183,13 +192,31 @@ describe('Translation State Machine (Unit Tests)', () => {
       }
     });
 
-    it('should allow retry from QUEUED or VALIDATING', () => {
+    it('should allow attempt 1 from QUEUED or VALIDATING', () => {
       expect(
         canBeginRetryAttempt(TranslationJobStatus.QUEUED, 0, 1, 3),
       ).toBe(true);
       expect(
         canBeginRetryAttempt(TranslationJobStatus.VALIDATING, 0, 1, 3),
       ).toBe(true);
+    });
+
+    it('should reject attempt 2 or 3 from QUEUED or VALIDATING (must be active state)', () => {
+      expect(
+        canBeginRetryAttempt(TranslationJobStatus.QUEUED, 1, 2, 3),
+      ).toBe(false);
+      expect(
+        canBeginRetryAttempt(TranslationJobStatus.VALIDATING, 1, 2, 3),
+      ).toBe(false);
+    });
+
+    it('should disallow retry if job is in READY_FOR_REVIEW (Worker-final)', () => {
+      expect(
+        canBeginRetryAttempt(TranslationJobStatus.READY_FOR_REVIEW, 1, 2, 3),
+      ).toBe(false);
+      expect(
+        canBeginRetryAttempt(TranslationJobStatus.READY_FOR_REVIEW, 2, 3, 3),
+      ).toBe(false);
     });
 
     it('should disallow retry if new attempt <= current attempt or > max attempts', () => {

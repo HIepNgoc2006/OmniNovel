@@ -769,17 +769,11 @@ export class TranslationService {
 
       if (!job) return null;
 
-      // Anti-resurrection guard: Bỏ qua nếu job đã CANCELED hoặc terminal
+      // Anti-resurrection & Retry transition guard:
       if (
         job.status === TranslationJobStatus.CANCELED ||
-        SYSTEM_TERMINAL_STATES.includes(job.status)
-      ) {
-        return null;
-      }
-
-      // Retry transition check
-      if (
-        attemptNumber > 1 &&
+        SYSTEM_TERMINAL_STATES.includes(job.status) ||
+        job.status === TranslationJobStatus.READY_FOR_REVIEW ||
         !canBeginRetryAttempt(
           job.status,
           job.attemptCount,
@@ -787,6 +781,9 @@ export class TranslationService {
           job.maxAttempts,
         )
       ) {
+        this.logger.warn(
+          `[BullMQ] Bỏ qua startAttempt cho TranslationJob ${job.id} (attempt: ${attemptNumber}, status: ${job.status}, currentAttempt: ${job.attemptCount})`,
+        );
         return null;
       }
 
@@ -797,24 +794,30 @@ export class TranslationService {
       job.heartbeatAt = new Date();
       await manager.save(TranslationJob, job);
 
+      const story =
+        job.project?.storyEdition?.story ||
+        job.sourceVersion?.chapter?.storyEdition?.story;
+
       let sourceDownloadUrl = '';
       if (job.sourceUploadSessionId) {
         const session = await manager.findOne(UploadSession, {
           where: { id: job.sourceUploadSessionId },
         });
         if (session?.finalKey) {
+          const isManga =
+            session.fileType === 'MANGA_PACKAGE' ||
+            session.fileType === 'MANGA_ZIP_ARCHIVE' ||
+            session.fileType === 'IMAGE' ||
+            session.fileType?.startsWith('MANGA') ||
+            story?.mediaFormat === 'COMIC';
           sourceDownloadUrl =
             await this.storageService.createInternalDownloadUrl(
               session.finalKey,
-              true,
+              isManga,
               3600,
             );
         }
       }
-
-      const story =
-        job.project?.storyEdition?.story ||
-        job.sourceVersion?.chapter?.storyEdition?.story;
 
       return {
         jobId: job.id,

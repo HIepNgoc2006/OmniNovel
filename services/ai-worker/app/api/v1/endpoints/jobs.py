@@ -33,7 +33,8 @@ async def health_check():
 
 async def request_output_upload_urls(job_id: str, attempt_number: int, filenames: List[str]) -> List[Dict[str, Any]]:
     """
-    Giai đoạn 2 của Two-Step Upload: Xin Core API cấp Presigned PUT URLs cho các trang đã phân tích
+    Giai đoạn 2 của Two-Step Upload: Xin Core API cấp Presigned PUT URLs cho các trang output.
+    Fail-fast: Ném HTTPException(502) nếu Core API trả lỗi hoặc không cấp được URLs.
     """
     url = f"{settings.CORE_API_INTERNAL_URL}/internal/v1/ai/jobs/{job_id}/output-uploads"
     payload = {
@@ -47,24 +48,39 @@ async def request_output_upload_urls(job_id: str, attempt_number: int, filenames
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code == 200:
+            if resp.status_code in (200, 201):
                 data = resp.json()
-                return data.get("files", [])
+                files = data.get("files", [])
+                if not files:
+                    raise HTTPException(status_code=502, detail="Core API returned empty files list")
+                return files
+            else:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Core API request output uploads failed with status {resp.status_code}: {resp.text}"
+                )
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"[AI-Worker Error] Failed to request output upload URLs from Core API: {e}")
-    return []
+        raise HTTPException(status_code=502, detail=f"Failed to connect to Core API for output upload URLs: {e}")
 
-async def upload_file_to_presigned_url(upload_url: str, data: bytes, content_type: str = "image/webp") -> bool:
+async def upload_file_to_presigned_url(upload_url: str, data: bytes, content_type: str = "image/webp") -> None:
     """
-    Upload buffer ảnh thật lên MinIO qua Presigned PUT URL
+    Upload buffer ảnh thật lên MinIO qua Presigned PUT URL.
+    Fail-fast: Ném HTTPException(502) nếu upload thất bại.
     """
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.put(upload_url, content=data, headers={"Content-Type": content_type})
-            return resp.status_code == 200
+            if resp.status_code not in (200, 201):
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"MinIO presigned PUT failed with status {resp.status_code}: {resp.text}"
+                )
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"[AI-Worker Error] Failed to PUT file to MinIO presigned URL: {e}")
-        return False
+        raise HTTPException(status_code=502, detail=f"Failed to PUT file to MinIO presigned URL: {e}")
 
 async def send_callback_event(
     job_id: str,
@@ -74,7 +90,11 @@ async def send_callback_event(
     progress: int,
     result_manifest: Optional[Dict[str, Any]] = None,
     segments: Optional[List[Dict[str, Any]]] = None,
-) -> bool:
+) -> None:
+    """
+    Gửi Fenced Callback event lên Core API.
+    Fail-fast: Ném HTTPException(502) nếu Core API từ chối hoặc trả non-2xx.
+    """
     callback_url = f"{settings.CORE_API_INTERNAL_URL}/internal/v1/ai/jobs/{job_id}/events"
     payload = {
         "eventId": str(uuid.uuid4()),
@@ -93,50 +113,43 @@ async def send_callback_event(
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(callback_url, json=payload, headers=headers)
-            return resp.status_code == 200
+            if resp.status_code not in (200, 201):
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Core API callback event for stage {stage} (seq {sequence}) failed with status {resp.status_code}: {resp.text}"
+                )
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"[AI-Worker Callback Error] Failed to send event to Core API: {e}")
-        return False
+        raise HTTPException(status_code=502, detail=f"Failed to send callback event to Core API: {e}")
 
 @router.post("/process-manga", dependencies=[Depends(verify_internal_key)])
 async def process_manga_job(req: ProcessJobRequest):
     """
-    Pipeline cho Manga Translation:
-    1. Xin Presigned PUT URL qua two-step protocol
+    Pipeline cho Manga Translation (Fail-Fast Orchestration):
+    1. Xác thực nguồn và xin Presigned PUT URLs qua Two-Step Protocol
     2. Upload WebP buffer thật lên MinIO
-    3. Gửi chuỗi callback hợp lệ: PREPROCESSING -> OCR -> TRANSLATING -> INPAINTING -> TYPESETTING -> QUALITY_CHECK -> READY_FOR_REVIEW
+    3. Gửi chuỗi sequential callback: PREPROCESSING -> OCR -> TRANSLATING -> INPAINTING -> TYPESETTING -> QUALITY_CHECK -> READY_FOR_REVIEW
     """
     job_id = req.jobId
     attempt_num = req.attemptNumber
 
-    # 1. Xin Presigned PUT URL từ Core API cho trang đầu tiên
+    # 1. Xin Presigned PUT URL từ Core API cho trang output
     uploaded_files = await request_output_upload_urls(job_id, attempt_num, ["page-001.webp"])
     manifest_pages = []
 
-    if uploaded_files:
-        for idx, f in enumerate(uploaded_files, start=1):
-            put_success = await upload_file_to_presigned_url(f["uploadUrl"], VALID_MOCK_WEBP_BYTES, "image/webp")
-            if put_success:
-                manifest_pages.append({
-                    "page": idx,
-                    "storageKey": f["storageKey"],
-                    "previewKey": f["storageKey"],
-                    "width": 1200,
-                    "height": 1800,
-                    "fileSize": len(VALID_MOCK_WEBP_BYTES),
-                })
-
-    # Nếu không kết nối được Core API để xin Presigned URL (chế độ mock độc lập)
-    if not manifest_pages:
+    for idx, f in enumerate(uploaded_files, start=1):
+        await upload_file_to_presigned_url(f["uploadUrl"], VALID_MOCK_WEBP_BYTES, "image/webp")
         manifest_pages.append({
-            "page": 1,
-            "storageKey": f"ai/jobs/{job_id}/attempt-{attempt_num}/page-001.webp",
-            "previewKey": f"ai/jobs/{job_id}/attempt-{attempt_num}/page-001.webp",
+            "page": idx,
+            "storageKey": f["storageKey"],
+            "previewKey": f["storageKey"],
             "width": 1200,
             "height": 1800,
-            "fileSize": 154200,
+            "fileSize": len(VALID_MOCK_WEBP_BYTES),
         })
 
+    # 2. Sequential callbacks
     stages = [
         ("PREPROCESSING", 10),
         ("OCR", 30),
@@ -151,7 +164,7 @@ async def process_manga_job(req: ProcessJobRequest):
         await send_callback_event(job_id, attempt_num, seq, stage_name, prog)
         seq += 1
 
-    # Stage cuối cùng: READY_FOR_REVIEW với result_manifest và segments
+    # 3. Stage cuối cùng: READY_FOR_REVIEW với result_manifest và segments
     result_manifest = {
         "pages": manifest_pages,
     }

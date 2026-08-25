@@ -19,11 +19,12 @@ import { GlobalRole } from '@omninovel/shared';
   namespace: '/ws/ai',
   cors: {
     origin: (origin, callback) => {
-      // Cho phép tất cả localhost trong môi trường dev / test
+      const webBaseUrl = process.env.WEB_BASE_URL;
       if (
         !origin ||
         origin.startsWith('http://localhost') ||
-        origin.startsWith('http://127.0.0.1')
+        origin.startsWith('http://127.0.0.1') ||
+        (webBaseUrl && origin === webBaseUrl)
       ) {
         callback(null, true);
       } else {
@@ -85,16 +86,16 @@ export class TranslationGateway
           );
         }
 
-        // Xác thực User tồn tại và đang active trong Database
+        // Xác thực User tồn tại, đang active và chưa bị xóa trong Database
         const users = await this.dataSource.query(
-          `SELECT id, email, role, is_active FROM users WHERE id = $1`,
+          `SELECT id, email, role, is_active, is_deleted FROM users WHERE id = $1`,
           [payload.sub],
         );
 
-        if (users.length === 0 || !users[0].is_active) {
+        if (users.length === 0 || !users[0].is_active || users[0].is_deleted) {
           return next(
             new Error(
-              'UNAUTHORIZED: Tài khoản không hợp lệ hoặc đã bị khóa.',
+              'UNAUTHORIZED: Tài khoản không hợp lệ, đã bị vô hiệu hóa hoặc đã bị xóa.',
             ),
           );
         }

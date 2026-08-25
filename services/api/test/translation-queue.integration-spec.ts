@@ -118,11 +118,9 @@ describe('Translation Queue Lifecycle, Cancel & Watchdog Suite (Integration)', (
       `c2000000-0000-4000-a000-${Date.now().toString(16).padStart(12, '0').substring(0, 12)}`,
     );
     const testJobId = jobRes.id;
-
-    // Giả lập job đang chạy và bị mất heartbeat 90s trước
-    await service.startAttempt(testJobId, 1);
+    // Giả lập job đang ở PREPROCESSING và bị mất heartbeat 90s trước
     await dataSource.query(
-      `UPDATE translation_jobs SET heartbeat_at = NOW() - INTERVAL '90 seconds' WHERE id = $1`,
+      `UPDATE translation_jobs SET status = 'PREPROCESSING', attempt_count = 1, heartbeat_at = NOW() - INTERVAL '90 seconds' WHERE id = $1`,
       [testJobId],
     );
 
@@ -156,5 +154,33 @@ describe('Translation Queue Lifecycle, Cancel & Watchdog Suite (Integration)', (
       [testJobId],
     );
     expect(reconciledJob[0].status).toBe(TranslationJobStatus.QUEUED);
+  });
+
+  it('Job in READY_FOR_REVIEW should reject startAttempt (Worker-Final Invariant: cannot reset to PREPROCESSING)', async () => {
+    const jobRes = await service.createJob(
+      ownerUser,
+      { chapterVersionId: versionId, sourceLang: 'ja', targetLang: 'vi' },
+      `c4000000-0000-4000-a000-${Date.now().toString(16).padStart(12, '0').substring(0, 12)}`,
+    );
+    const testJobId = jobRes.id;
+
+    // Giả lập job đã hoàn tất worker pipeline sang READY_FOR_REVIEW ở attempt 1
+    await service.startAttempt(testJobId, 1);
+    await dataSource.query(
+      `UPDATE translation_jobs SET status = 'READY_FOR_REVIEW', attempt_count = 1 WHERE id = $1`,
+      [testJobId],
+    );
+
+    // BullMQ processor cố gắng retry attempt 2 sau khi job đã READY
+    const attempt2 = await service.startAttempt(testJobId, 2);
+    expect(attempt2).toBeNull(); // Worker-final guard chặn đứng
+
+    // Kiểm tra DB status vẫn là READY_FOR_REVIEW
+    const jobDb = await dataSource.query(
+      `SELECT status, attempt_count FROM translation_jobs WHERE id = $1`,
+      [testJobId],
+    );
+    expect(jobDb[0].status).toBe(TranslationJobStatus.READY_FOR_REVIEW);
+    expect(jobDb[0].attempt_count).toBe(1);
   });
 });

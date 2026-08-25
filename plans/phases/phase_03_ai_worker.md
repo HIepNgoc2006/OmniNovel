@@ -25,15 +25,20 @@
   - [x] Hardening Pessimistic Locking & Fencing: Lock `FOR UPDATE` trong giao dịch DB, kiểm tra HEAD MinIO non-blocking ngoài transaction
   - [x] Hardening Retry & Cancel Lifecycle: `abortAttempt` với reason `STALLED` / `CANCELED`, anti-resurrection guard chặn tái kích hoạt job đã hủy
   - [x] Two-Step Presigned Output Upload: Core API cấp Presigned PUT URLs, Worker upload WebP thật lên MinIO, Core verify object tồn tại trước khi duyệt `READY_FOR_REVIEW`
-  - [x] WebSocket Security & RBAC: Socket.IO Middleware xác thực JWT nguyên tử, RBAC IDOR StoryMember check cho `subscribe_job`
-  - [x] Test Pyramid Toàn Diện Đạt 100% Green:
-    - 19/19 Unit Tests (`state-machine.spec.ts`, `fencing.spec.ts`)
+  - [x] Hardening Invariants & Fail-Fast Lifecycle:
+    - Worker-Final Invariant: `READY_FOR_REVIEW` từ chối mọi mutation / same-state callback và chặn processor reset về `PREPROCESSING`.
+    - Fail-Fast Python Error Propagation: Ném HTTP 502 khi presign, upload MinIO hoặc callback thất bại để BullMQ retry đúng nghĩa.
+    - Accurate Bucket Resolution: Xác định bucket `manga-media` vs `novel-media` theo `fileType` và `mediaFormat`.
+    - WebSocket Production Security: CORS hỗ trợ `WEB_BASE_URL` và lọc tài khoản `is_deleted`.
+  - [x] Test Pyramid Toàn Diện Đạt 100% Green (Tổng 125/125 tests):
+    - 22/22 Unit Tests (`state-machine.spec.ts`, `fencing.spec.ts`)
     - 4/4 WebSocket Security E2E Tests (`translation-websocket.e2e-spec.ts`)
-    - DB Concurrency Integration Tests (`translation-db.integration-spec.ts`)
-    - BullMQ Lifecycle & Watchdog Integration Tests (`translation-queue.integration-spec.ts`)
-    - Migration Integration Tests (`migration-0003.integration-spec.ts`)
-    - 21/21 Core API Orchestration E2E Tests (`app.e2e-spec.ts` Describe 8)
-    - 5/5 Python FastAPI Pytest Cases (`test_endpoints.py`)
+    - 2/2 DB Concurrency Integration Tests (`translation-db.integration-spec.ts`)
+    - 4/4 BullMQ Lifecycle, Cancel & Worker-Final Tests (`translation-queue.integration-spec.ts`)
+    - 2/2 Migration Integration Tests (`migration-0003.integration-spec.ts`)
+    - 1/1 Cross-Service End-to-End Smoke Test (`translation-cross-service.integration-spec.ts`)
+    - 81/81 Core API E2E Lifecycle Tests (`app.e2e-spec.ts`)
+    - 9/9 Python FastAPI Pytest Cases (`test_endpoints.py`)
   - [x] **VERTICAL SLICE 1: FROZEN & 100% HOÀN TẤT**
 - [ ] **Vertical Slice 2: Japanese Manga-OCR & AI Processing Engine (PyTorch & Inpainting)**
   - [ ] Tải package an toàn từ `upload_sessions.final_key` trong MinIO

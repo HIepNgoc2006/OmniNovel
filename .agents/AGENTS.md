@@ -29,5 +29,5 @@
   - Luôn chỉ rõ đường dẫn cụ thể của bất kỳ file/thư mục nào được tạo ra hoặc cài đặt.
 - **Đồng bộ Git Tự động & Liên tục (Continuous Commit & Push):**
   - Bất cứ khi nào có thay đổi (tạo mới, sửa đổi, xóa) các file không nằm trong danh sách loại trừ của `.gitignore`, phải lập tức thực hiện `git add`, `git commit` với thông điệp rõ ràng và `git push` lên repository từ xa ngay.
-  - **Git Remote / Organization:** `https://github.com/OmniNovel/omninovel` (Organization: `https://github.com/OmniNovel`).
+  - **Git Remote / Organization:** `https://github.com/HIepNgoc2006/OmniNovel` (Repository: `https://github.com/HIepNgoc2006/OmniNovel`).
 

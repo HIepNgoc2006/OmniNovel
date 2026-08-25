@@ -296,3 +296,41 @@ async def test_prompt_injection_construction_defense():
     user_data = json.loads(messages[1]["content"])
     assert user_data["items"][0]["rawText"] == injection_text
     assert results[0].segment_key == "p0001-s0001"
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_outgoing_payload_privacy_boundary():
+    # Kiểm tra ranh giới dữ liệu: Payload gửi sang OpenAI chỉ gồm minimal text fields
+    batch = _create_sample_batch(1)
+    captured_payload = {}
+
+    def mock_handler(request: httpx.Request):
+        nonlocal captured_payload
+        captured_payload = json.loads(request.content.decode("utf-8"))
+        res_payload = {
+            "choices": [
+                {"message": {"content": json.dumps({"translations": [{"segmentKey": "p0001-s0001", "translatedText": "Xin chào 1"}]})}}
+            ]
+        }
+        return httpx.Response(200, json=res_payload)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler))
+    provider = OpenAICompatibleTranslationProvider(api_key="test-key", client=client)
+    await provider.translate_batch(batch)
+
+    user_data = json.loads(captured_payload["messages"][1]["content"])
+    item = user_data["items"][0]
+
+    # Invariant: Chỉ chứa 4 trường dữ liệu tối thiểu
+    allowed_keys = {"segmentKey", "rawText", "context", "glossary_constraints"}
+    assert set(item.keys()) == allowed_keys
+
+    # Tuyệt đối không chứa tọa độ bbox, url, image, storage key hay story/user metadata
+    forbidden_keys = {
+        "bbox", "bbox_x", "bbox_y", "bbox_w", "bbox_h", "url", "image", "image_url",
+        "presigned_url", "storage_key", "story_id", "user_id", "session_id", "chapter_id"
+    }
+    for k in forbidden_keys:
+        assert k not in item
+        assert k not in user_data
+

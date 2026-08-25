@@ -11,25 +11,28 @@
     - **Chiến lược 1 (Ghi đè - Overwrite):** Gán `chapter.active_version_id = translated_version.id`. Bản ghi ChapterVersion gốc vẫn giữ nguyên bất biến (`RAW_ORIGINAL`).
     - **Chiến lược 2 (Nhân bản - Duplicate):** Tạo bản ghi mới trong `chapter_versions` với `version_type = 'AI_TRANSLATED'`, giữ nguyên `active_version_id` trỏ vào bản gốc để biên tập viên review thủ công.
   - **Trọng tâm MVP Scope:** Tập trung chuyên sâu **Manga tiếng Nhật (Japanese Manga-OCR)** cho bản MVP. Ngôn ngữ Hàn (Manhwa) / Trung (Manhua) được thiết kế theo Interface Adapter mở rộng cho V1.
-- **Trạng thái:** [ ] Sẵn sàng khởi động
+- **Trạng thái:** [/] Đang triển khai (Vertical Slice 1: Core Orchestration, State Machine, Watchdog, Fencing & Mock Contract: **100% HOÀN THÀNH**)
 
 ---
 
 ### Danh Sách Đầu Việc (Checklist):
-- [ ] Thiết lập môi trường cục bộ cô lập `services/ai-worker` (`.venv` Python 3.10+ / requirements.txt / FastAPI skeleton)
-- [ ] Xây dựng BullMQ Producer & Consumer trong NestJS Core API (`services/api/src/modules/translation`) quản lý đúng 14 trạng thái của `TranslationJob`
-- [ ] Xây dựng REST Worker Contract giữa NestJS và Python FastAPI (`POST /internal/v1/jobs/process-manga`, `POST /internal/v1/jobs/process-novel`)
-- [ ] Xây dựng Manga Pipeline Slice:
-  - Tải package an toàn từ `upload_sessions.final_key` trong MinIO
-  - Text Bubble Detection (Contour / Bounding Box)
-  - Japanese Manga-OCR (Manga-OCR PyTorch model tối ưu cho tiếng Nhật)
-  - Inpainting xóa thoại nguyên bản bằng LaMa / OpenCV inpaint
-  - Typesetting tự động: Wrap text tiếng Việt, chọn font Manga, tự động co giãn font theo khung bóng thoại
-- [ ] Xây dựng Light Novel Pipeline Slice:
-  - Text chunking & Segment alignment
-  - Khớp từ điển thuật ngữ (`glossaries` table) chống sai lệch tên riêng/chiêu thức
-  - Dịch văn phong tiểu thuyết qua LLM Adapter
-- [ ] Xây dựng Logic 2 chiến lược xuất bản chuẩn immutable:
-  - **Overwrite Strategy:** `chapter.active_version_id = translated_version_id` (raw version bất biến)
-  - **Duplicate Strategy:** Tạo mới `ChapterVersion` (`AI_TRANSLATED`), `active_version_id` không đổi
-- [ ] Viết kiểm thử E2E / Integration xác minh luồng dịch hoàn chỉnh từ Upload raw $\rightarrow$ Worker xử lý $\rightarrow$ Promote MediaAsset / ChapterVersion.
+- [x] **Vertical Slice 1: Khởi tạo Hạ tầng & Orchestration Contract**
+  - [x] Thiết lập môi trường cục bộ cô lập `services/ai-worker` (`.venv` Python 3.10+ / requirements.txt / FastAPI skeleton)
+  - [x] Migration 0003: TypeORM Migration thêm orchestration metadata, idempotency & fencing sequence
+  - [x] Xây dựng BullMQ Producer & Consumer trong NestJS Core API (`services/api/src/modules/translation`) quản lý đúng 14 trạng thái của `TranslationJob`
+  - [x] Xây dựng REST Worker Contract hai chiều giữa NestJS và Python FastAPI (`/internal/v1/ai/jobs/:id/events` có fencing token và safe buffer `timingSafeEqual`)
+  - [x] Tích hợp Watchdog Reconciler (khôi phục `VALIDATING` stalled) và Heartbeat Watchdog (abort HTTP connection khi worker treo)
+  - [x] Xây dựng WebSocket Gateway (`/ws/ai`) thông báo tiến trình đa kênh (`job_progress`, `job_ready_for_review`, `job_failed`, `job_canceled`)
+  - [x] Xây dựng API Huỷ Job (`POST /api/v1/ai/jobs/:id/cancel`)
+  - [x] Xây dựng 2 chiến lược xuất bản chuẩn immutable (`OVERWRITE_ACTIVE_VERSION` & `CREATE_ALTERNATE_VERSION`)
+  - [x] Viết và hoàn thiện 21 E2E test cases (Describe 8) + 3 Python pytest cases (100% Green).
+- [ ] **Vertical Slice 2: Japanese Manga-OCR & AI Processing Engine (PyTorch & Inpainting)**
+  - [ ] Tải package an toàn từ `upload_sessions.final_key` trong MinIO
+  - [ ] Text Bubble Detection (Contour / Bounding Box)
+  - [ ] Japanese Manga-OCR (Manga-OCR PyTorch model tối ưu cho tiếng Nhật)
+  - [ ] Inpainting xóa thoại nguyên bản bằng LaMa / OpenCV inpaint
+  - [ ] Typesetting tự động: Wrap text tiếng Việt, chọn font Manga, tự động co giãn font theo khung bóng thoại
+- [ ] **Vertical Slice 3: Light Novel Pipeline Slice**
+  - [ ] Text chunking & Segment alignment
+  - [ ] Khớp từ điển thuật ngữ (`glossaries` table) chống sai lệch tên riêng/chiêu thức
+  - [ ] Dịch văn phong tiểu thuyết qua LLM Adapter

@@ -33,6 +33,10 @@ export const envSchema = z
     JWT_EXPIRATION: z.string().default('15m'),
     JWT_REFRESH_SECRET: z.string().default('super_secret_refresh_jwt_key_2026'),
     JWT_REFRESH_EXPIRATION: z.string().default('7d'),
+
+    // AI Worker Service (Internal RPC)
+    AI_WORKER_BASE_URL: z.string().default('http://localhost:8001'),
+    AI_WORKER_SECRET: z.string().default('internal_ai_worker_secret_secure_2026'),
   })
   .refine(
     (data) => {
@@ -40,7 +44,8 @@ export const envSchema = z
         const isDefaultJwt = data.JWT_SECRET.includes('super_secret');
         const isDefaultRefresh = data.JWT_REFRESH_SECRET.includes('super_secret');
         const isDefaultDbPass = data.DB_PASSWORD === 'postgres_password_secure';
-        if (isDefaultJwt || isDefaultRefresh || isDefaultDbPass) {
+        const isDefaultAiSecret = data.AI_WORKER_SECRET.includes('internal_ai_worker_secret');
+        if (isDefaultJwt || isDefaultRefresh || isDefaultDbPass || isDefaultAiSecret) {
           return false;
         }
       }

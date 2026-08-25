@@ -233,8 +233,13 @@ export class GamificationService {
   }
 
   // 3. THƯỞNG ĐỌC CHƯƠNG TRUYỆN: +5 EXP, KIỂM TRA CHAPTER THỰC TẾ & ACCESS, ĐIỀU KIỆN >=45s & >=80%, TRẦN 100 EXP/NGÀY VN
-  async rewardReadChapter(userId: string, dto: ReadChapterRewardDto) {
-    // 1. Xác thực Chương Truyện có thực sự tồn tại trong DB và kiểm tra quyền truy cập
+  async rewardReadChapter(userOrId: any, dto: ReadChapterRewardDto) {
+    const userId = typeof userOrId === 'string' ? userOrId : userOrId.id;
+    const isGlobalAdmin =
+      typeof userOrId === 'object' &&
+      (userOrId.globalRole === 'ADMIN' || userOrId.role === 'ADMIN');
+
+    // 1. Kiểm tra sự tồn tại của Chương truyện và Story tương ứng
     const chapter = await this.chapterRepository.findOne({
       where: { id: dto.chapterId },
       relations: { storyEdition: { story: true } },
@@ -244,14 +249,19 @@ export class GamificationService {
       throw new NotFoundException('Chương truyện không tồn tại.');
     }
 
-    // Nếu Story là PRIVATE -> Yêu cầu phải là thành viên Story hoặc Admin
-    if (chapter.storyEdition?.story?.visibility === 'PRIVATE') {
+    // Nếu Story là PRIVATE -> Yêu cầu phải là thành viên Story hoặc Global Admin
+    if (
+      chapter.storyEdition?.story?.visibility === 'PRIVATE' &&
+      !isGlobalAdmin
+    ) {
       const isMember = await this.dataSource.query(
         `SELECT 1 FROM story_members WHERE story_id = $1 AND user_id = $2 LIMIT 1`,
         [chapter.storyEdition.story.id, userId],
       );
       if (!isMember || isMember.length === 0) {
-        throw new ForbiddenException('Bạn không có quyền truy cập truyện riêng tư này.');
+        throw new ForbiddenException(
+          'Bạn không có quyền truy cập truyện riêng tư này.',
+        );
       }
     }
 

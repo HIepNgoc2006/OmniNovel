@@ -95,10 +95,10 @@ export class GamificationController {
   @RateLimit({ limit: 30, ttlSeconds: 60, keyPrefix: 'gamification_read_exp', scope: 'USER' })
   @HttpCode(HttpStatus.OK)
   rewardReadChapter(
-    @CurrentUser('id') userId: string,
+    @CurrentUser() user: any,
     @Body() dto: ReadChapterRewardDto,
   ) {
-    return this.gamificationService.rewardReadChapter(userId, dto);
+    return this.gamificationService.rewardReadChapter(user, dto);
   }
 
   // 7. Bảng xếp hạng cấp bậc độc giả (GET /gamification/leaderboard)

@@ -1,5 +1,6 @@
 import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
+import { BullModule } from '@nestjs/bullmq';
 import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database/database.module';
 import { RedisModule } from './redis/redis.module';
@@ -10,6 +11,7 @@ import { StoriesModule } from './modules/stories/stories.module';
 import { ChaptersModule } from './modules/chapters/chapters.module';
 import { StorageModule } from './modules/storage/storage.module';
 import { GamificationModule } from './modules/gamification/gamification.module';
+import { TranslationModule } from './modules/translation/translation.module';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 
 @Module({
@@ -21,6 +23,16 @@ import { CorrelationIdMiddleware } from './common/middleware/correlation-id.midd
     }),
     DatabaseModule,
     RedisModule,
+    BullModule.forRootAsync({
+      inject: [ConfigService],
+      useFactory: (configService: ConfigService) => ({
+        connection: {
+          host: configService.get<string>('REDIS_HOST', 'localhost'),
+          port: configService.get<number>('REDIS_PORT', 6379),
+          password: configService.get<string>('REDIS_PASSWORD') || undefined,
+        },
+      }),
+    }),
     HealthModule,
     UsersModule,
     AuthModule,
@@ -28,6 +40,7 @@ import { CorrelationIdMiddleware } from './common/middleware/correlation-id.midd
     ChaptersModule,
     StorageModule,
     GamificationModule,
+    TranslationModule,
   ],
 })
 export class AppModule implements NestModule {

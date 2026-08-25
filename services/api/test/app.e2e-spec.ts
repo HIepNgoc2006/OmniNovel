@@ -14,8 +14,11 @@ import {
   PublicationFormat,
   ChapterVersionType,
   StoryMemberRole,
+  TranslationJobStatus,
 } from '@omninovel/shared';
 import { AllowedUploadFileType } from '../src/modules/storage/dto/create-upload-session.dto';
+import { TranslationWatchdogService } from '../src/modules/translation/translation-watchdog.service';
+import { TranslationProcessor } from '../src/modules/translation/translation.processor';
 
 describe('OmniNovel Backend Core API (e2e)', () => {
   let app: INestApplication;
@@ -81,7 +84,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
     );
     app.useGlobalFilters(new GlobalExceptionFilter());
     app.setGlobalPrefix('api/v1', {
-      exclude: ['health/live', 'health/ready'],
+      exclude: ['health/live', 'health/ready', 'internal/v1/(.*)'],
     });
 
     await app.init();
@@ -1206,7 +1209,705 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(res.body.transactions[0].rewardType).toBe('EXP');
     });
   });
+
+  // ==========================================
+  // 8. PHASE 3 - AI TRANSLATION HUB & ORCHESTRATION SLICE
+  // ==========================================
+  describe('8. Phase 3 - AI Translation Hub & Orchestration Slice', () => {
+    let adminAccessToken: string;
+    let aiJobId: string;
+    let aiJobId2: string;
+    let cancelJobId: string;
+    let projectId: string;
+    let watchdog: TranslationWatchdogService;
+    let processor: TranslationProcessor;
+    let promotedSessionId: string;
+
+    const testAdminUser = {
+      username: `admin_ai_${Date.now()}`,
+      email: `admin_ai_${Date.now()}@omninovel.com`,
+      password: 'Password123@Secure',
+    };
+
+    beforeAll(async () => {
+      // 1. Tạo và đăng nhập Global Admin
+      await request(app.getHttpServer())
+        .post('/api/v1/auth/register')
+        .send(testAdminUser);
+      await dataSource.query(
+        `UPDATE users SET role = 'ADMIN' WHERE email = $1`,
+        [testAdminUser.email],
+      );
+      const adminLogin = await request(app.getHttpServer())
+        .post('/api/v1/auth/login')
+        .send({
+          identifier: testAdminUser.email,
+          password: testAdminUser.password,
+        });
+      adminAccessToken = adminLogin.body.accessToken;
+
+      // 2. Lấy services cho watchdog testing
+      watchdog = app.get(TranslationWatchdogService);
+      processor = app.get(TranslationProcessor);
+
+      // 3. Tạo 1 UploadSession PROMOTED cho versionA1Id để làm raw source package
+      const zip = new AdmZip();
+      zip.addFile('001.webp', Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50]));
+      const zipBuffer = zip.toBuffer();
+
+      const sessRes = await request(app.getHttpServer())
+        .post('/api/v1/uploads/sessions')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          storyEditionId: editionAId,
+          chapterVersionId: versionA1Id,
+          fileType: AllowedUploadFileType.MANGA_ZIP,
+          expectedSize: zipBuffer.length,
+        })
+        .expect(201);
+      promotedSessionId = sessRes.body.sessionId;
+
+      await axios.put(sessRes.body.uploadUrl, zipBuffer, {
+        headers: { 'Content-Type': 'application/zip' },
+      });
+
+      await request(app.getHttpServer())
+        .post(`/api/v1/uploads/sessions/${promotedSessionId}/finalize`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`);
+
+      // Gán session này cho versionA1Id
+      await dataSource.query(
+        `UPDATE upload_sessions SET chapter_version_id = $1 WHERE id = $2`,
+        [versionA1Id, promotedSessionId],
+      );
+    });
+
+    it('POST /api/v1/ai/jobs with invalid Idempotency-Key format should return 400 Bad Request', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/ai/jobs')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .set('Idempotency-Key', 'invalid-non-uuid-key')
+        .send({
+          chapterVersionId: versionA1Id,
+          sourceLang: 'ja',
+          targetLang: 'vi',
+          provider: 'OPENAI',
+        })
+        .expect(400);
+    });
+
+    it('POST /api/v1/ai/jobs by Reader without story membership should return 403 Forbidden', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/ai/jobs')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({
+          chapterVersionId: versionA1Id,
+          sourceLang: 'ja',
+          targetLang: 'vi',
+          provider: 'OPENAI',
+        })
+        .expect(403);
+    });
+
+    it('POST /api/v1/ai/jobs with non-existent ChapterVersion should return 404 Not Found', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/ai/jobs')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          chapterVersionId: '00000000-0000-0000-0000-000000000000',
+          sourceLang: 'ja',
+          targetLang: 'vi',
+        })
+        .expect(404);
+    });
+
+    it('POST /api/v1/ai/jobs on ChapterVersion with ambiguous artifacts (>1 PROMOTED) should return 409 Conflict', async () => {
+      // Tạo session PROMOTED thứ 2 cho versionA1Id để kích hoạt 409
+      const secondSession = await dataSource.query(
+        `INSERT INTO upload_sessions (story_edition_id, chapter_version_id, file_type, expected_size, quarantine_key, final_key, status, user_id, expires_at)
+         VALUES ($1, $2, 'MANGA_ZIP', 1024, 'quar_key_2', 'final_key_2', 'PROMOTED', (SELECT id FROM users LIMIT 1), NOW() + INTERVAL '15 minutes')
+         RETURNING id`,
+        [editionAId, versionA1Id],
+      );
+
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/ai/jobs')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          chapterVersionId: versionA1Id,
+          sourceLang: 'ja',
+          targetLang: 'vi',
+        })
+        .expect(409);
+
+      expect(res.body.error.message).toContain('SOURCE_ARTIFACT_AMBIGUOUS');
+
+      // Dọn dẹp session thừa để các test sau chạy bình thường
+      await dataSource.query(`DELETE FROM upload_sessions WHERE id = $1`, [secondSession[0].id]);
+    });
+
+    it('POST /api/v1/ai/jobs with valid payload should pin source artifact, create job in QUEUED and return 202 Accepted', async () => {
+      const idempotencyKey = 'a0000000-0000-4000-a000-000000000001';
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/ai/jobs')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          chapterVersionId: versionA1Id,
+          sourceLang: 'ja',
+          targetLang: 'vi',
+          provider: 'OPENAI',
+        })
+        .expect(202);
+
+      expect(res.body.jobId).toBeDefined();
+      expect(res.body.status).toBe(TranslationJobStatus.QUEUED);
+      expect(res.body.isDuplicate).toBe(false);
+      aiJobId = res.body.jobId;
+
+      // Kiểm tra DB: Đã pin đúng source_upload_session_id
+      const jobDb = await dataSource.query(
+        `SELECT * FROM translation_jobs WHERE id = $1`,
+        [aiJobId],
+      );
+      expect(jobDb.length).toBe(1);
+      expect(jobDb[0].source_upload_session_id).toBe(promotedSessionId);
+      expect(jobDb[0].status).toBe(TranslationJobStatus.QUEUED);
+      expect(jobDb[0].attempt_count).toBe(0);
+      expect(jobDb[0].last_sequence).toBe(0);
+      projectId = jobDb[0].project_id;
+    });
+
+    it('POST /api/v1/ai/jobs with same Idempotency-Key should return same jobId with isDuplicate: true (Durable Idempotency)', async () => {
+      const idempotencyKey = 'a0000000-0000-4000-a000-000000000001';
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/ai/jobs')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .set('Idempotency-Key', idempotencyKey)
+        .send({
+          chapterVersionId: versionA1Id,
+          sourceLang: 'ja',
+          targetLang: 'vi',
+        })
+        .expect(202);
+
+      expect(res.body.jobId).toBe(aiJobId);
+      expect(res.body.isDuplicate).toBe(true);
+    });
+
+    it('Concurrent / subsequent createJob on same edition + language pair should reuse the same TranslationProject', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/ai/jobs')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .set('Idempotency-Key', 'a0000000-0000-4000-a000-000000000002')
+        .send({
+          chapterVersionId: versionA1Id,
+          sourceLang: 'ja',
+          targetLang: 'vi',
+        })
+        .expect(202);
+
+      aiJobId2 = res.body.jobId;
+      const job2Db = await dataSource.query(
+        `SELECT project_id FROM translation_jobs WHERE id = $1`,
+        [aiJobId2],
+      );
+      expect(job2Db[0].project_id).toBe(projectId);
+    });
+
+    it('GET /api/v1/ai/jobs/:id should block Translator of Story B with 403 Forbidden (IDOR Protection)', async () => {
+      await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${aiJobId}`)
+        .set('Authorization', `Bearer ${translatorBAccessToken}`)
+        .expect(403);
+    });
+
+    it('GET /api/v1/ai/jobs/:id should allow Story Owner / Member to view job details', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${aiJobId}`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(200);
+
+      expect(res.body.job.id).toBe(aiJobId);
+      expect([
+        TranslationJobStatus.QUEUED,
+        TranslationJobStatus.PREPROCESSING,
+      ]).toContain(res.body.job.status);
+      expect(res.body.segments).toBeDefined();
+    });
+
+    it('POST /internal/v1/ai/jobs/:id/events without X-Internal-Service-Key should return 401 Unauthorized', async () => {
+      await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId}/events`)
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000001',
+          attemptNumber: 1,
+          sequence: 1,
+          stage: TranslationJobStatus.OCR,
+          progress: 30,
+        })
+        .expect(401);
+    });
+
+    it('POST /internal/v1/ai/jobs/:id/events with wrong key should return 401 Unauthorized', async () => {
+      await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId}/events`)
+        .set('X-Internal-Service-Key', 'wrong_secret_key_1234')
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000001',
+          attemptNumber: 1,
+          sequence: 1,
+          stage: TranslationJobStatus.OCR,
+          progress: 30,
+        })
+        .expect(401);
+    });
+
+    it('Route isolation: POST /api/v1/internal/v1/ai/jobs/:id/events should return 404 Not Found', async () => {
+      await request(app.getHttpServer())
+        .post(`/api/v1/internal/v1/ai/jobs/${aiJobId}/events`)
+        .set('X-Internal-Service-Key', 'internal_ai_worker_secret_secure_2026')
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000001',
+          attemptNumber: 1,
+          sequence: 1,
+          stage: TranslationJobStatus.OCR,
+          progress: 30,
+        })
+        .expect(404);
+    });
+
+    it('Internal worker event callback with sequence progression should advance state and save segments', async () => {
+      const internalKey = 'internal_ai_worker_secret_secure_2026';
+
+      // Giả lập Processor bắt đầu attempt 1
+      await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId}/events`)
+        .set('X-Internal-Service-Key', internalKey);
+
+      // Cập nhật attempt_count = 1
+      await dataSource.query(`UPDATE translation_jobs SET attempt_count = 1 WHERE id = $1`, [aiJobId]);
+
+      // Gửi event sequence 1: OCR (30%)
+      const res1 = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId}/events`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000002',
+          attemptNumber: 1,
+          sequence: 1,
+          stage: TranslationJobStatus.OCR,
+          progress: 30,
+        })
+        .expect(200);
+
+      expect(res1.body.success).toBe(true);
+      expect(res1.body.status).toBe(TranslationJobStatus.OCR);
+
+      // Gửi event sequence 2: READY_FOR_REVIEW với result_manifest và segments
+      const validResultManifest = {
+        pages: [
+          {
+            page: 1,
+            previewKey: `ai/jobs/${aiJobId}/attempt-1/page-001.webp`,
+            width: 1200,
+            height: 1800,
+          },
+        ],
+        previewUrls: [`http://localhost:9000/manga-media/ai/jobs/${aiJobId}/attempt-1/page-001.webp`],
+      };
+
+      const mockSegments = [
+        {
+          pageNumber: 1,
+          sortOrder: 1,
+          bboxX: 100,
+          bboxY: 200,
+          bboxW: 300,
+          bboxH: 150,
+          rawText: 'こんにちは',
+          translatedText: 'Xin chào',
+          confidence: 0.99,
+        },
+      ];
+
+      const res2 = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId}/events`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000003',
+          attemptNumber: 1,
+          sequence: 2,
+          stage: TranslationJobStatus.READY_FOR_REVIEW,
+          progress: 100,
+          resultManifest: validResultManifest,
+          segments: mockSegments,
+        })
+        .expect(200);
+
+      expect(res2.body.status).toBe(TranslationJobStatus.READY_FOR_REVIEW);
+
+      // Kiểm tra segments và result_manifest đã được persist vào DB
+      const segmentsDb = await dataSource.query(
+        `SELECT * FROM translation_segments WHERE job_id = $1`,
+        [aiJobId],
+      );
+      expect(segmentsDb.length).toBe(1);
+      expect(segmentsDb[0].raw_text).toBe('こんにちは');
+      expect(segmentsDb[0].translated_text).toBe('Xin chào');
+    });
+
+    it('Internal worker event with malicious storage key outside job prefix should be rejected with 400', async () => {
+      const internalKey = 'internal_ai_worker_secret_secure_2026';
+      await dataSource.query(
+        `UPDATE translation_jobs SET status = 'INPAINTING', attempt_count = 1, last_sequence = 1 WHERE id = $1`,
+        [aiJobId2],
+      );
+
+      const maliciousManifest = {
+        pages: [
+          {
+            page: 1,
+            previewKey: `media/editions/another-story/confidential.webp`, // Độc hại
+          },
+        ],
+      };
+
+      await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId2}/events`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000004',
+          attemptNumber: 1,
+          sequence: 2,
+          stage: TranslationJobStatus.READY_FOR_REVIEW,
+          progress: 100,
+          resultManifest: maliciousManifest,
+        })
+        .expect(400);
+    });
+
+    it('Stale callback fencing: Callback from attempt 1 when attempt 2 is active should be safely ignored', async () => {
+      const internalKey = 'internal_ai_worker_secret_secure_2026';
+      // Bắt đầu attempt 2 trên aiJobId2 -> sequence reset về 0
+      await dataSource.query(
+        `UPDATE translation_jobs SET attempt_count = 2, last_sequence = 0, status = 'PREPROCESSING' WHERE id = $1`,
+        [aiJobId2],
+      );
+
+      // 1. Attempt 2 gửi sequence 1 -> Được chấp nhận
+      const resValid = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId2}/events`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000005',
+          attemptNumber: 2,
+          sequence: 1,
+          stage: TranslationJobStatus.OCR,
+          progress: 40,
+        })
+        .expect(200);
+
+      expect(resValid.body.success).toBe(true);
+
+      // 2. Attempt 1 đến trễ (attemptNumber: 1, sequence: 9) -> Bị bỏ qua
+      const resStale = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId2}/events`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000006',
+          attemptNumber: 1,
+          sequence: 9,
+          stage: TranslationJobStatus.TRANSLATING,
+          progress: 60,
+        })
+        .expect(200);
+
+      expect(resStale.body.ignored).toBe(true);
+      expect(resStale.body.reason).toBe('STALE_ATTEMPT');
+    });
+
+    it('Out-of-order sequence fencing: Callback with sequence <= last_sequence should be ignored', async () => {
+      const internalKey = 'internal_ai_worker_secret_secure_2026';
+      // Gửi lại sequence 1 trong khi lastSequence hiện tại là 1
+      const res = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId2}/events`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000007',
+          attemptNumber: 2,
+          sequence: 1,
+          stage: TranslationJobStatus.OCR,
+          progress: 40,
+        })
+        .expect(200);
+
+      expect(res.body.ignored).toBe(true);
+      expect(res.body.reason).toBe('OUT_OF_ORDER_SEQUENCE');
+    });
+
+    it('POST /api/v1/ai/jobs/:id/cancel should cancel active job and reject further callbacks', async () => {
+      // Tạo job để test cancel
+      const createRes = await request(app.getHttpServer())
+        .post('/api/v1/ai/jobs')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          chapterVersionId: versionA1Id,
+          sourceLang: 'ja',
+          targetLang: 'vi',
+        });
+      cancelJobId = createRes.body.jobId;
+
+      // Hủy job
+      const cancelRes = await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${cancelJobId}/cancel`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(200);
+
+      expect(cancelRes.body.status).toBe(TranslationJobStatus.CANCELED);
+
+      // Callback gửi tới sau khi cancel -> Bị bỏ qua (JOB_TERMINAL)
+      const internalKey = 'internal_ai_worker_secret_secure_2026';
+      const eventRes = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${cancelJobId}/events`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          eventId: 'b0000000-0000-4000-b000-000000000008',
+          attemptNumber: 1,
+          sequence: 1,
+          stage: TranslationJobStatus.OCR,
+          progress: 50,
+        })
+        .expect(200);
+
+      expect(eventRes.body.ignored).toBe(true);
+      expect(eventRes.body.reason).toBe('JOB_TERMINAL');
+
+      // Hủy lại lần nữa -> 400 Bad Request
+      await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${cancelJobId}/cancel`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(400);
+    });
+
+    it('Watchdog Heartbeat: Stalled active job (>60s) should be detected and aborted', async () => {
+      // Giả lập job đang active bị mất heartbeat > 60s
+      const seventySecondsAgo = new Date(Date.now() - 70 * 1000);
+      await dataSource.query(
+        `UPDATE translation_jobs SET status = 'OCR', heartbeat_at = $1 WHERE id = $2`,
+        [seventySecondsAgo, aiJobId2],
+      );
+
+      // Chạy watchdog
+      await watchdog.checkStalledJobs();
+      // Không crash và log cảnh báo thành công
+    });
+
+    it('Watchdog Reconciler: Stalled VALIDATING job (>30s) should be enqueued and marked QUEUED', async () => {
+      const fortySecondsAgo = new Date(Date.now() - 40 * 1000);
+      const stuckJob = await dataSource.query(
+        `INSERT INTO translation_jobs (project_id, source_version_id, status, created_at)
+         VALUES ($1, $2, 'VALIDATING', $3)
+         RETURNING id`,
+        [projectId, versionA1Id, fortySecondsAgo],
+      );
+
+      await watchdog.reconcileValidatingJobs();
+
+      const updatedJob = await dataSource.query(
+        `SELECT status FROM translation_jobs WHERE id = $1`,
+        [stuckJob[0].id],
+      );
+      expect(updatedJob[0].status).toBe(TranslationJobStatus.QUEUED);
+    });
+
+    it('POST /api/v1/ai/jobs/:id/apply with OVERWRITE_ACTIVE_VERSION should create new AI_TRANSLATED version and update active_version_id', async () => {
+      // Translator không có quyền apply -> 403
+      // (Story Member role của TranslatorA là OWNER nên ta test với TranslatorB không thuộc story)
+      await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${aiJobId}/apply`)
+        .set('Authorization', `Bearer ${translatorBAccessToken}`)
+        .send({ mode: 'OVERWRITE_ACTIVE_VERSION' })
+        .expect(403);
+
+      // Lấy active_version_id ban đầu của Chapter
+      const initialChapter = await dataSource.query(
+        `SELECT active_version_id FROM chapters WHERE id = $1`,
+        [chapterAId],
+      );
+      const initialActiveVersionId = initialChapter[0].active_version_id;
+
+      // Đảm bảo job ở trạng thái READY_FOR_REVIEW kèm result_manifest
+      await dataSource.query(
+        `UPDATE translation_jobs SET status = 'READY_FOR_REVIEW', result_manifest = $1 WHERE id = $2`,
+        [
+          JSON.stringify({
+            pages: [
+              {
+                page: 1,
+                previewKey: `ai/jobs/${aiJobId}/attempt-1/page-001.webp`,
+                width: 1200,
+                height: 1800,
+              },
+            ],
+          }),
+          aiJobId,
+        ],
+      );
+
+      // Owner/Editor apply với OVERWRITE_ACTIVE_VERSION
+      const applyRes = await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${aiJobId}/apply`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .set('Idempotency-Key', 'c0000000-0000-4000-a000-000000000001')
+        .send({ mode: 'OVERWRITE_ACTIVE_VERSION' })
+        .expect(200);
+
+      expect(applyRes.body.chapterId).toBe(chapterAId);
+      expect(applyRes.body.versionType).toBe(ChapterVersionType.AI_TRANSLATED);
+      expect(applyRes.body.activeVersionId).not.toBe(initialActiveVersionId);
+      expect(applyRes.body.activeVersionId).toBeDefined();
+
+      // Kiểm tra tính bất biến: Bản raw gốc (versionA1Id) và version trước đó vẫn nguyên vẹn
+      const rawVersionDb = await dataSource.query(
+        `SELECT * FROM chapter_versions WHERE id = $1`,
+        [versionA1Id],
+      );
+      expect(rawVersionDb.length).toBe(1);
+      expect(rawVersionDb[0].version_type).toBe(ChapterVersionType.RAW_ORIGINAL);
+
+      const prevActiveVersionDb = await dataSource.query(
+        `SELECT * FROM chapter_versions WHERE id = $1`,
+        [initialActiveVersionId],
+      );
+      expect(prevActiveVersionDb[0].version_type).toBe(ChapterVersionType.HUMAN_EDITED);
+
+      // Kiểm tra MediaAssets đã được materialize cho version mới
+      const newAssets = await dataSource.query(
+        `SELECT * FROM media_assets WHERE version_id = $1`,
+        [applyRes.body.activeVersionId],
+      );
+      expect(newAssets.length).toBeGreaterThan(0);
+      expect(newAssets[0].storage_key).toContain('page-001.webp');
+
+      // Idempotent retry apply cùng key -> Trả về kết quả cũ, không tạo version mới
+      const retryApply = await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${aiJobId}/apply`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .set('Idempotency-Key', 'c0000000-0000-4000-a000-000000000001')
+        .send({ mode: 'OVERWRITE_ACTIVE_VERSION' })
+        .expect(200);
+
+      expect(retryApply.body.activeVersionId).toBe(applyRes.body.activeVersionId);
+      expect(retryApply.body.isAlreadyApplied).toBe(true);
+    });
+
+    it('POST /api/v1/ai/jobs/:id/apply with CREATE_ALTERNATE_VERSION should create new version while keeping active_version_id unchanged', async () => {
+      // Chuẩn bị job ở trạng thái READY_FOR_REVIEW
+      const altJob = await dataSource.query(
+        `INSERT INTO translation_jobs (project_id, source_version_id, status, result_manifest)
+         VALUES ($1, $2, 'READY_FOR_REVIEW', '{"pages":[{"page":1,"previewKey":"ai/jobs/alt/page-1.webp"}]}')
+         RETURNING id`,
+        [projectId, versionA1Id],
+      );
+
+      const beforeChapter = await dataSource.query(
+        `SELECT active_version_id FROM chapters WHERE id = $1`,
+        [chapterAId],
+      );
+      const currentActiveVersion = beforeChapter[0].active_version_id;
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${altJob[0].id}/apply`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({ mode: 'CREATE_ALTERNATE_VERSION' })
+        .expect(200);
+
+      expect(res.body.versionType).toBe(ChapterVersionType.AI_TRANSLATED);
+
+      // Con trỏ activeVersionId của Chapter vẫn giữ nguyên
+      const afterChapter = await dataSource.query(
+        `SELECT active_version_id FROM chapters WHERE id = $1`,
+        [chapterAId],
+      );
+      expect(afterChapter[0].active_version_id).toBe(currentActiveVersion);
+    });
+
+    it('POST /api/v1/ai/glossary and GET /api/v1/ai/glossary should manage project glossary terms', async () => {
+      // 1. Tạo thuật ngữ
+      const postRes = await request(app.getHttpServer())
+        .post('/api/v1/ai/glossary')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          projectId,
+          sourceTerm: '螺旋丸',
+          targetTerm: 'Rasengan (Loa Toàn Hoàn)',
+          category: 'SKILL_NAME',
+        })
+        .expect(201);
+
+      expect(postRes.body.sourceTerm).toBe('螺旋丸');
+      expect(postRes.body.targetTerm).toBe('Rasengan (Loa Toàn Hoàn)');
+
+      // 2. Lấy danh sách thuật ngữ
+      const getRes = await request(app.getHttpServer())
+        .get(`/api/v1/ai/glossary?projectId=${projectId}`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(200);
+
+      expect(getRes.body.length).toBeGreaterThan(0);
+      expect(getRes.body.some((g: any) => g.sourceTerm === '螺旋丸')).toBe(true);
+    });
+
+    it('Gamification Cleanup: Global Admin should be allowed to reward read chapter on PRIVATE story', async () => {
+      // Tạo truyện PRIVATE
+      const uniqueSlug = `truyen-rieng-tu-admin-${Date.now()}`;
+      const privateStory = await dataSource.query(
+        `INSERT INTO stories (title, slug, cover_url, visibility, media_format, publication_format, origin_country, original_language)
+         VALUES ('Truyện Riêng Tư Admin', $1, 'https://example.com/cover.webp', 'PRIVATE', 'COMIC', 'MANGA', 'JP', 'ja')
+         RETURNING id`,
+        [uniqueSlug],
+      );
+      const privateEdition = await dataSource.query(
+        `INSERT INTO story_editions (story_id, edition_name, language, is_default)
+         VALUES ($1, 'Bản gốc', 'ja', true)
+         RETURNING id`,
+        [privateStory[0].id],
+      );
+      const privateChapter = await dataSource.query(
+        `INSERT INTO chapters (story_edition_id, chapter_number, title)
+         VALUES ($1, 1, 'Chương 1')
+         RETURNING id`,
+        [privateEdition[0].id],
+      );
+
+      // Reader không thuộc story bị chặn 403
+      await request(app.getHttpServer())
+        .post('/api/v1/gamification/read-chapter')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({
+          chapterId: privateChapter[0].id,
+          readingDurationSeconds: 60,
+          progressPercentage: 100,
+        })
+        .expect(403);
+
+      // Global Admin được phép nhận thưởng mà không bị 403
+      const adminRewardRes = await request(app.getHttpServer())
+        .post('/api/v1/gamification/read-chapter')
+        .set('Authorization', `Bearer ${adminAccessToken}`)
+        .send({
+          chapterId: privateChapter[0].id,
+          readingDurationSeconds: 60,
+          progressPercentage: 100,
+        })
+        .expect(200);
+
+      expect(adminRewardRes.body.success).toBe(true);
+    });
+  });
 });
+
 
 
 

@@ -83,10 +83,12 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 | `POST` | `/api/v1/studio/editions/:id/volumes` | Auth: Story Editor / Story Owner / Global Admin, Body: `{ volumeNumber, title, coverUrl }` | `201 Created` + `{ volumeId }` |
 | `POST` | `/api/v1/studio/volumes/:id/chapters` | Auth: Story Editor / Story Owner / Global Admin, Body: `{ chapterNumber, title }` | `201 Created` + `{ chapterId }` |
 | `POST` | `/api/v1/uploads/sessions`| Auth: Story Uploader / Story Translator / Story Editor / Story Owner / Global Admin, Body: `{ storyEditionId, chapterNumber, fileType: 'ZIP' \| 'TEXT' \| 'EPUB' \| 'MARKDOWN', fileSize }` | `201 Created` + `{ uploadId, presignedUrls: [...] }` |
-| `POST` | `/api/v1/ai/jobs` | Header: `Idempotency-Key`, Auth: Story Translator / Story Editor / Story Owner / Global Admin, Body: `{ chapterVersionId, sourceLang, targetLang, provider }` | `202 Accepted` + `{ jobId, status: 'QUEUED' }` |
+| `POST` | `/api/v1/ai/jobs` | Header: `Idempotency-Key` (UUID-v4), Auth: Story Translator / Story Editor / Story Owner / Global Admin, Body: `{ chapterVersionId, sourceLang, targetLang, provider }` | `202 Accepted` + `{ jobId, status: 'QUEUED' }` |
 | `GET` | `/api/v1/ai/jobs/:id` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` | `200 OK` + `{ job, segments, diffPreviewUrls }` |
-| `POST` | `/api/v1/ai/jobs/:id/apply` | Header: `Idempotency-Key`, Auth: Story Editor / Story Owner / Global Admin, Body: `{ mode: 'OVERWRITE_ACTIVE_VERSION' \| 'CREATE_ALTERNATE_VERSION' }` | `200 OK` + `{ chapterId, activeVersionId, versionNumber }` |
+| `POST` | `/api/v1/ai/jobs/:id/cancel` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` | `200 OK` + `{ jobId, status: 'CANCELED' }` |
+| `POST` | `/api/v1/ai/jobs/:id/apply` | Header: `Idempotency-Key` (UUID-v4), Auth: Story Editor / Story Owner / Global Admin, Body: `{ mode: 'OVERWRITE_ACTIVE_VERSION' \| 'CREATE_ALTERNATE_VERSION' }` | `200 OK` + `{ chapterId, activeVersionId, versionNumber }` |
 | `GET/POST` | `/api/v1/ai/glossary` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Body (POST): `{ projectId, sourceTerm, targetTerm, category }` | `200 OK / 201 Created` + `{ glossaryTerm }` |
+| `POST` | `/internal/v1/ai/jobs/:id/events` | Header: `X-Internal-Service-Key`, Body: `{ eventId, attemptNumber, sequence, stage, progress, resultManifest, segments }` | `200 OK` + `{ received: true, status, sequence }` |
 
 ### 3.6. Phân Hệ Gamification & Sổ Cái (Gamification)
 | Method | Endpoint | Yêu Cầu Header / Body | Response Thành Công |

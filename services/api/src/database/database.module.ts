@@ -19,6 +19,10 @@ import { RewardTransaction } from '../modules/gamification/entities/reward-trans
 import { DailyCheckin } from '../modules/gamification/entities/daily-checkin.entity';
 import { LevelReward } from '../modules/gamification/entities/level-reward.entity';
 import { UserClaimedLevelReward } from '../modules/gamification/entities/user-claimed-level-reward.entity';
+import { TranslationProject } from '../modules/translation/entities/translation-project.entity';
+import { TranslationGlossary } from '../modules/translation/entities/translation-glossary.entity';
+import { TranslationJob } from '../modules/translation/entities/translation-job.entity';
+import { TranslationSegment } from '../modules/translation/entities/translation-segment.entity';
 
 @Module({
   imports: [
@@ -52,6 +56,10 @@ import { UserClaimedLevelReward } from '../modules/gamification/entities/user-cl
           DailyCheckin,
           LevelReward,
           UserClaimedLevelReward,
+          TranslationProject,
+          TranslationGlossary,
+          TranslationJob,
+          TranslationSegment,
         ],
         logging: config.get<string>('NODE_ENV') === 'development' ? ['error', 'warn'] : false,
       }),

@@ -1,0 +1,168 @@
+import time
+from dataclasses import dataclass
+from pathlib import Path
+from typing import List, Optional
+import cv2
+import numpy as np
+
+from app.core.package_extractor import ExtractedPageRef, extract_chapter_package
+from app.pipeline.detector import MangaBubbleDetector
+from app.pipeline.heartbeat_emitter import HeartbeatEmitter
+from app.pipeline.ocr_engine import MangaOcrEngine
+from app.pipeline.preview import SegmentPreviewItem, generate_ocr_debug_preview
+from app.pipeline.progress_sink import NoopProgressSink, ProgressSink
+from app.pipeline.reading_order import sort_manga_reading_order
+
+
+@dataclass(frozen=True)
+class MangaOcrSegmentResult:
+    page_number: int
+    sort_order: int
+    bbox_x: int
+    bbox_y: int
+    bbox_w: int
+    bbox_h: int
+    raw_text: str
+    confidence: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class MangaOcrPageResult:
+    page_number: int
+    original_filename: str
+    width: int
+    height: int
+    preview_path: Optional[Path]
+    segments: List[MangaOcrSegmentResult]
+
+
+@dataclass(frozen=True)
+class MangaOcrResult:
+    pages: List[MangaOcrPageResult]
+    total_segments: int
+    processing_time_ms: float
+
+
+class MangaOcrPipeline:
+    """
+    Vertical Slice 2A: Standalone Japanese Manga-OCR Pipeline:
+    1. Extract ZIP an toàn với Zip-Bomb / Traversal / PIL Limits
+    2. OpenCV Bubble & Text Region Detection
+    3. Deterministic RTL + TTB Reading Order Heuristic
+    4. Manga-OCR Inference dưới concurrency lock & cache cô lập
+    5. WebP OCR Debug Preview Generation
+    6. Heartbeat & Progress Emitter độc lập qua ProgressSink
+    """
+
+    def __init__(
+        self,
+        detector: Optional[MangaBubbleDetector] = None,
+        engine: Optional[MangaOcrEngine] = None,
+        sink: Optional[ProgressSink] = None,
+    ):
+        self.detector = detector or MangaBubbleDetector()
+        self.engine = engine or MangaOcrEngine.get_instance()
+        self.sink = sink or NoopProgressSink()
+
+    async def process_chapter_package(
+        self,
+        zip_path: Path,
+        work_dir: Path,
+        generate_previews: bool = True,
+    ) -> MangaOcrResult:
+        start_time = time.perf_counter()
+        emitter = HeartbeatEmitter(self.sink, stage="OCR", interval_seconds=15.0)
+        emitter.start()
+
+        try:
+            # 1. Giải nén an toàn
+            await self.sink.emit_progress(progress=10, stage="OCR", message="Extracting source ZIP archive")
+            extracted_dir = work_dir / "extracted"
+            extracted_pages: List[ExtractedPageRef] = extract_chapter_package(zip_path, extracted_dir)
+
+            total_pages = len(extracted_pages)
+            page_results: List[MangaOcrPageResult] = []
+            all_segments_count = 0
+
+            preview_dir = work_dir / "previews"
+            if generate_previews:
+                preview_dir.mkdir(parents=True, exist_ok=True)
+
+            # 2. Xử lý từng trang
+            for p_idx, page in enumerate(extracted_pages, start=1):
+                cur_progress = 10 + int(80 * ((p_idx - 1) / total_pages))
+                emitter.set_progress(cur_progress)
+                await self.sink.emit_progress(
+                    progress=cur_progress,
+                    stage="OCR",
+                    message=f"Processing OCR for page {p_idx}/{total_pages}",
+                )
+
+                # Đọc ảnh an toàn
+                raw_bytes = np.fromfile(str(page.file_path), dtype=np.uint8)
+                full_img = cv2.imdecode(raw_bytes, cv2.IMREAD_COLOR)
+                if full_img is None:
+                    raise ValueError(f"Failed to read image from {page.file_path}")
+
+                # Phát hiện vùng thoại
+                detected_regions = self.detector.detect_regions(page.file_path)
+
+                # Sắp xếp thứ tự đọc Manga RTL / TTB
+                ordered_regions = sort_manga_reading_order(
+                    detected_regions, page.width, page.height
+                )
+
+                page_segments: List[MangaOcrSegmentResult] = []
+                preview_items: List[SegmentPreviewItem] = []
+
+                for s_idx, r in enumerate(ordered_regions, start=1):
+                    # Cắt vùng ảnh crop
+                    x, y, w, h = r.bbox_x, r.bbox_y, r.bbox_w, r.bbox_h
+                    crop = full_img[y : y + h, x : x + w]
+
+                    # Chạy OCR
+                    recognized_text = await self.engine.recognize_crop_async(crop)
+
+                    seg_result = MangaOcrSegmentResult(
+                        page_number=page.page_number,
+                        sort_order=s_idx,
+                        bbox_x=x,
+                        bbox_y=y,
+                        bbox_w=w,
+                        bbox_h=h,
+                        raw_text=recognized_text,
+                        confidence=None,  # SSoT: Manga-OCR không sinh confidence giả định
+                    )
+                    page_segments.append(seg_result)
+                    preview_items.append(SegmentPreviewItem(sort_order=s_idx, region=r))
+
+                # Tạo WebP Debug Preview
+                preview_path: Optional[Path] = None
+                if generate_previews:
+                    preview_file = preview_dir / f"page_{page.page_number:04d}_preview.webp"
+                    generate_ocr_debug_preview(page.file_path, preview_items, preview_file)
+                    preview_path = preview_file
+
+                all_segments_count += len(page_segments)
+                page_results.append(
+                    MangaOcrPageResult(
+                        page_number=page.page_number,
+                        original_filename=page.original_filename,
+                        width=page.width,
+                        height=page.height,
+                        preview_path=preview_path,
+                        segments=page_segments,
+                    )
+                )
+
+            elapsed_ms = (time.perf_counter() - start_time) * 1000.0
+            await self.sink.emit_progress(progress=95, stage="OCR", message="OCR processing completed")
+
+            return MangaOcrResult(
+                pages=page_results,
+                total_segments=all_segments_count,
+                processing_time_ms=elapsed_ms,
+            )
+
+        finally:
+            await emitter.stop()

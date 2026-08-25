@@ -21,6 +21,8 @@ ENV/
 *.onnx
 *.bin
 weights/
+.cache/
+services/ai-worker/.cache/
 
 # Flutter / Mobile
 .dart_tool/

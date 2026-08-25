@@ -40,12 +40,21 @@
     - 80/80 Core API E2E Lifecycle Tests (`app.e2e-spec.ts`)
     - 9/9 Python FastAPI Pytest Cases (`test_endpoints.py`)
   - [x] **VERTICAL SLICE 1: FROZEN & 100% HOÀN TẤT**
-- [ ] **Vertical Slice 2: Japanese Manga-OCR & AI Processing Engine (PyTorch & Inpainting)**
-  - [ ] Tải package an toàn từ `upload_sessions.final_key` trong MinIO
-  - [ ] Text Bubble Detection (Contour / Bounding Box)
-  - [ ] Japanese Manga-OCR (Manga-OCR PyTorch model tối ưu cho tiếng Nhật)
-  - [ ] Inpainting xóa thoại nguyên bản bằng LaMa / OpenCV inpaint
-  - [ ] Typesetting tự động: Wrap text tiếng Việt, chọn font Manga, tự động co giãn font theo khung bóng thoại
+- [/] **Vertical Slice 2: Japanese Manga-OCR & AI Processing Engine (PyTorch & Inpainting)**
+  - [x] **Vertical Slice 2A: Japanese Manga-OCR Foundation (100% HOÀN TẤT):**
+    - [x] Core Migration 0004: Drop default `confidence`, hỗ trợ nullable semantics cho OCR segments.
+    - [x] Core API validation: `WorkerSegmentDto` kiểm tra toạ độ pixel (`INT >= 0`) và `confidence` nullable.
+    - [x] Local Environment & Cache: Thiết lập tuyệt đối `HF_HOME` và `TORCH_HOME` vào `services/ai-worker/.cache/`.
+    - [x] Package Extractor: Tải & thẩm định an toàn ZIP (100MB, 100:1 ratio, 500 entries, 200 pages, 4096px, traversal & magic header check).
+    - [x] Bubble & Text Region Detector: OpenCV morphology contour extraction, xuất toạ độ pixel INT chuẩn xác.
+    - [x] Reading Order Engine: Thuật toán sắp xếp Manga RTL / TTB deterministic 100%.
+    - [x] ProgressSink & Heartbeat Emitter: Standalone execution không làm corrupt production TranslationJob, periodic keep-alive.
+    - [x] MangaOcrEngine Singleton: Concurrency guard (`asyncio.Semaphore(1)`), lazy loading, thread-safe.
+    - [x] Debug Preview Generator: Xuất ảnh WebP hiển thị bounding box và nhãn `#1`, `#2` (không phụ thuộc font hệ điều hành).
+    - [x] Test Pyramid: 144/144 tests passing (117 NestJS Core + 27 Python Pytest bao gồm Real HuggingFace Model test).
+  - [ ] **Vertical Slice 2B: Inpainting & Typesetting:**
+    - [ ] Inpainting xóa thoại nguyên bản bằng LaMa / OpenCV inpaint.
+    - [ ] Typesetting tự động: Wrap text tiếng Việt, chọn font Manga, tự động co giãn font theo khung bóng thoại.
 - [ ] **Vertical Slice 3: Light Novel Pipeline Slice**
   - [ ] Text chunking & Segment alignment
   - [ ] Khớp từ điển thuật ngữ (`glossaries` table) chống sai lệch tên riêng/chiêu thức

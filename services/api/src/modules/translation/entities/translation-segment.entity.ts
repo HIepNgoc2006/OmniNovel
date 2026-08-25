@@ -47,8 +47,8 @@ export class TranslationSegment {
   @Column({ name: 'translated_text', type: 'text', nullable: true })
   translatedText: string | null;
 
-  @Column({ type: 'numeric', precision: 4, scale: 3, default: 0.95 })
-  confidence: number;
+  @Column({ type: 'numeric', precision: 4, scale: 3, nullable: true })
+  confidence: number | null;
 
   @Column({ name: 'is_human_verified', default: false })
   isHumanVerified: boolean;

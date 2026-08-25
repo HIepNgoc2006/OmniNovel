@@ -174,6 +174,18 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
         sequence: 4,
         stage: TranslationJobStatus.OCR,
         progress: 55,
+        segments: [
+          {
+            pageNumber: 1,
+            sortOrder: 1,
+            bboxX: 0,
+            bboxY: 0,
+            bboxW: 100,
+            bboxH: 200,
+            rawText: 'こんにちは',
+            confidence: null,
+          },
+        ],
       },
     ];
 
@@ -189,6 +201,19 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
     expect(finalJob[0].last_sequence).toBe(4);
     expect(finalJob[0].status).toBe(TranslationJobStatus.OCR);
     expect(finalJob[0].progress_percentage).toBe(55);
+
+    // Xác minh PostgreSQL lưu đúng bbox_x = 0, bbox_y = 0 và confidence IS NULL (không bị fallback 0.95 hay NULL)
+    const savedSegments = await dataSource.query(
+      `SELECT bbox_x, bbox_y, bbox_w, bbox_h, confidence, raw_text FROM translation_segments WHERE job_id = $1`,
+      [testJobId],
+    );
+    expect(savedSegments.length).toBe(1);
+    expect(savedSegments[0].bbox_x).toBe(0);
+    expect(savedSegments[0].bbox_y).toBe(0);
+    expect(savedSegments[0].bbox_w).toBe(100);
+    expect(savedSegments[0].bbox_h).toBe(200);
+    expect(savedSegments[0].confidence).toBeNull();
+    expect(savedSegments[0].raw_text).toBe('こんにちは');
   });
 
   it('Parallel concurrent applyJob with same Idempotency-Key should create exactly 1 new ChapterVersion', async () => {

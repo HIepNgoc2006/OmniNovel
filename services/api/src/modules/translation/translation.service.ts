@@ -682,16 +682,16 @@ export class TranslationService {
         for (const seg of eventDto.segments) {
           const segmentEntity = manager.create(TranslationSegment, {
             jobId: job.id,
-            pageNumber: seg.pageNumber || null,
-            anchorBlockId: seg.anchorBlockId || null,
+            pageNumber: seg.pageNumber ?? null,
+            anchorBlockId: seg.anchorBlockId ?? null,
             sortOrder: seg.sortOrder,
-            bboxX: seg.bboxX || null,
-            bboxY: seg.bboxY || null,
-            bboxW: seg.bboxW || null,
-            bboxH: seg.bboxH || null,
+            bboxX: seg.bboxX ?? null,
+            bboxY: seg.bboxY ?? null,
+            bboxW: seg.bboxW ?? null,
+            bboxH: seg.bboxH ?? null,
             rawText: seg.rawText,
-            translatedText: seg.translatedText || null,
-            confidence: seg.confidence || 0.95,
+            translatedText: seg.translatedText ?? null,
+            confidence: seg.confidence ?? null,
           });
           await manager.save(TranslationSegment, segmentEntity);
         }

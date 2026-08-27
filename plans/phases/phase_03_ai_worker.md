@@ -61,17 +61,20 @@
     - [x] Translation Providers & Strict Validation: `MockTranslationProvider` và `OpenAICompatibleTranslationProvider` với fail-fast error handling (401/429/500), xác thực 1:1 segmentKey `set(output) == set(input)` không cho phép thiếu/thừa/trùng key.
     - [x] Manga Translation Pipeline: Kết nối OCR result, glossary snapshot, translation batching và phát progress/heartbeats ở stage `TRANSLATING`.
     - [x] Test Pyramid: 175/175 tests green (103 E2E/Integration + 22 Unit NestJS Core + 50 Pytest AI Worker).
-  - [x] **Vertical Slice 2C: Inpainting, Typesetting & Full Production Pipeline (100% HOÀN TẤT):**
+  - [x] **Vertical Slice 2C: Inpainting, Typesetting & Full Production Pipeline (100% HOÀN TẤT & FROZEN):**
     - [x] Concurrency-safe AttemptProgressCoordinator: Bảo vệ bằng `asyncio.Lock`, atomic stage transitions, centralized heartbeat loop ngăn stale stage callbacks.
     - [x] SSoT Segments Invariant: Core API reject intermediate callbacks gửi segments (`INTERMEDIATE_SEGMENTS_FORBIDDEN`), lưu segments atomic & idempotent (`DELETE FROM translation_segments WHERE job_id = $1` rồi bulk-insert) khi `READY_FOR_REVIEW`.
-    - [x] Bounded SSRF Protection Downloader: Giới hạn scheme `http`/`https`, allowlist hostname MinIO, stream download có giới hạn cứng 100MB (`MAX_ARCHIVE_DOWNLOAD_BYTES`).
+    - [x] Bounded SSRF Protection Downloader: Giới hạn scheme `http`/`https`, strict origin whitelist ở production (`_get_allowed_origins`), stream download có giới hạn cứng 100MB (`MAX_ARCHIVE_DOWNLOAD_BYTES`).
     - [x] Text-Stroke Mask Generation: Otsu thresholding + morphology dilation bám sát nét chữ gốc, safety guard `mask_pixels / ROI <= 65%` (`MaskCoverageExceededError`).
     - [x] Telea Inpainting Engine: Khôi phục nền thoại, đảm bảo pixel invariance 100% ngoài vùng mask (`mask == 0`).
     - [x] Vietnamese Manga Typesetting: Pinned TrueType font `manga_default.ttf`, wrap text tiếng Việt chuẩn dấu thanh / từ cực dài, dynamic font fitting ($36 \rightarrow 12\text{px}$), căn giữa 2 chiều và outline stroke.
     - [x] Mechanical Visual QA: Thẩm định geometry, pixel invariance ngoài `(inpaint_mask ∪ typeset_mask)`, WebP encoding/decoding và tính toàn vẹn 1:1 của manifest/segments.
     - [x] Two-Step Presigned MinIO Upload: Core cấp canonical upload slots, Worker PUT WebP thật lên MinIO, manifest dùng canonical `storageKey`.
     - [x] Cross-Service Smoke Test với Tiến Trình Thật: Spawn subprocess Python FastAPI thật (`AI_WORKER_TEST_MODE=true`), kiểm chứng trọn vẹn toàn bộ chu trình sinh `ChapterVersion` (`AI_TRANSLATED`), `MediaAsset`s và `TranslationSegment`s.
-    - [x] Test Pyramid: **195/195 tests green (100%)** — 105 NestJS E2E/Integration + 22 NestJS Unit + 68 Python Pytest.
+    - [x] 3-Pass Streaming Disk Spill Architecture: `INPAINTING` $\rightarrow$ `TYPESETTING` $\rightarrow$ `QUALITY_CHECK` phân tách rõ ràng, giữ bộ nhớ $O(1)$ RAM và durable state phản ánh chính xác từng giai đoạn.
+    - [x] CI/CD Automation & Reproducibility: Độc lập font OS với static Japanese fixture PNG, MinIO service container polling, migration bootstrap và force-exit sạch sẽ.
+    - [x] Test Pyramid CI-Verified: **203/203 tests green (100%)** — 76 Python Pytest + 22 NestJS Unit + 105 NestJS E2E/Integration trên GitHub Actions run #10.
+- [x] **VERTICAL SLICE 2: FROZEN & 100% HOÀN TẤT**
 - [ ] **Vertical Slice 3: Light Novel Pipeline Slice**
   - [ ] Text chunking & Segment alignment
   - [ ] Khớp từ điển thuật ngữ (`glossaries` table) chống sai lệch tên riêng/chiêu thức

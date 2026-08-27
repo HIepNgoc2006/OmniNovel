@@ -192,7 +192,9 @@ describe('Real Python FastAPI Worker Cross-Service Integration Spec (Slice 2C Ac
 
   afterAll(async () => {
     if (pythonProcess) {
-      pythonProcess.kill();
+      try {
+        pythonProcess.kill('SIGTERM');
+      } catch (e) {}
     }
     if (app) {
       await app.close();

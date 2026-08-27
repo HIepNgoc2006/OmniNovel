@@ -23,12 +23,22 @@ def _get_allowed_origins() -> Set[Tuple[str, str, int]]:
     - Ở production: CHỈ cho phép origin được cấu hình cụ thể qua settings.MINIO_ENDPOINT.
     - Ở test/development: Bổ sung các local aliases (localhost, 127.0.0.1, minio, host.docker.internal).
     """
-    minio_host = (settings.MINIO_ENDPOINT or "localhost").lower()
-    if "://" in minio_host:
-        parsed_minio = urllib.parse.urlparse(minio_host)
+    raw_endpoint = (settings.MINIO_ENDPOINT or "localhost").lower()
+    if "://" in raw_endpoint:
+        parsed_minio = urllib.parse.urlparse(raw_endpoint)
         minio_host = parsed_minio.hostname or "localhost"
+        minio_port = parsed_minio.port or settings.MINIO_PORT or 9000
+    elif ":" in raw_endpoint:
+        parts = raw_endpoint.split(":")
+        minio_host = parts[0]
+        try:
+            minio_port = int(parts[1])
+        except ValueError:
+            minio_port = settings.MINIO_PORT or 9000
+    else:
+        minio_host = raw_endpoint
+        minio_port = settings.MINIO_PORT or 9000
 
-    minio_port = settings.MINIO_PORT or 9000
     minio_scheme = "https" if settings.MINIO_USE_SSL else "http"
 
     origins = {

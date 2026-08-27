@@ -10,17 +10,17 @@ logger = logging.getLogger(__name__)
 class AttemptProgressCoordinator:
     """
     Coordinator quản lý toàn bộ sequence, heartbeat và state transitions cho 1 attempt duy nhất:
-    - Thread/Concurrency-safe: Bảo vệ sequence và HTTP emission bằng asyncio.Lock.
-    - Transition nguyên tử: Chuyển stage ngay lập tức, cập nhật current_stage để mọi heartbeat
-      sau đó luôn phát đúng stage mới với sequence tăng dần đơn điệu.
-    - Tuyệt đối không để heartbeat của stage cũ lọt tới Core sau khi transition mới đã xảy ra.
+    - Thread/Concurrency-safe: Bảo vệ sequence và toàn bộ luồng emission bằng asyncio.Lock critical section.
+    - Strict Outbound Serialization: Giữ lock trong suốt quá trình phát HTTP callback, ngăn ngừa
+      triệt để tình huống heartbeat của stage cũ phát sau khi stage mới đã chuyển đổi.
+    - Canonical 10s Heartbeat: Mặc định phát keep-alive mỗi 10 giây.
     - Final-only segments: Intermediate transitions gửi segments=[], chỉ emit_ready mới gửi final segments.
     """
 
     def __init__(
         self,
         sink: ProgressSink,
-        interval_seconds: float = 15.0,
+        interval_seconds: float = 10.0,
     ):
         self.sink = sink
         self.interval_seconds = interval_seconds
@@ -57,21 +57,23 @@ class AttemptProgressCoordinator:
                 if not self._running:
                     break
 
+                # Giữ lock trong toàn bộ quá trình emit để serialize tuyệt đối
                 async with self._lock:
+                    if not self._running:
+                        break
                     self._sequence += 1
                     seq = self._sequence
                     stage = self._current_stage
                     progress = self._current_progress
 
-                # Phát heartbeat (heartbeat=True)
-                await self.sink.emit_heartbeat(
-                    sequence=seq,
-                    stage=stage,
-                    progress=progress,
-                )
-                logger.debug(
-                    f"[Coordinator] Đã phát heartbeat: stage={stage}, seq={seq}, prog={progress}"
-                )
+                    await self.sink.emit_heartbeat(
+                        sequence=seq,
+                        stage=stage,
+                        progress=progress,
+                    )
+                    logger.debug(
+                        f"[Coordinator] Đã phát heartbeat: stage={stage}, seq={seq}, prog={progress}"
+                    )
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -85,7 +87,7 @@ class AttemptProgressCoordinator:
     ) -> None:
         """
         Critical Section: Chuyển stage an toàn.
-        Tăng sequence, cập nhật stage và progress, gửi event lên Core API.
+        Tăng sequence, cập nhật stage và progress, gửi event lên Core API trong cùng 1 lock block.
         """
         async with self._lock:
             self._sequence += 1

@@ -90,7 +90,7 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
        VALUES ($1, $2, 'MANGA_ZIP', 1024, 'quar', 'final_db.zip', 'PROMOTED', $3, NOW() + INTERVAL '15 minutes')`,
       [editionId, versionId, ownerUser.id],
     );
-  });
+  }, 30000);
 
   afterAll(async () => {
     await app.close();

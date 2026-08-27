@@ -136,7 +136,10 @@ describe('Real Python FastAPI Worker Cross-Service Integration Spec (Slice 2C Ac
 
     // 6. Khởi chạy tiến trình Python FastAPI Worker thật
     const aiWorkerDir = path.resolve(__dirname, '../../ai-worker');
-    const uvicornPath = path.join(aiWorkerDir, '.venv', 'Scripts', 'uvicorn.exe');
+    const isWin = process.platform === 'win32';
+    const uvicornPath = isWin
+      ? path.join(aiWorkerDir, '.venv', 'Scripts', 'uvicorn.exe')
+      : path.join(aiWorkerDir, '.venv', 'bin', 'uvicorn');
 
     pythonProcess = spawn(
       uvicornPath,

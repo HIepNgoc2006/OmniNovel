@@ -8,6 +8,15 @@ from app.core.config import settings
 client = TestClient(app)
 AUTH_HEADERS = {"X-Internal-Service-Key": settings.AI_WORKER_SECRET}
 
+
+@pytest.fixture(autouse=True)
+def setup_test_env(monkeypatch):
+    monkeypatch.setattr("app.api.v1.endpoints.jobs.settings.ENV", "test")
+    monkeypatch.setattr("app.api.v1.endpoints.jobs.settings.AI_WORKER_TEST_MODE", True)
+    monkeypatch.setenv("ENV", "test")
+    monkeypatch.setenv("AI_WORKER_TEST_MODE", "true")
+
+
 def test_health_check():
     response = client.get("/internal/v1/jobs/health")
     assert response.status_code == 200
@@ -178,3 +187,41 @@ def test_process_novel_callback_failure_raises_502(mock_send_event):
     )
     assert response.status_code == 502
     assert "Novel stage callback failed" in response.json()["detail"]
+
+
+def test_test_mode_in_production_raises_500(monkeypatch):
+    monkeypatch.setattr("app.api.v1.endpoints.jobs.settings.ENV", "production")
+    monkeypatch.setattr("app.api.v1.endpoints.jobs.settings.AI_WORKER_TEST_MODE", True)
+    monkeypatch.setenv("ENV", "production")
+    monkeypatch.setenv("AI_WORKER_TEST_MODE", "true")
+
+    response = client.post(
+        "/internal/v1/jobs/process-manga",
+        headers=AUTH_HEADERS,
+        json={
+            "jobId": "11111111-1111-1111-1111-111111111111",
+            "attemptNumber": 1,
+        },
+    )
+    assert response.status_code == 500
+    assert "strictly forbidden outside ENV=test" in response.json()["detail"]
+
+
+def test_missing_source_download_url_in_production_raises_400(monkeypatch):
+    monkeypatch.setattr("app.api.v1.endpoints.jobs.settings.ENV", "production")
+    monkeypatch.setattr("app.api.v1.endpoints.jobs.settings.AI_WORKER_TEST_MODE", False)
+    monkeypatch.setenv("ENV", "production")
+    monkeypatch.setenv("AI_WORKER_TEST_MODE", "false")
+
+    response = client.post(
+        "/internal/v1/jobs/process-manga",
+        headers=AUTH_HEADERS,
+        json={
+            "jobId": "11111111-1111-1111-1111-111111111111",
+            "attemptNumber": 1,
+            "sourceDownloadUrl": None,
+        },
+    )
+    assert response.status_code == 400
+    assert "sourceDownloadUrl is required in production" in response.json()["detail"]
+

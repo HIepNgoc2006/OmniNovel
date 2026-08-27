@@ -1,7 +1,7 @@
 import ipaddress
 import urllib.parse
 from pathlib import Path
-from typing import Optional, Set
+from typing import Optional, Set, Tuple
 import httpx
 from app.core.config import settings
 
@@ -12,50 +12,93 @@ FORBIDDEN_METADATA_HOSTS = {
 }
 
 
-def _get_allowed_hosts() -> Set[str]:
-    """Tập hợp hostname/domain được phép tải file (MinIO, S3, Core API)."""
-    allowed = {"localhost", "127.0.0.1", "minio", "host.docker.internal"}
-    if settings.MINIO_ENDPOINT:
-        parsed = urllib.parse.urlparse(
-            f"http://{settings.MINIO_ENDPOINT}" if "://" not in settings.MINIO_ENDPOINT else settings.MINIO_ENDPOINT
-        )
-        if parsed.hostname:
-            allowed.add(parsed.hostname.lower())
-    return allowed
+class SSRFBlockedError(ValueError):
+    """Lỗi ném ra khi URL vi phạm chính sách SSRF."""
+    pass
+
+
+def _get_allowed_origins() -> Set[Tuple[str, str, int]]:
+    """
+    Trả về tập hợp các origin (scheme, hostname, port) được phép tải file Object Storage.
+    """
+    minio_host = (settings.MINIO_ENDPOINT or "localhost").lower()
+    if "://" in minio_host:
+        parsed_minio = urllib.parse.urlparse(minio_host)
+        minio_host = parsed_minio.hostname or "localhost"
+
+    minio_port = settings.MINIO_PORT or 9000
+    minio_scheme = "https" if settings.MINIO_USE_SSL else "http"
+
+    # Tập hợp các origin hợp lệ
+    origins = {
+        (minio_scheme, minio_host, minio_port),
+        ("http", "localhost", minio_port),
+        ("http", "127.0.0.1", minio_port),
+        ("http", "minio", minio_port),
+        ("http", "host.docker.internal", minio_port),
+    }
+    return origins
 
 
 def validate_download_url(url: str) -> urllib.parse.ParseResult:
     """
     Thẩm định an toàn ranh giới SSRF cho URL download nguồn:
     - Bắt buộc giao thức http hoặc https.
-    - Chặn IP metadata cloud (169.254.169.254).
-    - Hostname phải nằm trong danh sách Object Storage cho phép.
+    - Chặn IP metadata cloud (169.254.169.254) và mọi dải link-local / multicast.
+    - Thẩm định exact origin: Khóa chặt theo (scheme, hostname, port) của Object Storage được cấu hình.
     """
     if not url or not isinstance(url, str):
-        raise ValueError("SSRF_BLOCKED: URL tải nguồn không hợp lệ hoặc rỗng.")
+        raise SSRFBlockedError("SSRF_BLOCKED: URL tải nguồn không hợp lệ hoặc rỗng.")
 
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"SSRF_BLOCKED: Giao thức '{parsed.scheme}' không được hỗ trợ. Chỉ cho phép http/https.")
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception as e:
+        raise SSRFBlockedError(f"SSRF_BLOCKED: Không thể parse URL: {e}") from e
+
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise SSRFBlockedError(f"SSRF_BLOCKED: Giao thức '{scheme}' không được hỗ trợ. Chỉ cho phép http/https.")
 
     hostname = (parsed.hostname or "").lower()
     if not hostname:
-        raise ValueError("SSRF_BLOCKED: URL thiếu hostname.")
+        raise SSRFBlockedError("SSRF_BLOCKED: URL thiếu hostname.")
 
+    # 1. Chặn blacklist metadata cloud domains/IPs
     if hostname in FORBIDDEN_METADATA_HOSTS:
-        raise ValueError(f"SSRF_BLOCKED: Hostname nhạy cảm '{hostname}' bị cấm tuyệt đối.")
+        raise SSRFBlockedError(f"SSRF_BLOCKED: Hostname nhạy cảm '{hostname}' bị cấm tuyệt đối.")
 
+    # 2. Kiểm tra IP address và chặn link-local / multicast mà không nuốt nhầm exception
+    is_ip = False
     try:
         ip_obj = ipaddress.ip_address(hostname)
-        if ip_obj.is_link_local or ip_obj.is_multicast:
-            raise ValueError(f"SSRF_BLOCKED: Địa chỉ IP nội bộ '{hostname}' bị cấm.")
-    except ValueError:
-        pass  # Không phải IP thuần (domain name)
+        is_ip = True
+    except (ValueError, AttributeError):
+        is_ip = False
 
-    allowed_hosts = _get_allowed_hosts()
-    if hostname not in allowed_hosts:
-        raise ValueError(
-            f"SSRF_BLOCKED: Hostname '{hostname}' không nằm trong danh sách Object Storage được cấp phép: {allowed_hosts}"
+    if is_ip:
+        if ip_obj.is_link_local or ip_obj.is_multicast:
+            raise SSRFBlockedError(f"SSRF_BLOCKED: Địa chỉ IP link-local/multicast '{hostname}' bị cấm tuyệt đối.")
+
+    # 3. Xác định port hiệu dụng (mặc định 80 cho http, 443 cho https nếu không chỉ định)
+    effective_port = parsed.port
+    if effective_port is None:
+        effective_port = 443 if scheme == "https" else 80
+
+    # 4. Thẩm định exact origin (scheme, hostname, port)
+    allowed_origins = _get_allowed_origins()
+    current_origin = (scheme, hostname, effective_port)
+
+    # Nếu không khớp exact origin, kiểm tra match hostname và port
+    if current_origin not in allowed_origins:
+        # Kiểm tra nếu hostname thuộc allowed hosts nhưng sai port
+        allowed_hosts = {o[1] for o in allowed_origins}
+        if hostname in allowed_hosts:
+            allowed_ports = {o[2] for o in allowed_origins if o[1] == hostname}
+            raise SSRFBlockedError(
+                f"SSRF_BLOCKED: Port {effective_port} trên host '{hostname}' không được phép. Các port được phép: {allowed_ports}"
+            )
+        raise SSRFBlockedError(
+            f"SSRF_BLOCKED: Origin '{scheme}://{hostname}:{effective_port}' không nằm trong danh sách Object Storage được cấp phép."
         )
 
     return parsed

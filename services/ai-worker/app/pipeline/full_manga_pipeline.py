@@ -1,13 +1,16 @@
+import asyncio
+import io
 import os
 import shutil
 import tempfile
-import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set
 import cv2
+import numpy as np
+from PIL import Image
 
 from app.core.config import settings
-from app.core.package_extractor import extract_chapter_package
+from app.core.package_extractor import ExtractedPageRef, extract_chapter_package
 from app.core.ssrf_safe_downloader import safe_download_archive
 from app.inpainting.inpainter import MangaInpainter
 from app.inpainting.mask_generator import generate_text_stroke_mask
@@ -15,20 +18,20 @@ from app.pipeline.attempt_coordinator import AttemptProgressCoordinator
 from app.pipeline.manga_pipeline import MangaOcrPipeline, MangaOcrResult
 from app.qa.visual_qa import VisualQAEvaluator
 from app.translation.manga_translator import MangaTranslationPipeline, MangaTranslationResult
-from app.translation.providers.base import TranslationProvider
 from app.typesetting.typesetter import MangaTypesetter
 
 
 class FullMangaPipeline:
     """
-    Orchestration trọn vẹn của quy trình sản xuất Manga (Vertical Slice 2C):
-    1. Bounded SSRF download & Safe ZIP extraction (PREPROCESSING - 10%)
+    Orchestration trọn vẹn của quy trình sản xuất Manga (Vertical Slice 2C Hardened):
+    1. Bounded SSRF download & Non-blocking ZIP extraction (PREPROCESSING - 10%)
     2. Bubble Detection & Japanese Manga-OCR (OCR - 30%)
     3. Contextual Translation & Glossary Constraints (TRANSLATING - 50%)
-    4. Text-Stroke Mask Generation & Inpainting (INPAINTING - 70%)
-    5. Vietnamese Typesetting & Dynamic Fitting (TYPESETTING - 85%)
-    6. Mechanical Visual QA & WebP Encoding (QUALITY_CHECK - 95%)
-    7. Two-Step Presigned Upload & Final READY_FOR_REVIEW Callback (100%)
+    4. Bounded-Memory Page Streaming / Spill-to-Disk:
+       - Text-Stroke Mask Generation & Inpainting (INPAINTING - 70%)
+       - Vietnamese Typesetting & Dynamic Fitting (TYPESETTING - 85%)
+       - Lossless WebP Compression & Post-Decode Pixel Invariance Mechanical QA (QUALITY_CHECK - 95%)
+    5. Two-Step Presigned Upload & Strict Manifest Verification (100%)
     """
 
     def __init__(
@@ -60,12 +63,14 @@ class FullMangaPipeline:
     ) -> Dict[str, Any]:
         manifest = input_manifest or {}
         work_dir = Path(tempfile.mkdtemp(prefix=f"manga_job_{job_id}_att_{attempt_number}_"))
+        rendered_dir = work_dir / "rendered_webp"
+        rendered_dir.mkdir(parents=True, exist_ok=True)
 
         # Bắt đầu background heartbeat loop đồng bộ
         self.coordinator.start()
 
         try:
-            # 1. PREPROCESSING: Tải an toàn và giải nén source package
+            # 1. PREPROCESSING: Tải an toàn và giải nén source package non-blocking
             await self.coordinator.transition_stage(
                 stage="PREPROCESSING",
                 progress=10,
@@ -76,7 +81,10 @@ class FullMangaPipeline:
             extracted_dir = work_dir / "extracted"
 
             await safe_download_archive(source_download_url, zip_target)
-            extracted_pages = extract_chapter_package(zip_target, extracted_dir)
+            # Chạy unzip trong threadpool để tránh starvation của async event loop và heartbeat timer
+            extracted_pages: List[ExtractedPageRef] = await asyncio.to_thread(
+                extract_chapter_package, zip_target, extracted_dir
+            )
 
             # 2. OCR: Phát hiện bubble và nhận diện chữ tiếng Nhật
             await self.coordinator.transition_stage(
@@ -102,16 +110,16 @@ class FullMangaPipeline:
                 )
             )
 
-            # 4. INPAINTING: Sinh text-stroke mask và inpaint xóa chữ gốc
+            # 4. STREAMING / SPILL-TO-DISK RENDERING (INPAINTING -> TYPESETTING -> LOSSLESS QA)
+            # Tránh giữ đồng thời toàn bộ 200 trang ảnh trong RAM (O(1) Memory Footprint)
             await self.coordinator.transition_stage(
                 stage="INPAINTING",
                 progress=70,
                 message="Generating text-stroke masks and inpainting speech bubbles",
             )
 
-            inpainted_pages_bgr: List[cv2.Mat] = []
-            source_pages_bgr: List[cv2.Mat] = []
-            inpaint_masks: List[cv2.Mat] = []
+            total_pages = len(translation_result.pages)
+            page_records: List[Dict[str, Any]] = []
 
             for page_idx, page_trans in enumerate(translation_result.pages):
                 page_ref = extracted_pages[page_idx]
@@ -119,83 +127,82 @@ class FullMangaPipeline:
                 if src_bgr is None:
                     raise ValueError(f"Không thể đọc file ảnh nguồn tại {page_ref.file_path}")
 
-                source_pages_bgr.append(src_bgr)
+                src_h, src_w = src_bgr.shape[:2]
 
-                # Sinh text-stroke mask (không lấy cả bbox hình chữ nhật)
-                # Chuyển đổi segments sang format MangaSegmentItem
+                # A. INPAINTING: Sinh text-stroke mask và inpaint
                 mask = generate_text_stroke_mask(src_bgr, page_trans.segments)
-                inpaint_masks.append(mask)
-
-                # Thực thi inpaint
                 inpainted_bgr = self.inpainter.inpaint(src_bgr, mask)
-                inpainted_pages_bgr.append(inpainted_bgr)
 
-            # 5. TYPESETTING: Dàn trang chữ tiếng Việt với dynamic fitting và centering
-            await self.coordinator.transition_stage(
-                stage="TYPESETTING",
-                progress=85,
-                message="Typesetting Vietnamese text with dynamic fitting and outline stroke",
-            )
-
-            final_rendered_pages_bgr: List[cv2.Mat] = []
-            typeset_masks: List[cv2.Mat] = []
-
-            for page_idx, page_trans in enumerate(translation_result.pages):
-                inpainted_bgr = inpainted_pages_bgr[page_idx]
+                # B. TYPESETTING: Dàn chữ tiếng Việt
                 rendered_bgr, t_mask = self.typesetter.render_page(
                     image_bgr=inpainted_bgr,
                     segments=page_trans.segments,
                 )
-                final_rendered_pages_bgr.append(rendered_bgr)
-                typeset_masks.append(t_mask)
 
-            # 6. QUALITY_CHECK: Kiểm định chất lượng hình học, pixel invariance và nén WebP
+                # C. QUALITY CHECK: Geometry check
+                self.qa.verify_page_geometry(source_w=src_w, source_h=src_h, output_bgr=rendered_bgr)
+
+                # D. Nén sang Lossless WebP đảm bảo bit-exact ngoài vùng thay đổi
+                pil_img = Image.fromarray(cv2.cvtColor(rendered_bgr, cv2.COLOR_BGR2RGB))
+                buf = io.BytesIO()
+                pil_img.save(buf, format="WEBP", lossless=True)
+                webp_bytes = buf.getvalue()
+
+                # Ghi WebP ra đĩa (Spill-to-Disk)
+                webp_path = rendered_dir / f"page_{page_idx + 1:04d}.webp"
+                webp_path.write_bytes(webp_bytes)
+
+                # E. POST-DECODE MECHANICAL QA: Thẩm định pixel invariance trên chính artifact WebP sau khi decode
+                decoded_pil = Image.open(io.BytesIO(webp_bytes))
+                decoded_bgr = cv2.cvtColor(np.array(decoded_pil), cv2.COLOR_RGB2BGR)
+
+                self.qa.verify_pixel_invariance(
+                    source_bgr=src_bgr,
+                    final_bgr=decoded_bgr,
+                    inpaint_mask=mask,
+                    typeset_mask=t_mask,
+                )
+                self.qa.verify_webp_encoding(webp_bytes, expected_w=src_w, expected_h=src_h)
+
+                # Lưu metadata nhẹ
+                page_records.append(
+                    {
+                        "page": page_idx + 1,
+                        "width": src_w,
+                        "height": src_h,
+                        "filePath": webp_path,
+                        "fileSize": len(webp_bytes),
+                    }
+                )
+
+                # Giải phóng bộ nhớ cục bộ trang ngay lập tức
+                del src_bgr, mask, inpainted_bgr, rendered_bgr, t_mask, pil_img, decoded_pil, decoded_bgr, webp_bytes
+
+            # Báo stage TYPESETTING và QUALITY_CHECK hoàn tất
+            await self.coordinator.transition_stage(
+                stage="TYPESETTING",
+                progress=85,
+                message="Completed typography rendering for all pages",
+            )
             await self.coordinator.transition_stage(
                 stage="QUALITY_CHECK",
                 progress=95,
-                message="Executing mechanical visual QA and WebP compression",
+                message="Verified lossless WebP pixel invariance and geometry",
             )
 
-            encoded_webp_pages: List[bytes] = []
-            for page_idx, rendered_bgr in enumerate(final_rendered_pages_bgr):
-                src_bgr = source_pages_bgr[page_idx]
-                src_h, src_w = src_bgr.shape[:2]
-
-                # Geometry check
-                self.qa.verify_page_geometry(source_w=src_w, source_h=src_h, output_bgr=rendered_bgr)
-
-                # Pixel Invariance check: Pixel ngoài (inpaint_mask ∪ typeset_mask) nguyên vẹn 100%
-                self.qa.verify_pixel_invariance(
-                    source_bgr=src_bgr,
-                    final_bgr=rendered_bgr,
-                    inpaint_mask=inpaint_masks[page_idx],
-                    typeset_mask=typeset_masks[page_idx],
-                )
-
-                # Nén sang WebP lossless / quality 90
-                encode_success, webp_buf = cv2.imencode(
-                    ".webp", rendered_bgr, [cv2.IMWRITE_WEBP_QUALITY, 90]
-                )
-                if not encode_success or webp_buf is None:
-                    raise ValueError(f"Nén WebP thất bại cho trang {page_idx + 1}")
-
-                webp_bytes = webp_buf.tobytes()
-                self.qa.verify_webp_encoding(webp_bytes, expected_w=src_w, expected_h=src_h)
-                encoded_webp_pages.append(webp_bytes)
-
-            # 7. TWO-STEP UPLOAD & MANIFEST ASSEMBLY
-            output_filenames = [f"page_{idx + 1:04d}.webp" for idx in range(len(encoded_webp_pages))]
+            # 5. TWO-STEP PRESIGNED UPLOAD & MANIFEST ASSEMBLY
+            output_filenames = [f"page_{p['page']:04d}.webp" for p in page_records]
 
             if self.request_upload_urls is not None and self.upload_file is not None:
                 # 1. Xin Core API cấp canonical presigned URLs
                 upload_slots = await self.request_upload_urls(job_id, attempt_number, output_filenames)
-                if len(upload_slots) != len(encoded_webp_pages):
+                if len(upload_slots) != len(page_records):
                     raise ValueError("Core API cấp không đủ số lượng upload URLs cho các trang")
 
                 manifest_pages = []
                 for idx, slot in enumerate(upload_slots):
-                    webp_data = encoded_webp_pages[idx]
-                    src_h, src_w = source_pages_bgr[idx].shape[:2]
+                    prec = page_records[idx]
+                    webp_data = prec["filePath"].read_bytes()
 
                     # Upload lên MinIO qua presigned URL
                     await self.upload_file(slot["uploadUrl"], webp_data, "image/webp")
@@ -203,31 +210,45 @@ class FullMangaPipeline:
                     # Invariant: Dùng canonical storageKey do Core trả về
                     manifest_pages.append(
                         {
-                            "page": idx + 1,
+                            "page": prec["page"],
                             "storageKey": slot["storageKey"],
                             "previewKey": slot["storageKey"],
-                            "width": src_w,
-                            "height": src_h,
-                            "fileSize": len(webp_data),
+                            "width": prec["width"],
+                            "height": prec["height"],
+                            "fileSize": prec["fileSize"],
                         }
                     )
             else:
                 # Mock storage keys cho local unit testing
                 manifest_pages = [
                     {
-                        "page": idx + 1,
-                        "storageKey": f"ai/jobs/{job_id}/attempt-{attempt_number}/page_{idx + 1:04d}.webp",
-                        "previewKey": f"ai/jobs/{job_id}/attempt-{attempt_number}/page_{idx + 1:04d}.webp",
-                        "width": source_pages_bgr[idx].shape[1],
-                        "height": source_pages_bgr[idx].shape[0],
-                        "fileSize": len(encoded_webp_pages[idx]),
+                        "page": prec["page"],
+                        "storageKey": f"ai/jobs/{job_id}/attempt-{attempt_number}/page_{prec['page']:04d}.webp",
+                        "previewKey": f"ai/jobs/{job_id}/attempt-{attempt_number}/page_{prec['page']:04d}.webp",
+                        "width": prec["width"],
+                        "height": prec["height"],
+                        "fileSize": prec["fileSize"],
                     }
-                    for idx in range(len(encoded_webp_pages))
+                    for prec in page_records
                 ]
+
+            # 6. MECHANICAL QA: Thẩm định tính đầy đủ và toàn vẹn của Manifest & Segment Keys 1:1
+            expected_keys: Set[str] = {
+                s.segment_key for p in ocr_result.pages for s in p.segments
+            }
+            output_keys: Set[str] = {
+                s.segment_key for p in translation_result.pages for s in p.segments
+            }
+            self.qa.verify_manifest_completeness(
+                source_page_count=len(extracted_pages),
+                manifest_pages=manifest_pages,
+                expected_segment_keys=expected_keys,
+                output_segment_keys=output_keys,
+            )
 
             result_manifest = {"pages": manifest_pages}
 
-            # 8. TẬP HỢP FINAL SEGMENTS VÀ PHÁT CALLBACK READY_FOR_REVIEW
+            # 7. TẬP HỢP FINAL SEGMENTS VÀ PHÁT CALLBACK READY_FOR_REVIEW
             final_segments_payload = [
                 {
                     "pageNumber": s.page_number,

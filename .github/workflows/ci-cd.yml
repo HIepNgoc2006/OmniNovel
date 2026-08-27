@@ -1,4 +1,4 @@
-name: OmniNovel Monorepo CI/CD
+name: OmniNovel Monorepo CI/CD Pipeline
 
 on:
   push:
@@ -7,15 +7,135 @@ on:
     branches: [ main ]
 
 jobs:
-  lint-and-validate:
-    name: Lint & Validation
+  ai-worker-test:
+    name: AI Worker Test Suite (Pytest)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Setup Node.js
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install Python Dependencies
+        working-directory: services/ai-worker
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run AI Worker Pytest Suite
+        working-directory: services/ai-worker
+        env:
+          ENV: test
+          AI_WORKER_TEST_MODE: "true"
+          AI_WORKER_SECRET: internal_ai_worker_secret_secure_2026
+        run: |
+          pytest -v
+
+  core-api-test:
+    name: NestJS Core API Test Suite (Jest Unit & E2E)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: omninovel_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres_password_secure
+        ports:
+          - 5433:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      minio:
+        image: minio/minio:latest
+        env:
+          MINIO_ROOT_USER: minioadmin
+          MINIO_ROOT_PASSWORD: minioadmin
+        ports:
+          - 9000:9000
+        options: >-
+          server /data
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
         uses: actions/setup-node@v4
         with:
           node-version: 20
-      - name: Validate Markdown Docs
+          cache: "npm"
+
+      - name: Set up Python 3.11 (for Real Process Cross-Service Integration Spec)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Node.js Dependencies
+        run: npm install
+
+      - name: Build Shared Package
+        run: npm --prefix packages/shared run build
+
+      - name: Prepare AI Worker Virtualenv for Integration Tests
+        working-directory: services/ai-worker
         run: |
-          echo "Validating documentation links..."
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -r requirements.txt
+
+      - name: Create MinIO Buckets
+        run: |
+          docker run --net=host --entrypoint sh minio/mc -c "
+            mc alias set localminio http://127.0.0.1:9000 minioadmin minioadmin &&
+            mc mb --ignore-existing localminio/manga-media &&
+            mc mb --ignore-existing localminio/novel-media
+          "
+
+      - name: Run Core API Unit Tests
+        working-directory: services/api
+        run: npm test
+
+      - name: Run Core API Integration & E2E Tests
+        working-directory: services/api
+        env:
+          PORT: 8000
+          NODE_ENV: test
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5433
+          DB_USER: postgres
+          DB_PASSWORD: postgres_password_secure
+          DB_NAME: omninovel_db
+          REDIS_HOST: 127.0.0.1
+          REDIS_PORT: 6379
+          MINIO_ENDPOINT: 127.0.0.1
+          MINIO_PORT: 9000
+          MINIO_USE_SSL: false
+          MINIO_ACCESS_KEY: minioadmin
+          MINIO_SECRET_KEY: minioadmin
+          MINIO_BUCKET_MANGA: manga-media
+          MINIO_BUCKET_NOVEL: novel-media
+          JWT_SECRET: super_secret_jwt_key_omninovel_2026
+          JWT_EXPIRATION: 15m
+          JWT_REFRESH_SECRET: super_secret_refresh_jwt_key_2026
+          JWT_REFRESH_EXPIRATION: 7d
+          AI_TRANSLATION_SERVICE_URL: http://127.0.0.1:8001
+          AI_WORKER_SECRET: internal_ai_worker_secret_secure_2026
+        run: npm run test:e2e

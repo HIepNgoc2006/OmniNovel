@@ -15,11 +15,14 @@ os.environ["HF_HOME"] = str(_HF_HOME)
 os.environ["TORCH_HOME"] = str(_TORCH_HOME)
 
 class Settings(BaseSettings):
+    ENV: str = "production"
+    AI_WORKER_TEST_MODE: bool = False
     AI_WORKER_PORT: int = 8001
     AI_WORKER_SECRET: str
     CORE_API_INTERNAL_URL: str = "http://localhost:8000"
     MINIO_ENDPOINT: str = "localhost"
     MINIO_PORT: int = 9000
+    MINIO_USE_SSL: bool = False
 
     # Model & Inference Settings
     OCR_MODEL_NAME: str = "kha-white/manga-ocr-base"

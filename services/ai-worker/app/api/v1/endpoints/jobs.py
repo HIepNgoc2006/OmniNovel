@@ -1,3 +1,4 @@
+import os
 import uuid
 from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, Depends, HTTPException
@@ -128,15 +129,32 @@ async def send_callback_event(
 async def process_manga_job(req: ProcessJobRequest):
     """
     Pipeline cho Manga Translation (Fail-Fast Production Engine):
-    - Nếu có sourceDownloadUrl: Kích hoạt FullMangaPipeline thực tế (Extract -> OCR -> Translate -> Inpaint -> Typeset -> QA -> Upload -> READY).
-    - Nếu không có sourceDownloadUrl: Fallback sang Mock protocol cho backward compatibility trong test cũ.
+    - Khóa ranh giới: AI_WORKER_TEST_MODE chỉ hợp lệ khi ENV=test.
+    - Ở production: Bắt buộc sourceDownloadUrl, tuyệt đối không chạy fallback mock.
+    - Ở test environment (ENV=test): Cho phép mock fallback khi sourceDownloadUrl=None phục vụ unit testing endpoint.
     """
+    is_test_env = (settings.ENV == "test") or (os.environ.get("ENV") == "test")
+    is_test_mode = settings.AI_WORKER_TEST_MODE or (os.environ.get("AI_WORKER_TEST_MODE") == "true")
+
+    # Invariant P0: Chặn test mode rò rỉ ra production
+    if is_test_mode and not is_test_env:
+        raise HTTPException(
+            status_code=500,
+            detail="AI_WORKER_TEST_MODE is strictly forbidden outside ENV=test",
+        )
+
     job_id = req.jobId
     attempt_num = req.attemptNumber
 
-    # Nếu có sourceDownloadUrl, thực thi FullMangaPipeline thật
-    if req.sourceDownloadUrl:
-        import os
+    # Invariant P0: Production bắt buộc phải có sourceDownloadUrl
+    if not req.sourceDownloadUrl:
+        if not is_test_env:
+            raise HTTPException(
+                status_code=400,
+                detail="sourceDownloadUrl is required in production environment",
+            )
+    else:
+        # Thực thi FullMangaPipeline thật
         from app.pipeline.attempt_coordinator import AttemptProgressCoordinator
         from app.pipeline.full_manga_pipeline import FullMangaPipeline
         from app.pipeline.progress_sink import CoreCallbackProgressSink
@@ -146,8 +164,7 @@ async def process_manga_job(req: ProcessJobRequest):
         sink = CoreCallbackProgressSink(job_id=job_id, attempt_number=attempt_num)
         coordinator = AttemptProgressCoordinator(sink=sink)
 
-        # Trong test mode, dùng MockTranslationProvider để test chạy nhanh mà không cần gọi OpenAI ngoài
-        if os.environ.get("AI_WORKER_TEST_MODE") == "true":
+        if is_test_mode and is_test_env:
             trans_pipe = MangaTranslationPipeline(provider=MockTranslationProvider())
         else:
             trans_pipe = MangaTranslationPipeline()
@@ -174,7 +191,7 @@ async def process_manga_job(req: ProcessJobRequest):
                 detail=f"Full Manga Pipeline execution failed: {str(e)}"
             ) from e
 
-    # Fallback cho mock isolation
+    # Fallback cho mock isolation trong ENV=test (legacy endpoint tests)
     uploaded_files = await request_output_upload_urls(job_id, attempt_num, ["page-001.webp"])
     manifest_pages = []
 

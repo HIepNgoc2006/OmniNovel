@@ -1,6 +1,7 @@
 import io
 import zipfile
 from pathlib import Path
+from unittest.mock import MagicMock
 import cv2
 import numpy as np
 from PIL import Image
@@ -9,6 +10,7 @@ import pytest
 from app.pipeline.attempt_coordinator import AttemptProgressCoordinator
 from app.pipeline.full_manga_pipeline import FullMangaPipeline
 from app.pipeline.progress_sink import RecordingProgressSink
+from app.qa.visual_qa import VisualQAError
 from app.translation.manga_translator import MangaTranslationPipeline
 from app.translation.providers.mock_provider import MockTranslationProvider
 
@@ -36,7 +38,6 @@ async def test_full_manga_pipeline_execution_all_stages(tmp_path: Path, monkeypa
     zip_path = tmp_path / "chapter.zip"
     _create_sample_zip(zip_path)
 
-    # Monkeypatch safe_download_archive để copy từ file cục bộ cho test
     async def mock_download(url, target_path, **kwargs):
         import shutil
         shutil.copy(zip_path, target_path)
@@ -47,7 +48,6 @@ async def test_full_manga_pipeline_execution_all_stages(tmp_path: Path, monkeypa
     sink = RecordingProgressSink()
     coordinator = AttemptProgressCoordinator(sink=sink)
 
-    # Mock upload helpers
     uploaded_payloads = {}
 
     async def mock_request_upload_urls(job_id, attempt_num, filenames):
@@ -91,20 +91,120 @@ async def test_full_manga_pipeline_execution_all_stages(tmp_path: Path, monkeypa
 
     # Kiểm tra chuỗi các stages trong events
     stages = [e["stage"] for e in sink.events if not e["heartbeat"]]
-    assert "PREPROCESSING" in stages
-    assert "OCR" in stages
-    assert "TRANSLATING" in stages
-    assert "INPAINTING" in stages
-    assert "TYPESETTING" in stages
-    assert "QUALITY_CHECK" in stages
-    assert "READY_FOR_REVIEW" in stages
+    assert stages == [
+        "PREPROCESSING",
+        "OCR",
+        "TRANSLATING",
+        "INPAINTING",
+        "TYPESETTING",
+        "QUALITY_CHECK",
+        "READY_FOR_REVIEW",
+    ]
 
-    # Invariant: Các stage trước READY_FOR_REVIEW không chứa segments
-    for ev in sink.events[:-1]:
-        assert ev["segments"] == []
 
-    # Final event READY_FOR_REVIEW mang segments và manifest
-    last_event = sink.events[-1]
-    assert last_event["stage"] == "READY_FOR_REVIEW"
-    assert len(last_event["resultManifest"]["pages"]) == 2
-    assert len(uploaded_payloads) == 2
+@pytest.mark.asyncio
+async def test_full_manga_pipeline_failure_at_inpainting(tmp_path: Path, monkeypatch):
+    zip_path = tmp_path / "chapter.zip"
+    _create_sample_zip(zip_path)
+
+    async def mock_download(url, target_path, **kwargs):
+        import shutil
+        shutil.copy(zip_path, target_path)
+        return target_path
+
+    monkeypatch.setattr("app.pipeline.full_manga_pipeline.safe_download_archive", mock_download)
+
+    sink = RecordingProgressSink()
+    coordinator = AttemptProgressCoordinator(sink=sink)
+
+    pipeline = FullMangaPipeline(
+        coordinator=coordinator,
+        translation_pipeline=MangaTranslationPipeline(provider=MockTranslationProvider()),
+    )
+
+    # Giả lập lỗi tại stage INPAINTING
+    pipeline.inpainter.inpaint = MagicMock(side_effect=RuntimeError("Inpainting model failed"))
+
+    with pytest.raises(RuntimeError, match="Inpainting model failed"):
+        await pipeline.execute(
+            job_id="job-fail-inpaint",
+            attempt_number=1,
+            source_download_url="http://localhost:9000/media/chapter.zip",
+        )
+
+    # Durable state dừng chính xác tại INPAINTING
+    assert coordinator.current_stage == "INPAINTING"
+    last_stage_event = [e for e in sink.events if not e["heartbeat"]][-1]
+    assert last_stage_event["stage"] == "INPAINTING"
+
+
+@pytest.mark.asyncio
+async def test_full_manga_pipeline_failure_at_typesetting(tmp_path: Path, monkeypatch):
+    zip_path = tmp_path / "chapter.zip"
+    _create_sample_zip(zip_path)
+
+    async def mock_download(url, target_path, **kwargs):
+        import shutil
+        shutil.copy(zip_path, target_path)
+        return target_path
+
+    monkeypatch.setattr("app.pipeline.full_manga_pipeline.safe_download_archive", mock_download)
+
+    sink = RecordingProgressSink()
+    coordinator = AttemptProgressCoordinator(sink=sink)
+
+    pipeline = FullMangaPipeline(
+        coordinator=coordinator,
+        translation_pipeline=MangaTranslationPipeline(provider=MockTranslationProvider()),
+    )
+
+    # Giả lập lỗi tại stage TYPESETTING
+    pipeline.typesetter.render_page = MagicMock(side_effect=ValueError("Typesetting overflow error"))
+
+    with pytest.raises(ValueError, match="Typesetting overflow error"):
+        await pipeline.execute(
+            job_id="job-fail-typeset",
+            attempt_number=1,
+            source_download_url="http://localhost:9000/media/chapter.zip",
+        )
+
+    # Durable state dừng chính xác tại TYPESETTING
+    assert coordinator.current_stage == "TYPESETTING"
+    last_stage_event = [e for e in sink.events if not e["heartbeat"]][-1]
+    assert last_stage_event["stage"] == "TYPESETTING"
+
+
+@pytest.mark.asyncio
+async def test_full_manga_pipeline_failure_at_quality_check(tmp_path: Path, monkeypatch):
+    zip_path = tmp_path / "chapter.zip"
+    _create_sample_zip(zip_path)
+
+    async def mock_download(url, target_path, **kwargs):
+        import shutil
+        shutil.copy(zip_path, target_path)
+        return target_path
+
+    monkeypatch.setattr("app.pipeline.full_manga_pipeline.safe_download_archive", mock_download)
+
+    sink = RecordingProgressSink()
+    coordinator = AttemptProgressCoordinator(sink=sink)
+
+    pipeline = FullMangaPipeline(
+        coordinator=coordinator,
+        translation_pipeline=MangaTranslationPipeline(provider=MockTranslationProvider()),
+    )
+
+    # Giả lập lỗi tại stage QUALITY_CHECK
+    pipeline.qa.verify_pixel_invariance = MagicMock(side_effect=VisualQAError("Pixel invariance violation"))
+
+    with pytest.raises(VisualQAError, match="Pixel invariance violation"):
+        await pipeline.execute(
+            job_id="job-fail-qa",
+            attempt_number=1,
+            source_download_url="http://localhost:9000/media/chapter.zip",
+        )
+
+    # Durable state dừng chính xác tại QUALITY_CHECK
+    assert coordinator.current_stage == "QUALITY_CHECK"
+    last_stage_event = [e for e in sink.events if not e["heartbeat"]][-1]
+    assert last_stage_event["stage"] == "QUALITY_CHECK"

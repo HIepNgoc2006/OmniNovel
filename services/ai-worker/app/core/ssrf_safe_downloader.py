@@ -20,6 +20,8 @@ class SSRFBlockedError(ValueError):
 def _get_allowed_origins() -> Set[Tuple[str, str, int]]:
     """
     Trả về tập hợp các origin (scheme, hostname, port) được phép tải file Object Storage.
+    - Ở production: CHỈ cho phép origin được cấu hình cụ thể qua settings.MINIO_ENDPOINT.
+    - Ở test/development: Bổ sung các local aliases (localhost, 127.0.0.1, minio, host.docker.internal).
     """
     minio_host = (settings.MINIO_ENDPOINT or "localhost").lower()
     if "://" in minio_host:
@@ -29,14 +31,19 @@ def _get_allowed_origins() -> Set[Tuple[str, str, int]]:
     minio_port = settings.MINIO_PORT or 9000
     minio_scheme = "https" if settings.MINIO_USE_SSL else "http"
 
-    # Tập hợp các origin hợp lệ
     origins = {
         (minio_scheme, minio_host, minio_port),
-        ("http", "localhost", minio_port),
-        ("http", "127.0.0.1", minio_port),
-        ("http", "minio", minio_port),
-        ("http", "host.docker.internal", minio_port),
     }
+
+    # Chỉ thêm local aliases khi ở môi trường test hoặc development
+    if settings.ENV != "production":
+        origins.update({
+            ("http", "localhost", minio_port),
+            ("http", "127.0.0.1", minio_port),
+            ("http", "minio", minio_port),
+            ("http", "host.docker.internal", minio_port),
+        })
+
     return origins
 
 

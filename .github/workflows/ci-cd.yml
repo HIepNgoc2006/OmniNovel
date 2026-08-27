@@ -120,6 +120,16 @@ jobs:
         working-directory: services/api
         run: npm test
 
+      - name: Run Database Migrations
+        working-directory: services/api
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 5433
+          DB_USER: postgres
+          DB_PASSWORD: postgres_password_secure
+          DB_NAME: omninovel_db
+        run: npm run migration:run
+
       - name: Run Core API Integration & E2E Tests
         working-directory: services/api
         env:

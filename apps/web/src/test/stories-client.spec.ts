@@ -114,4 +114,40 @@ describe('Story API Client & Normalization (Phase 4B)', () => {
     expect(result.id).toBe('story-uuid-1');
     expect(result.slug).toBe('tham-tu-lung-danh-conan');
   });
+
+  it('gọi setBookmarkApi với POST /library/bookmarks và payload idempotent', async () => {
+    const postSpy = vi.spyOn(apiClient, 'post').mockResolvedValueOnce({
+      data: {
+        isBookmarked: true,
+        followersCount: 321,
+      },
+    });
+
+    const { setBookmarkApi } = await import('../lib/api/stories');
+    const result = await setBookmarkApi({
+      storyId: 'story-uuid-1',
+      isBookmarked: true,
+    });
+
+    expect(postSpy).toHaveBeenCalledWith('/library/bookmarks', {
+      storyId: 'story-uuid-1',
+      isBookmarked: true,
+    });
+    expect(result.isBookmarked).toBe(true);
+    expect(result.followersCount).toBe(321);
+  });
+
+  it('gọi getBookmarkStatusApi với GET /library/bookmarks/:storyId', async () => {
+    const getSpy = vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: {
+        isBookmarked: true,
+      },
+    });
+
+    const { getBookmarkStatusApi } = await import('../lib/api/stories');
+    const result = await getBookmarkStatusApi('story-uuid-1');
+
+    expect(getSpy).toHaveBeenCalledWith('/library/bookmarks/story-uuid-1');
+    expect(result.isBookmarked).toBe(true);
+  });
 });

@@ -24,8 +24,8 @@ export function RankingsSection({ topComics, topNovels }: RankingsSectionProps) 
             <Trophy className="w-4 h-4" />
           </div>
           <div>
-            <h3 className="font-extrabold text-base text-white">Bảng Xếp Hạng</h3>
-            <p className="text-[11px] text-slate-400">Truyện được xem nhiều nhất tuần qua</p>
+            <h3 className="font-extrabold text-base text-white">Bảng Xếp Hạng Lượt Xem</h3>
+            <p className="text-[11px] text-slate-400">Top truyện có lượt xem cao nhất toàn thời gian</p>
           </div>
         </div>
 

@@ -9,8 +9,11 @@ import { Repository, DataSource } from 'typeorm';
 import { Story } from './entities/story.entity';
 import { StoryMember } from './entities/story-member.entity';
 import { StoryEdition } from './entities/story-edition.entity';
+import { Bookmark } from './entities/bookmark.entity';
 import { Volume } from '../chapters/entities/volume.entity';
 import { CreateStoryDto } from './dto/create-story.dto';
+import { FindStoriesQueryDto } from './dto/find-stories-query.dto';
+import { SetBookmarkDto } from './dto/set-bookmark.dto';
 import {
   GlobalRole,
   StoryMemberRole,
@@ -27,6 +30,8 @@ export class StoriesService {
     private storyMemberRepository: Repository<StoryMember>,
     @InjectRepository(StoryEdition)
     private editionRepository: Repository<StoryEdition>,
+    @InjectRepository(Bookmark)
+    private bookmarkRepository: Repository<Bookmark>,
     @InjectRepository(Volume)
     private volumeRepository: Repository<Volume>,
     private redisService: RedisService,
@@ -77,23 +82,63 @@ export class StoriesService {
     });
   }
 
-  async findAll(query: { page?: number; limit?: number; format?: string }) {
+  async findAll(query: FindStoriesQueryDto) {
     const page = Math.max(1, query.page || 1);
     const limit = Math.min(50, Math.max(1, query.limit || 20));
     const skip = (page - 1) * limit;
 
     const qb = this.storyRepository
       .createQueryBuilder('story')
-      .where('story.visibility = :visibility', { visibility: StoryVisibility.PUBLIC })
-      .orderBy('story.createdAt', 'DESC')
-      .skip(skip)
-      .take(limit);
+      .leftJoinAndSelect('story.genres', 'genre')
+      .where('story.visibility = :visibility', { visibility: StoryVisibility.PUBLIC });
 
     if (query.format) {
       qb.andWhere('story.mediaFormat = :format', { format: query.format });
     }
 
-    const [data, total] = await qb.getManyAndCount();
+    if (query.status) {
+      qb.andWhere('story.status = :status', { status: query.status });
+    }
+
+    const keyword = query.q || query.search;
+    if (keyword) {
+      qb.andWhere(
+        '(LOWER(story.title) LIKE :kw OR LOWER(COALESCE(story.summary, \'\')) LIKE :kw)',
+        { kw: `%${keyword.toLowerCase()}%` },
+      );
+    }
+
+    if (query.genre) {
+      const genreSlug = query.genre.toLowerCase();
+      qb.andWhere(
+        `EXISTS (
+          SELECT 1 FROM story_genres sg
+          JOIN genres g ON g.id = sg.genre_id
+          WHERE sg.story_id = story.id
+            AND (LOWER(g.slug) = :genreSlug OR LOWER(g.name) = :genreSlug)
+        )`,
+        { genreSlug },
+      );
+    }
+
+    const sort = query.sort || 'LATEST';
+    if (sort === 'VIEWS') {
+      qb.orderBy('story.viewsCount', 'DESC').addOrderBy('story.id', 'ASC');
+    } else if (sort === 'POPULAR') {
+      qb.orderBy('story.followersCount', 'DESC')
+        .addOrderBy('story.viewsCount', 'DESC')
+        .addOrderBy('story.id', 'ASC');
+    } else {
+      // LATEST: Sắp xếp theo thời gian cập nhật mới nhất, fallback thời gian tạo
+      qb.orderBy('story.updatedAt', 'DESC')
+        .addOrderBy('story.createdAt', 'DESC')
+        .addOrderBy('story.id', 'ASC');
+    }
+
+    qb.skip(skip).take(limit);
+
+    const [stories, total] = await qb.getManyAndCount();
+    const data = await this.attachLatestChapters(stories);
 
     return {
       data,
@@ -156,11 +201,14 @@ export class StoriesService {
       } catch {}
     }
 
-    const hotStories = await this.storyRepository.find({
+    const hotStoriesRaw = await this.storyRepository.find({
       where: { visibility: StoryVisibility.PUBLIC },
+      relations: ['genres'],
       order: { viewsCount: 'DESC' },
       take: 10,
     });
+
+    const hotStories = await this.attachLatestChapters(hotStoriesRaw);
 
     const result = {
       hotStories,
@@ -181,21 +229,80 @@ export class StoriesService {
       } catch {}
     }
 
-    const topComics = await this.storyRepository.find({
+    const topComicsRaw = await this.storyRepository.find({
       where: { visibility: StoryVisibility.PUBLIC, mediaFormat: 'COMIC' as any },
+      relations: ['genres'],
       order: { viewsCount: 'DESC' },
       take: 10,
     });
 
-    const topNovels = await this.storyRepository.find({
+    const topNovelsRaw = await this.storyRepository.find({
       where: { visibility: StoryVisibility.PUBLIC, mediaFormat: 'NOVEL' as any },
+      relations: ['genres'],
       order: { viewsCount: 'DESC' },
       take: 10,
     });
+
+    const topComics = await this.attachLatestChapters(topComicsRaw);
+    const topNovels = await this.attachLatestChapters(topNovelsRaw);
 
     const result = { topComics, topNovels };
     await this.redisService.set(cacheKey, JSON.stringify(result), 300);
     return result;
+  }
+
+  async setBookmark(userId: string, dto: SetBookmarkDto) {
+    const story = await this.storyRepository.findOne({ where: { id: dto.storyId } });
+    if (!story) {
+      throw new NotFoundException('Bộ truyện không tồn tại.');
+    }
+
+    return this.dataSource.transaction(async (manager) => {
+      if (dto.isBookmarked) {
+        // Idempotent insert
+        const insertRes = await manager.query(
+          `INSERT INTO bookmarks (user_id, story_id, created_at)
+           VALUES ($1, $2, NOW())
+           ON CONFLICT (user_id, story_id) DO NOTHING
+           RETURNING user_id`,
+          [userId, dto.storyId],
+        );
+        if (insertRes && insertRes.length > 0) {
+          await manager.query(
+            `UPDATE stories SET followers_count = followers_count + 1 WHERE id = $1`,
+            [dto.storyId],
+          );
+        }
+      } else {
+        // Idempotent delete
+        const deleteRes = await manager.query(
+          `DELETE FROM bookmarks WHERE user_id = $1 AND story_id = $2 RETURNING user_id`,
+          [userId, dto.storyId],
+        );
+        if (deleteRes && deleteRes.length > 0) {
+          await manager.query(
+            `UPDATE stories SET followers_count = GREATEST(followers_count - 1, 0) WHERE id = $1`,
+            [dto.storyId],
+          );
+        }
+      }
+
+      const updated = await manager.findOne(Story, { where: { id: dto.storyId } });
+      return {
+        isBookmarked: dto.isBookmarked,
+        followersCount: updated ? updated.followersCount : 0,
+      };
+    });
+  }
+
+  async getBookmarkStatus(userId: string | undefined, storyId: string) {
+    if (!userId) {
+      return { isBookmarked: false };
+    }
+    const bookmark = await this.bookmarkRepository.findOne({
+      where: { userId, storyId },
+    });
+    return { isBookmarked: Boolean(bookmark) };
   }
 
   async createEdition(storyId: string, editionName: string, language = 'vi') {
@@ -268,6 +375,42 @@ export class StoriesService {
       storyId: story.id,
       visibility: story.visibility,
     };
+  }
+
+  private async attachLatestChapters(stories: Story[]) {
+    if (!stories || stories.length === 0) return [];
+    const storyIds = stories.map((s) => s.id);
+
+    const latestChaptersRaw = await this.dataSource.query(
+      `SELECT DISTINCT ON (se.story_id)
+          c.id,
+          c.chapter_number AS "chapterNumber",
+          c.title,
+          c.created_at AS "createdAt",
+          se.story_id AS "storyId"
+       FROM chapters c
+       JOIN story_editions se ON se.id = c.story_edition_id
+       JOIN chapter_versions cv ON cv.id = c.active_version_id
+       WHERE se.story_id = ANY($1) AND cv.is_published = TRUE
+       ORDER BY se.story_id, CAST(c.chapter_number AS NUMERIC) DESC`,
+      [storyIds],
+    );
+
+    const latestMap = new Map<string, any>();
+    for (const row of latestChaptersRaw) {
+      latestMap.set(row.storyId, {
+        id: row.id,
+        chapterNumber: Number(row.chapterNumber) || row.chapterNumber,
+        title: row.title,
+        createdAt: row.createdAt,
+      });
+    }
+
+    return stories.map((story) => ({
+      ...story,
+      genres: story.genres || [],
+      latestChapter: latestMap.get(story.id) || null,
+    }));
   }
 
   private generateSlug(text: string): string {

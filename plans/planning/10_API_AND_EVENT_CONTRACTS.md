@@ -49,11 +49,9 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 ### 3.2. Phân Hệ Khám Phá & Bộ Truyện (Catalog & Discovery)
 | Method | Endpoint | Yêu Cầu Query / Body | Response Thành Công |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/stories` | Query: `genre`, `format`, `status`, `page`, `limit` | `200 OK` + `{ data: [...], pagination }` |
+| `GET` | `/api/v1/stories` | Query: `q`, `search`, `genre` (slug), `format` (`MediaFormat`), `status` (`StoryStatus`), `sort` (`LATEST` \| `VIEWS` \| `POPULAR`), `page`, `limit` (max 50) | `200 OK` + `{ data: [...], pagination: { page, limit, total, totalPages } }` (Mỗi story kèm `genres: []` và `latestChapter` đã xuất bản) |
 | `GET` | `/api/v1/stories/featured` | None | `200 OK` + `{ hotStories: [...], banners: [...] }` |
-| `GET` | `/api/v1/stories/recent` | Query: `page`, `limit` | `200 OK` + `{ recentStories: [...] }` |
-| `GET` | `/api/v1/stories/rankings` | Query: `timeframe: daily \| weekly \| monthly` | `200 OK` + `{ rankings: [...] }` |
-| `GET` | `/api/v1/stories/search` | Query: `q` (từ khóa debounce 300ms) | `200 OK` + `{ results: [...] }` (Tối đa 10) |
+| `GET` | `/api/v1/stories/rankings` | None | `200 OK` + `{ topComics: [...], topNovels: [...] }` |
 | `GET` | `/api/v1/stories/:slug` | Params: `slug` | `200 OK` + `{ story, editions, volumes, chapters }` |
 | `PATCH`| `/api/v1/stories/:id/visibility` | Auth: Story Owner / Global Admin, Body: `{ visibility: 'PUBLIC' \| 'UNLISTED' \| 'PRIVATE' }` | `200 OK` + `{ storyId, visibility }` |
 
@@ -72,7 +70,8 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 | `POST` | `/api/v1/chapters/:id/reports` | Auth: Reader, Body: `{ pageNumber, errorType, description }` | `201 Created` + `{ reportId }` |
 | `GET` | `/api/v1/library` | Auth: Bearer Token | `200 OK` + `{ bookmarks: [...], history: [...] }` |
 | `POST` | `/api/v1/library/progress` | Auth: Bearer Token, Body: `{ storyId, chapterId, pageIndex, anchorBlockId, textOffset }` | `200 OK` + `{ syncedAt }` |
-| `POST` | `/api/v1/library/bookmarks`| Auth: Bearer Token, Body: `{ storyId, isBookmarked: boolean }` | `200 OK` + `{ isBookmarked, followersCount }` |
+| `POST` | `/api/v1/library/bookmarks`| Auth: Bearer Token, Body: `{ storyId: UUID, isBookmarked: boolean }` | `200 OK` + `{ isBookmarked: boolean, followersCount: number }` (Idempotent state) |
+| `GET` | `/api/v1/library/bookmarks/:storyId`| Optional Auth: Bearer Token, Params: `storyId` | `200 OK` + `{ isBookmarked: boolean }` |
 
 ### 3.5. Phân Hệ Studio & Dịch Thuật AI (Studio & AI)
 | Method | Endpoint | Yêu Cầu Body / Header | Response Thành Công |

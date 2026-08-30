@@ -38,9 +38,9 @@ export default function ProfilePage() {
 
           <div className="space-y-1 flex-1">
             <div className="flex flex-wrap items-center gap-2">
-              <h1 className="text-2xl font-black text-white">{user?.fullName || user?.username}</h1>
+              <h1 className="text-2xl font-black text-white">{user?.username}</h1>
               <Badge variant="rank">Lv.{progression?.level || 1} {progression?.rankTitle || 'Tân Thủ'}</Badge>
-              <Badge variant="primary">{user?.globalRole}</Badge>
+              <Badge variant="primary">{user?.role}</Badge>
             </div>
             <p className="text-xs text-slate-400 flex items-center gap-1">
               <Mail className="w-3.5 h-3.5" />

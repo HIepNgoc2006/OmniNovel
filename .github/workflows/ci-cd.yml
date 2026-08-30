@@ -158,7 +158,7 @@ jobs:
         run: npm run test:e2e
 
   web-client-test:
-    name: Web Client Test Suite (Lint, Typecheck & Vitest)
+    name: Web Client Test Suite (Lint, Typecheck, Vitest & Playwright E2E)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout Code
@@ -187,4 +187,11 @@ jobs:
 
       - name: Build Web Production Bundle
         run: npm --prefix apps/web run build
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright E2E Smoke Suite
+        run: npm --prefix apps/web run test:e2e
+
 

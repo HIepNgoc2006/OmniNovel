@@ -1,7 +1,7 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 import { memoryAuthStore } from '../auth/auth-store';
 
-const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:4000/api/v1';
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -33,14 +33,14 @@ export async function refreshAccessToken(): Promise<string | null> {
 
   refreshPromise = (async () => {
     try {
-      // POST /auth/refresh sử dụng instance axios thuần (hoặc withCredentials) để tránh trigger loop
+      // POST /auth/refresh sử dụng instance axios thuần với withCredentials để tránh trigger loop
       const response = await axios.post<{ accessToken: string }>(
         `${API_BASE_URL}/auth/refresh`,
         {},
         { withCredentials: true },
       );
 
-      const newToken = response.data.accessToken;
+      const newToken = response.data?.accessToken;
       if (newToken) {
         memoryAuthStore.setAccessToken(newToken);
         return newToken;
@@ -62,7 +62,7 @@ export async function refreshAccessToken(): Promise<string | null> {
 apiClient.interceptors.response.use(
   (response) => response,
   async (error: AxiosError) => {
-    const originalRequest = error.config as InternalAxiosRequestConfig & { _retry?: boolean };
+    const originalRequest = error.config as (InternalAxiosRequestConfig & { _retry?: boolean }) | undefined;
 
     // Không intercept lỗi 401 của chính endpoint refresh hoặc login để tránh loop
     if (

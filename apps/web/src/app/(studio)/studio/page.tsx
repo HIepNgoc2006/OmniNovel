@@ -112,17 +112,17 @@ export default function StudioPage() {
               {lastProgress ? (
                 <div className="space-y-2">
                   <div className="flex justify-between text-xs text-slate-400">
-                    <span>Tiến độ</span>
-                    <span className="font-bold text-red-400">{lastProgress.progressPercentage}%</span>
+                    <span>Tiến độ ({lastProgress.stage})</span>
+                    <span className="font-bold text-red-400">{lastProgress.progress}%</span>
                   </div>
                   <div className="w-full h-2.5 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
                     <div
                       className="h-full bg-red-600 transition-all duration-300"
-                      style={{ width: `${lastProgress.progressPercentage}%` }}
+                      style={{ width: `${Math.min(100, Math.max(0, lastProgress.progress))}%` }}
                     />
                   </div>
                   <p className="text-[10px] text-slate-500 text-right">
-                    Attempt #{lastProgress.attemptNumber} • Sequence {lastProgress.sequence}
+                    Cập nhật lúc: {new Date(lastProgress.timestamp).toLocaleTimeString('vi-VN')}
                   </p>
                 </div>
               ) : (

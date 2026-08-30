@@ -123,14 +123,16 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
     await expect(htmlElement).toHaveAttribute('data-theme', 'dark');
 
     // 2. Kiểm tra Header Logo và Search bar
-    await expect(page.locator('header')).toBeVisible();
-    await expect(page.getByText('OMNI')).toBeVisible();
-    await expect(page.getByText('NOVEL')).toBeVisible();
+    const header = page.locator('header');
+    await expect(header).toBeVisible();
+    await expect(header.getByText('OMNI')).toBeVisible();
+    await expect(header.getByText('NOVEL')).toBeVisible();
     await expect(page.getByPlaceholder(/Tìm kiếm Manga, Light Novel/i)).toBeVisible();
 
     // 3. Kiểm tra Footer
-    await expect(page.locator('footer')).toBeVisible();
-    await expect(page.getByText('Anti-Leech Bot & Rate-Limiting Protected')).toBeVisible();
+    const footer = page.locator('footer');
+    await expect(footer).toBeVisible();
+    await expect(footer.getByText('Anti-Leech Bot & Rate-Limiting Protected')).toBeVisible();
   });
 
   test('Chuyển đổi Theme Dark / Light trên thanh điều hướng', async ({ page }) => {
@@ -169,23 +171,25 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
 
     // 3. Modal tự đóng và Header hiển thị thông tin User & Gamification
     await expect(modal).not.toBeVisible();
-    await expect(page.getByRole('button', { name: 'novel_tester' })).toBeVisible();
-    await expect(page.getByText('Lv.5')).toBeVisible();
-    await expect(page.getByText('150')).toBeVisible(); // OmniCoins
+    const header = page.locator('header');
+    await expect(header.getByRole('button', { name: 'novel_tester' })).toBeVisible();
+    await expect(header.getByText('Lv.5')).toBeVisible();
+    await expect(header.getByText('150')).toBeVisible(); // OmniCoins
 
     // 4. Truy cập trang Profile
     await page.goto('/profile');
-    await expect(page.getByText('Độc Giả Tinh Anh')).toBeVisible();
-    await expect(page.getByText('450')).toBeVisible(); // Total EXP
-    await expect(page.getByText('4 ngày liên tiếp')).toBeVisible(); // Streak
+    const mainContent = page.locator('main');
+    await expect(mainContent.getByText('Độc Giả Tinh Anh')).toBeVisible();
+    await expect(mainContent.getByText('450')).toBeVisible(); // Total EXP
+    await expect(mainContent.getByText('4 ngày liên tiếp')).toBeVisible(); // Streak
 
     // 5. Hard Reload (F5) để kiểm tra Session Hydration qua refresh token & getMe
     await page.reload();
-    await expect(page.getByRole('button', { name: 'novel_tester' })).toBeVisible();
-    await expect(page.getByText('Độc Giả Tinh Anh')).toBeVisible();
+    await expect(page.locator('header').getByRole('button', { name: 'novel_tester' })).toBeVisible();
+    await expect(page.locator('main').getByText('Độc Giả Tinh Anh')).toBeVisible();
 
     // 6. Mở User Dropdown và thực hiện Đăng Xuất
-    await page.getByRole('button', { name: 'novel_tester' }).click();
+    await page.locator('header').getByRole('button', { name: 'novel_tester' }).click();
     await page.getByRole('button', { name: 'Đăng Xuất' }).click();
 
     // 7. Xác nhận đã trở về trạng thái Anonymous

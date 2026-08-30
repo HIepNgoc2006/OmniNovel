@@ -182,7 +182,7 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
     await page.goto('/');
 
     // 1. Mở Modal Đăng Nhập
-    const loginBtn = page.getByRole('button', { name: 'Đăng Nhập' });
+    const loginBtn = page.locator('header').getByRole('button', { name: 'Đăng Nhập' });
     await expect(loginBtn).toBeVisible();
     await loginBtn.click();
 
@@ -218,8 +218,8 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
     await page.getByRole('button', { name: 'Đăng Xuất' }).click();
 
     // 7. Xác nhận đã trở về trạng thái Anonymous
-    await expect(page.getByRole('button', { name: 'Đăng Nhập' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Đăng Ký' })).toBeVisible();
+    await expect(page.locator('header').getByRole('button', { name: 'Đăng Nhập' })).toBeVisible();
+    await expect(page.locator('header').getByRole('button', { name: 'Đăng Ký' })).toBeVisible();
   });
 
   test('Kiểm tra trang 404 tùy biến', async ({ page }) => {

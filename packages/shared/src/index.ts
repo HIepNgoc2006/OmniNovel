@@ -86,12 +86,17 @@ export enum RewardSourceType {
 }
 
 export interface UserProgressionResponse {
+  userId?: string;
   level: number;
-  totalExp: number;
+  totalExp: number | string;
   currentLevelExp: number;
   nextLevelExp: number;
   omnicoinBalance: number;
   streak: number;
+  currentStreak?: number;
+  maxStreak?: number;
+  lastCheckinDate?: string | null;
+  hasCheckedInToday?: boolean;
   rankTitle: string;
 }
 

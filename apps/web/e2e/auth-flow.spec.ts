@@ -7,6 +7,28 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
     isSessionActive = false;
 
     // Mock Core API Endpoints for deterministic browser testing
+    await page.route('**/api/v1/stories/featured', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          hotStories: [],
+          banners: [],
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/stories/rankings', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          topComics: [],
+          topNovels: [],
+        }),
+      });
+    });
+
     await page.route('**/api/v1/stories**', async (route) => {
       await route.fulfill({
         status: 200,
@@ -29,7 +51,7 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
             id: 'user-uuid-1',
             username: 'novel_tester',
             email: 'tester@omninovel.com',
-            role: 'USER',
+            role: 'READER',
             avatarUrl: null,
             createdAt: '2026-08-30T00:00:00.000Z',
           },
@@ -47,11 +69,15 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
               id: 'user-uuid-1',
               username: 'novel_tester',
               email: 'tester@omninovel.com',
-              role: 'USER',
+              role: 'READER',
               avatarUrl: null,
               createdAt: '2026-08-30T00:00:00.000Z',
             },
-            permissions: ['READ_STORY', 'COMMENT'],
+            permissions: {
+              canCreateStory: false,
+              canModerate: false,
+              isAdmin: false,
+            },
           }),
         });
       } else {
@@ -156,7 +182,7 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
     await page.goto('/');
 
     // 1. Mở Modal Đăng Nhập
-    const loginBtn = page.getByRole('button', { name: 'Đăng Nhập' });
+    const loginBtn = page.locator('header').getByRole('button', { name: 'Đăng Nhập' });
     await expect(loginBtn).toBeVisible();
     await loginBtn.click();
 
@@ -192,8 +218,8 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
     await page.getByRole('button', { name: 'Đăng Xuất' }).click();
 
     // 7. Xác nhận đã trở về trạng thái Anonymous
-    await expect(page.getByRole('button', { name: 'Đăng Nhập' })).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Đăng Ký' })).toBeVisible();
+    await expect(page.locator('header').getByRole('button', { name: 'Đăng Nhập' })).toBeVisible();
+    await expect(page.locator('header').getByRole('button', { name: 'Đăng Ký' })).toBeVisible();
   });
 
   test('Kiểm tra trang 404 tùy biến', async ({ page }) => {

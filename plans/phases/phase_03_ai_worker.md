@@ -80,11 +80,12 @@
     - [x] `NovelAstParser` (`app/novel/ast_parser.py`): Dựng cây `CanonicalNovelDocument` (Document AST bất biến) từ HTML/XHTML, Markdown và Plain text. Bảo toàn nguyên dạng ký tự Unicode gốc (không áp dụng NFKC compatibility transformation, bảo toàn codepoint gốc), bảo toàn cấu trúc thẻ Ruby `<ruby><rb>漢字</rb><rt>かんじ</rt></ruby>`, heading `<h1>`-`<h6>`, `<p>`, `<blockquote>`, `<hr>` và `<img>` nội bộ.
     - [x] `NovelSegmenter` (`app/novel/segmenter.py`): Duyệt DFS cây AST theo quy tắc tất định (`segmenter_version = "novel-v1"`), trích xuất `TranslatableBlock` với `anchor_block_id` bất biến (`blk_{index:04d}_{tag}`). Phân loại câu thoại `DIALOGUE` (`「...」`, `『...』`) vs lời dẫn `NARRATION`.
     - [x] Test Suite 3A: 47/47 tests `test_novel_security.py`, 5/5 tests `test_novel_parser.py`, 2/2 tests `test_novel_segmenter.py`, 76/76 regression tests passed (Tổng cộng 130/130 local tests green 100%).
-  - [ ] **Checkpoint 3B: Novel Context Windowing, Shadow Glossary Matching & LLM Translation Engine (`services/ai-worker`)**
-    - [ ] `NovelContextBuilder`: Gom cụm translatable blocks theo token budget (~1500-2000 tokens), phân tách cấu trúc rõ ràng: `context_before`, `translate_blocks`, `context_after`.
-    - [ ] `NovelGlossaryEngine`: Đối chiếu thuật ngữ qua Shadow String NFKC (Longest-Match-First) bảo toàn Unicode nguồn `raw_text`.
-    - [ ] `NovelTranslationPipeline`: Nạp versioned prompt `novel-ja-vi-v1`, bảo vệ ranh giới Prompt Injection, provider fail-fast và xác thực 1:1 anchor mapping `set(outputIds) == set(inputIds)`.
-    - [ ] Unit & integration tests cho Context Builder, Glossary Shadow Matching và LLM Translation.
+  - [x] **Checkpoint 3B: Novel Context Windowing, Shadow Glossary Matching & LLM Translation Engine (100% HOÀN TẤT - 147/147 Local Tests Passed)**
+    - [x] `ConservativeTokenEstimator` & `TokenEstimator` protocol (`app/novel/token_estimator.py`): Ước tính token đa ngôn ngữ độc lập với model (CJK ~2.0 tokens/ký tự, Latin ~0.35 tokens/ký tự, block formatting overhead).
+    - [x] `NovelGlossaryEngine` (`app/novel/glossary_engine.py`): Khớp thuật ngữ Longest-Match-First qua Shadow String NFKC (nhận diện full-width/half-width `ＡＢＣ` vs `ABC`), bảo toàn 100% tính bất biến của `raw_text` nguồn.
+    - [x] `NovelContextBuilder` (`app/novel/context_builder.py`): Phân cụm các translatable blocks theo token budget (~1500 tokens), tổ chức Sliding Window Context (`context_before` và `context_after`) hoàn toàn tách biệt khỏi `translate_blocks`.
+    - [x] `NovelTranslationPipeline` & Prompt Registry (`app/novel/translator.py`, `app/translation/prompt_registry.py`): Nạp versioned prompt `novel-ja-vi-v1`, bảo vệ ranh giới Prompt Injection, xác thực nghiêm ngặt 1:1 anchor mapping (`len == len`, `no duplicates`, `set == set`), tích hợp `MockTranslationProvider` và `OpenAICompatibleTranslationProvider`, phát tiến độ qua `ProgressSink`.
+    - [x] Unit & Integration Tests: 5/5 `test_novel_token_estimator.py`, 4/4 `test_novel_glossary.py`, 3/3 `test_novel_context_builder.py`, 5/5 `test_novel_translator.py` (Tổng cộng 71/71 novel tests, 147/147 worker tests passing 100%).
   - [ ] **Checkpoint 3C: Structural Rebuilder & Structural QA Engine (`services/ai-worker`)**
     - [ ] `NovelDocumentRebuilder`: Thay thế plain text đã dịch vào đúng các text nodes tương ứng trên Document AST bất biến, escape HTML an toàn chống XSS.
     - [ ] `NovelStructuralQAEvaluator`: Kiểm định toàn vẹn cấu trúc (khớp anchor 1:1, bảo toàn cấu trúc thẻ Ruby, heading, divider, ảnh nội bộ, UTF-8 validity).

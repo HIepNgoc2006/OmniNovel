@@ -1,7 +1,8 @@
-from typing import Dict, List
+from typing import Any, Dict, List
 from app.translation.context_builder import ContextBatch
 from app.translation.providers.base import (
     TranslationProvider,
+    TranslatedNovelBlockItem,
     TranslatedSegmentItem,
 )
 
@@ -25,7 +26,7 @@ class MockTranslationProvider(TranslationProvider):
     Mock Translation Provider phục vụ unit test và testing nội bộ tốc độ cao:
     - 100% deterministic, không gọi mạng ngoài.
     - Áp dụng triệt để glossary constraints.
-    - Validate tính toàn vẹn 1:1 của segmentKey.
+    - Validate tính toàn vẹn 1:1 của segmentKey / anchorBlockId.
     """
 
     async def translate_batch(
@@ -36,15 +37,15 @@ class MockTranslationProvider(TranslationProvider):
         for item in batch.items:
             translated = item.raw_text
 
-            # 1. Áp dụng từ điển cơ bản
+            # 1. Áp dụng Glossary Constraints bắt buộc trước (Longest match)
+            for c in item.glossary_constraints:
+                if c.source_term in translated:
+                    translated = translated.replace(c.source_term, c.target_term)
+
+            # 2. Áp dụng từ điển cơ bản cho các từ còn lại
             for ja_word, vi_word in _MOCK_JA_VI_DICT.items():
                 if ja_word in translated:
                     translated = translated.replace(ja_word, vi_word)
-
-            # 2. Áp dụng Glossary Constraints bắt buộc
-            for c in item.glossary_constraints:
-                if c.source_term in item.raw_text:
-                    translated = translated.replace(c.source_term, c.target_term)
 
             # Nếu không có từ nào khớp, gắn tiền tố mẫu
             if translated == item.raw_text:
@@ -59,3 +60,35 @@ class MockTranslationProvider(TranslationProvider):
 
         self._validate_output_keys(batch.items, results)
         return results
+
+    async def translate_novel_batch(
+        self, batch: Any, prompt_version: str = "novel-ja-vi-v1"
+    ) -> List[TranslatedNovelBlockItem]:
+        results: List[TranslatedNovelBlockItem] = []
+
+        for item in batch.translate_blocks:
+            translated = item.raw_text
+
+            # 1. Áp dụng Glossary Constraints bắt buộc trước (Longest match)
+            for c in item.glossary_constraints:
+                if c.source_term in translated:
+                    translated = translated.replace(c.source_term, c.target_term)
+
+            # 2. Áp dụng từ điển cơ bản cho các từ còn lại
+            for ja_word, vi_word in _MOCK_JA_VI_DICT.items():
+                if ja_word in translated:
+                    translated = translated.replace(ja_word, vi_word)
+
+            if translated == item.raw_text:
+                translated = f"[Dịch: {item.raw_text}]"
+
+            results.append(
+                TranslatedNovelBlockItem(
+                    anchor_block_id=item.anchor_block_id,
+                    translated_text=translated,
+                )
+            )
+
+        self._validate_novel_output_keys(batch.translate_blocks, results)
+        return results
+

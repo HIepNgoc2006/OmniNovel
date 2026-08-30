@@ -15,7 +15,7 @@
     - TanStack Query v5 quản lý Server State & SWR Caching.
     - WebSocket Gateway (`/ws/ai`) xác thực qua `socket.handshake.auth.token` và tự động reconnect khi token xoay vòng.
     - Gamification: Tiêu thụ endpoint chuẩn `/gamification/progression` và `UserProgressionResponse` từ `@omninovel/shared`.
-- **Trạng thái:** [/] Đang thực hiện (Phase 4A & Phase 4B: 100% HOÀN TẤT & FROZEN - 20 Vitest + 7 Playwright Tests + 115 Core API Tests + 184 AI Worker Tests)
+- **Trạng thái:** [/] Đang thực hiện (Phase 4A & Phase 4B: 100% HOÀN TẤT & FROZEN - 20 Vitest + 7 Playwright + 137 Core API [22 Unit + 115 E2E/Integration] + 184 AI Worker = 348 Total CI Tests Pass 100% | Merge Baseline SHA: `5c9b5fa2b7aa1fb80d2d9474c0c9a37d7609ba3f`)
 
 ---
 
@@ -31,7 +31,7 @@
   - [x] Xây dựng WebSocket Hook kết nối `/ws/ai` lắng nghe tiến trình TranslationJob ({ jobId, stage, progress, timestamp }) kèm cơ chế active token rotation reconnect.
   - [x] Thiết lập hạ tầng kiểm thử Vitest (9/9 Unit/Component Tests Green 100%), Playwright Browser E2E Smoke Suite (4/4 Tests Green with Mocked Canonical Core API), và Next.js Production Build.
 
-- [x] **Phase 4B: Discovery, Catalog, Story Details & Idempotent Bookmarks (100% HOÀN TẤT & FROZEN - 20 Vitest + 7 Playwright Tests + 91 Core E2E Tests)**
+- [x] **Phase 4B: Discovery, Catalog, Story Details & Idempotent Bookmarks (100% HOÀN TẤT & FROZEN - 20 Vitest + 7 Playwright + 91 app.e2e-spec / 137 Core Tests)**
   - [x] Xây dựng Trang chủ: Hero Carousel Slider truyện HOT, Danh sách mới cập nhật, Bảng xếp hạng Top truyện có lượt xem cao nhất toàn thời gian, Widget điểm danh hàng ngày.
   - [x] Xây dựng Trang lọc & tìm kiếm nâng cao (Multi-criteria filter: Manga/Novel, Thể loại canonical slugs, Trạng thái hoàn thành, Sắp xếp canonical LATEST/VIEWS/POPULAR, Phân trang).
   - [x] Xây dựng Trang chi tiết truyện: Thông tin bộ truyện, Danh sách chương, Đánh dấu theo dõi / Tủ sách (`POST /api/v1/library/bookmarks`), Bộ chọn phiên bản chương (`RAW_ORIGINAL`, `AI_TRANSLATED`, `HUMAN_EDITED`).

@@ -156,3 +156,35 @@ jobs:
           AI_TRANSLATION_SERVICE_URL: http://127.0.0.1:8001
           AI_WORKER_SECRET: internal_ai_worker_secret_secure_2026
         run: npm run test:e2e
+
+  web-client-test:
+    name: Web Client Test Suite (Lint, Typecheck & Vitest)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Node.js Dependencies
+        run: npm install
+
+      - name: Build Shared Package
+        run: npm --prefix packages/shared run build
+
+      - name: Lint Web App
+        run: npm --prefix apps/web run lint
+
+      - name: Typecheck Web App
+        run: npx tsc --noEmit --project apps/web/tsconfig.json
+
+      - name: Run Web App Vitest Suite
+        run: npm --prefix apps/web run test
+
+      - name: Build Web Production Bundle
+        run: npm --prefix apps/web run build
+

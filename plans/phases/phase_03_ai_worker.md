@@ -11,7 +11,7 @@
     - **Chiến lược 1 (Ghi đè - Overwrite):** Gán `chapter.active_version_id = translated_version.id`. Bản ghi ChapterVersion gốc vẫn giữ nguyên bất biến (`RAW_ORIGINAL`).
     - **Chiến lược 2 (Nhân bản - Duplicate):** Tạo bản ghi mới trong `chapter_versions` với `version_type = 'AI_TRANSLATED'`, giữ nguyên `active_version_id` trỏ vào bản gốc để biên tập viên review thủ công.
   - **Trọng tâm MVP Scope:** Tập trung chuyên sâu **Manga tiếng Nhật (Japanese Manga-OCR)** cho bản MVP. Ngôn ngữ Hàn (Manhwa) / Trung (Manhua) được thiết kế theo Interface Adapter mở rộng cho V1.
-- **Trạng thái:** [/] Đang triển khai (Vertical Slice 1 & 2: **100% HOÀN THÀNH & FROZEN**; Vertical Slice 3: **Checkpoint 3A, 3B & 3C FROZEN**, Checkpoint 3D đang thực hiện)
+- **Trạng thái:** [x] 100% HOÀN THÀNH & FROZEN (Vertical Slice 1, 2, 3 hoàn tất 100% với 181/181 AI Worker Tests & 106/106 NestJS Tests)
 
 ---
 
@@ -74,7 +74,7 @@
     - [x] CI/CD Automation & Reproducibility: Độc lập font OS với static Japanese fixture PNG, MinIO service container polling, migration bootstrap và force-exit sạch sẽ.
     - [x] Test Pyramid CI-Verified: **203/203 tests green (100%)** — 76 Python Pytest + 22 NestJS Unit + 105 NestJS E2E/Integration trên GitHub Actions run #10.
 - [x] **VERTICAL SLICE 2: FROZEN & 100% HOÀN TẤT (203/203 CI-VERIFIED TESTS)**
-- [/] **Vertical Slice 3: Light Novel Translation Pipeline Slice (~85–90% Hoàn Thành)**
+- [x] **Vertical Slice 3: Light Novel Translation Pipeline Slice (100% HOÀN TẤT & FROZEN)**
   - [x] **Checkpoint 3A: Novel Ingestion, Canonical AST Parser, Deterministic Segmenter & Security Sandbox (100% HOÀN TẤT & FROZEN - Commit 0937b6d - 130/130 Local Tests Passed)**
     - [x] `SafeNovelPackageExtractor` (`app/novel/security.py`): Sandbox giải nén an toàn file EPUB / ZIP. Chặn path traversal (`..`, `C:`, UNC, null bytes, url-encoded), Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1..9`, `LPT1..9`), trailing dots/spaces và leading spaces, non-regular files (`mode & 0o170000` POSIX masking: FIFO, Char/Block devices, Socket, Symlink), deterministic Unicode NFC canonical casefold collision (`unicodedata.normalize("NFC", p).casefold()`), multi-encoding XML pre-scan (UTF-8, UTF-16LE/BE, BOM) & binary scanning chống XXE / DTD / entity expansion, zip bomb ($> 100:1$ ratio), streaming byte counter (50MB uncompressed text / 100MB aggregate total, $\le 500$ entries). Enforce single-chapter EPUB spine (`container.xml` $\rightarrow$ OPF) và fail-closed URL ngoài (`http://`, `https://`).
     - [x] `NovelAstParser` (`app/novel/ast_parser.py`): Dựng cây `CanonicalNovelDocument` (Document AST bất biến) từ HTML/XHTML, Markdown và Plain text. Bảo toàn nguyên dạng ký tự Unicode gốc (không áp dụng NFKC compatibility transformation, bảo toàn codepoint gốc), bảo toàn cấu trúc thẻ Ruby `<ruby><rb>漢字</rb><rt>かんじ</rt></ruby>`, heading `<h1>`-`<h6>`, `<p>`, `<blockquote>`, `<hr>` và `<img>` nội bộ.
@@ -90,11 +90,14 @@
     - [x] `InlineAnchorCodec` & Strict Protected Inline Anchors (`app/novel/inline_anchors.py`): Mã hóa và giải mã các phần tử dòng Ruby (bảo toàn furigana `<rt>` trong metadata cấu trúc), Strong, Emphasis và InlineImage với cú pháp `⟦...⟧`. Mặc định `strict=True` cho Production (enforce exact set, reject unknown/duplicate/unclosed tags, improper nesting interleaving qua `InlineAnchorMismatchError`).
     - [x] `NovelDocumentRebuilder` (`app/novel/rebuilder.py`): Tái tạo cây `CanonicalNovelDocument` mới hoàn toàn (Source AST bất biến 100%), defense-in-depth boundary validation (enforce uniqueness, exact-set cardinality, reject extra/missing translated blocks), bảo toàn nguyên vị trí ảnh minh họa `IllustrationBlockNode` và thẻ phân đoạn `DividerBlockNode`.
     - [x] `NovelDocumentSerializer` (`app/novel/serializer.py`): Tuần tự hóa HTML5 với Context-Aware Auto-Escaping chống XSS, URL sanitization chặn `javascript:` / `data:` schemes và sinh thẻ `<ruby><rb>...<rt>...` chuẩn semantic.
-    - [x] `NovelStructuralQAEvaluator` (`app/novel/qa_evaluator.py`): So sánh dấu vân tay cấu trúc toàn diện (Structural Fingerprint: block sequence, heading levels, dividers, illustrations, assets, ruby furigana metadata, strong/emphasis, inline tree topology), UTF-8 validity và Round-trip AST parsing.
-    - [x] `SYSTEM_PROMPT_NOVEL_JA_VI_V2` (`app/translation/prompt_registry.py`): Bổ sung quy tắc bất biến bảo toàn thẻ `⟦...⟧` phục vụ Full Novel Pipeline 3D.
+    - [x] `NovelStructuralQAEvaluator` (`app/novel/qa_evaluator.py`): So sánh dấu vân tay cấu trúc toàn diện (Structural Fingerprint: block sequence, heading levels, dividers, illustrations, assets, ruby furigana metadata, strong/emphasis, inline tree topology), UTF-8 validity và Round-trip AST parsing full fingerprint equality.
+    - [x] `SYSTEM_PROMPT_NOVEL_JA_VI_V2` (`app/translation/prompt_registry.py`): Đăng ký `novel-ja-vi-v2`, chuẩn hóa quy tắc định vị thẻ dòng tự nhiên bám sát cụm từ dịch tiếng Việt, nghiêm cấm sửa ID/xóa/chế thẻ.
     - [x] Unit & Integration Tests: 11/11 `test_novel_inline_anchors.py`, 7/7 `test_novel_rebuilder.py`, 3/3 `test_novel_serializer.py`, 7/7 `test_novel_qa_evaluator.py` (Tổng cộng 103/103 novel tests, 179/179 worker tests green 100%).
-  - [ ] **Checkpoint 3D: Full Novel Orchestration, Core API Apply Semantics & Cross-Service CI (`services/api` & CI)**
-    - [ ] `AttemptProgressCoordinator` cho Novel: Điều phối stage Novel `PREPROCESSING` $\rightarrow$ `TRANSLATING` $\rightarrow$ `QUALITY_CHECK` $\rightarrow$ `READY_FOR_REVIEW`.
-    - [ ] NestJS BullMQ Processor: Dispatch `mediaFormat === 'NOVEL'` gọi endpoint `/internal/v1/jobs/process-novel`.
-    - [ ] MinIO Upload & Apply Semantics: Core cấp presigned URL cho `NOVEL_HTML`, Worker upload và callback `READY_FOR_REVIEW`. `applyJob` tạo `ChapterVersion` mới (`AI_TRANSLATED`) theo 2 mode `CREATE_ALTERNATE` vs `OVERWRITE_ACTIVE`.
-    - [ ] Cross-service integration test (`translation-novel-worker.integration-spec.ts`) & toàn bộ Test Pyramid trên GitHub Actions CI đạt 100% Green.
+  - [x] **Checkpoint 3D: Full Novel Orchestration, Core API Apply Semantics & Cross-Service CI (100% HOÀN TẤT & FROZEN - 181/181 Worker Tests & 106/106 Core API Tests Passed)**
+    - [x] `FullNovelPipeline` (`app/novel/full_novel_pipeline.py`): Orchestrator hoàn chỉnh điều phối toàn diện chu trình dịch Light Novel `PREPROCESSING` (15%) $\rightarrow$ `TRANSLATING` (50%) $\rightarrow$ `QUALITY_CHECK` (85%) $\rightarrow$ `READY_FOR_REVIEW` (100%). Tích hợp an toàn Sandbox EPUB extractor, Canonical AST parser, segmenter với protected inline anchors, shadow glossary engine, sliding window translation (`novel-ja-vi-v2`), document rebuilder, structural QA full-fingerprint evaluator, serializer và presigned MinIO uploader.
+    - [x] Endpoint `/internal/v1/jobs/process-novel` (`app/api/v1/endpoints/jobs.py`): Router xử lý job tiểu thuyết với cấu hình prompt mặc định `novel-ja-vi-v2`, hỗ trợ đầy đủ fail-fast 502 error propagation.
+    - [x] NestJS BullMQ Processor: Dynamic routing `mediaFormat === 'NOVEL'` kích hoạt pipeline tiểu thuyết độc lập.
+    - [x] Apply Semantics & MediaAsset Materialization: `applyJob` trong `translation.service.ts` hỗ trợ tạo `ChapterVersion` mới (`AI_TRANSLATED`) với `MediaAsset` kiểu `NOVEL_HTML` và `ILLUSTRATION` theo 2 mode `CREATE_ALTERNATE_VERSION` và `OVERWRITE_ACTIVE_VERSION`.
+    - [x] Cross-Service Integration Spec: `test/translation-novel-worker.integration-spec.ts` khởi chạy subprocess Python FastAPI thật, xác thực end-to-end BullMQ $\rightarrow$ Novel Pipeline $\rightarrow$ MinIO Upload $\rightarrow$ Callbacks $\rightarrow$ READY $\rightarrow$ Apply.
+    - [x] Toàn bộ Test Pyramid đạt 100% Green: 181/181 tests Pytest (AI Worker) + 106/106 tests Jest (NestJS Core API Unit, Integration & E2E).
+

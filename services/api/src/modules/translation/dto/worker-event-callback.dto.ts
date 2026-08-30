@@ -26,6 +26,10 @@ export class WorkerSegmentDto {
   @IsString()
   anchorBlockId?: string;
 
+  @IsOptional()
+  @IsString()
+  blockType?: string;
+
   @IsInt()
   @Min(1)
   sortOrder: number;

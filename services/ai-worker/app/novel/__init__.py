@@ -28,6 +28,9 @@ from app.novel.context_builder import (
     NovelContextItem,
     NovelTranslationBatch,
 )
+from app.novel.full_novel_pipeline import (
+    FullNovelPipeline,
+)
 from app.novel.glossary_engine import (
     GlossaryConstraint,
     NovelGlossaryEngine,
@@ -140,4 +143,5 @@ __all__ = [
     "NovelTranslationPipeline",
     "NovelTranslationResult",
     "TranslatedNovelBlock",
+    "FullNovelPipeline",
 ]

@@ -1,7 +1,11 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
+  let isSessionActive = false;
+
   test.beforeEach(async ({ page }) => {
+    isSessionActive = false;
+
     // Mock Core API Endpoints for deterministic browser testing
     await page.route('**/api/v1/stories**', async (route) => {
       await route.fulfill({
@@ -15,6 +19,7 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
     });
 
     await page.route('**/api/v1/auth/login', async (route) => {
+      isSessionActive = true;
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -33,21 +38,31 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
     });
 
     await page.route('**/api/v1/auth/me', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          user: {
-            id: 'user-uuid-1',
-            username: 'novel_tester',
-            email: 'tester@omninovel.com',
-            role: 'USER',
-            avatarUrl: null,
-            createdAt: '2026-08-30T00:00:00.000Z',
-          },
-          permissions: ['READ_STORY', 'COMMENT'],
-        }),
-      });
+      if (isSessionActive) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            user: {
+              id: 'user-uuid-1',
+              username: 'novel_tester',
+              email: 'tester@omninovel.com',
+              role: 'USER',
+              avatarUrl: null,
+              createdAt: '2026-08-30T00:00:00.000Z',
+            },
+            permissions: ['READ_STORY', 'COMMENT'],
+          }),
+        });
+      } else {
+        await route.fulfill({
+          status: 401,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            message: 'Unauthorized',
+          }),
+        });
+      }
     });
 
     await page.route('**/api/v1/gamification/progression', async (route) => {
@@ -69,16 +84,27 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
     });
 
     await page.route('**/api/v1/auth/refresh', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          accessToken: 'mock_refreshed_jwt_token_2026',
-        }),
-      });
+      if (isSessionActive) {
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            accessToken: 'mock_refreshed_jwt_token_2026',
+          }),
+        });
+      } else {
+        await route.fulfill({
+          status: 401,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            message: 'Không tìm thấy Refresh Token.',
+          }),
+        });
+      }
     });
 
     await page.route('**/api/v1/auth/logout', async (route) => {
+      isSessionActive = false;
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
@@ -130,6 +156,7 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
 
     // 1. Mở Modal Đăng Nhập
     const loginBtn = page.getByRole('button', { name: 'Đăng Nhập' });
+    await expect(loginBtn).toBeVisible();
     await loginBtn.click();
 
     const modal = page.getByRole('dialog');
@@ -142,7 +169,7 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
 
     // 3. Modal tự đóng và Header hiển thị thông tin User & Gamification
     await expect(modal).not.toBeVisible();
-    await expect(page.getByText('novel_tester')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'novel_tester' })).toBeVisible();
     await expect(page.getByText('Lv.5')).toBeVisible();
     await expect(page.getByText('150')).toBeVisible(); // OmniCoins
 
@@ -154,7 +181,7 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
 
     // 5. Hard Reload (F5) để kiểm tra Session Hydration qua refresh token & getMe
     await page.reload();
-    await expect(page.getByText('novel_tester')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'novel_tester' })).toBeVisible();
     await expect(page.getByText('Độc Giả Tinh Anh')).toBeVisible();
 
     // 6. Mở User Dropdown và thực hiện Đăng Xuất

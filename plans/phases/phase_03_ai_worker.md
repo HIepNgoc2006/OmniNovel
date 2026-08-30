@@ -11,7 +11,7 @@
     - **Chiến lược 1 (Ghi đè - Overwrite):** Gán `chapter.active_version_id = translated_version.id`. Bản ghi ChapterVersion gốc vẫn giữ nguyên bất biến (`RAW_ORIGINAL`).
     - **Chiến lược 2 (Nhân bản - Duplicate):** Tạo bản ghi mới trong `chapter_versions` với `version_type = 'AI_TRANSLATED'`, giữ nguyên `active_version_id` trỏ vào bản gốc để biên tập viên review thủ công.
   - **Trọng tâm MVP Scope:** Tập trung chuyên sâu **Manga tiếng Nhật (Japanese Manga-OCR)** cho bản MVP. Ngôn ngữ Hàn (Manhwa) / Trung (Manhua) được thiết kế theo Interface Adapter mở rộng cho V1.
-- **Trạng thái:** [/] Đang triển khai (Vertical Slice 1 & 2: **100% HOÀN THÀNH & FROZEN**; Vertical Slice 3: Checkpoint 3A Passed & In-Review, Checkpoints 3B..3D Sắp thực hiện)
+- **Trạng thái:** [/] Đang triển khai (Vertical Slice 1 & 2: **100% HOÀN THÀNH & FROZEN**; Vertical Slice 3: **Checkpoint 3A FROZEN**, Checkpoints 3B..3D đang thực hiện)
 
 ---
 

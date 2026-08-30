@@ -47,6 +47,7 @@ from app.novel.inline_anchors import (
 from app.novel.qa_evaluator import (
     NovelQAIssue,
     NovelQAResult,
+    NovelQualityGateError,
     NovelStructuralFingerprint,
     NovelStructuralQAEvaluator,
     QASeverity,
@@ -116,6 +117,7 @@ __all__ = [
     "ProtectedInlineMetadata",
     "NovelQAIssue",
     "NovelQAResult",
+    "NovelQualityGateError",
     "NovelStructuralFingerprint",
     "NovelStructuralQAEvaluator",
     "QASeverity",

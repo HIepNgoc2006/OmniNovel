@@ -140,6 +140,7 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
     </metadata>
     <manifest>
         <item id="chapter1" href="chapter1.xhtml" media-type="application/xhtml+xml"/>
+        <item id="img1" href="assets/star.png" media-type="image/png"/>
     </manifest>
     <spine>
         <itemref idref="chapter1"/>
@@ -155,8 +156,16 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
     <h1>第1章 覚醒</h1>
     <p>彼は<strong>勇者</strong>であり、<ruby>魔王<rt>まおう</rt></ruby>を討つ者だ。</p>
     <p>「行くぞ！」</p>
+    <figure><img src="assets/star.png" alt="Star Hero" /></figure>
 </body>
 </html>`),
+    );
+    zip.addFile(
+      'OEBPS/assets/star.png',
+      Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'base64',
+      ),
     );
 
     const sourceZipBuffer = zip.toBuffer();
@@ -303,21 +312,63 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
     expect(appliedJobDb[0].status).toBe(TranslationJobStatus.APPLIED);
     expect(appliedJobDb[0].target_version_id).toBeDefined();
 
-    // 5. Kiểm tra MediaAsset được tạo và có asset_type NOVEL_HTML
+    // 5. Kiểm tra MediaAssets được tạo: cả NOVEL_HTML và ILLUSTRATION
     const assets = await dataSource.query(
-      `SELECT * FROM media_assets WHERE version_id = $1`,
+      `SELECT * FROM media_assets WHERE version_id = $1 ORDER BY sort_order ASC`,
       [appliedJobDb[0].target_version_id],
     );
-    expect(assets.length).toBeGreaterThanOrEqual(1);
+    expect(assets.length).toBe(2);
+
     const htmlAsset = assets.find((a: any) => a.asset_type === MediaAssetType.NOVEL_HTML);
     expect(htmlAsset).toBeDefined();
     expect(htmlAsset.storage_key).toContain('novel_translated.html');
 
-    // 6. Kiểm tra file HTML thật sự tồn tại trong MinIO (bucket novel-media)
-    const existsInMinio = await storageService.headInternalObject(
+    const imgAsset = assets.find((a: any) => a.asset_type === MediaAssetType.ILLUSTRATION);
+    expect(imgAsset).toBeDefined();
+    expect(imgAsset.storage_key).toContain('assets_star.png');
+
+    // 6. Kiểm tra file HTML & Illustration thật sự tồn tại trong MinIO (bucket novel-media)
+    const htmlExistsInMinio = await storageService.headInternalObject(
       htmlAsset.storage_key,
       false, // novel bucket
     );
-    expect(existsInMinio).toBe(true);
+    expect(htmlExistsInMinio).toBe(true);
+
+    const imgExistsInMinio = await storageService.headInternalObject(
+      imgAsset.storage_key,
+      false, // novel bucket
+    );
+    expect(imgExistsInMinio).toBe(true);
+
+    // 7. Negative Test: Từ chối apply job Novel nếu QA failed
+    const failedQaJob = await dataSource.query(
+      `INSERT INTO translation_jobs (
+         id, project_id, source_version_id, created_by, status, provider, model_name, prompt_version,
+         result_manifest, progress_percentage, attempt_count, max_attempts, last_sequence
+       ) VALUES (
+         gen_random_uuid(), (SELECT project_id FROM translation_jobs WHERE id = $1), $2, $3,
+         'READY_FOR_REVIEW', 'OPENAI', 'gpt-4o-mini', 'novel-ja-vi-v2',
+         $4, 100, 1, 3, 4
+       ) RETURNING id`,
+      [
+        jobId,
+        rawVersionId,
+        ownerUser.id,
+        JSON.stringify({
+          mediaFormat: 'NOVEL',
+          htmlKey: `ai/jobs/${jobId}/attempt-1/novel_translated.html`,
+          qa: { passed: false, fingerprintMatch: false },
+        }),
+      ],
+    );
+
+    await expect(
+      service.applyJob(
+        failedQaJob[0].id,
+        { mode: ApplyTranslationMode.CREATE_ALTERNATE_VERSION },
+        ownerUser,
+        `app_failed_qa_${Date.now()}`,
+      ),
+    ).rejects.toThrow('Kiểm định chất lượng cấu trúc (Structural QA) không đạt yêu cầu');
   }, 45000);
 });

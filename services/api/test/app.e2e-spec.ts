@@ -439,12 +439,26 @@ describe('OmniNovel Backend Core API (e2e)', () => {
     });
 
     it('GET /api/v1/stories?q= should filter stories by keyword on title', async () => {
-      const res = await request(app.getHttpServer())
+      const storyARow = await dataSource.query(`SELECT title FROM stories WHERE id = $1`, [storyAId]);
+      const titleToSearch = storyARow[0]?.title || 'Quản Gia';
+
+      const resExact = await request(app.getHttpServer())
+        .get(`/api/v1/stories?q=${encodeURIComponent(titleToSearch)}`)
+        .expect(200);
+
+      expect(resExact.body.data.length).toBeGreaterThanOrEqual(1);
+      expect(resExact.body.data.some((s: any) => s.id === storyAId)).toBe(true);
+
+      const resPartial = await request(app.getHttpServer())
         .get(`/api/v1/stories?q=${encodeURIComponent('Quản Gia')}`)
         .expect(200);
 
-      expect(res.body.data.length).toBeGreaterThanOrEqual(1);
-      expect(res.body.data.some((s: any) => s.id === storyAId)).toBe(true);
+      expect(resPartial.body.data.length).toBeGreaterThanOrEqual(1);
+      expect(
+        resPartial.body.data.every(
+          (s: any) => s.title.includes('Quản Gia') || (s.summary && s.summary.includes('Quản Gia')),
+        ),
+      ).toBe(true);
     });
 
     it('GET /api/v1/stories?format=NOVEL should filter only Novel stories', async () => {
@@ -702,6 +716,70 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(res.body.chapter.id).toBe(chapterAId);
       expect(res.body.chapter.activeVersionId).toBe(versionA2Id);
       expect(res.body.activeVersion).toBeDefined();
+    });
+
+    it('GET /api/v1/stories latestChapter invariant: default edition only and ignores unpublished drafts', async () => {
+      // 1. Tạo Draft chapter (isPublished = false) trên default edition của Story A
+      const draftChap = await request(app.getHttpServer())
+        .post(`/api/v1/studio/editions/${editionAId}/chapters`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({ chapterNumber: '999.00', title: 'Chương Nháp Chưa Xuất Bản', volumeId: volumeAId });
+
+      const draftVer = await request(app.getHttpServer())
+        .post(`/api/v1/studio/chapters/${draftChap.body.id}/versions`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({ versionType: ChapterVersionType.RAW_ORIGINAL, language: 'vi' });
+
+      // Đặt is_published = false cho draft
+      await dataSource.query(`UPDATE chapter_versions SET is_published = FALSE WHERE id = $1`, [draftVer.body.id]);
+
+      // 2. Tạo Alternate Edition cho Story A (isDefault = false) với Chapter 150 (isPublished = true)
+      const altEdition = await request(app.getHttpServer())
+        .post(`/api/v1/studio/stories/${storyAId}/editions`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({ editionName: `Bản Tiếng Nhật ${Date.now()}`, language: 'ja' });
+
+      const altVol = await request(app.getHttpServer())
+        .post(`/api/v1/studio/editions/${altEdition.body.id}/volumes`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({ volumeNumber: 1, title: 'Tập 1' });
+
+      const altChap = await request(app.getHttpServer())
+        .post(`/api/v1/studio/editions/${altEdition.body.id}/chapters`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({ chapterNumber: '150.00', title: 'Alternate Edition Chapter', volumeId: altVol.body.id });
+
+      const altVer = await request(app.getHttpServer())
+        .post(`/api/v1/studio/chapters/${altChap.body.id}/versions`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({ versionType: ChapterVersionType.RAW_ORIGINAL, language: 'ja' });
+
+      await dataSource.query(`UPDATE chapter_versions SET is_published = TRUE WHERE id = $1`, [altVer.body.id]);
+
+      // 3. Query GET /api/v1/stories -> latestChapter phải là chapter trên default edition, KHÔNG phải draft 999 cũng KHÔNG phải alternate 150
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/stories')
+        .expect(200);
+
+      const storyItem = res.body.data.find((s: any) => s.id === storyAId);
+      expect(storyItem).toBeDefined();
+      if (storyItem.latestChapter) {
+        expect(storyItem.latestChapter.id).not.toBe(draftChap.body.id);
+        expect(storyItem.latestChapter.id).not.toBe(altChap.body.id);
+        expect(Number(storyItem.latestChapter.chapterNumber)).toBe(1);
+      }
+    });
+
+    it('GET /api/v1/stories?sort=LATEST ordering invariant: ordered by newest published chapter date on default edition', async () => {
+      // Set timestamp của chapterA (trên storyA default edition) thành tương lai gần (mới nhất)
+      await dataSource.query(`UPDATE chapters SET created_at = NOW() + INTERVAL '1 hour' WHERE id = $1`, [chapterAId]);
+
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/stories?sort=LATEST')
+        .expect(200);
+
+      expect(res.body.data.length).toBeGreaterThanOrEqual(1);
+      expect(res.body.data[0].id).toBe(storyAId);
     });
   });
 

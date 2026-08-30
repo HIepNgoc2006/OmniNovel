@@ -5,7 +5,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, In } from 'typeorm';
 import { Story } from './entities/story.entity';
 import { StoryMember } from './entities/story-member.entity';
 import { StoryEdition } from './entities/story-edition.entity';
@@ -83,62 +83,104 @@ export class StoriesService {
   }
 
   async findAll(query: FindStoriesQueryDto) {
-    const page = Math.max(1, query.page || 1);
-    const limit = Math.min(50, Math.max(1, query.limit || 20));
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(50, Math.max(1, Number(query.limit) || 20));
     const skip = (page - 1) * limit;
 
-    const qb = this.storyRepository
-      .createQueryBuilder('story')
-      .leftJoinAndSelect('story.genres', 'genre')
-      .where('story.visibility = :visibility', { visibility: StoryVisibility.PUBLIC });
+    const params: any[] = [];
+    const whereClauses: string[] = [`s.visibility = 'PUBLIC'`];
 
     if (query.format) {
-      qb.andWhere('story.mediaFormat = :format', { format: query.format });
+      params.push(query.format);
+      whereClauses.push(`s.media_format = $${params.length}`);
     }
 
     if (query.status) {
-      qb.andWhere('story.status = :status', { status: query.status });
+      params.push(query.status);
+      whereClauses.push(`s.status = $${params.length}`);
     }
 
-    const keyword = query.q || query.search;
-    if (keyword) {
-      qb.andWhere(
-        '(LOWER(story.title) LIKE :kw OR LOWER(COALESCE(story.summary, \'\')) LIKE :kw)',
-        { kw: `%${keyword.toLowerCase()}%` },
-      );
+    const searchTerm = query.q || query.search;
+    if (searchTerm) {
+      params.push(`%${searchTerm}%`);
+      whereClauses.push(`(s.title ILIKE $${params.length} OR COALESCE(s.summary, '') ILIKE $${params.length})`);
     }
 
     if (query.genre) {
-      const genreSlug = query.genre.toLowerCase();
-      qb.andWhere(
+      params.push(query.genre.toLowerCase());
+      whereClauses.push(
         `EXISTS (
           SELECT 1 FROM story_genres sg
           JOIN genres g ON g.id = sg.genre_id
-          WHERE sg.story_id = story.id
-            AND (LOWER(g.slug) = :genreSlug OR LOWER(g.name) = :genreSlug)
+          WHERE sg.story_id = s.id
+            AND (LOWER(g.slug) = $${params.length} OR LOWER(g.name) = $${params.length})
         )`,
-        { genreSlug },
       );
     }
 
+    const whereSql = whereClauses.join(' AND ');
+
+    // Đếm tổng số truyện khớp điều kiện
+    const countResult = await this.dataSource.query(
+      `SELECT COUNT(*)::int AS total FROM stories s WHERE ${whereSql}`,
+      params,
+    );
+    const total = countResult[0]?.total || 0;
+
+    // Xác định mệnh đề sắp xếp
     const sort = query.sort || 'LATEST';
+    let orderSql = '';
     if (sort === 'VIEWS') {
-      qb.orderBy('story.viewsCount', 'DESC').addOrderBy('story.id', 'ASC');
+      orderSql = 'ORDER BY s.views_count DESC, s.id ASC';
     } else if (sort === 'POPULAR') {
-      qb.orderBy('story.followersCount', 'DESC')
-        .addOrderBy('story.viewsCount', 'DESC')
-        .addOrderBy('story.id', 'ASC');
+      orderSql = 'ORDER BY s.followers_count DESC, s.views_count DESC, s.id ASC';
     } else {
-      // LATEST: Sắp xếp theo thời gian cập nhật mới nhất, fallback thời gian tạo
-      qb.orderBy('story.updatedAt', 'DESC')
-        .addOrderBy('story.createdAt', 'DESC')
-        .addOrderBy('story.id', 'ASC');
+      // LATEST: Sắp xếp theo ngày xuất bản của chương mới nhất thuộc ấn bản mặc định (default edition), fallback s.created_at
+      orderSql = `ORDER BY (
+        SELECT MAX(c.created_at)
+        FROM chapters c
+        JOIN story_editions se ON se.id = c.story_edition_id
+        JOIN chapter_versions cv ON cv.id = c.active_version_id
+        WHERE se.story_id = s.id
+          AND se.is_default = TRUE
+          AND cv.is_published = TRUE
+      ) DESC NULLS LAST, s.created_at DESC, s.id ASC`;
     }
 
-    qb.skip(skip).take(limit);
+    // Truy vấn phân trang lấy danh sách ID truyện theo thứ tự
+    const queryParams = [...params, limit, skip];
+    const limitParamIdx = params.length + 1;
+    const skipParamIdx = params.length + 2;
 
-    const [stories, total] = await qb.getManyAndCount();
-    const data = await this.attachLatestChapters(stories);
+    const idRows = await this.dataSource.query(
+      `SELECT s.id FROM stories s WHERE ${whereSql} ${orderSql} LIMIT $${limitParamIdx} OFFSET $${skipParamIdx}`,
+      queryParams,
+    );
+
+    const storyIds = idRows.map((r: any) => r.id);
+    if (storyIds.length === 0) {
+      return {
+        data: [],
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      };
+    }
+
+    // Tải các entity hoàn chỉnh kèm genres
+    const storiesRaw = await this.storyRepository.find({
+      where: { id: In(storyIds) },
+      relations: ['genres'],
+    });
+
+    // Giữ đúng thứ tự pagination đã được DB sắp xếp
+    const storyMap = new Map(storiesRaw.map((s) => [s.id, s]));
+    const orderedStories = storyIds.map((id: string) => storyMap.get(id)!).filter(Boolean);
+
+    const data = await this.attachLatestChapters(orderedStories);
 
     return {
       data,
@@ -391,8 +433,10 @@ export class StoriesService {
        FROM chapters c
        JOIN story_editions se ON se.id = c.story_edition_id
        JOIN chapter_versions cv ON cv.id = c.active_version_id
-       WHERE se.story_id = ANY($1) AND cv.is_published = TRUE
-       ORDER BY se.story_id, CAST(c.chapter_number AS NUMERIC) DESC`,
+       WHERE se.story_id = ANY($1)
+         AND se.is_default = TRUE
+         AND cv.is_published = TRUE
+       ORDER BY se.story_id, c.created_at DESC, c.chapter_number DESC`,
       [storyIds],
     );
 

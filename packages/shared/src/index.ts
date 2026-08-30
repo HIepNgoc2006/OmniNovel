@@ -116,12 +116,12 @@ export interface LatestChapterSummary {
 export interface FindStoriesQuery {
   page?: number;
   limit?: number;
-  format?: MediaFormat | string;
+  format?: MediaFormat;
   genre?: string;
-  status?: StoryStatus | string;
+  status?: StoryStatus;
   q?: string;
   search?: string;
-  sort?: 'LATEST' | 'VIEWS' | 'POPULAR' | string;
+  sort?: 'LATEST' | 'VIEWS' | 'POPULAR';
 }
 
 export interface SetBookmarkDto {

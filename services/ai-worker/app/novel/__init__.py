@@ -32,6 +32,26 @@ from app.novel.glossary_engine import (
     GlossaryConstraint,
     NovelGlossaryEngine,
 )
+from app.novel.inline_anchors import (
+    ANCHOR_ANY_TAG_RE,
+    ANCHOR_CLOSE_TAG_RE,
+    ANCHOR_OPEN_TAG_RE,
+    InlineAnchorCodec,
+    InlineAnchorMap,
+    ProtectedInlineMetadata,
+)
+from app.novel.qa_evaluator import (
+    NovelQAIssue,
+    NovelQAResult,
+    NovelStructuralFingerprint,
+    NovelStructuralQAEvaluator,
+    QASeverity,
+)
+from app.novel.rebuilder import (
+    MissingAnchorBlockError,
+    NovelDocumentRebuilder,
+    NovelRebuilderError,
+)
 from app.novel.security import (
     NovelSecurityError,
     PathTraversalError,
@@ -50,6 +70,9 @@ from app.novel.security import (
 from app.novel.segmenter import (
     NovelSegmenter,
     TranslatableBlock,
+)
+from app.novel.serializer import (
+    NovelDocumentSerializer,
 )
 from app.novel.token_estimator import (
     ConservativeTokenEstimator,
@@ -80,6 +103,20 @@ __all__ = [
     "NovelTranslationBatch",
     "GlossaryConstraint",
     "NovelGlossaryEngine",
+    "ANCHOR_OPEN_TAG_RE",
+    "ANCHOR_CLOSE_TAG_RE",
+    "ANCHOR_ANY_TAG_RE",
+    "InlineAnchorCodec",
+    "InlineAnchorMap",
+    "ProtectedInlineMetadata",
+    "NovelQAIssue",
+    "NovelQAResult",
+    "NovelStructuralFingerprint",
+    "NovelStructuralQAEvaluator",
+    "QASeverity",
+    "MissingAnchorBlockError",
+    "NovelDocumentRebuilder",
+    "NovelRebuilderError",
     "NovelSecurityError",
     "PathTraversalError",
     "ZipBombError",
@@ -95,10 +132,10 @@ __all__ = [
     "sanitize_and_resolve_archive_path",
     "NovelSegmenter",
     "TranslatableBlock",
+    "NovelDocumentSerializer",
     "ConservativeTokenEstimator",
     "TokenEstimator",
     "NovelTranslationPipeline",
     "NovelTranslationResult",
     "TranslatedNovelBlock",
 ]
-

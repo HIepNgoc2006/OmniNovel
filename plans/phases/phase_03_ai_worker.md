@@ -11,7 +11,7 @@
     - **Chiến lược 1 (Ghi đè - Overwrite):** Gán `chapter.active_version_id = translated_version.id`. Bản ghi ChapterVersion gốc vẫn giữ nguyên bất biến (`RAW_ORIGINAL`).
     - **Chiến lược 2 (Nhân bản - Duplicate):** Tạo bản ghi mới trong `chapter_versions` với `version_type = 'AI_TRANSLATED'`, giữ nguyên `active_version_id` trỏ vào bản gốc để biên tập viên review thủ công.
   - **Trọng tâm MVP Scope:** Tập trung chuyên sâu **Manga tiếng Nhật (Japanese Manga-OCR)** cho bản MVP. Ngôn ngữ Hàn (Manhwa) / Trung (Manhua) được thiết kế theo Interface Adapter mở rộng cho V1.
-- **Trạng thái:** [/] Đang triển khai (Vertical Slice 1 & 2: **100% HOÀN THÀNH & FROZEN**; Vertical Slice 3: **Checkpoint 3A & 3B FROZEN**, Checkpoints 3C..3D đang thực hiện)
+- **Trạng thái:** [/] Đang triển khai (Vertical Slice 1 & 2: **100% HOÀN THÀNH & FROZEN**; Vertical Slice 3: **Checkpoint 3A, 3B & 3C FROZEN**, Checkpoint 3D đang thực hiện)
 
 ---
 
@@ -74,7 +74,7 @@
     - [x] CI/CD Automation & Reproducibility: Độc lập font OS với static Japanese fixture PNG, MinIO service container polling, migration bootstrap và force-exit sạch sẽ.
     - [x] Test Pyramid CI-Verified: **203/203 tests green (100%)** — 76 Python Pytest + 22 NestJS Unit + 105 NestJS E2E/Integration trên GitHub Actions run #10.
 - [x] **VERTICAL SLICE 2: FROZEN & 100% HOÀN TẤT (203/203 CI-VERIFIED TESTS)**
-- [/] **Vertical Slice 3: Light Novel Translation Pipeline Slice (~60–65% Hoàn Thành)**
+- [/] **Vertical Slice 3: Light Novel Translation Pipeline Slice (~85–90% Hoàn Thành)**
   - [x] **Checkpoint 3A: Novel Ingestion, Canonical AST Parser, Deterministic Segmenter & Security Sandbox (100% HOÀN TẤT & FROZEN - Commit 0937b6d - 130/130 Local Tests Passed)**
     - [x] `SafeNovelPackageExtractor` (`app/novel/security.py`): Sandbox giải nén an toàn file EPUB / ZIP. Chặn path traversal (`..`, `C:`, UNC, null bytes, url-encoded), Windows reserved device names (`CON`, `PRN`, `AUX`, `NUL`, `COM1..9`, `LPT1..9`), trailing dots/spaces và leading spaces, non-regular files (`mode & 0o170000` POSIX masking: FIFO, Char/Block devices, Socket, Symlink), deterministic Unicode NFC canonical casefold collision (`unicodedata.normalize("NFC", p).casefold()`), multi-encoding XML pre-scan (UTF-8, UTF-16LE/BE, BOM) & binary scanning chống XXE / DTD / entity expansion, zip bomb ($> 100:1$ ratio), streaming byte counter (50MB uncompressed text / 100MB aggregate total, $\le 500$ entries). Enforce single-chapter EPUB spine (`container.xml` $\rightarrow$ OPF) và fail-closed URL ngoài (`http://`, `https://`).
     - [x] `NovelAstParser` (`app/novel/ast_parser.py`): Dựng cây `CanonicalNovelDocument` (Document AST bất biến) từ HTML/XHTML, Markdown và Plain text. Bảo toàn nguyên dạng ký tự Unicode gốc (không áp dụng NFKC compatibility transformation, bảo toàn codepoint gốc), bảo toàn cấu trúc thẻ Ruby `<ruby><rb>漢字</rb><rt>かんじ</rt></ruby>`, heading `<h1>`-`<h6>`, `<p>`, `<blockquote>`, `<hr>` và `<img>` nội bộ.
@@ -86,10 +86,10 @@
     - [x] `NovelContextBuilder` (`app/novel/context_builder.py`): Phân cụm các translatable blocks theo token budget, bảo đảm invariant cứng `estimated_tokens(framing + before + translate + after) <= max_tokens_per_batch`, fail-fast với `ValueError` nếu block đơn lẻ vượt budget.
     - [x] `NovelTranslationPipeline` & Prompt Registry (`app/novel/translator.py`, `app/translation/prompt_registry.py`): Nạp versioned prompt `novel-ja-vi-v1`, bảo vệ ranh giới Prompt Injection, xác thực nghiêm ngặt 4 tầng anchor mapping (Input Uniqueness, Output Uniqueness, Cardinality, Exact Set Equality), tích hợp `MockTranslationProvider` và `OpenAICompatibleTranslationProvider`, phát tiến độ qua `ProgressSink`.
     - [x] Unit & Integration Tests & CI: 5/5 `test_novel_token_estimator.py`, 5/5 `test_novel_glossary.py`, 4/4 `test_novel_context_builder.py`, 7/7 `test_novel_translator.py` (Tổng cộng 75/75 novel tests, 151/151 worker tests passing 100% Green, CI CPU-only dependencies verified).
-  - [x] **Checkpoint 3C: Structural Rebuilder & Structural QA Engine (100% HOÀN TẤT - 168/168 Local Tests Passed)**
+  - [x] **Checkpoint 3C: Structural Rebuilder & Structural QA Engine (100% HOÀN TẤT & FROZEN - Merged PR #2 - Commit 4eb12aa - 168/168 Local Tests & CI Green)**
     - [x] `InlineAnchorCodec` & Protected Inline Anchors (`app/novel/inline_anchors.py`): Mã hóa và giải mã các phần tử dòng Ruby (bảo toàn furigana `<rt>` trong metadata cấu trúc), Strong, Emphasis và InlineImage với cú pháp `⟦...⟧`, chịu lỗi cao khi LLM làm mất thẻ đóng.
     - [x] `NovelDocumentRebuilder` (`app/novel/rebuilder.py`): Tái tạo cây `CanonicalNovelDocument` mới hoàn toàn (Source AST bất biến 100%), khớp `anchor_block_id` 1:1, bảo toàn nguyên vị trí ảnh minh họa `IllustrationBlockNode` và thẻ phân đoạn `DividerBlockNode`.
-    - [x] `NovelDocumentSerializer` (`app/novel/serializer.py`): Tuần tự hóa HTML5 với Context-Aware Auto-Escaping chống XSS, URL sanitization chặn `javascript:` / `data:` schemes và sinh thẻ `<ruby><rb>...<rt>...` chuẩn semantic.
+    - [x] `NovelDocumentSerializer` (`app/novel/serializer.py`): Tuần tự hóa HTML5 with Context-Aware Auto-Escaping chống XSS, URL sanitization chặn `javascript:` / `data:` schemes và sinh thẻ `<ruby><rb>...<rt>...` chuẩn semantic.
     - [x] `NovelStructuralQAEvaluator` (`app/novel/qa_evaluator.py`): So sánh dấu vân tay cấu trúc (Structural Fingerprint), kiểm định chuỗi block 1:1, cấp bậc Heading, số lượng Ruby/Strong/Emphasis, UTF-8 validity và Round-trip AST parsing.
     - [x] Unit & Integration Tests: 5/5 `test_novel_inline_anchors.py`, 4/4 `test_novel_rebuilder.py`, 3/3 `test_novel_serializer.py`, 5/5 `test_novel_qa_evaluator.py` (Tổng cộng 92/92 novel tests, 168/168 worker tests green 100%).
   - [ ] **Checkpoint 3D: Full Novel Orchestration, Core API Apply Semantics & Cross-Service CI (`services/api` & CI)**

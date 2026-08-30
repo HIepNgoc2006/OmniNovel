@@ -15,12 +15,14 @@ export function StoryCard({ story, priority = false }: StoryCardProps) {
   const isNovel = story.mediaFormat === MediaFormat.NOVEL;
   const status = story.status;
 
-  // Lấy chương mới nhất nếu có
+  // Lấy chương mới nhất từ projection hoặc editions
   const defaultEdition = story.editions?.find((e) => e.isDefault) || story.editions?.[0];
   const chapters = defaultEdition?.chapters || [];
-  const latestChapter = chapters.length > 0
-    ? chapters.reduce((max, curr) => (Number(curr.chapterNumber) > Number(max.chapterNumber) ? curr : max))
-    : null;
+  const latestChapter =
+    story.latestChapter ||
+    (chapters.length > 0
+      ? chapters.reduce((max, curr) => (Number(curr.chapterNumber) > Number(max.chapterNumber) ? curr : max))
+      : null);
 
   return (
     <div className="group relative flex flex-col bg-slate-900/60 hover:bg-slate-900 border border-slate-800/80 hover:border-slate-700 rounded-2xl overflow-hidden transition-all duration-300 hover:shadow-xl hover:shadow-red-950/20 hover:-translate-y-1">
@@ -75,17 +77,10 @@ export function StoryCard({ story, priority = false }: StoryCardProps) {
             <span>{views >= 1000 ? `${(views / 1000).toFixed(1)}k` : views}</span>
           </div>
 
-          {story.ratingAverage ? (
-            <div className="flex items-center gap-1 bg-slate-950/70 backdrop-blur-md px-2 py-0.5 rounded-md text-amber-400">
-              <Star className="w-3 h-3 fill-amber-400 text-amber-400" />
-              <span>{story.ratingAverage.toFixed(1)}</span>
-            </div>
-          ) : (
-            <div className="flex items-center gap-1 bg-slate-950/70 backdrop-blur-md px-2 py-0.5 rounded-md text-red-400">
-              <Flame className="w-3 h-3 fill-red-400 text-red-400" />
-              <span>HOT</span>
-            </div>
-          )}
+          <div className="flex items-center gap-1 bg-slate-950/70 backdrop-blur-md px-2 py-0.5 rounded-md text-red-400">
+            <Flame className="w-3 h-3 fill-red-400 text-red-400" />
+            <span>HOT</span>
+          </div>
         </div>
       </Link>
 

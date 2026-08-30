@@ -15,7 +15,7 @@
     - TanStack Query v5 quản lý Server State & SWR Caching.
     - WebSocket Gateway (`/ws/ai`) xác thực qua `socket.handshake.auth.token` và tự động reconnect khi token xoay vòng.
     - Gamification: Tiêu thụ endpoint chuẩn `/gamification/progression` và `UserProgressionResponse` từ `@omninovel/shared`.
-- **Trạng thái:** [/] Đang thực hiện (Phase 4A: 100% HOÀN TẤT & FROZEN - 9 Vitest + 4 Mocked Playwright E2E Tests - Phase 4B In Progress)
+- **Trạng thái:** [/] Đang thực hiện (Phase 4A & Phase 4B: 100% HOÀN TẤT & GREEN - 20 Vitest + 7 Playwright Tests + 111 Core API Tests)
 
 ---
 
@@ -31,11 +31,12 @@
   - [x] Xây dựng WebSocket Hook kết nối `/ws/ai` lắng nghe tiến trình TranslationJob ({ jobId, stage, progress, timestamp }) kèm cơ chế active token rotation reconnect.
   - [x] Thiết lập hạ tầng kiểm thử Vitest (9/9 Unit/Component Tests Green 100%), Playwright Browser E2E Smoke Suite (4/4 Tests Green with Mocked Canonical Core API), và Next.js Production Build.
 
-- [x] **Phase 4B: Discovery, Catalog & Story Details (100% HOÀN TẤT & GREEN - 18 Vitest + 7 Playwright Tests)**
-  - [x] Xây dựng Trang chủ: Hero Carousel Slider truyện HOT, Danh sách mới cập nhật, Bảng xếp hạng Top ngày/tuần/tháng, Widget điểm danh hàng ngày.
-  - [x] Xây dựng Trang lọc & tìm kiếm nâng cao (Multi-criteria filter: Manga/Novel, Thể loại, Trạng thái hoàn thành, Sắp xếp, Phân trang).
-  - [x] Xây dựng Trang chi tiết truyện: Thông tin bộ truyện, Danh sách chương, Đánh dấu yêu thích / Lịch sử đọc, Bộ chọn phiên bản chương (`RAW_ORIGINAL`, `AI_TRANSLATED`, `HUMAN_EDITED`).
-  - [x] Tích hợp hệ thống Bình luận & Đánh giá phân cấp kèm Huy hiệu Gamification.
+- [x] **Phase 4B: Discovery, Catalog, Story Details & Idempotent Bookmarks (100% HOÀN TẤT & GREEN - 20 Vitest + 7 Playwright Tests + 89 Core E2E Tests)**
+  - [x] Xây dựng Trang chủ: Hero Carousel Slider truyện HOT, Danh sách mới cập nhật, Bảng xếp hạng Top truyện có lượt xem cao nhất toàn thời gian, Widget điểm danh hàng ngày.
+  - [x] Xây dựng Trang lọc & tìm kiếm nâng cao (Multi-criteria filter: Manga/Novel, Thể loại canonical slugs, Trạng thái hoàn thành, Sắp xếp LATEST/VIEWS/POPULAR, Phân trang).
+  - [x] Xây dựng Trang chi tiết truyện: Thông tin bộ truyện, Danh sách chương, Đánh dấu theo dõi / Tủ sách (`POST /api/v1/library/bookmarks`), Bộ chọn phiên bản chương (`RAW_ORIGINAL`, `AI_TRANSLATED`, `HUMAN_EDITED`).
+  - [x] Hardening Core API Discovery: Runtime DTO validation `FindStoriesQueryDto`, Idempotent Bookmark state machine (`POST /api/v1/library/bookmarks`), Canonical latestChapter projection (chỉ chapter đã xuất bản), Trigram & index migration `1700000000006-AddStoryDiscoveryIndexes`.
+  - [x] Tích hợp hệ thống Bình luận & Thảo luận phân cấp kèm Huy hiệu Gamification.
 
 - [ ] **Phase 4C: Multimodal Reader Experience (Manga 120Hz & Light Novel Customizer)**
   - [ ] Manga Reader: Chế độ cuộn dọc (Webtoon mode), lật trang ngang RTL/LTR, bộ chọn máy chủ CDN, phím tắt điều hướng.

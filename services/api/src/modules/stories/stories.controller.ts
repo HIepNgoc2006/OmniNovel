@@ -12,6 +12,8 @@ import {
 } from '@nestjs/common';
 import { StoriesService } from './stories.service';
 import { CreateStoryDto } from './dto/create-story.dto';
+import { FindStoriesQueryDto } from './dto/find-stories-query.dto';
+import { SetBookmarkDto } from './dto/set-bookmark.dto';
 import { UpdateVisibilityDto } from './dto/update-visibility.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard';
@@ -26,9 +28,9 @@ import { GlobalRole, StoryMemberRole } from '@omninovel/shared';
 export class StoriesController {
   constructor(private storiesService: StoriesService) {}
 
-  // 1. Danh sách truyện công khai
+  // 1. Danh sách truyện công khai (hỗ trợ search, genre, format, status, sort LATEST/VIEWS/POPULAR)
   @Get('stories')
-  findAll(@Query() query: { page?: number; limit?: number; format?: string }) {
+  findAll(@Query() query: FindStoriesQueryDto) {
     return this.storiesService.findAll(query);
   }
 
@@ -49,6 +51,26 @@ export class StoriesController {
   @UseGuards(OptionalJwtAuthGuard)
   findBySlug(@Param('slug') slug: string, @CurrentUser() user?: any) {
     return this.storiesService.findBySlug(slug, user);
+  }
+
+  // 5. Quản lý Thư viện / Bookmarks (FR-LIB-02)
+  @Post('library/bookmarks')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  setBookmark(
+    @CurrentUser('id') userId: string,
+    @Body() dto: SetBookmarkDto,
+  ) {
+    return this.storiesService.setBookmark(userId, dto);
+  }
+
+  @Get('library/bookmarks/:storyId')
+  @UseGuards(OptionalJwtAuthGuard)
+  getBookmarkStatus(
+    @Param('storyId') storyId: string,
+    @CurrentUser('id') userId?: string,
+  ) {
+    return this.storiesService.getBookmarkStatus(userId, storyId);
   }
 
   // 5. Tạo bộ truyện mới trong Studio (Global TRANSLATOR hoặc Global ADMIN)

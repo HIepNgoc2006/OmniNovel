@@ -415,6 +415,132 @@ describe('OmniNovel Backend Core API (e2e)', () => {
 
       expect(res.body.id).toBe(storyAId);
     });
+
+    // ==========================================
+    // 3B. DISCOVERY, ADVANCED SEARCH & IDEMPOTENT LIBRARY BOOKMARKS
+    // ==========================================
+    it('GET /api/v1/stories should return public stories with pagination, genres array and latestChapter', async () => {
+      await dataSource.query(`UPDATE stories SET visibility = 'PUBLIC' WHERE id = $1`, [storyAId]);
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/stories')
+        .expect(200);
+
+      expect(res.body.data).toBeDefined();
+      expect(Array.isArray(res.body.data)).toBe(true);
+      expect(res.body.pagination).toBeDefined();
+      expect(res.body.pagination.page).toBe(1);
+      expect(res.body.pagination.limit).toBe(20);
+
+      if (res.body.data.length > 0) {
+        const item = res.body.data[0];
+        expect(item.id).toBeDefined();
+        expect(Array.isArray(item.genres)).toBe(true);
+      }
+    });
+
+    it('GET /api/v1/stories?q= should filter stories by keyword on title', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/stories?q=${encodeURIComponent('Quản Gia')}`)
+        .expect(200);
+
+      expect(res.body.data.length).toBeGreaterThanOrEqual(1);
+      expect(res.body.data.some((s: any) => s.id === storyAId)).toBe(true);
+    });
+
+    it('GET /api/v1/stories?format=NOVEL should filter only Novel stories', async () => {
+      const res = await request(app.getHttpServer())
+        .get('/api/v1/stories?format=NOVEL')
+        .expect(200);
+
+      expect(res.body.data.every((s: any) => s.mediaFormat === MediaFormat.NOVEL)).toBe(true);
+    });
+
+    it('GET /api/v1/stories?sort=VIEWS and sort=POPULAR should execute canonical ordering', async () => {
+      const resViews = await request(app.getHttpServer())
+        .get('/api/v1/stories?sort=VIEWS')
+        .expect(200);
+      expect(resViews.body.data).toBeDefined();
+
+      const resPopular = await request(app.getHttpServer())
+        .get('/api/v1/stories?sort=POPULAR')
+        .expect(200);
+      expect(resPopular.body.data).toBeDefined();
+    });
+
+    it('GET /api/v1/stories with invalid query params should be rejected with 400 Bad Request', async () => {
+      // 1. Unknown query parameter
+      await request(app.getHttpServer())
+        .get('/api/v1/stories?unknownProperty=malicious')
+        .expect(400);
+
+      // 2. Invalid sort parameter
+      await request(app.getHttpServer())
+        .get('/api/v1/stories?sort=INVALID_SORT')
+        .expect(400);
+
+      // 3. Invalid format parameter
+      await request(app.getHttpServer())
+        .get('/api/v1/stories?format=INVALID_FORMAT')
+        .expect(400);
+    });
+
+    it('POST /api/v1/library/bookmarks should require authentication (401 Unauthorized)', async () => {
+      await request(app.getHttpServer())
+        .post('/api/v1/library/bookmarks')
+        .send({ storyId: storyAId, isBookmarked: true })
+        .expect(401);
+    });
+
+    it('POST /api/v1/library/bookmarks should idempotently bookmark and update followersCount (FR-LIB-02)', async () => {
+      // 1. First bookmark (isBookmarked: true) -> followersCount increases by 1
+      const res1 = await request(app.getHttpServer())
+        .post('/api/v1/library/bookmarks')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({ storyId: storyAId, isBookmarked: true })
+        .expect(200);
+
+      expect(res1.body.isBookmarked).toBe(true);
+      const countAfterFirst = res1.body.followersCount;
+      expect(countAfterFirst).toBeGreaterThanOrEqual(1);
+
+      // 2. Second bookmark (isBookmarked: true) -> IDEMPOTENT (no double increment)
+      const res2 = await request(app.getHttpServer())
+        .post('/api/v1/library/bookmarks')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({ storyId: storyAId, isBookmarked: true })
+        .expect(200);
+
+      expect(res2.body.isBookmarked).toBe(true);
+      expect(res2.body.followersCount).toBe(countAfterFirst);
+
+      // 3. Check status via GET /library/bookmarks/:storyId
+      const statusRes = await request(app.getHttpServer())
+        .get(`/api/v1/library/bookmarks/${storyAId}`)
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .expect(200);
+
+      expect(statusRes.body.isBookmarked).toBe(true);
+
+      // 4. Unbookmark (isBookmarked: false) -> followersCount decreases by 1
+      const res3 = await request(app.getHttpServer())
+        .post('/api/v1/library/bookmarks')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({ storyId: storyAId, isBookmarked: false })
+        .expect(200);
+
+      expect(res3.body.isBookmarked).toBe(false);
+      expect(res3.body.followersCount).toBe(countAfterFirst - 1);
+
+      // 5. Second unbookmark (isBookmarked: false) -> IDEMPOTENT (never negative)
+      const res4 = await request(app.getHttpServer())
+        .post('/api/v1/library/bookmarks')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({ storyId: storyAId, isBookmarked: false })
+        .expect(200);
+
+      expect(res4.body.isBookmarked).toBe(false);
+      expect(res4.body.followersCount).toBe(countAfterFirst - 1);
+    });
   });
 
   // ==========================================

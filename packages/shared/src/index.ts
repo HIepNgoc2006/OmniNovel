@@ -100,6 +100,40 @@ export interface UserProgressionResponse {
   rankTitle: string;
 }
 
+export interface GenreSummary {
+  id: number;
+  name: string;
+  slug: string;
+}
+
+export interface LatestChapterSummary {
+  id: string;
+  chapterNumber: number | string;
+  title: string | null;
+  createdAt: string | Date;
+}
+
+export interface FindStoriesQuery {
+  page?: number;
+  limit?: number;
+  format?: MediaFormat | string;
+  genre?: string;
+  status?: StoryStatus | string;
+  q?: string;
+  search?: string;
+  sort?: 'LATEST' | 'VIEWS' | 'POPULAR' | string;
+}
+
+export interface SetBookmarkDto {
+  storyId: string;
+  isBookmarked: boolean;
+}
+
+export interface BookmarkStatusResponse {
+  isBookmarked: boolean;
+  followersCount?: number;
+}
+
 export interface StandardErrorResponse {
   error: {
     code: string;
@@ -109,3 +143,4 @@ export interface StandardErrorResponse {
     details?: Array<{ field: string; issue: string }>;
   };
 }
+

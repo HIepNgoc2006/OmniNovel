@@ -5,7 +5,12 @@ import {
   StoryStatus,
   StoryVisibility,
   ChapterVersionType,
+  LatestChapterSummary,
+  SetBookmarkDto,
+  BookmarkStatusResponse,
 } from '@omninovel/shared';
+
+export type { LatestChapterSummary, SetBookmarkDto, BookmarkStatusResponse };
 
 export interface GenreItem {
   id: number;
@@ -75,11 +80,10 @@ export interface Story {
   viewCount?: number;
   followersCount: number;
   favoriteCount?: number;
-  ratingAverage?: number;
-  ratingCount?: number;
   createdAt: string;
   updatedAt: string;
   genres?: GenreItem[];
+  latestChapter?: LatestChapterSummary | null;
   editions?: StoryEditionItem[];
 }
 
@@ -93,7 +97,7 @@ export interface StoryPagination {
 export interface StoryListResponse {
   data: Story[];
   pagination: StoryPagination;
-  meta?: StoryPagination; // Fallback alias
+  meta?: StoryPagination;
 }
 
 export interface FeaturedStoriesResponse {
@@ -129,8 +133,9 @@ export interface GetStoriesParams {
   mediaFormat?: MediaFormat;
   genre?: string;
   status?: StoryStatus | string;
-  sort?: 'LATEST' | 'POPULAR' | 'RATING' | 'VIEWS' | string;
+  sort?: 'LATEST' | 'VIEWS' | 'POPULAR' | string;
   search?: string;
+  q?: string;
 }
 
 export async function getStoriesApi(params?: GetStoriesParams): Promise<StoryListResponse> {
@@ -142,12 +147,12 @@ export async function getStoriesApi(params?: GetStoriesParams): Promise<StoryLis
   if (params?.genre) queryParams.genre = params.genre;
   if (params?.status) queryParams.status = params.status;
   if (params?.sort) queryParams.sort = params.sort;
+  if (params?.q) queryParams.q = params.q;
   if (params?.search) queryParams.search = params.search;
 
   const response = await apiClient.get<StoryListResponse>('/stories', { params: queryParams });
   const data = response.data;
   
-  // Normalization for pagination vs meta
   const pagination = data.pagination || data.meta || {
     page: params?.page || 1,
     limit: params?.limit || 20,
@@ -174,5 +179,15 @@ export async function getStoryRankingsApi(): Promise<RankingsResponse> {
 
 export async function getStoryBySlugApi(slug: string): Promise<Story> {
   const response = await apiClient.get<Story>(`/stories/${slug}`);
+  return response.data;
+}
+
+export async function setBookmarkApi(dto: SetBookmarkDto): Promise<BookmarkStatusResponse> {
+  const response = await apiClient.post<BookmarkStatusResponse>('/library/bookmarks', dto);
+  return response.data;
+}
+
+export async function getBookmarkStatusApi(storyId: string): Promise<BookmarkStatusResponse> {
+  const response = await apiClient.get<BookmarkStatusResponse>(`/library/bookmarks/${storyId}`);
   return response.data;
 }

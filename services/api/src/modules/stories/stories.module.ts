@@ -8,6 +8,7 @@ import { StoryMember } from './entities/story-member.entity';
 import { StoryEdition } from './entities/story-edition.entity';
 import { Genre } from './entities/genre.entity';
 import { Creator } from './entities/creator.entity';
+import { Bookmark } from './entities/bookmark.entity';
 import { Volume } from '../chapters/entities/volume.entity';
 import { StoryMemberGuard } from '../../common/guards/story-member.guard';
 
@@ -19,6 +20,7 @@ import { StoryMemberGuard } from '../../common/guards/story-member.guard';
       StoryEdition,
       Genre,
       Creator,
+      Bookmark,
       Volume,
     ]),
     JwtModule.register({}),

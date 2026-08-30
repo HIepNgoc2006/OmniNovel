@@ -19,17 +19,17 @@ import {
 } from 'lucide-react';
 
 const GENRE_OPTIONS = [
-  'Tất cả thể loại',
-  'Action',
-  'Isekai',
-  'Fantasy',
-  'Romance',
-  'Sci-Fi',
-  'Comedy',
-  'Mystery',
-  'Drama',
-  'Adventure',
-  'Supernatural',
+  { label: 'Tất cả thể loại', value: '' },
+  { label: 'Action', value: 'action' },
+  { label: 'Isekai', value: 'isekai' },
+  { label: 'Fantasy', value: 'fantasy' },
+  { label: 'Romance', value: 'romance' },
+  { label: 'Sci-Fi', value: 'sci-fi' },
+  { label: 'Comedy', value: 'comedy' },
+  { label: 'Mystery', value: 'mystery' },
+  { label: 'Drama', value: 'drama' },
+  { label: 'Adventure', value: 'adventure' },
+  { label: 'Supernatural', value: 'supernatural' },
 ];
 
 function SearchCatalogContent() {
@@ -63,9 +63,9 @@ function SearchCatalogContent() {
   const { data: storiesResponse, isLoading } = useStories({
     page: pageParam,
     limit: 16,
-    search: queryParam || undefined,
+    q: queryParam || undefined,
     format: selectedFormat || undefined,
-    genre: selectedGenre && selectedGenre !== 'Tất cả thể loại' ? selectedGenre : undefined,
+    genre: selectedGenre || undefined,
     status: (selectedStatus as StoryStatus) || undefined,
     sort: selectedSort || undefined,
   });
@@ -198,8 +198,8 @@ function SearchCatalogContent() {
               className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-slate-200 focus:outline-none focus:border-red-500"
             >
               {GENRE_OPTIONS.map((g) => (
-                <option key={g} value={g === 'Tất cả thể loại' ? '' : g}>
-                  {g}
+                <option key={g.value} value={g.value}>
+                  {g.label}
                 </option>
               ))}
             </select>
@@ -236,7 +236,6 @@ function SearchCatalogContent() {
               <option value="LATEST">Mới cập nhật</option>
               <option value="VIEWS">Xem nhiều nhất</option>
               <option value="POPULAR">Nổi bật nhất</option>
-              <option value="RATING">Đánh giá cao nhất</option>
             </select>
           </div>
         </div>

@@ -24,14 +24,14 @@ interface StoryCommentSectionProps {
   initialRating?: number;
 }
 
-export function StoryCommentSection({ storySlug, initialRating = 4.8 }: StoryCommentSectionProps) {
+export function StoryCommentSection({ storySlug, initialRating }: StoryCommentSectionProps) {
   const { user } = useAuth();
   const { data: progression } = useProgression();
   const [commentText, setCommentText] = useState('');
   const [selectedRating, setSelectedRating] = useState(5);
   const [hoverRating, setHoverRating] = useState(0);
 
-  // Mock comments state for interactive demonstration
+  // Prototype comments state for interactive demonstration
   const [comments, setComments] = useState<CommentItem[]>([
     {
       id: 'c-1',
@@ -104,22 +104,29 @@ export function StoryCommentSection({ storySlug, initialRating = 4.8 }: StoryCom
             <MessageSquare className="w-4 h-4" />
           </div>
           <div>
-            <h3 className="font-extrabold text-lg text-white">Bình Luận & Đánh Giá</h3>
+            <h3 className="font-extrabold text-lg text-white">Bình Luận & Thảo Luận</h3>
             <p className="text-xs text-slate-400">
               <span className="text-white font-bold">{comments.length}</span> lượt thảo luận từ cộng đồng độc giả
             </p>
           </div>
         </div>
 
-        {/* Rating Score Card */}
-        <div className="flex items-center gap-3 bg-slate-950/80 border border-slate-800 px-4 py-2 rounded-2xl">
-          <div className="flex items-center gap-1 text-amber-400">
-            <Star className="w-5 h-5 fill-amber-400 text-amber-400" />
-            <span className="text-lg font-black">{initialRating.toFixed(1)}</span>
+        {/* Rating Score Card (Chỉ hiển thị khi có điểm đánh giá thực tế) */}
+        {initialRating ? (
+          <div className="flex items-center gap-3 bg-slate-950/80 border border-slate-800 px-4 py-2 rounded-2xl">
+            <div className="flex items-center gap-1 text-amber-400">
+              <Star className="w-5 h-5 fill-amber-400 text-amber-400" />
+              <span className="text-lg font-black">{initialRating.toFixed(1)}</span>
+            </div>
+            <div className="h-6 w-px bg-slate-800" />
+            <span className="text-xs text-slate-400">Đánh giá chung (5★)</span>
           </div>
-          <div className="h-6 w-px bg-slate-800" />
-          <span className="text-xs text-slate-400">Đánh giá chung (5★)</span>
-        </div>
+        ) : (
+          <div className="flex items-center gap-2 bg-slate-950/80 border border-slate-800 px-3.5 py-1.5 rounded-2xl text-xs text-slate-400">
+            <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+            <span>Chưa có đánh giá</span>
+          </div>
+        )}
       </div>
 
       {/* Post Comment & Rating Box */}

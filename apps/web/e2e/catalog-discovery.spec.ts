@@ -209,6 +209,30 @@ test.describe('Discovery, Catalog & Story Details E2E Flow (Phase 4B)', () => {
       });
     });
 
+    await page.route('**/api/v1/library/bookmarks/**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ isBookmarked: false }),
+      });
+    });
+
+    await page.route('**/api/v1/library/bookmarks', async (route) => {
+      if (route.request().method() === 'POST') {
+        const postBody = JSON.parse(route.request().postData() || '{}');
+        await route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            isBookmarked: postBody.isBookmarked ?? true,
+            followersCount: postBody.isBookmarked ? 1421 : 1420,
+          }),
+        });
+      } else {
+        await route.fallback();
+      }
+    });
+
     await page.route('**/api/v1/gamification/progression', async (route) => {
       await route.fulfill({
         status: 200,
@@ -301,8 +325,8 @@ test.describe('Discovery, Catalog & Story Details E2E Flow (Phase 4B)', () => {
     await expect(page.getByText('Biên Tập Viên')).toBeVisible();
     await expect(page.getByText('AI Dịch')).toBeVisible();
 
-    // 4. Bình Luận & Đánh Giá
-    await expect(page.getByText('Bình Luận & Đánh Giá')).toBeVisible();
+    // 4. Bình Luận & Thảo Luận
+    await expect(page.getByText('Bình Luận & Thảo Luận')).toBeVisible();
     await expect(page.getByText('MangaMaster99')).toBeVisible();
     await expect(page.getByText('Lv.7')).toBeVisible();
   });

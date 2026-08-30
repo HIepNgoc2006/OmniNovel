@@ -4,6 +4,8 @@ import React, { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { useStoryBySlug } from '../../../../lib/query/hooks';
+import { setBookmarkApi, getBookmarkStatusApi } from '../../../../lib/api/stories';
+import { useAuth } from '../../../../lib/auth/auth-context';
 import { ChapterListSection } from '../../../../components/story/chapter-list-section';
 import { StoryCommentSection } from '../../../../components/story/story-comment-section';
 import { Button } from '../../../../components/ui/button';
@@ -31,10 +33,26 @@ export default function StoryDetailPage() {
   const router = useRouter();
   const slug = params?.slug as string;
 
+  const { user } = useAuth();
   const { data: story, isLoading, error } = useStoryBySlug(slug);
   const [isFollowing, setIsFollowing] = useState(false);
+  const [followersCount, setFollowersCount] = useState(0);
   const [copiedLink, setCopiedLink] = useState(false);
   const [isSynopsisExpanded, setIsSynopsisExpanded] = useState(false);
+
+  React.useEffect(() => {
+    if (story) {
+      setFollowersCount(story.followersCount || 0);
+    }
+  }, [story]);
+
+  React.useEffect(() => {
+    if (story?.id && user) {
+      getBookmarkStatusApi(story.id)
+        .then((res) => setIsFollowing(res.isBookmarked))
+        .catch(() => {});
+    }
+  }, [story?.id, user]);
 
   if (isLoading) {
     return (
@@ -97,8 +115,23 @@ export default function StoryDetailPage() {
     }
   };
 
-  const handleToggleFollow = () => {
-    setIsFollowing((prev) => !prev);
+  const handleToggleFollow = async () => {
+    if (!story) return;
+    const nextState = !isFollowing;
+    setIsFollowing(nextState);
+    setFollowersCount((prev) => (nextState ? prev + 1 : Math.max(0, prev - 1)));
+
+    try {
+      const res = await setBookmarkApi({ storyId: story.id, isBookmarked: nextState });
+      setIsFollowing(res.isBookmarked);
+      if (typeof res.followersCount === 'number') {
+        setFollowersCount(res.followersCount);
+      }
+    } catch {
+      // Revert if failed
+      setIsFollowing(!nextState);
+      setFollowersCount((prev) => (!nextState ? prev + 1 : Math.max(0, prev - 1)));
+    }
   };
 
   const synopsisText =
@@ -155,12 +188,8 @@ export default function StoryDetailPage() {
                 <span>{views.toLocaleString()}</span>
               </div>
               <div className="flex items-center gap-1 text-rose-400">
-                <Heart className="w-3.5 h-3.5 fill-rose-500/20" />
-                <span>{story.followersCount + (isFollowing ? 1 : 0)}</span>
-              </div>
-              <div className="flex items-center gap-1 text-amber-400">
-                <Star className="w-3.5 h-3.5 fill-amber-400" />
-                <span>{story.ratingAverage?.toFixed(1) || '4.9'}</span>
+                <Heart className={`w-3.5 h-3.5 ${isFollowing ? 'fill-rose-500 text-rose-500' : 'fill-rose-500/20'}`} />
+                <span>{followersCount.toLocaleString()}</span>
               </div>
             </div>
           </div>
@@ -207,7 +236,7 @@ export default function StoryDetailPage() {
                 {story.genres.map((g) => (
                   <Link
                     key={g.id}
-                    href={`/search?genre=${encodeURIComponent(g.name)}`}
+                    href={`/search?genre=${encodeURIComponent(g.slug || g.name.toLowerCase())}`}
                     className="flex items-center gap-1 text-xs px-2.5 py-1 rounded-xl bg-slate-950/80 hover:bg-red-600/20 hover:text-red-300 border border-slate-800 hover:border-red-500/40 text-slate-300 transition-colors"
                   >
                     <Tag className="w-3 h-3 text-red-400" />
@@ -299,7 +328,7 @@ export default function StoryDetailPage() {
 
       {/* 3. Community Reviews & Comments Section */}
       <section>
-        <StoryCommentSection storySlug={story.slug} initialRating={story.ratingAverage || 4.9} />
+        <StoryCommentSection storySlug={story.slug} />
       </section>
     </div>
   );

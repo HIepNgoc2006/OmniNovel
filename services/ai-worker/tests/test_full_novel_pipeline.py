@@ -130,18 +130,19 @@ async def test_full_novel_pipeline_execution_e2e(monkeypatch):
     assert manifest["qa"]["fingerprintMatch"] is True
     assert manifest["metrics"]["promptVersion"] == "novel-ja-vi-v2"
     assert len(manifest["assets"]) == 1
-    assert manifest["assets"][0]["storageKey"].endswith("assets_star.png")
+    assert "assets_star--" in manifest["assets"][0]["storageKey"]
+    assert manifest["assets"][0]["storageKey"].endswith(".png")
 
     # Kiểm tra file upload
     assert any("novel_translated.html" in url for url in uploaded_files)
-    assert any("assets_star.png" in url for url in uploaded_files)
+    assert any("assets_star--" in url for url in uploaded_files)
 
     html_upload = [v for k, v in uploaded_files.items() if "novel_translated.html" in k][0]
     html_data, html_content_type = html_upload
     assert html_content_type == "text/html; charset=utf-8"
-    assert b"assets_star.png" in html_data or b"ai/jobs/novel-test-job-001/attempt-1/assets_star.png" in html_data
+    assert b"assets_star--" in html_data
 
-    img_upload = [v for k, v in uploaded_files.items() if "assets_star.png" in k][0]
+    img_upload = [v for k, v in uploaded_files.items() if "assets_star--" in k][0]
     img_data, img_content_type = img_upload
     assert img_content_type == "image/png"
 
@@ -208,4 +209,35 @@ async def test_full_novel_pipeline_qa_failure_raises_and_blocks_ready(monkeypatc
     # Xác nhận READY_FOR_REVIEW tuyệt đối không được phát
     stages = [ev["stage"] for ev in sink.events if not ev.get("heartbeat")]
     assert "READY_FOR_REVIEW" not in stages
+
+
+def test_asset_slot_names_deterministic_hash_collision_prevention():
+    """
+    P1 Hardening: Xác nhận các href khác nhau (như 'a/b.png' và 'a_b.png')
+    sinh ra các slot name hoàn toàn riêng biệt không bị đè lên nhau.
+    """
+    import hashlib
+    from pathlib import Path
+    import re
+
+    def make_slot_name(href: str, ext_fallback: str) -> str:
+        cleaned_href = href.strip().lstrip('/')
+        href_path = Path(cleaned_href)
+        slug_base = re.sub(r'[^a-zA-Z0-9_-]', '_', str(href_path.with_suffix('')) if href_path.suffix else cleaned_href)
+        ext = href_path.suffix.lower() if href_path.suffix else ext_fallback.lower()
+        href_hash = hashlib.sha256(cleaned_href.encode('utf-8')).hexdigest()[:8]
+        return f"{slug_base}--{href_hash}{ext}"
+
+    slot_1 = make_slot_name("a/b.png", ".png")
+    slot_2 = make_slot_name("a_b.png", ".png")
+    slot_3 = make_slot_name("chapter1/images/pic.jpg", ".jpg")
+    slot_4 = make_slot_name("chapter2/images/pic.jpg", ".jpg")
+
+    assert slot_1 != slot_2
+    assert slot_3 != slot_4
+    assert slot_1.endswith(".png")
+    assert slot_2.endswith(".png")
+    assert slot_3.endswith(".jpg")
+    assert slot_4.endswith(".jpg")
+
 

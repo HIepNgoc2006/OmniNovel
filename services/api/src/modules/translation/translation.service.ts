@@ -17,6 +17,7 @@ import {
   TranslationJobStatus,
   ChapterVersionType,
   MediaAssetType,
+  MediaFormat,
 } from '@omninovel/shared';
 import { TranslationJob } from './entities/translation-job.entity';
 import { TranslationProject } from './entities/translation-project.entity';
@@ -525,13 +526,21 @@ export class TranslationService {
         );
       }
 
-      // Invariant P0: Defense-in-depth gate cho Novel Structural QA (đồng bộ predicate isNovel)
-      const isNovelJob =
-        job.resultManifest?.mediaFormat === 'NOVEL' ||
-        Boolean(job.resultManifest?.htmlKey);
+      // Invariant P0: Defense-in-depth gate cho Novel Structural QA (authoritative DB source)
+      const storyMediaFormat = job.project?.storyEdition?.story?.mediaFormat;
+      const isNovelJob = storyMediaFormat === MediaFormat.NOVEL;
 
       if (isNovelJob) {
-        if (!job.resultManifest?.htmlKey) {
+        if (
+          !job.resultManifest ||
+          typeof job.resultManifest !== 'object' ||
+          job.resultManifest.mediaFormat !== 'NOVEL'
+        ) {
+          throw new BadRequestException(
+            'Không thể apply Novel translation job: Result manifest không tồn tại hoặc sai mediaFormat.',
+          );
+        }
+        if (!job.resultManifest.htmlKey || typeof job.resultManifest.htmlKey !== 'string') {
           throw new BadRequestException(
             'Không thể apply Novel translation job: Thiếu htmlKey trong result_manifest.',
           );
@@ -727,13 +736,38 @@ export class TranslationService {
     // 1. Kiểm tra stage hợp lệ từ worker
     assertWorkerReportableState(eventDto.stage);
 
-    const isNovel =
-      eventDto.resultManifest?.mediaFormat === 'NOVEL' ||
-      Boolean(eventDto.resultManifest?.htmlKey);
+    // Truy vấn metadata Story từ DB để xác định authoritative mediaFormat
+    const jobInfo = await this.jobRepo.findOne({
+      where: { id: jobId },
+      relations: [
+        'project',
+        'project.storyEdition',
+        'project.storyEdition.story',
+      ],
+    });
 
-    // 2. Validate prefix jail trên result_manifest (Cả Manga và Novel)
+    if (!jobInfo) {
+      throw new NotFoundException(
+        `Không tìm thấy TranslationJob với ID: ${jobId}`,
+      );
+    }
+
+    const storyMediaFormat = jobInfo.project?.storyEdition?.story?.mediaFormat;
+    const isNovel = storyMediaFormat === MediaFormat.NOVEL;
+
+    // 2. Validate prefix jail & mediaFormat consistency trên result_manifest (Cả Manga và Novel)
     const allowedPrefix = `ai/jobs/${jobId}/attempt-${eventDto.attemptNumber}/`;
     if (eventDto.resultManifest) {
+      if (
+        eventDto.resultManifest.mediaFormat &&
+        ((isNovel && eventDto.resultManifest.mediaFormat !== 'NOVEL') ||
+          (!isNovel && eventDto.resultManifest.mediaFormat !== 'COMIC'))
+      ) {
+        throw new BadRequestException(
+          `MediaFormat trong result_manifest (${eventDto.resultManifest.mediaFormat}) không khớp với loại tác phẩm (${storyMediaFormat}).`,
+        );
+      }
+
       if (
         eventDto.resultManifest.pages &&
         Array.isArray(eventDto.resultManifest.pages)
@@ -774,13 +808,29 @@ export class TranslationService {
     // 3. Nếu là READY_FOR_REVIEW -> Xác thực file thật trong MinIO NGOÀI Transaction DB & Enforce Novel Invariants
     if (eventDto.stage === TranslationJobStatus.READY_FOR_REVIEW) {
       if (isNovel) {
-        if (!eventDto.resultManifest) {
+        if (
+          !eventDto.resultManifest ||
+          typeof eventDto.resultManifest !== 'object' ||
+          Object.keys(eventDto.resultManifest).length === 0
+        ) {
           throw new BadRequestException(
             'Result manifest không được để trống khi hoàn thành job Novel (READY_FOR_REVIEW).',
           );
         }
 
-        if (!eventDto.resultManifest.htmlKey || typeof eventDto.resultManifest.htmlKey !== 'string') {
+        if (
+          eventDto.resultManifest.mediaFormat &&
+          eventDto.resultManifest.mediaFormat !== 'NOVEL'
+        ) {
+          throw new BadRequestException(
+            `Novel result manifest có mediaFormat không hợp lệ: ${eventDto.resultManifest.mediaFormat}`,
+          );
+        }
+
+        if (
+          !eventDto.resultManifest.htmlKey ||
+          typeof eventDto.resultManifest.htmlKey !== 'string'
+        ) {
           throw new BadRequestException(
             'Novel result manifest bắt buộc phải có htmlKey hợp lệ khi ở trạng thái READY_FOR_REVIEW.',
           );

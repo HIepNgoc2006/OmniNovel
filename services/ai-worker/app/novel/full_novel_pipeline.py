@@ -160,9 +160,11 @@ class FullNovelPipeline:
             uploaded_assets: List[Dict[str, Any]] = []
             asset_map: Dict[str, str] = {}
 
-            # Xây dựng danh sách upload slots có định kiểu (Typed Content-Type) & chống va chạm tên file
+            # Xây dựng danh sách upload slots có định kiểu (Typed Content-Type) & fail-closed chống va chạm
             asset_href_to_slot_name: Dict[str, str] = {}
             asset_href_to_content_type: Dict[str, str] = {}
+            seen_slot_names: Dict[str, str] = {}
+
             for href, asset_path in extracted_chapter.image_assets.items():
                 cleaned_href = href.strip().lstrip('/')
                 href_path = Path(cleaned_href)
@@ -170,6 +172,16 @@ class FullNovelPipeline:
                 ext = href_path.suffix.lower() if href_path.suffix else asset_path.suffix.lower()
                 href_hash = hashlib.sha256(cleaned_href.encode('utf-8')).hexdigest()[:8]
                 sanitized_slot_name = f"{slug_base}--{href_hash}{ext}"
+
+                if sanitized_slot_name in seen_slot_names and seen_slot_names[sanitized_slot_name] != href:
+                    err = (
+                        f"CRITICAL_ASSET_SLOT_COLLISION: Slot name '{sanitized_slot_name}' already claimed by "
+                        f"'{seen_slot_names[sanitized_slot_name]}', collided with '{href}'"
+                    )
+                    logger.error(f"[NovelPipeline] {err}")
+                    raise ValueError(err)
+
+                seen_slot_names[sanitized_slot_name] = href
                 asset_href_to_slot_name[href] = sanitized_slot_name
                 suffix = asset_path.suffix.lower()
                 if suffix in ('.png',):
@@ -185,6 +197,10 @@ class FullNovelPipeline:
                 else:
                     content_type = 'application/octet-stream'
                 asset_href_to_content_type[href] = content_type
+
+            # Đếm số lần xuất hiện của từng basename để chỉ fallback khi basename là duy nhất (unambiguous)
+            from collections import Counter
+            basename_counts = Counter(Path(h.strip().lstrip('/')).name for h in extracted_chapter.image_assets.keys())
 
             # Upload qua presigned URL nếu có uploader được cung cấp
             if self.request_upload_urls and self.upload_file:
@@ -213,9 +229,14 @@ class FullNovelPipeline:
                             ct,
                         )
                         storage_key = a_slot["storageKey"]
+                        cleaned_h = href.strip().lstrip('/')
                         asset_map[href] = storage_key
+                        asset_map[cleaned_h] = storage_key
                         asset_map[slot_name] = storage_key
-                        asset_map[Path(href).name] = storage_key
+                        base_name = Path(cleaned_h).name
+                        if basename_counts[base_name] == 1:
+                            asset_map[base_name] = storage_key
+
                         uploaded_assets.append({
                             "filename": slot_name,
                             "originalHref": href,

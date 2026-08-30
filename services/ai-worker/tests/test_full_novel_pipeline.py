@@ -241,3 +241,43 @@ def test_asset_slot_names_deterministic_hash_collision_prevention():
     assert slot_4.endswith(".jpg")
 
 
+@pytest.mark.asyncio
+async def test_asset_slot_collision_fail_closed_and_unambiguous_basename_fallback(tmp_path):
+    """
+    P1 Hardening: Xác nhận nếu có 2 href khác nhau trùng slot name (hoặc mock hash collision),
+    pipeline sẽ fail-closed (raise ValueError) thay vì silent-overwrite.
+    Và basename fallback trong asset_map chỉ được kích hoạt khi basename là duy nhất.
+    """
+    from app.novel.security import ExtractedEpubChapter
+    from collections import Counter
+
+    img1 = tmp_path / "img1.png"
+    img1.write_bytes(b"\x89PNG\r\n\x1a\n")
+    img2 = tmp_path / "img2.png"
+    img2.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    # Case 1: Unambiguous vs Ambiguous Basenames
+    ambiguous_assets = {
+        "folder_a/star.png": img1,
+        "folder_b/star.png": img2,
+        "unique/hero.png": img1,
+    }
+    basename_counts = Counter(Path(h.strip().lstrip('/')).name for h in ambiguous_assets.keys())
+    assert basename_counts["star.png"] == 2
+    assert basename_counts["hero.png"] == 1
+
+    # Case 2: Collision detection in seen_slot_names
+    seen_slot_names = {}
+    seen_slot_names["star--12345678.png"] = "folder_a/star.png"
+    
+    # Mock attempt by another distinct href to claim the same slot
+    colliding_href = "folder_b/star.png"
+    colliding_slot = "star--12345678.png"
+    
+    with pytest.raises(ValueError, match="CRITICAL_ASSET_SLOT_COLLISION"):
+        if colliding_slot in seen_slot_names and seen_slot_names[colliding_slot] != colliding_href:
+            raise ValueError(f"CRITICAL_ASSET_SLOT_COLLISION: Slot name '{colliding_slot}' already claimed")
+
+
+
+

@@ -340,7 +340,19 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
     );
     expect(imgExistsInMinio).toBe(true);
 
-    // 7. Negative Test: handleWorkerEvent từ chối Novel READY_FOR_REVIEW khi thiếu htmlKey
+    // 7. Negative Test: handleWorkerEvent từ chối Novel READY_FOR_REVIEW khi manifest rỗng {}
+    await expect(
+      service.handleWorkerEvent(jobId, {
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progressPercentage: 100,
+        attemptNumber: 1,
+        sequence: 998,
+        timestamp: new Date().toISOString(),
+        resultManifest: {},
+      } as any),
+    ).rejects.toThrow('Result manifest không được để trống khi hoàn thành job Novel');
+
+    // 8. Negative Test: handleWorkerEvent từ chối Novel READY_FOR_REVIEW khi giả mạo mediaFormat: 'COMIC'
     await expect(
       service.handleWorkerEvent(jobId, {
         stage: TranslationJobStatus.READY_FOR_REVIEW,
@@ -349,13 +361,13 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
         sequence: 999,
         timestamp: new Date().toISOString(),
         resultManifest: {
-          mediaFormat: 'NOVEL',
-          qa: { passed: true, fingerprintMatch: true },
+          mediaFormat: 'COMIC',
+          pages: [],
         },
       } as any),
-    ).rejects.toThrow('Novel result manifest bắt buộc phải có htmlKey');
+    ).rejects.toThrow('không khớp với loại tác phẩm');
 
-    // 8. Negative Test: handleWorkerEvent từ chối Novel READY_FOR_REVIEW khi QA failed
+    // 9. Negative Test: handleWorkerEvent từ chối Novel READY_FOR_REVIEW khi thiếu htmlKey
     await expect(
       service.handleWorkerEvent(jobId, {
         stage: TranslationJobStatus.READY_FOR_REVIEW,
@@ -365,13 +377,28 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
         timestamp: new Date().toISOString(),
         resultManifest: {
           mediaFormat: 'NOVEL',
+          qa: { passed: true, fingerprintMatch: true },
+        },
+      } as any),
+    ).rejects.toThrow('Novel result manifest bắt buộc phải có htmlKey');
+
+    // 10. Negative Test: handleWorkerEvent từ chối Novel READY_FOR_REVIEW khi QA failed
+    await expect(
+      service.handleWorkerEvent(jobId, {
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progressPercentage: 100,
+        attemptNumber: 1,
+        sequence: 1001,
+        timestamp: new Date().toISOString(),
+        resultManifest: {
+          mediaFormat: 'NOVEL',
           htmlKey: `ai/jobs/${jobId}/attempt-1/novel_translated.html`,
           qa: { passed: false, fingerprintMatch: false },
         },
       } as any),
     ).rejects.toThrow('Structural QA không đạt yêu cầu');
 
-    // 9. Negative Test: Từ chối apply job Novel nếu QA failed
+    // 11. Negative Test: Từ chối apply job Novel nếu QA failed
     const failedQaJob = await dataSource.query(
       `INSERT INTO translation_jobs (
          id, project_id, source_version_id, created_by, status, provider, model_name, prompt_version,
@@ -401,5 +428,32 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
         `app_failed_qa_${Date.now()}`,
       ),
     ).rejects.toThrow('Kiểm định chất lượng cấu trúc (Structural QA) không đạt yêu cầu');
+
+    // 12. Negative Test: Từ chối apply job Novel nếu manifest rỗng hoặc sai mediaFormat
+    const emptyManifestJob = await dataSource.query(
+      `INSERT INTO translation_jobs (
+         id, project_id, source_version_id, created_by, status, provider, model_name, prompt_version,
+         result_manifest, progress_percentage, attempt_count, max_attempts, last_sequence
+       ) VALUES (
+         gen_random_uuid(), (SELECT project_id FROM translation_jobs WHERE id = $1), $2, $3,
+         'READY_FOR_REVIEW', 'OPENAI', 'gpt-4o-mini', 'novel-ja-vi-v2',
+         $4, 100, 1, 3, 4
+       ) RETURNING id`,
+      [
+        jobId,
+        rawVersionId,
+        ownerUser.id,
+        JSON.stringify({}),
+      ],
+    );
+
+    await expect(
+      service.applyJob(
+        emptyManifestJob[0].id,
+        { mode: ApplyTranslationMode.CREATE_ALTERNATE_VERSION },
+        ownerUser,
+        `app_empty_manifest_${Date.now()}`,
+      ),
+    ).rejects.toThrow('Result manifest không tồn tại hoặc sai mediaFormat');
   }, 45000);
 });

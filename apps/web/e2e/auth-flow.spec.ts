@@ -125,8 +125,7 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
     // 2. Kiểm tra Header Logo và Search bar
     const header = page.locator('header');
     await expect(header).toBeVisible();
-    await expect(header.getByText('OMNI')).toBeVisible();
-    await expect(header.getByText('NOVEL')).toBeVisible();
+    await expect(header.getByRole('link', { name: /OMNI NOVEL/i })).toBeVisible();
     await expect(page.getByPlaceholder(/Tìm kiếm Manga, Light Novel/i)).toBeVisible();
 
     // 3. Kiểm tra Footer

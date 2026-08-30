@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import logging
 from pathlib import Path
@@ -163,7 +164,12 @@ class FullNovelPipeline:
             asset_href_to_slot_name: Dict[str, str] = {}
             asset_href_to_content_type: Dict[str, str] = {}
             for href, asset_path in extracted_chapter.image_assets.items():
-                sanitized_slot_name = re.sub(r'[^a-zA-Z0-9._-]', '_', href.strip().lstrip('/'))
+                cleaned_href = href.strip().lstrip('/')
+                href_path = Path(cleaned_href)
+                slug_base = re.sub(r'[^a-zA-Z0-9_-]', '_', str(href_path.with_suffix('')) if href_path.suffix else cleaned_href)
+                ext = href_path.suffix.lower() if href_path.suffix else asset_path.suffix.lower()
+                href_hash = hashlib.sha256(cleaned_href.encode('utf-8')).hexdigest()[:8]
+                sanitized_slot_name = f"{slug_base}--{href_hash}{ext}"
                 asset_href_to_slot_name[href] = sanitized_slot_name
                 suffix = asset_path.suffix.lower()
                 if suffix in ('.png',):

@@ -325,7 +325,7 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
 
     const imgAsset = assets.find((a: any) => a.asset_type === MediaAssetType.ILLUSTRATION);
     expect(imgAsset).toBeDefined();
-    expect(imgAsset.storage_key).toContain('assets_star.png');
+    expect(imgAsset.storage_key).toContain('assets_star--');
 
     // 6. Kiểm tra file HTML & Illustration thật sự tồn tại trong MinIO (bucket novel-media)
     const htmlExistsInMinio = await storageService.headInternalObject(
@@ -340,7 +340,38 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
     );
     expect(imgExistsInMinio).toBe(true);
 
-    // 7. Negative Test: Từ chối apply job Novel nếu QA failed
+    // 7. Negative Test: handleWorkerEvent từ chối Novel READY_FOR_REVIEW khi thiếu htmlKey
+    await expect(
+      service.handleWorkerEvent(jobId, {
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progressPercentage: 100,
+        attemptNumber: 1,
+        sequence: 999,
+        timestamp: new Date().toISOString(),
+        resultManifest: {
+          mediaFormat: 'NOVEL',
+          qa: { passed: true, fingerprintMatch: true },
+        },
+      } as any),
+    ).rejects.toThrow('Novel result manifest bắt buộc phải có htmlKey');
+
+    // 8. Negative Test: handleWorkerEvent từ chối Novel READY_FOR_REVIEW khi QA failed
+    await expect(
+      service.handleWorkerEvent(jobId, {
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progressPercentage: 100,
+        attemptNumber: 1,
+        sequence: 1000,
+        timestamp: new Date().toISOString(),
+        resultManifest: {
+          mediaFormat: 'NOVEL',
+          htmlKey: `ai/jobs/${jobId}/attempt-1/novel_translated.html`,
+          qa: { passed: false, fingerprintMatch: false },
+        },
+      } as any),
+    ).rejects.toThrow('Structural QA không đạt yêu cầu');
+
+    // 9. Negative Test: Từ chối apply job Novel nếu QA failed
     const failedQaJob = await dataSource.query(
       `INSERT INTO translation_jobs (
          id, project_id, source_version_id, created_by, status, provider, model_name, prompt_version,

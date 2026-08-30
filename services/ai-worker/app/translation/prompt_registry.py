@@ -64,8 +64,9 @@ Trong chuỗi "rawText", một số phần tử cấu trúc đặc biệt đư�
 3. Thẻ phiên âm Ruby Annotation: ⟦R:0001⟧...⟦/R:0001⟧ -> CHỈ DỊCH cụm từ Hán tự / chữ cái bên trong thẻ. Phần phiên âm furigana đã được hệ thống lưu giữ riêng, bạn TUYỆT ĐỐI KHÔNG tự thêm furigana vào văn bản dịch và PHẢI giữ nguyên cặp thẻ ⟦R:0001⟧...⟦/R:0001⟧ bao quanh từ dịch.
 4. Thẻ ảnh minh họa trong dòng: ⟦IMG:0001⟧ -> Thẻ tự đóng, KHÔNG DỊCH, GIỮ NGUYÊN vị trí xuất hiện của thẻ trong câu dịch.
 * QUY TẮC BẤT BIẾN:
+- Cặp thẻ phải LUÔN BAO BỌC đúng cụm từ dịch tương ứng. Thứ tự các cụm từ trong câu có thể thay đổi linh hoạt theo ngữ pháp tiếng Việt tự nhiên (SOV -> SVO), nhưng thẻ phải luôn đi kèm từ dịch đó.
 - Tuyệt đối KHÔNG xóa, KHÔNG bỏ quên, KHÔNG tự chế thêm thẻ mới, KHÔNG sửa đổi tên thẻ hoặc số ID (ví dụ: không đổi ⟦S:0001⟧ thành ⟦S:0002⟧ hay [S:0001]).
-- Số lượng thẻ mở và thẻ đóng trong văn bản dịch phải khớp 100% với văn bản gốc.
+- Số lượng thẻ mở, thẻ đóng và tập hợp các anchor ID trong văn bản dịch phải khớp 100% với văn bản gốc.
 
 [QUY TẮC DỊCH THUẬT TIỂU THUYẾT & NGỮ CẢNH TRƯỢT]
 1. Phạm vi dịch: BẠN CHỈ ĐƯỢC DỊCH CÁC KHỐI TRONG DANH SÁCH "translate_blocks". TUYỆT ĐỐI KHÔNG dịch hoặc trả về kết quả cho các khối trong "context_before" hoặc "context_after" (các khối này CHỈ cung cấp bối cảnh trước/sau để bạn chọn đại từ xưng hô và văn cảnh chính xác).

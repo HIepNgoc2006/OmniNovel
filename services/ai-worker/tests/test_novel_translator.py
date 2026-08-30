@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Any, List
+from typing import Any, Dict, List, Optional
 import httpx
 import pytest
 
@@ -42,8 +42,18 @@ async def test_novel_pipeline_with_mock_provider():
 
     sink_events = []
     class CustomSink(ProgressSink):
-        async def emit_progress(self, stage: str, progress_percentage: int, current_page: int = 0, total_pages: int = 0):
-            sink_events.append((stage, progress_percentage, current_page, total_pages))
+        async def emit_progress(
+            self,
+            progress: int,
+            stage: str,
+            heartbeat: bool = False,
+            message: str = "",
+            sequence: Optional[int] = None,
+            result_manifest: Optional[Dict[str, Any]] = None,
+            segments: Optional[List[Dict[str, Any]]] = None,
+            **kwargs,
+        ):
+            sink_events.append((stage, progress))
 
     result = await pipeline.translate_document(
         doc,
@@ -67,11 +77,18 @@ async def test_novel_pipeline_with_mock_provider():
 
 
 def test_novel_prompt_template_registered():
-    prompt = get_prompt_template("novel-ja-vi-v1")
-    assert "Biên dịch viên Light Novel" in prompt
-    assert "translate_blocks" in prompt
-    assert "anchorBlockId" in prompt
-    assert "DATA BOUNDARY & INJECTION DEFENSE" in prompt
+    prompt_v1 = get_prompt_template("novel-ja-vi-v1")
+    assert "Biên dịch viên Light Novel" in prompt_v1
+    assert "translate_blocks" in prompt_v1
+    assert "anchorBlockId" in prompt_v1
+    assert "DATA BOUNDARY & INJECTION DEFENSE" in prompt_v1
+
+    prompt_v2 = get_prompt_template("novel-ja-vi-v2")
+    assert "PROTECTED INLINE ANCHORS" in prompt_v2
+    assert "⟦S:0001⟧" in prompt_v2
+    assert "⟦R:0001⟧" in prompt_v2
+    assert "SOV -> SVO" in prompt_v2
+
 
 
 @pytest.mark.asyncio

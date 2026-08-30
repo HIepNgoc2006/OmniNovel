@@ -223,7 +223,8 @@ export class TranslationService {
     const canonicalJson = JSON.stringify(sortedGlossary);
     const glossaryHash = `sha256:${crypto.createHash('sha256').update(canonicalJson, 'utf8').digest('hex')}`;
     const modelName = provider === 'OPENAI' ? 'gpt-4o-mini' : 'mock-model-v1';
-    const promptVersion = 'manga-ja-vi-v1';
+    const isNovel = story?.mediaFormat === 'NOVEL';
+    const promptVersion = isNovel ? 'novel-ja-vi-v2' : 'manga-ja-vi-v1';
 
     const inputManifest = {
       sourceLang: dto.sourceLang,
@@ -402,7 +403,18 @@ export class TranslationService {
       );
     }
 
-    const job = await this.jobRepo.findOne({ where: { id } });
+    const job = await this.jobRepo.findOne({
+      where: { id },
+      relations: [
+        'project',
+        'project.storyEdition',
+        'project.storyEdition.story',
+        'sourceVersion',
+        'sourceVersion.chapter',
+        'sourceVersion.chapter.storyEdition',
+        'sourceVersion.chapter.storyEdition.story',
+      ],
+    });
     if (!job) {
       throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
     }
@@ -419,14 +431,19 @@ export class TranslationService {
       );
     }
 
+    const story =
+      job.project?.storyEdition?.story ||
+      job.sourceVersion?.chapter?.storyEdition?.story;
+    const isManga = story?.mediaFormat !== 'NOVEL';
+
     const presignedOutputs = [];
     for (const f of files) {
       const sanitizedFilename = f.filename.replace(/[^a-zA-Z0-9._-]/g, '_');
       const storageKey = `ai/jobs/${id}/attempt-${attemptNumber}/${sanitizedFilename}`;
       const uploadUrl = await this.storageService.createInternalUploadUrl(
         storageKey,
-        f.contentType || 'image/webp',
-        true,
+        f.contentType || (isManga ? 'image/webp' : 'text/html; charset=utf-8'),
+        isManga,
         1800,
       );
       presignedOutputs.push({
@@ -540,19 +557,49 @@ export class TranslationService {
       });
       const savedVersion = await manager.save(ChapterVersion, newVersion);
 
-      // 4. Materialize MediaAssets từ result_manifest
-      if (job.resultManifest && Array.isArray(job.resultManifest.pages)) {
-        for (const page of job.resultManifest.pages) {
-          const mediaAsset = manager.create(MediaAsset, {
-            versionId: savedVersion.id,
-            assetType: MediaAssetType.MANGA_PAGE,
-            storageKey: page.previewKey || page.storageKey,
-            sortOrder: page.page || 1,
-            width: page.width || 1200,
-            height: page.height || 1800,
-            fileSizeBytes: (page.fileSize || 102400).toString(),
-          });
-          await manager.save(MediaAsset, mediaAsset);
+      // 4. Materialize MediaAssets từ result_manifest (Manga Pages hoặc Novel HTML & Assets)
+      if (job.resultManifest) {
+        if (Array.isArray(job.resultManifest.pages) && job.resultManifest.pages.length > 0) {
+          for (const page of job.resultManifest.pages) {
+            const mediaAsset = manager.create(MediaAsset, {
+              versionId: savedVersion.id,
+              assetType: MediaAssetType.MANGA_PAGE,
+              storageKey: page.previewKey || page.storageKey,
+              sortOrder: page.page || 1,
+              width: page.width || 1200,
+              height: page.height || 1800,
+              fileSizeBytes: (page.fileSize || 102400).toString(),
+            });
+            await manager.save(MediaAsset, mediaAsset);
+          }
+        } else if (job.resultManifest.htmlKey || job.resultManifest.mediaFormat === 'NOVEL') {
+          if (job.resultManifest.htmlKey) {
+            const htmlAsset = manager.create(MediaAsset, {
+              versionId: savedVersion.id,
+              assetType: MediaAssetType.NOVEL_HTML,
+              storageKey: job.resultManifest.htmlKey,
+              sortOrder: 1,
+              width: null,
+              height: null,
+              fileSizeBytes: (job.resultManifest.fileSize || 20480).toString(),
+            });
+            await manager.save(MediaAsset, htmlAsset);
+          }
+          if (Array.isArray(job.resultManifest.assets)) {
+            let sortIdx = 2;
+            for (const assetItem of job.resultManifest.assets) {
+              const imgAsset = manager.create(MediaAsset, {
+                versionId: savedVersion.id,
+                assetType: MediaAssetType.ILLUSTRATION,
+                storageKey: assetItem.storageKey,
+                sortOrder: sortIdx++,
+                width: 1200,
+                height: 1800,
+                fileSizeBytes: (assetItem.fileSize || 51200).toString(),
+              });
+              await manager.save(MediaAsset, imgAsset);
+            }
+          }
         }
       }
 

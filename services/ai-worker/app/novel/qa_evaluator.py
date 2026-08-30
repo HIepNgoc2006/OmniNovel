@@ -325,20 +325,40 @@ class NovelStructuralQAEvaluator:
                 )
                 score -= 0.2
 
-        # 7. Round-trip Serialization Test
+        # 7. Round-trip Serialization & Re-parsing Full Fingerprint Test
         try:
             rendered_html = NovelDocumentSerializer.serialize_to_html(translated_doc)
             reparsed_doc = NovelAstParser.parse_html(rendered_html)
             reparsed_fp = self.extract_fingerprint(reparsed_doc)
-            if trans_fp.block_sequence != reparsed_fp.block_sequence:
+            
+            roundtrip_match = (
+                trans_fp.block_sequence == reparsed_fp.block_sequence
+                and trans_fp.heading_levels == reparsed_fp.heading_levels
+                and trans_fp.total_dividers == reparsed_fp.total_dividers
+                and trans_fp.total_illustrations == reparsed_fp.total_illustrations
+                and trans_fp.asset_sources == reparsed_fp.asset_sources
+                and trans_fp.total_ruby_nodes == reparsed_fp.total_ruby_nodes
+                and trans_fp.ruby_metadata_list == reparsed_fp.ruby_metadata_list
+                and trans_fp.total_strong_nodes == reparsed_fp.total_strong_nodes
+                and trans_fp.total_emphasis_nodes == reparsed_fp.total_emphasis_nodes
+                and trans_fp.inline_topology == reparsed_fp.inline_topology
+            )
+            
+            if not roundtrip_match:
                 issues.append(
                     NovelQAIssue(
                         severity=QASeverity.ERROR,
                         rule_id="ROUNDTRIP_SERIALIZATION_MISMATCH",
-                        message="Tuần tự hóa HTML và phân tích lại tạo ra cây AST bị lệch cấu trúc block sequence.",
+                        message="Tuần tự hóa HTML và phân tích lại tạo ra cây AST bị lệch cấu trúc hoặc suy hao metadata.",
+                        details={
+                            "translated_topology": trans_fp.inline_topology,
+                            "reparsed_topology": reparsed_fp.inline_topology,
+                            "translated_ruby": trans_fp.ruby_metadata_list,
+                            "reparsed_ruby": reparsed_fp.ruby_metadata_list,
+                        },
                     )
                 )
-                score -= 0.2
+                score -= 0.25
         except Exception as ex:
             issues.append(
                 NovelQAIssue(

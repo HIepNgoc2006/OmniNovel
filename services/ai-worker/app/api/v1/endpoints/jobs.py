@@ -258,12 +258,70 @@ async def process_manga_job(req: ProcessJobRequest):
 @router.post("/process-novel", dependencies=[Depends(verify_internal_key)])
 async def process_novel_job(req: ProcessJobRequest):
     """
-    Pipeline cho Light Novel Translation:
-    PREPROCESSING -> TRANSLATING -> QUALITY_CHECK -> READY_FOR_REVIEW
+    Pipeline cho Light Novel Translation (Full Novel Orchestrator):
+    - PREPROCESSING -> TRANSLATING -> QUALITY_CHECK -> READY_FOR_REVIEW
+    - Khóa ranh giới: AI_WORKER_TEST_MODE chỉ hợp lệ khi ENV=test.
+    - Ở production: Bắt buộc sourceDownloadUrl, tuyệt đối không chạy fallback mock.
+    - Sử dụng phiên bản prompt chuẩn: novel-ja-vi-v2
     """
+    is_test_env = (settings.ENV == "test") or (os.environ.get("ENV") == "test")
+    is_test_mode = settings.AI_WORKER_TEST_MODE or (os.environ.get("AI_WORKER_TEST_MODE") == "true")
+
+    if is_test_mode and not is_test_env:
+        raise HTTPException(
+            status_code=500,
+            detail="AI_WORKER_TEST_MODE is strictly forbidden outside ENV=test",
+        )
+
     job_id = req.jobId
     attempt_num = req.attemptNumber
 
+    if not req.sourceDownloadUrl:
+        if not is_test_env:
+            raise HTTPException(
+                status_code=400,
+                detail="sourceDownloadUrl is required in production environment",
+            )
+    else:
+        # Thực thi FullNovelPipeline thật
+        from app.novel.full_novel_pipeline import FullNovelPipeline
+        from app.pipeline.attempt_coordinator import AttemptProgressCoordinator
+        from app.pipeline.progress_sink import CoreCallbackProgressSink
+        from app.translation.providers.mock_provider import MockTranslationProvider
+        from app.translation.providers.openai_provider import OpenAICompatibleTranslationProvider
+
+        sink = CoreCallbackProgressSink(job_id=job_id, attempt_number=attempt_num)
+        coordinator = AttemptProgressCoordinator(sink=sink)
+
+        if is_test_mode and is_test_env:
+            provider = MockTranslationProvider()
+        else:
+            provider = OpenAICompatibleTranslationProvider()
+
+        pipeline = FullNovelPipeline(
+            coordinator=coordinator,
+            translation_provider=provider,
+            request_upload_urls_func=request_output_upload_urls,
+            upload_file_func=upload_file_to_presigned_url,
+            prompt_version="novel-ja-vi-v2",
+        )
+
+        try:
+            return await pipeline.execute(
+                job_id=job_id,
+                attempt_number=attempt_num,
+                source_download_url=req.sourceDownloadUrl,
+                input_manifest=req.inputManifest,
+                glossary_entries=(req.inputManifest or {}).get("glossary"),
+            )
+        except Exception as e:
+            await coordinator.stop()
+            raise HTTPException(
+                status_code=502,
+                detail=f"Full Novel Pipeline execution failed: {str(e)}"
+            ) from e
+
+    # Fallback cho mock isolation trong ENV=test (legacy endpoint tests)
     stages = [
         ("PREPROCESSING", 15),
         ("TRANSLATING", 50),
@@ -278,7 +336,7 @@ async def process_novel_job(req: ProcessJobRequest):
     segments = [
         {
             "sortOrder": 1,
-            "anchorBlockId": "p-1",
+            "anchorBlockId": "blk_0001_p",
             "rawText": "その日、人類は思い出した。ヤツらに支配されていた恐怖を。",
             "translatedText": "Ngày hôm đó, nhân loại đã nhớ lại. Nỗi sợ hãi khi bị thống trị bởi chúng.",
             "confidence": 0.99,
@@ -291,7 +349,7 @@ async def process_novel_job(req: ProcessJobRequest):
         seq,
         "READY_FOR_REVIEW",
         100,
-        result_manifest={"pages": []},
+        result_manifest={"mediaFormat": "NOVEL", "htmlKey": f"chapters/{job_id}/novel_translated.html"},
         segments=segments,
     )
 
@@ -302,3 +360,4 @@ async def process_novel_job(req: ProcessJobRequest):
         "status": "READY_FOR_REVIEW",
         "segmentsCount": len(segments),
     }
+

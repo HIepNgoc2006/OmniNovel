@@ -159,7 +159,6 @@ def test_process_novel_happy_path(mock_send_event):
             "jobId": "22222222-2222-2222-2222-222222222222",
             "attemptNumber": 1,
             "outputPrefix": "ai/jobs/22222222-2222-2222-2222-222222222222/attempt-1/",
-            "sourceDownloadUrl": "http://localhost:9000/novel-media/chapter.epub",
             "sourceLang": "ja",
             "targetLang": "vi",
         },
@@ -171,6 +170,36 @@ def test_process_novel_happy_path(mock_send_event):
     assert data["status"] == "READY_FOR_REVIEW"
     assert data["segmentsCount"] == 1
     assert mock_send_event.call_count == 4
+
+
+@patch("app.novel.full_novel_pipeline.FullNovelPipeline.execute")
+def test_process_novel_with_source_url_dispatches_pipeline(mock_pipeline_exec):
+    mock_pipeline_exec.return_value = {
+        "success": True,
+        "jobId": "22222222-2222-2222-2222-222222222222",
+        "attemptNumber": 1,
+        "status": "READY_FOR_REVIEW",
+        "segmentsCount": 3,
+    }
+
+    response = client.post(
+        "/internal/v1/jobs/process-novel",
+        headers=AUTH_HEADERS,
+        json={
+            "jobId": "22222222-2222-2222-2222-222222222222",
+            "attemptNumber": 1,
+            "sourceDownloadUrl": "http://mock-storage/novel.epub",
+            "sourceLang": "ja",
+            "targetLang": "vi",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["success"] is True
+    assert data["status"] == "READY_FOR_REVIEW"
+    assert mock_pipeline_exec.called
+
 
 @patch("app.api.v1.endpoints.jobs.send_callback_event")
 def test_process_novel_callback_failure_raises_502(mock_send_event):

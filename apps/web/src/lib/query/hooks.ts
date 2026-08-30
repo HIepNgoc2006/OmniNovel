@@ -2,17 +2,22 @@
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { getProgressionApi, checkinApi } from '../api/gamification';
-import { getStoriesApi } from '../api/stories';
+import {
+  getStoriesApi,
+  getFeaturedStoriesApi,
+  getStoryRankingsApi,
+  getStoryBySlugApi,
+  GetStoriesParams,
+} from '../api/stories';
 import { useAuth } from '../auth/auth-context';
-import { MediaFormat, StoryStatus } from '@omninovel/shared';
 
 export function useProgression() {
-  const { isAuthenticated } = useAuth();
+  const { user } = useAuth();
 
   return useQuery({
-    queryKey: ['gamification', 'progression'],
+    queryKey: ['gamification', 'progression', user?.id],
     queryFn: getProgressionApi,
-    enabled: isAuthenticated,
+    enabled: Boolean(user),
   });
 }
 
@@ -27,15 +32,31 @@ export function useCheckinMutation() {
   });
 }
 
-export function useStories(params?: {
-  page?: number;
-  limit?: number;
-  mediaFormat?: MediaFormat;
-  status?: StoryStatus;
-  search?: string;
-}) {
+export function useStories(params?: GetStoriesParams) {
   return useQuery({
     queryKey: ['stories', params],
     queryFn: () => getStoriesApi(params),
+  });
+}
+
+export function useFeaturedStories() {
+  return useQuery({
+    queryKey: ['stories', 'featured'],
+    queryFn: getFeaturedStoriesApi,
+  });
+}
+
+export function useStoryRankings() {
+  return useQuery({
+    queryKey: ['stories', 'rankings'],
+    queryFn: getStoryRankingsApi,
+  });
+}
+
+export function useStoryBySlug(slug: string) {
+  return useQuery({
+    queryKey: ['stories', 'detail', slug],
+    queryFn: () => getStoryBySlugApi(slug),
+    enabled: Boolean(slug),
   });
 }

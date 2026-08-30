@@ -29,7 +29,7 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
             id: 'user-uuid-1',
             username: 'novel_tester',
             email: 'tester@omninovel.com',
-            role: 'USER',
+            role: 'READER',
             avatarUrl: null,
             createdAt: '2026-08-30T00:00:00.000Z',
           },
@@ -47,11 +47,15 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
               id: 'user-uuid-1',
               username: 'novel_tester',
               email: 'tester@omninovel.com',
-              role: 'USER',
+              role: 'READER',
               avatarUrl: null,
               createdAt: '2026-08-30T00:00:00.000Z',
             },
-            permissions: ['READ_STORY', 'COMMENT'],
+            permissions: {
+              canCreateStory: false,
+              canModerate: false,
+              isAdmin: false,
+            },
           }),
         });
       } else {

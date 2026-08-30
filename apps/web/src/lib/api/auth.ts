@@ -38,9 +38,15 @@ export interface RegisterResponse {
   };
 }
 
+export interface UserPermissions {
+  canCreateStory: boolean;
+  canModerate: boolean;
+  isAdmin: boolean;
+}
+
 export interface GetMeResponse {
   user: UserProfile;
-  permissions: string[];
+  permissions: UserPermissions;
 }
 
 export async function loginApi(data: LoginRequest): Promise<LoginResponse> {

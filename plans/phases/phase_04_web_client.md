@@ -15,27 +15,27 @@
     - TanStack Query v5 quản lý Server State & SWR Caching.
     - WebSocket Gateway (`/ws/ai`) xác thực qua `socket.handshake.auth.token` và tự động reconnect khi token xoay vòng.
     - Gamification: Tiêu thụ endpoint chuẩn `/gamification/progression` và `UserProgressionResponse` từ `@omninovel/shared`.
-- **Trạng thái:** [/] Đang thực hiện (Phase 4A Hardening: 9/9 Vitest + 4 Playwright E2E Tests - Canonical Contract Alignment - Build & Lint Green)
+- **Trạng thái:** [/] Đang thực hiện (Phase 4A: 100% HOÀN TẤT & FROZEN - 9 Vitest + 4 Mocked Playwright E2E Tests - Phase 4B In Progress)
 
 ---
 
 ### Danh Sách Phân Đoạn & Đầu Việc (Checklist):
 
-- [x] **Phase 4A: Web Foundation, Design System & Auth/State Core (9 Vitest + 4 Playwright Tests Green)**
+- [x] **Phase 4A: Web Foundation, Design System & Auth/State Core (100% HOÀN TẤT & FROZEN)**
   - [x] Khởi tạo dự án Next.js 16.3.3 + React 19.2 trong `apps/web`, cấu hình TypeScript 5.6+, Tailwind CSS 4.3 CSS-first.
   - [x] Xây dựng Theme Engine phân tách `siteTheme` (dark, light, system) và `readerTheme` (dark, light, sepia) với `localStorage` persistence.
   - [x] Xây dựng Memory-Only Auth Store & API Client SDK với Single-Flight 401 Refresh Interceptor (Canonical port 8000).
-  - [x] Chuẩn hóa Auth Contract (`{ identifier, password }`, `{ user: { id, username, email, role, avatarUrl }, permissions }`, `minLength={8}`).
+  - [x] Chuẩn hóa Auth Contract (`{ identifier, password }`, `{ user: { id, username, email, role, avatarUrl }, permissions: UserPermissions }`, `minLength={8}`).
   - [x] Xây dựng Auth Context & Session Hydration Provider (Login/Register modal tabs, Route Guards, User Profile, Level/EXP/OmniCoin).
   - [x] Xây dựng App Shell chuẩn SEO (Server Component `layout.tsx`, Client `providers.tsx`, Header với Mega Search & Gamification Badge, Footer, Mobile Bottom Bar).
   - [x] Xây dựng WebSocket Hook kết nối `/ws/ai` lắng nghe tiến trình TranslationJob ({ jobId, stage, progress, timestamp }) kèm cơ chế active token rotation reconnect.
-  - [x] Thiết lập hạ tầng kiểm thử Vitest (9/9 Unit/Component Tests Green 100%), Playwright E2E Smoke Suite (4/4 Tests Green), và Next.js Production Build.
+  - [x] Thiết lập hạ tầng kiểm thử Vitest (9/9 Unit/Component Tests Green 100%), Playwright Browser E2E Smoke Suite (4/4 Tests Green with Mocked Canonical Core API), và Next.js Production Build.
 
-- [ ] **Phase 4B: Discovery, Catalog & Story Details (TruyenQQ & DocLN Showcase)**
-  - [ ] Xây dựng Trang chủ: Hero Carousel Slider truyện HOT, Danh sách mới cập nhật, Bảng xếp hạng Top ngày/tuần/tháng.
-  - [ ] Xây dựng Trang lọc & tìm kiếm nâng cao (Multi-criteria filter: Manga/Novel, Thể loại, Trạng thái hoàn thành, Sắp xếp).
-  - [ ] Xây dựng Trang chi tiết truyện: Thông tin bộ truyện, Danh sách chương, Đánh dấu yêu thích / Lịch sử đọc, Bộ chọn phiên bản chương (`RAW_ORIGINAL`, `AI_TRANSLATED`, `HUMAN_EDITED`).
-  - [ ] Tích hợp hệ thống Bình luận & Đánh giá phân cấp kèm Huy hiệu Gamification.
+- [x] **Phase 4B: Discovery, Catalog & Story Details (100% HOÀN TẤT & GREEN - 18 Vitest + 7 Playwright Tests)**
+  - [x] Xây dựng Trang chủ: Hero Carousel Slider truyện HOT, Danh sách mới cập nhật, Bảng xếp hạng Top ngày/tuần/tháng, Widget điểm danh hàng ngày.
+  - [x] Xây dựng Trang lọc & tìm kiếm nâng cao (Multi-criteria filter: Manga/Novel, Thể loại, Trạng thái hoàn thành, Sắp xếp, Phân trang).
+  - [x] Xây dựng Trang chi tiết truyện: Thông tin bộ truyện, Danh sách chương, Đánh dấu yêu thích / Lịch sử đọc, Bộ chọn phiên bản chương (`RAW_ORIGINAL`, `AI_TRANSLATED`, `HUMAN_EDITED`).
+  - [x] Tích hợp hệ thống Bình luận & Đánh giá phân cấp kèm Huy hiệu Gamification.
 
 - [ ] **Phase 4C: Multimodal Reader Experience (Manga 120Hz & Light Novel Customizer)**
   - [ ] Manga Reader: Chế độ cuộn dọc (Webtoon mode), lật trang ngang RTL/LTR, bộ chọn máy chủ CDN, phím tắt điều hướng.

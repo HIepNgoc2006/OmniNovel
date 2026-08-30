@@ -1,46 +1,178 @@
 import { apiClient } from './client';
-import { MediaFormat, PublicationFormat, StoryStatus } from '@omninovel/shared';
+import {
+  MediaFormat,
+  PublicationFormat,
+  StoryStatus,
+  StoryVisibility,
+  ChapterVersionType,
+} from '@omninovel/shared';
 
-export interface StoryListItem {
+export interface GenreItem {
+  id: number;
+  name: string;
+  slug: string;
+  description?: string;
+}
+
+export interface ChapterVersionItem {
+  id: string;
+  versionNumber: number;
+  versionType: ChapterVersionType;
+  isPublished: boolean;
+  translatedBy?: string;
+  rawAssetKey?: string;
+  renderedAssetKey?: string;
+  htmlKey?: string;
+  createdAt: string;
+}
+
+export interface ChapterItem {
+  id: string;
+  storyEditionId: string;
+  volumeId?: string | null;
+  chapterNumber: string | number;
+  title?: string | null;
+  activeVersionId?: string | null;
+  viewsCount?: string | number;
+  createdAt: string;
+  activeVersion?: ChapterVersionItem | null;
+}
+
+export interface VolumeItem {
+  id: string;
+  storyEditionId: string;
+  volumeNumber: number;
+  title: string;
+  chapters?: ChapterItem[];
+}
+
+export interface StoryEditionItem {
+  id: string;
+  storyId: string;
+  editionName: string;
+  language: string;
+  isDefault: boolean;
+  volumes?: VolumeItem[];
+  chapters?: ChapterItem[];
+}
+
+export interface Story {
   id: string;
   title: string;
-  originalTitle?: string;
   slug: string;
-  coverImageUrl?: string;
-  synopsis?: string;
   mediaFormat: MediaFormat;
   publicationFormat: PublicationFormat;
+  originCountry?: string;
+  originalLanguage?: string;
+  coverUrl: string;
+  coverImageUrl?: string;
   status: StoryStatus;
-  viewCount: number;
-  ratingAverage: number;
-  ratingCount: number;
-  favoriteCount: number;
-  latestChapterNumber?: number;
+  visibility: StoryVisibility;
+  summary?: string | null;
+  synopsis?: string | null;
+  createdBy?: string | null;
+  viewsCount: string | number;
+  viewCount?: number;
+  followersCount: number;
+  favoriteCount?: number;
+  ratingAverage?: number;
+  ratingCount?: number;
+  createdAt: string;
   updatedAt: string;
+  genres?: GenreItem[];
+  editions?: StoryEditionItem[];
+}
+
+export interface StoryPagination {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
 }
 
 export interface StoryListResponse {
-  data: StoryListItem[];
-  meta: {
-    total: number;
-    page: number;
-    limit: number;
-    totalPages: number;
+  data: Story[];
+  pagination: StoryPagination;
+  meta?: StoryPagination; // Fallback alias
+}
+
+export interface FeaturedStoriesResponse {
+  hotStories: Story[];
+  banners: Story[];
+}
+
+export interface RankingsResponse {
+  topComics: Story[];
+  topNovels: Story[];
+}
+
+export interface StoryComment {
+  id: string;
+  userId: string;
+  username: string;
+  userAvatar?: string | null;
+  userRole?: string;
+  userLevel?: number;
+  rankTitle?: string;
+  content: string;
+  rating?: number;
+  likesCount: number;
+  isLiked?: boolean;
+  createdAt: string;
+  replies?: StoryComment[];
+}
+
+export interface GetStoriesParams {
+  page?: number;
+  limit?: number;
+  format?: string | MediaFormat;
+  mediaFormat?: MediaFormat;
+  genre?: string;
+  status?: StoryStatus | string;
+  sort?: 'LATEST' | 'POPULAR' | 'RATING' | 'VIEWS' | string;
+  search?: string;
+}
+
+export async function getStoriesApi(params?: GetStoriesParams): Promise<StoryListResponse> {
+  const queryParams: Record<string, any> = {};
+  if (params?.page) queryParams.page = params.page;
+  if (params?.limit) queryParams.limit = params.limit;
+  if (params?.format) queryParams.format = params.format;
+  if (params?.mediaFormat) queryParams.format = params.mediaFormat;
+  if (params?.genre) queryParams.genre = params.genre;
+  if (params?.status) queryParams.status = params.status;
+  if (params?.sort) queryParams.sort = params.sort;
+  if (params?.search) queryParams.search = params.search;
+
+  const response = await apiClient.get<StoryListResponse>('/stories', { params: queryParams });
+  const data = response.data;
+  
+  // Normalization for pagination vs meta
+  const pagination = data.pagination || data.meta || {
+    page: params?.page || 1,
+    limit: params?.limit || 20,
+    total: data.data?.length || 0,
+    totalPages: 1,
+  };
+
+  return {
+    data: data.data || [],
+    pagination,
+    meta: pagination,
   };
 }
 
-export async function getStoriesApi(params?: {
-  page?: number;
-  limit?: number;
-  mediaFormat?: MediaFormat;
-  status?: StoryStatus;
-  search?: string;
-}): Promise<StoryListResponse> {
-  const response = await apiClient.get<StoryListResponse>('/stories', { params });
+export async function getFeaturedStoriesApi(): Promise<FeaturedStoriesResponse> {
+  const response = await apiClient.get<FeaturedStoriesResponse>('/stories/featured');
   return response.data;
 }
 
-export async function getStoryBySlugApi(slug: string): Promise<StoryListItem> {
-  const response = await apiClient.get<StoryListItem>(`/stories/${slug}`);
+export async function getStoryRankingsApi(): Promise<RankingsResponse> {
+  const response = await apiClient.get<RankingsResponse>('/stories/rankings');
+  return response.data;
+}
+
+export async function getStoryBySlugApi(slug: string): Promise<Story> {
+  const response = await apiClient.get<Story>(`/stories/${slug}`);
   return response.data;
 }

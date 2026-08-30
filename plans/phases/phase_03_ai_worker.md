@@ -10,8 +10,8 @@
   - **Bảo Vệ Tính Bất Biến Của ChapterVersion:**
     - **Chiến lược 1 (Ghi đè - Overwrite):** Gán `chapter.active_version_id = translated_version.id`. Bản ghi ChapterVersion gốc vẫn giữ nguyên bất biến (`RAW_ORIGINAL`).
     - **Chiến lược 2 (Nhân bản - Duplicate):** Tạo bản ghi mới trong `chapter_versions` với `version_type = 'AI_TRANSLATED'`, giữ nguyên `active_version_id` trỏ vào bản gốc để biên tập viên review thủ công.
-  - **Trọng tâm MVP Scope:** Tập trung chuyên sâu **Manga tiếng Nhật (Japanese Manga-OCR)** cho bản MVP. Ngôn ngữ Hàn (Manhwa) / Trung (Manhua) được thiết kế theo Interface Adapter mở rộng cho V1.
-- **Trạng thái:** [/] Đang triển khai (Vertical Slice 1: Core Orchestration, State Machine, Watchdog, Fencing & Mock Contract: **100% HOÀN THÀNH**)
+  - **Trọng tâm MVP Scope:** Tập trung chuyên sâu **Manga tiếng Nhật (Japanese Manga-OCR)** và **Light Novel Single-Chapter (EPUB/MD/TXT)** cho bản MVP.
+- **Trạng thái:** [/] Đang triển khai (Vertical Slice 1: **100% FROZEN**, Vertical Slice 2: **100% FROZEN với 203/203 tests CI-verified**, Vertical Slice 3: **Đang triển khai Checkpoint 3A..3D**)
 
 ---
 
@@ -40,7 +40,7 @@
     - 80/80 Core API E2E Lifecycle Tests (`app.e2e-spec.ts`)
     - 9/9 Python FastAPI Pytest Cases (`test_endpoints.py`)
   - [x] **VERTICAL SLICE 1: FROZEN & 100% HOÀN TẤT**
-- [/] **Vertical Slice 2: Japanese Manga-OCR & AI Processing Engine (PyTorch, Translation & Inpainting)**
+- [x] **Vertical Slice 2: Japanese Manga-OCR & AI Processing Engine (PyTorch, Translation & Inpainting)**
   - [x] **Vertical Slice 2A: Japanese Manga-OCR Foundation (100% HOÀN TẤT & FROZEN):**
     - [x] Core Migration 0004: Drop default `confidence`, hỗ trợ nullable semantics cho OCR segments.
     - [x] Core API validation: `WorkerSegmentDto` kiểm tra toạ độ pixel (`INT >= 0`) và `confidence` nullable.
@@ -52,7 +52,7 @@
     - [x] MangaOcrEngine Singleton: Concurrency guard (`asyncio.Semaphore(1)`), lazy loading, thread-safe.
     - [x] Debug Preview Generator: Xuất ảnh WebP hiển thị bounding box và nhãn `#1`, `#2` (không phụ thuộc font hệ điều hành).
     - [x] Test Pyramid: 150/150 tests passing (119 NestJS Core + 31 Python Pytest bao gồm Real HuggingFace Model test).
-  - [x] **Vertical Slice 2B: Contextual Translation & Glossary Engine (100% HOÀN TẤT):**
+  - [x] **Vertical Slice 2B: Contextual Translation & Glossary Engine (100% HOÀN TẤT & FROZEN):**
     - [x] Core Migration 0005: Thêm `input_manifest JSONB` vào `translation_jobs` để snapshot cố định tham số và glossary cho toàn bộ retry lifecycle.
     - [x] Core Service & DTO: Bổ sung `externalConsent` enforce cho external providers (HTTP 400 `EXTERNAL_PROVIDER_CONSENT_REQUIRED`), canonical glossary hashing (`sha256`), bảo toàn `inputManifest` qua idempotency replay, và fail-closed khi `input_manifest IS NULL`.
     - [x] Prompt Registry: Quản lý versioned system prompts (`manga-ja-vi-v1`), phân định ranh giới Prompt Injection.
@@ -74,8 +74,27 @@
     - [x] 3-Pass Streaming Disk Spill Architecture: `INPAINTING` $\rightarrow$ `TYPESETTING` $\rightarrow$ `QUALITY_CHECK` phân tách rõ ràng, giữ bộ nhớ $O(1)$ RAM và durable state phản ánh chính xác từng giai đoạn.
     - [x] CI/CD Automation & Reproducibility: Độc lập font OS với static Japanese fixture PNG, MinIO service container polling, migration bootstrap và force-exit sạch sẽ.
     - [x] Test Pyramid CI-Verified: **203/203 tests green (100%)** — 76 Python Pytest + 22 NestJS Unit + 105 NestJS E2E/Integration trên GitHub Actions run #10.
-- [x] **VERTICAL SLICE 2: FROZEN & 100% HOÀN TẤT**
-- [ ] **Vertical Slice 3: Light Novel Pipeline Slice**
-  - [ ] Text chunking & Segment alignment
-  - [ ] Khớp từ điển thuật ngữ (`glossaries` table) chống sai lệch tên riêng/chiêu thức
-  - [ ] Dịch văn phong tiểu thuyết qua LLM Adapter
+  - [x] **VERTICAL SLICE 2: FROZEN & 100% HOÀN TẤT**
+- [/] **Vertical Slice 3: Light Novel Translation Pipeline**
+  - [/] **Checkpoint 3A: Novel Parser, Segmenter & EPUB Security Sandbox (Code Complete - 105/105 Tests Green):**
+    - [x] `SafeNovelPackageExtractor`: Sandbox giải nén ZIP/EPUB, chặn path traversal (`..`, UNC, drive, null bytes), symlinks (`stat.S_ISLNK`), in-flight streaming byte counter (50MB text / 100MB total, ratio < 100:1, max 500 files), enforce single-chapter EPUB scope, fail-closed URL ngoài.
+    - [x] `NovelAstParser`: Canonical Document AST bất biến (`Heading`, `Paragraph`, `Blockquote`, `Illustration`, `Divider`), bảo toàn cấu trúc thẻ Ruby `<ruby><rt><rp>`, hỗ trợ HTML/Markdown/Plain Text.
+    - [x] `NovelSegmenter`: DFS deterministic trích xuất translatable blocks với `anchor_block_id` dạng `blk_{index:04d}_{tag}`, phân loại `DIALOGUE` (`「...」`, `『...』`) vs `NARRATION`.
+    - [x] Test Suite: 23 test security + 4 test parser + 2 test segmenter + 76 regression tests = **105/105 Pytest passed 100%**.
+  - [ ] **Checkpoint 3B: Novel Context Windowing & Translation Engine:**
+    - [ ] `NovelContextBuilder`: Gom cụm translatable blocks theo token budget (~1500-2000 tokens), phân tách `context_before`, `translate_blocks`, `context_after`.
+    - [ ] NFKC Shadow Glossary Matcher: Longest-match-first trên shadow string mà không mutate text nguồn `raw_text`.
+    - [ ] `NovelTranslationPipeline`: Nạp system prompt chuyên dụng Light Novel tiếng Nhật $\rightarrow$ tiếng Việt, bảo vệ ranh giới Prompt Injection.
+    - [ ] Strict 1:1 Anchor Validation: Kiểm tra `set(outputIds) == set(inputIds)`.
+    - [ ] Unit & integration tests cho Context, Glossary và LLM provider mock.
+  - [ ] **Checkpoint 3C: Novel Document Rebuilder & Structural QA:**
+    - [ ] `NovelDocumentRebuilder`: Thay thế plain text đã dịch vào đúng text nodes trên Document AST bất biến, HTML escaping an toàn (`&`, `<`, `>`, `"`).
+    - [ ] Defense-in-depth HTML Sanitization: Lọc theo whitelist thẻ cho phép, triệt tiêu inline scripts / event handlers.
+    - [ ] `NovelStructuralQAEvaluator`: Kiểm định toàn vẹn cấu trúc (khớp block count, cân bằng thẻ ruby, internal image refs, UTF-8 validity).
+    - [ ] `FullNovelPipeline`: Kết nối với `AttemptProgressCoordinator` phát đúng chuỗi stage `PREPROCESSING` $\rightarrow$ `TRANSLATING` $\rightarrow$ `QUALITY_CHECK` $
+ightarrow$ `READY_FOR_REVIEW`.
+  - [ ] **Checkpoint 3D: Core BullMQ Orchestration, Presigned NOVEL_HTML Upload & Full CI:**
+    - [ ] NestJS `translation.processor.ts`: Định tuyến `mediaFormat === 'NOVEL'` gọi `/internal/v1/jobs/process-novel`.
+    - [ ] Cập nhật `applyJob` lưu trữ asset `MediaAssetType.NOVEL_HTML` vào `ChapterVersion` mới (`CREATE_ALTERNATE` vs `OVERWRITE_ACTIVE`).
+    - [ ] Viết suite `translation-novel-worker.integration-spec.ts` kiểm thử đa dịch vụ với tiến trình Python FastAPI thật.
+    - [ ] Chạy toàn bộ Test Pyramid và kiểm chứng GitHub Actions CI Green 100% $\rightarrow$ Freeze Slice 3 & Freeze Phase 3.

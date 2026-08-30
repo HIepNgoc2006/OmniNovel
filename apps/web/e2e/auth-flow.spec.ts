@@ -162,10 +162,10 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
     const modal = page.getByRole('dialog');
     await expect(modal).toBeVisible();
 
-    // 2. Điền thông tin đăng nhập và Submit
+    // 2. Điền thông tin đăng nhập và Click nút Submit trong Form
     await modal.getByPlaceholder(/reader@omninovel.com hoặc novel_user/i).fill('novel_tester');
     await modal.getByPlaceholder('••••••••').fill('secure_password_123');
-    await modal.getByRole('button', { name: 'Đăng Nhập' }).click();
+    await modal.locator('form').getByRole('button', { name: 'Đăng Nhập' }).click();
 
     // 3. Modal tự đóng và Header hiển thị thông tin User & Gamification
     await expect(modal).not.toBeVisible();

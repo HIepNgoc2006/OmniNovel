@@ -1,6 +1,94 @@
 import { test, expect } from '@playwright/test';
 
-test.describe('Web Foundation & Authentication E2E Flow', () => {
+test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
+  test.beforeEach(async ({ page }) => {
+    // Mock Core API Endpoints for deterministic browser testing
+    await page.route('**/api/v1/stories**', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [],
+          meta: { total: 0, page: 1, limit: 8, totalPages: 1 },
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/auth/login', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          accessToken: 'mock_bearer_jwt_token_2026',
+          user: {
+            id: 'user-uuid-1',
+            username: 'novel_tester',
+            email: 'tester@omninovel.com',
+            role: 'USER',
+            avatarUrl: null,
+            createdAt: '2026-08-30T00:00:00.000Z',
+          },
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/auth/me', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          user: {
+            id: 'user-uuid-1',
+            username: 'novel_tester',
+            email: 'tester@omninovel.com',
+            role: 'USER',
+            avatarUrl: null,
+            createdAt: '2026-08-30T00:00:00.000Z',
+          },
+          permissions: ['READ_STORY', 'COMMENT'],
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/gamification/progression', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          userId: 'user-uuid-1',
+          totalExp: 450,
+          level: 5,
+          rankTitle: 'Độc Giả Tinh Anh',
+          currentLevelExp: 50,
+          nextLevelExp: 100,
+          omnicoinBalance: 150,
+          streak: 4,
+          lastCheckinDate: '2026-08-30',
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/auth/refresh', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          accessToken: 'mock_refreshed_jwt_token_2026',
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/auth/logout', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          message: 'Đăng xuất thành công.',
+        }),
+      });
+    });
+  });
+
   test('Khởi tạo trang chủ OmniNovel với Dark theme, Logo và Navigation Shell', async ({ page }) => {
     await page.goto('/');
 
@@ -31,31 +119,51 @@ test.describe('Web Foundation & Authentication E2E Flow', () => {
 
     // Click 2: light -> system
     await themeToggleBtn.click();
-    // System resolves to light or dark depending on OS preference
 
     // Click 3: system -> dark
     await themeToggleBtn.click();
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
   });
 
-  test('Mở và tương tác AuthModal (Đăng Nhập & Đăng Ký tabs)', async ({ page }) => {
+  test('Vertical Smoke: Login -> Progression UI -> Hard Reload F5 Restore Session -> Logout', async ({ page }) => {
     await page.goto('/');
 
+    // 1. Mở Modal Đăng Nhập
     const loginBtn = page.getByRole('button', { name: 'Đăng Nhập' });
     await loginBtn.click();
 
-    // Modal xuất hiện
     const modal = page.getByRole('dialog');
     await expect(modal).toBeVisible();
 
-    // Chuyển sang tab Đăng Ký
-    const registerTabBtn = modal.getByRole('button', { name: 'Đăng Ký Tài Khoản' });
-    await registerTabBtn.click();
-    await expect(modal.getByPlaceholder('novel_master')).toBeVisible();
+    // 2. Điền thông tin đăng nhập và Submit
+    await modal.getByPlaceholder(/reader@omninovel.com hoặc novel_user/i).fill('novel_tester');
+    await modal.getByPlaceholder('••••••••').fill('secure_password_123');
+    await modal.getByRole('button', { name: 'Đăng Nhập' }).click();
 
-    // Đóng modal bằng nút Esc hoặc nút X
-    await page.keyboard.press('Escape');
+    // 3. Modal tự đóng và Header hiển thị thông tin User & Gamification
     await expect(modal).not.toBeVisible();
+    await expect(page.getByText('novel_tester')).toBeVisible();
+    await expect(page.getByText('Lv.5')).toBeVisible();
+    await expect(page.getByText('150')).toBeVisible(); // OmniCoins
+
+    // 4. Truy cập trang Profile
+    await page.goto('/profile');
+    await expect(page.getByText('Độc Giả Tinh Anh')).toBeVisible();
+    await expect(page.getByText('450')).toBeVisible(); // Total EXP
+    await expect(page.getByText('4 ngày liên tiếp')).toBeVisible(); // Streak
+
+    // 5. Hard Reload (F5) để kiểm tra Session Hydration qua refresh token & getMe
+    await page.reload();
+    await expect(page.getByText('novel_tester')).toBeVisible();
+    await expect(page.getByText('Độc Giả Tinh Anh')).toBeVisible();
+
+    // 6. Mở User Dropdown và thực hiện Đăng Xuất
+    await page.getByRole('button', { name: 'novel_tester' }).click();
+    await page.getByRole('button', { name: 'Đăng Xuất' }).click();
+
+    // 7. Xác nhận đã trở về trạng thái Anonymous
+    await expect(page.getByRole('button', { name: 'Đăng Nhập' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Đăng Ký' })).toBeVisible();
   });
 
   test('Kiểm tra trang 404 tùy biến', async ({ page }) => {

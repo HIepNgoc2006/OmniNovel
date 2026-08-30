@@ -24,7 +24,6 @@ export function AuthModal({ isOpen, onClose, defaultTab = 'login' }: AuthModalPr
   const [registerEmail, setRegisterEmail] = useState('');
   const [registerUsername, setRegisterUsername] = useState('');
   const [registerPassword, setRegisterPassword] = useState('');
-  const [registerFullName, setRegisterFullName] = useState('');
 
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -41,10 +40,8 @@ export function AuthModal({ isOpen, onClose, defaultTab = 'login' }: AuthModalPr
     setIsLoading(true);
 
     try {
-      const isEmail = identifier.includes('@');
       await login({
-        email: isEmail ? identifier : undefined,
-        username: !isEmail ? identifier : undefined,
+        identifier: identifier.trim(),
         password: loginPassword,
       });
       onClose();
@@ -66,15 +63,14 @@ export function AuthModal({ isOpen, onClose, defaultTab = 'login' }: AuthModalPr
 
     try {
       const res = await registerApi({
-        email: registerEmail,
-        username: registerUsername,
+        email: registerEmail.trim(),
+        username: registerUsername.trim(),
         password: registerPassword,
-        fullName: registerFullName || undefined,
       });
       setSuccessMessage(res.message || 'Đăng ký tài khoản thành công! Vui lòng đăng nhập.');
-      setIdentifier(registerUsername);
+      setIdentifier(registerUsername.trim());
       setLoginPassword('');
-      // Chuyển sang tab login
+      // Chuyển sang tab login sau khi đăng ký
       setTab('login');
     } catch (err: any) {
       setErrorMessage(
@@ -151,7 +147,7 @@ export function AuthModal({ isOpen, onClose, defaultTab = 'login' }: AuthModalPr
                 required
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
-                placeholder="reader@omninovel.com hoặc user123"
+                placeholder="reader@omninovel.com hoặc novel_user"
                 className="w-full bg-slate-950 border border-slate-800 focus:border-red-500 rounded-xl pl-9 pr-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-red-500"
               />
             </div>
@@ -164,6 +160,7 @@ export function AuthModal({ isOpen, onClose, defaultTab = 'login' }: AuthModalPr
               <input
                 type="password"
                 required
+                minLength={8}
                 value={loginPassword}
                 onChange={(e) => setLoginPassword(e.target.value)}
                 placeholder="••••••••"
@@ -217,6 +214,7 @@ export function AuthModal({ isOpen, onClose, defaultTab = 'login' }: AuthModalPr
               <input
                 type="text"
                 required
+                minLength={3}
                 value={registerUsername}
                 onChange={(e) => setRegisterUsername(e.target.value)}
                 placeholder="novel_master"
@@ -226,27 +224,16 @@ export function AuthModal({ isOpen, onClose, defaultTab = 'login' }: AuthModalPr
           </div>
 
           <div>
-            <label className="block text-xs font-semibold text-slate-300 mb-1">Họ và tên (Tùy chọn)</label>
-            <input
-              type="text"
-              value={registerFullName}
-              onChange={(e) => setRegisterFullName(e.target.value)}
-              placeholder="Nguyễn Văn A"
-              className="w-full bg-slate-950 border border-slate-800 focus:border-red-500 rounded-xl px-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-red-500"
-            />
-          </div>
-
-          <div>
             <label className="block text-xs font-semibold text-slate-300 mb-1">Mật khẩu</label>
             <div className="relative">
               <Lock className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
               <input
                 type="password"
                 required
-                minLength={6}
+                minLength={8}
                 value={registerPassword}
                 onChange={(e) => setRegisterPassword(e.target.value)}
-                placeholder="Tối thiểu 6 ký tự"
+                placeholder="Tối thiểu 8 ký tự"
                 className="w-full bg-slate-950 border border-slate-800 focus:border-red-500 rounded-xl pl-9 pr-4 py-2.5 text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-red-500"
               />
             </div>

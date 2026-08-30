@@ -22,34 +22,91 @@ describe('Auth Memory Store & Single-Flight Refresh Invariant', () => {
     expect(memoryAuthStore.getAccessToken()).toBeNull();
   });
 
-  it('Single-Flight Invariant: 10 request đồng thời nhận 401 chỉ kích hoạt đúng 1 lần POST /auth/refresh', async () => {
+  it('Single-Flight Lock: 10 cuộc gọi refresh đồng thời chỉ kích hoạt đúng 1 lần POST /auth/refresh', async () => {
     let refreshCallCount = 0;
     const newAccessToken = 'fresh_rotated_access_token_777';
 
-    // Mock axios.post cho /auth/refresh
     vi.spyOn(axios, 'post').mockImplementation(async (url: string) => {
       if (url.includes('/auth/refresh')) {
         refreshCallCount++;
-        // Giả lập network delay nhẹ
         await new Promise((resolve) => setTimeout(resolve, 30));
         return { data: { accessToken: newAccessToken } };
       }
       return { data: {} };
     });
 
-    // Chạy 10 cuộc gọi refreshAccessToken đồng thời
     const refreshPromises = Array.from({ length: 10 }).map(() => refreshAccessToken());
     const results = await Promise.all(refreshPromises);
 
-    // Xác nhận: tất cả 10 promise đều nhận được token mới
     results.forEach((token) => {
       expect(token).toBe(newAccessToken);
     });
 
-    // Xác nhận bất biến cốt lõi: CHỈ GỌI REFRESH ĐÚNG 1 LẦN DUY NHẤT
     expect(refreshCallCount).toBe(1);
     expect(memoryAuthStore.getAccessToken()).toBe(newAccessToken);
     expect(memoryAuthStore.getStatus()).toBe('authenticated');
+  });
+
+  it('Axios Interceptor Concurrency: 10 requests đồng thời nhận 401 đều retry thành công và refresh đúng 1 lần', async () => {
+    let refreshCallCount = 0;
+    const newAccessToken = 'rotated_bearer_jwt_999';
+    let requestCount = 0;
+
+    // Giả lập backend endpoint /auth/refresh
+    vi.spyOn(axios, 'post').mockImplementation(async (url: string) => {
+      if (url.includes('/auth/refresh')) {
+        refreshCallCount++;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { data: { accessToken: newAccessToken } };
+      }
+      return { data: {} };
+    });
+
+    // Mock apiClient adapter để trả về 401 ở lần đầu, và 200 OK khi có token mới
+    const customAdapter = async (config: any) => {
+      requestCount++;
+      const authHeader = config.headers?.Authorization;
+
+      if (!authHeader || authHeader !== `Bearer ${newAccessToken}`) {
+        const error: any = new Error('Request failed with status code 401');
+        error.response = {
+          status: 401,
+          data: { message: 'Unauthorized' },
+          statusText: 'Unauthorized',
+          headers: {},
+          config,
+        };
+        error.config = config;
+        return Promise.reject(error);
+      }
+
+      return {
+        data: { success: true, storyId: 'story-uuid-123' },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config,
+      };
+    };
+
+    apiClient.defaults.adapter = customAdapter;
+
+    // Bắn 10 request đồng thời qua apiClient
+    const requests = Array.from({ length: 10 }).map((_, idx) =>
+      apiClient.get(`/stories/item-${idx}`),
+    );
+
+    const responses = await Promise.all(requests);
+
+    // Xác nhận cả 10 response đều trả về data thành công sau retry
+    responses.forEach((res) => {
+      expect(res.status).toBe(200);
+      expect(res.data.success).toBe(true);
+    });
+
+    // Invariant: refreshAccessToken chỉ chạy đúng 1 lần duy nhất cho toàn bộ 10 requests
+    expect(refreshCallCount).toBe(1);
+    expect(memoryAuthStore.getAccessToken()).toBe(newAccessToken);
   });
 
   it('Refresh Failure Invariant: Khi refresh thất bại, xóa sạch session và chuyển về anonymous không retry loop', async () => {

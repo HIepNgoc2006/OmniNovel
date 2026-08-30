@@ -14,7 +14,7 @@ export function MobileNav() {
   const isTranslatorOrAdmin =
     isAuthenticated &&
     user &&
-    (user.globalRole === GlobalRole.TRANSLATOR || user.globalRole === GlobalRole.ADMIN);
+    (user.role === GlobalRole.TRANSLATOR || user.role === GlobalRole.ADMIN);
 
   const navItems = [
     { href: '/', label: 'Trang Chủ', icon: Home },

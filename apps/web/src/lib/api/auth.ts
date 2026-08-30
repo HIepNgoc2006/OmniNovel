@@ -5,16 +5,13 @@ export interface UserProfile {
   id: string;
   email: string;
   username: string;
-  fullName?: string;
-  avatarUrl?: string;
-  globalRole: GlobalRole;
-  isActive: boolean;
-  createdAt: string;
+  role: GlobalRole | string;
+  avatarUrl?: string | null;
+  createdAt?: string;
 }
 
 export interface LoginRequest {
-  email?: string;
-  username?: string;
+  identifier: string;
   password: string;
 }
 
@@ -24,10 +21,9 @@ export interface LoginResponse {
 }
 
 export interface RegisterRequest {
-  email: string;
   username: string;
+  email: string;
   password: string;
-  fullName?: string;
 }
 
 export interface RegisterResponse {
@@ -36,7 +32,15 @@ export interface RegisterResponse {
     id: string;
     email: string;
     username: string;
+    role?: string;
+    avatarUrl?: string | null;
+    createdAt?: string;
   };
+}
+
+export interface GetMeResponse {
+  user: UserProfile;
+  permissions: string[];
 }
 
 export async function loginApi(data: LoginRequest): Promise<LoginResponse> {
@@ -55,6 +59,6 @@ export async function logoutApi(): Promise<{ message: string }> {
 }
 
 export async function getMeApi(): Promise<UserProfile> {
-  const response = await apiClient.get<UserProfile>('/auth/me');
-  return response.data;
+  const response = await apiClient.get<GetMeResponse>('/auth/me');
+  return response.data.user;
 }

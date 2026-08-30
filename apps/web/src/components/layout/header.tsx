@@ -76,8 +76,8 @@ export function Header() {
                 Light Novel
               </Link>
               {isAuthenticated &&
-                (user?.globalRole === GlobalRole.TRANSLATOR ||
-                  user?.globalRole === GlobalRole.ADMIN) && (
+                (user?.role === GlobalRole.TRANSLATOR ||
+                  user?.role === GlobalRole.ADMIN) && (
                   <Link
                     href="/studio"
                     className="text-red-400 hover:text-red-300 flex items-center gap-1 transition-colors"
@@ -161,15 +161,15 @@ export function Header() {
                       {user.avatarUrl ? (
                         <img
                           src={user.avatarUrl}
-                          alt={user.username}
+                          alt={user.username || 'User'}
                           className="w-full h-full rounded-full object-cover"
                         />
                       ) : (
-                        user.username.charAt(0).toUpperCase()
+                        (user.username?.charAt(0) || 'U').toUpperCase()
                       )}
                     </div>
                     <span className="text-xs font-semibold text-slate-200 hidden sm:inline max-w-[100px] truncate">
-                      {user.username}
+                      {user.username || 'User'}
                     </span>
                   </button>
 
@@ -180,11 +180,11 @@ export function Header() {
                       onClick={() => setIsUserMenuOpen(false)}
                     >
                       <div className="px-4 py-2 border-b border-slate-800">
-                        <p className="text-xs font-bold text-white truncate">{user.fullName || user.username}</p>
+                        <p className="text-xs font-bold text-white truncate">{user.username}</p>
                         <p className="text-[11px] text-slate-400 truncate">{user.email}</p>
                         <div className="mt-1">
-                          <Badge variant={user.globalRole === GlobalRole.ADMIN ? 'warning' : 'primary'}>
-                            {user.globalRole}
+                          <Badge variant={user.role === GlobalRole.ADMIN ? 'warning' : 'primary'}>
+                            {user.role}
                           </Badge>
                         </div>
                       </div>
@@ -197,7 +197,7 @@ export function Header() {
                         <span>Hồ Sơ & Cấp Độ</span>
                       </Link>
 
-                      {(user.globalRole === GlobalRole.TRANSLATOR || user.globalRole === GlobalRole.ADMIN) && (
+                      {(user.role === GlobalRole.TRANSLATOR || user.role === GlobalRole.ADMIN) && (
                         <Link
                           href="/studio"
                           className="flex items-center gap-2 px-4 py-2 text-xs text-red-400 hover:text-red-300 hover:bg-slate-800 transition-colors"

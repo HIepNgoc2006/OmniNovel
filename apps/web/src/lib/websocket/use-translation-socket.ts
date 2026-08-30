@@ -7,22 +7,27 @@ import { TranslationJobStatus } from '@omninovel/shared';
 
 export interface JobProgressEvent {
   jobId: string;
-  stage: TranslationJobStatus;
-  progressPercentage: number;
-  attemptNumber: number;
-  sequence: number;
+  stage: TranslationJobStatus | string;
+  progress: number;
+  heartbeatAt?: string | Date;
   timestamp: string;
 }
 
 export interface JobReadyEvent {
   jobId: string;
-  resultManifest: Record<string, any>;
+  targetVersionId?: string;
+  resultManifest?: Record<string, any>;
   timestamp: string;
 }
 
 export interface JobFailedEvent {
   jobId: string;
-  errorMessage?: string;
+  errorTrace: string;
+  timestamp: string;
+}
+
+export interface JobCanceledEvent {
+  jobId: string;
   timestamp: string;
 }
 
@@ -31,10 +36,10 @@ export interface UseTranslationSocketOptions {
   onProgress?: (event: JobProgressEvent) => void;
   onReady?: (event: JobReadyEvent) => void;
   onFailed?: (event: JobFailedEvent) => void;
-  onCanceled?: (data: { jobId: string; reason?: string }) => void;
+  onCanceled?: (event: JobCanceledEvent) => void;
 }
 
-const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:4000';
+const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:8000';
 
 export function useTranslationSocket({
   jobId,
@@ -60,7 +65,8 @@ export function useTranslationSocket({
     }
 
     // Nếu socket đã kết nối với đúng token, không cần tạo mới
-    if (socketRef.current?.connected) {
+    const authObj = socketRef.current?.auth as Record<string, any> | undefined;
+    if (socketRef.current?.connected && authObj?.token === token) {
       return;
     }
 
@@ -112,7 +118,7 @@ export function useTranslationSocket({
       }
     });
 
-    socket.on('job_canceled', (data: { jobId: string; reason?: string }) => {
+    socket.on('job_canceled', (data: JobCanceledEvent) => {
       if (!jobId || data.jobId === jobId) {
         onCanceled?.(data);
       }
@@ -124,18 +130,25 @@ export function useTranslationSocket({
   useEffect(() => {
     connectSocket();
 
-    // Lắng nghe sự kiện token rotation để reconnect với token mới
+    // Lắng nghe sự kiện token rotation để reconnect ngay với token mới
     const unsubscribe = memoryAuthStore.subscribe(() => {
       const currentToken = memoryAuthStore.getAccessToken();
       if (currentToken && socketRef.current) {
-        socketRef.current.auth = { token: currentToken };
-        if (!socketRef.current.connected) {
-          socketRef.current.connect();
+        const authRecord = socketRef.current.auth as Record<string, any> | undefined;
+        if (authRecord?.token !== currentToken) {
+          socketRef.current.auth = { token: currentToken };
+          if (socketRef.current.connected) {
+            socketRef.current.disconnect().connect();
+          } else {
+            socketRef.current.connect();
+          }
         }
       } else if (!currentToken && socketRef.current) {
         socketRef.current.disconnect();
         socketRef.current = null;
         setIsConnected(false);
+      } else if (currentToken && !socketRef.current) {
+        connectSocket();
       }
     });
 

@@ -1,6 +1,6 @@
 import os
 import uuid
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Union
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 import httpx
@@ -33,15 +33,32 @@ class HealthResponse(BaseModel):
 async def health_check():
     return HealthResponse(status="healthy", service="omninovel-ai-worker")
 
-async def request_output_upload_urls(job_id: str, attempt_number: int, filenames: List[str]) -> List[Dict[str, Any]]:
+async def request_output_upload_urls(
+    job_id: str,
+    attempt_number: int,
+    filenames_or_specs: List[Union[str, Dict[str, str]]],
+) -> List[Dict[str, Any]]:
     """
-    Giai đoạn 2 của Two-Step Upload: Xin Core API cấp Presigned PUT URLs cho các trang output.
+    Giai đoạn 2 của Two-Step Upload: Xin Core API cấp Presigned PUT URLs cho các file output (Manga & Novel).
     Fail-fast: Ném HTTPException(502) nếu Core API trả lỗi hoặc không cấp được URLs.
     """
     url = f"{settings.CORE_API_INTERNAL_URL}/internal/v1/ai/jobs/{job_id}/output-uploads"
+    normalized_files = []
+    for item in filenames_or_specs:
+        if isinstance(item, dict):
+            normalized_files.append({
+                "filename": item["filename"],
+                "contentType": item.get("contentType", "application/octet-stream"),
+            })
+        else:
+            normalized_files.append({
+                "filename": str(item),
+                "contentType": "image/webp",
+            })
+
     payload = {
         "attemptNumber": attempt_number,
-        "files": [{"filename": fn, "contentType": "image/webp"} for fn in filenames],
+        "files": normalized_files,
     }
     headers = {
         "Content-Type": "application/json",

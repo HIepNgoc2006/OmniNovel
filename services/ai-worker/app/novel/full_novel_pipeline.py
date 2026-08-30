@@ -2,14 +2,15 @@ import asyncio
 import io
 import logging
 from pathlib import Path
+import re
 import shutil
 import tempfile
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Union
 
 from app.core.ssrf_safe_downloader import safe_download_archive
 from app.novel.ast_parser import CanonicalNovelDocument, NovelAstParser
 from app.novel.inline_anchors import InlineAnchorCodec, InlineAnchorMap
-from app.novel.qa_evaluator import NovelQAResult, NovelStructuralQAEvaluator
+from app.novel.qa_evaluator import NovelQAResult, NovelQualityGateError, NovelStructuralQAEvaluator
 from app.novel.rebuilder import NovelDocumentRebuilder
 from app.novel.security import ExtractedEpubChapter, SafeNovelPackageExtractor
 from app.novel.segmenter import NovelSegmenter, TranslatableBlock
@@ -138,32 +139,92 @@ class FullNovelPipeline:
             qa_result: NovelQAResult = self.qa.evaluate(source_doc, translated_doc)
             logger.info(
                 f"[NovelPipeline] QA Evaluator score={qa_result.score}, passed={qa_result.passed}, "
-                f"issues={len(qa_result.issues)}"
+                f"fingerprint_match={qa_result.fingerprint_match}, issues={len(qa_result.issues)}"
             )
 
-            # Tuần tự hóa cây AST thành chuỗi HTML5 context-aware auto-escaped
-            serialized_html = NovelDocumentSerializer.serialize_to_html(translated_doc)
-            output_html_path = work_dir / "translated.html"
-            output_html_path.write_text(serialized_html, encoding="utf-8")
+            # Invariant P0: Fail-closed QA Gate - Chặn mọi upload/ready nếu QA không đạt
+            if not qa_result.passed or not qa_result.fingerprint_match:
+                err_msg = (
+                    f"Novel Quality Gate Failed: passed={qa_result.passed}, "
+                    f"fingerprint_match={qa_result.fingerprint_match}, "
+                    f"issues_count={len(qa_result.issues)}"
+                )
+                logger.error(f"[NovelPipeline] {err_msg}")
+                raise NovelQualityGateError(err_msg)
 
             # -------------------------------------------------------------
             # Stage 4: Upload Outputs & READY_FOR_REVIEW (100%)
             # -------------------------------------------------------------
             uploaded_html_key = f"chapters/{job_id}/novel_translated.html"
             uploaded_assets: List[Dict[str, Any]] = []
+            asset_map: Dict[str, str] = {}
+
+            # Xây dựng danh sách upload slots có định kiểu (Typed Content-Type) & chống va chạm tên file
+            asset_href_to_slot_name: Dict[str, str] = {}
+            asset_href_to_content_type: Dict[str, str] = {}
+            for href, asset_path in extracted_chapter.image_assets.items():
+                sanitized_slot_name = re.sub(r'[^a-zA-Z0-9._-]', '_', href.strip().lstrip('/'))
+                asset_href_to_slot_name[href] = sanitized_slot_name
+                suffix = asset_path.suffix.lower()
+                if suffix in ('.png',):
+                    content_type = 'image/png'
+                elif suffix in ('.jpg', '.jpeg'):
+                    content_type = 'image/jpeg'
+                elif suffix in ('.webp',):
+                    content_type = 'image/webp'
+                elif suffix in ('.gif',):
+                    content_type = 'image/gif'
+                elif suffix in ('.svg',):
+                    content_type = 'image/svg+xml'
+                else:
+                    content_type = 'application/octet-stream'
+                asset_href_to_content_type[href] = content_type
 
             # Upload qua presigned URL nếu có uploader được cung cấp
             if self.request_upload_urls and self.upload_file:
-                # Xin presigned upload URLs từ Core API
-                filenames = ["novel_translated.html"]
-                # Thêm danh sách ảnh minh họa nếu có
-                for asset_path in extracted_chapter.image_assets.values():
-                    filenames.append(asset_path.name)
+                # Chuẩn bị danh sách upload slots có typed Content-Type
+                file_specs: List[Dict[str, str]] = [
+                    {"filename": "novel_translated.html", "contentType": "text/html; charset=utf-8"}
+                ]
+                for href, slot_name in asset_href_to_slot_name.items():
+                    file_specs.append({
+                        "filename": slot_name,
+                        "contentType": asset_href_to_content_type[href],
+                    })
 
-                upload_slots = await self.request_upload_urls(job_id, attempt_number, filenames)
+                upload_slots = await self.request_upload_urls(job_id, attempt_number, file_specs)
                 slot_map = {s["filename"]: s for s in upload_slots}
 
-                # Upload HTML file
+                # Upload Asset files và xây dựng asset_map cho serializer
+                for href, asset_path in extracted_chapter.image_assets.items():
+                    slot_name = asset_href_to_slot_name[href]
+                    if slot_name in slot_map:
+                        a_slot = slot_map[slot_name]
+                        ct = asset_href_to_content_type[href]
+                        await self.upload_file(
+                            a_slot["uploadUrl"],
+                            asset_path.read_bytes(),
+                            ct,
+                        )
+                        storage_key = a_slot["storageKey"]
+                        asset_map[href] = storage_key
+                        asset_map[slot_name] = storage_key
+                        asset_map[Path(href).name] = storage_key
+                        uploaded_assets.append({
+                            "filename": slot_name,
+                            "originalHref": href,
+                            "storageKey": storage_key,
+                        })
+
+                # Tuần tự hóa cây AST với asset_map đã ánh xạ storageKey thực tế
+                serialized_html = NovelDocumentSerializer.serialize_to_html(
+                    translated_doc,
+                    asset_map=asset_map,
+                )
+                output_html_path = work_dir / "translated.html"
+                output_html_path.write_text(serialized_html, encoding="utf-8")
+
+                # Upload HTML file với đúng Content-Type text/html; charset=utf-8
                 if "novel_translated.html" in slot_map:
                     html_slot = slot_map["novel_translated.html"]
                     await self.upload_file(
@@ -172,20 +233,11 @@ class FullNovelPipeline:
                         "text/html; charset=utf-8",
                     )
                     uploaded_html_key = html_slot["storageKey"]
-
-                # Upload Asset files
-                for asset_path in extracted_chapter.image_assets.values():
-                    if asset_path.name in slot_map:
-                        a_slot = slot_map[asset_path.name]
-                        await self.upload_file(
-                            a_slot["uploadUrl"],
-                            asset_path.read_bytes(),
-                            "application/octet-stream",
-                        )
-                        uploaded_assets.append({
-                            "filename": asset_path.name,
-                            "storageKey": a_slot["storageKey"],
-                        })
+            else:
+                # Fallback khi test nội bộ không truyền upload helpers
+                serialized_html = NovelDocumentSerializer.serialize_to_html(translated_doc)
+                output_html_path = work_dir / "translated.html"
+                output_html_path.write_text(serialized_html, encoding="utf-8")
 
             # Chuẩn bị segments payload cho biên tập viên duyệt
             segments_payload: List[Dict[str, Any]] = []

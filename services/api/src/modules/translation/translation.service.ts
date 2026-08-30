@@ -525,6 +525,18 @@ export class TranslationService {
         );
       }
 
+      // Invariant P0: Defense-in-depth gate cho Novel Structural QA
+      if (job.resultManifest?.mediaFormat === 'NOVEL') {
+        if (
+          job.resultManifest?.qa?.passed !== true ||
+          job.resultManifest?.qa?.fingerprintMatch !== true
+        ) {
+          throw new BadRequestException(
+            'Không thể apply Novel translation job: Kiểm định chất lượng cấu trúc (Structural QA) không đạt yêu cầu (passed=false hoặc fingerprintMatch=false).',
+          );
+        }
+      }
+
       await manager.query(
         `SELECT id FROM chapters WHERE id = $1 FOR UPDATE`,
         [job.sourceVersion.chapterId],
@@ -705,39 +717,101 @@ export class TranslationService {
     // 1. Kiểm tra stage hợp lệ từ worker
     assertWorkerReportableState(eventDto.stage);
 
-    // 2. Validate prefix jail trên result_manifest
-    if (
-      eventDto.resultManifest?.pages &&
-      Array.isArray(eventDto.resultManifest.pages)
-    ) {
-      const allowedPrefix = `ai/jobs/${jobId}/attempt-${eventDto.attemptNumber}/`;
-      for (const page of eventDto.resultManifest.pages) {
-        const key = page.previewKey || page.storageKey;
-        if (key && !key.startsWith(allowedPrefix)) {
+    // 2. Validate prefix jail trên result_manifest (Cả Manga và Novel)
+    const allowedPrefix = `ai/jobs/${jobId}/attempt-${eventDto.attemptNumber}/`;
+    if (eventDto.resultManifest) {
+      if (
+        eventDto.resultManifest.pages &&
+        Array.isArray(eventDto.resultManifest.pages)
+      ) {
+        for (const page of eventDto.resultManifest.pages) {
+          const key = page.previewKey || page.storageKey;
+          if (key && !key.startsWith(allowedPrefix)) {
+            throw new BadRequestException(
+              `Storage key trong result_manifest (${key}) không nằm trong prefix được cấp phép: ${allowedPrefix}`,
+            );
+          }
+        }
+      }
+
+      if (eventDto.resultManifest.htmlKey) {
+        if (!eventDto.resultManifest.htmlKey.startsWith(allowedPrefix)) {
           throw new BadRequestException(
-            `Storage key trong result_manifest (${key}) không nằm trong prefix được cấp phép: ${allowedPrefix}`,
+            `HTML storage key trong result_manifest (${eventDto.resultManifest.htmlKey}) không nằm trong prefix được cấp phép: ${allowedPrefix}`,
           );
+        }
+      }
+
+      if (
+        eventDto.resultManifest.assets &&
+        Array.isArray(eventDto.resultManifest.assets)
+      ) {
+        for (const asset of eventDto.resultManifest.assets) {
+          const key = asset.storageKey;
+          if (key && !key.startsWith(allowedPrefix)) {
+            throw new BadRequestException(
+              `Asset storage key trong result_manifest (${key}) không nằm trong prefix được cấp phép: ${allowedPrefix}`,
+            );
+          }
         }
       }
     }
 
     // 3. Nếu là READY_FOR_REVIEW -> Xác thực file thật trong MinIO NGOÀI Transaction DB
     if (eventDto.stage === TranslationJobStatus.READY_FOR_REVIEW) {
-      if (
-        eventDto.resultManifest?.pages &&
-        Array.isArray(eventDto.resultManifest.pages)
-      ) {
-        for (const page of eventDto.resultManifest.pages) {
-          const key = page.previewKey || page.storageKey;
-          if (key) {
-            const exists = await this.storageService.headInternalObject(
-              key,
-              true,
-            );
-            if (!exists) {
-              throw new BadRequestException(
-                `ARTIFACT_NOT_FOUND_IN_STORAGE: Object ${key} không tồn tại trong MinIO storage.`,
+      if (eventDto.resultManifest) {
+        // Manga pages verification (Manga Bucket)
+        if (
+          eventDto.resultManifest.pages &&
+          Array.isArray(eventDto.resultManifest.pages) &&
+          eventDto.resultManifest.pages.length > 0
+        ) {
+          for (const page of eventDto.resultManifest.pages) {
+            const key = page.previewKey || page.storageKey;
+            if (key) {
+              const exists = await this.storageService.headInternalObject(
+                key,
+                true,
               );
+              if (!exists) {
+                throw new BadRequestException(
+                  `ARTIFACT_NOT_FOUND_IN_STORAGE: Manga page ${key} không tồn tại trong MinIO storage.`,
+                );
+              }
+            }
+          }
+        }
+
+        // Novel HTML verification (Novel Bucket)
+        if (eventDto.resultManifest.htmlKey) {
+          const exists = await this.storageService.headInternalObject(
+            eventDto.resultManifest.htmlKey,
+            false,
+          );
+          if (!exists) {
+            throw new BadRequestException(
+              `ARTIFACT_NOT_FOUND_IN_STORAGE: Novel HTML ${eventDto.resultManifest.htmlKey} không tồn tại trong MinIO storage.`,
+            );
+          }
+        }
+
+        // Novel Assets verification (Novel Bucket)
+        if (
+          eventDto.resultManifest.assets &&
+          Array.isArray(eventDto.resultManifest.assets)
+        ) {
+          for (const asset of eventDto.resultManifest.assets) {
+            const key = asset.storageKey;
+            if (key) {
+              const exists = await this.storageService.headInternalObject(
+                key,
+                false,
+              );
+              if (!exists) {
+                throw new BadRequestException(
+                  `ARTIFACT_NOT_FOUND_IN_STORAGE: Novel asset ${key} không tồn tại trong MinIO storage.`,
+                );
+              }
             }
           }
         }

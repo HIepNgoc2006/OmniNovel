@@ -21,6 +21,11 @@ from app.novel.ast_parser import (
 from app.novel.serializer import NovelDocumentSerializer
 
 
+class NovelQualityGateError(RuntimeError):
+    """Ném ra khi bản dịch Novel không vượt qua bài kiểm định chất lượng cấu trúc (QA Gate Fail-Closed)."""
+    pass
+
+
 class QASeverity(str, Enum):
     INFO = "INFO"
     WARNING = "WARNING"

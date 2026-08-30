@@ -1,6 +1,6 @@
 import html
 import re
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from app.novel.ast_parser import (
     BlockquoteBlockNode,
@@ -37,14 +37,16 @@ class NovelDocumentSerializer:
         cls,
         doc: CanonicalNovelDocument,
         include_html_wrapper: bool = True,
+        asset_map: Optional[Dict[str, str]] = None,
     ) -> str:
         """
         Tuần tự hóa toàn bộ CanonicalNovelDocument thành chuỗi HTML5 hoàn chỉnh hoặc HTML fragment.
+        Nếu asset_map được cung cấp, các đường dẫn ảnh minh họa (src) sẽ được ánh xạ lại.
         """
         body_parts: List[str] = []
 
         for block in doc.blocks:
-            rendered = cls._render_block(block)
+            rendered = cls._render_block(block, asset_map=asset_map)
             if rendered:
                 body_parts.append(rendered)
 
@@ -70,23 +72,39 @@ class NovelDocumentSerializer:
         )
 
     @classmethod
-    def _render_block(cls, block: NovelBlockNode) -> str:
+    def _resolve_src(cls, raw_src: str, asset_map: Optional[Dict[str, str]] = None) -> str:
+        if not asset_map or not raw_src:
+            return raw_src
+        clean_src = raw_src.strip()
+        if clean_src in asset_map:
+            return asset_map[clean_src]
+        posix_src = clean_src.replace("\\", "/")
+        if posix_src in asset_map:
+            return asset_map[posix_src]
+        base_name = posix_src.split("/")[-1]
+        if base_name in asset_map:
+            return asset_map[base_name]
+        return clean_src
+
+    @classmethod
+    def _render_block(cls, block: NovelBlockNode, asset_map: Optional[Dict[str, str]] = None) -> str:
         if isinstance(block, HeadingBlockNode):
             lvl = min(max(block.level, 1), 6)
-            inner_html = "".join(cls._render_inline(c) for c in block.children)
+            inner_html = "".join(cls._render_inline(c, asset_map=asset_map) for c in block.children)
             return f"    <h{lvl}>{inner_html}</h{lvl}>"
 
         elif isinstance(block, ParagraphBlockNode):
-            inner_html = "".join(cls._render_inline(c) for c in block.children)
+            inner_html = "".join(cls._render_inline(c, asset_map=asset_map) for c in block.children)
             return f"    <p>{inner_html}</p>"
 
         elif isinstance(block, BlockquoteBlockNode):
-            sub_parts = [cls._render_block(c) for c in block.children]
+            sub_parts = [cls._render_block(c, asset_map=asset_map) for c in block.children]
             joined = "\n".join(sub_parts)
             return f"    <blockquote>\n{joined}\n    </blockquote>"
 
         elif isinstance(block, IllustrationBlockNode):
-            safe_src = cls._sanitize_url(block.src)
+            resolved_src = cls._resolve_src(block.src, asset_map)
+            safe_src = cls._sanitize_url(resolved_src)
             alt_attr = f' alt="{html.escape(block.alt, quote=True)}"' if block.alt else ""
             img_tag = f'<img src="{safe_src}"{alt_attr} />'
 
@@ -101,16 +119,16 @@ class NovelDocumentSerializer:
         return ""
 
     @classmethod
-    def _render_inline(cls, node: NovelInlineNode) -> str:
+    def _render_inline(cls, node: NovelInlineNode, asset_map: Optional[Dict[str, str]] = None) -> str:
         if isinstance(node, TextNode):
             return html.escape(node.text, quote=False)
 
         elif isinstance(node, StrongNode):
-            inner = "".join(cls._render_inline(c) for c in node.children)
+            inner = "".join(cls._render_inline(c, asset_map=asset_map) for c in node.children)
             return f"<strong>{inner}</strong>"
 
         elif isinstance(node, EmphasisNode):
-            inner = "".join(cls._render_inline(c) for c in node.children)
+            inner = "".join(cls._render_inline(c, asset_map=asset_map) for c in node.children)
             return f"<em>{inner}</em>"
 
         elif isinstance(node, RubyNode):
@@ -122,7 +140,8 @@ class NovelDocumentSerializer:
             return f"<ruby><rb>{base_esc}</rb><rt>{rt_esc}</rt></ruby>"
 
         elif isinstance(node, InlineImageNode):
-            safe_src = cls._sanitize_url(node.src)
+            resolved_src = cls._resolve_src(node.src, asset_map)
+            safe_src = cls._sanitize_url(resolved_src)
             alt_attr = f' alt="{html.escape(node.alt, quote=True)}"' if node.alt else ""
             return f'<img src="{safe_src}"{alt_attr} />'
 

@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 import re
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from app.novel.ast_parser import (
     EmphasisNode,
@@ -20,6 +20,11 @@ from app.novel.ast_parser import (
 ANCHOR_OPEN_TAG_RE = re.compile(r"⟦([A-Z]+):(\d{4})⟧")
 ANCHOR_CLOSE_TAG_RE = re.compile(r"⟦/([A-Z]+):(\d{4})⟧")
 ANCHOR_ANY_TAG_RE = re.compile(r"⟦(/?[A-Z]+):?(\d{4})?⟧")
+
+
+class InlineAnchorMismatchError(Exception):
+    """Lỗi khi các thẻ protected inline tags bị mất, thừa, sai thứ tự hoặc sai kiểu dữ liệu."""
+    pass
 
 
 @dataclass(frozen=True)
@@ -63,7 +68,8 @@ class InlineAnchorCodec:
     - Chuyển đổi danh sách NovelInlineNode thành chuỗi văn bản chứa protected tags ⟦...⟧.
     - Giải mã chuỗi văn bản đã dịch chứa protected tags trở lại cây NovelInlineNode chuẩn xác 100%.
     - Bảo toàn nguyên vẹn furigana <rt> và image src mà không cần LLM can thiệp.
-    - Chịu lỗi (Fault-tolerant): Nếu LLM làm rơi tag đóng/mở, tự động fallback an toàn không gây crash.
+    - Chế độ nghiêm ngặt (Strict Mode - Mặc định): Enforce 1:1 exact set anchor IDs, reject unknown/duplicate/unclosed tags.
+    - Chế độ chịu lỗi (Tolerant Mode): Chỉ dùng cho preview/fallback khi strict=False.
     """
 
     @classmethod
@@ -123,32 +129,45 @@ class InlineAnchorCodec:
         return "".join(encoded_parts), anchor_map, current_idx
 
     @classmethod
-    def decode(cls, text: str, anchor_map: InlineAnchorMap) -> List[NovelInlineNode]:
+    def decode(
+        cls,
+        text: str,
+        anchor_map: InlineAnchorMap,
+        strict: bool = True,
+    ) -> List[NovelInlineNode]:
         """
         Giải mã chuỗi văn bản dịch chứa protected tags thành danh sách NovelInlineNode.
+        - strict=True (Mặc định cho Production): Bắt buộc khớp 100% exact set anchor IDs,
+          không thiếu, không thừa, không trùng lặp, không sai kiểu tag và lồng nhau đúng chuẩn.
+        - strict=False (Preview/Fallback): Tự phục hồi khi mất tag đóng.
         """
         if not text:
             return []
 
+        pattern = re.compile(r"⟦(/?[A-Z]+):?(\d{4})?⟧")
+
+        # 1. Nếu không có anchor nào được mong đợi
         if not anchor_map.has_anchors():
-            # Nếu không có protected anchors nào được ghi nhận, trả về TextNode đơn thuần
-            # Đồng thời làm sạch mọi thẻ ⟦...⟧ rác nếu có
+            if strict:
+                found_tags = pattern.findall(text)
+                if found_tags:
+                    raise InlineAnchorMismatchError(
+                        f"Phát hiện thẻ protected inline tag không mong đợi trong block: {found_tags}"
+                    )
             cleaned_text = ANCHOR_ANY_TAG_RE.sub("", text)
             return [TextNode(cleaned_text)] if cleaned_text else []
 
-        # Tokenize text thành các phần text thuần và tags
-        tokens = ANCHOR_ANY_TAG_RE.split(text)
-        # re.split với 2 capture groups trả về: [text, tag_name, anchor_id, text, ...]
-        
-        # Sử dụng Regex Match Scanner tuần tự để phân tích ngữ pháp cây
-        pattern = re.compile(r"⟦(/?[A-Z]+):?(\d{4})?⟧")
+        # 2. Strict Validation Pre-check
+        if strict:
+            cls._validate_strict_invariants(text, anchor_map, pattern)
+
+        # 3. Phân tích ngữ pháp cây (Tree Parsing)
         pos = 0
         nodes: List[NovelInlineNode] = []
         stack: List[Tuple[str, str, List[NovelInlineNode]]] = []  # (tag_type, anchor_id, children)
 
         for match in pattern.finditer(text):
             start, end = match.span()
-            # 1. Đoạn text trước tag
             if start > pos:
                 plain_piece = text[pos:start]
                 if plain_piece:
@@ -162,7 +181,7 @@ class InlineAnchorCodec:
             aid = match.group(2) or ""
 
             # Tag tự đóng: Inline Image
-            if tag_content == "IMG" and aid:
+            if tag_content == "IMG":
                 meta = anchor_map.get(aid)
                 img_node = InlineImageNode(
                     src=meta.image_src if meta else "",
@@ -180,36 +199,39 @@ class InlineAnchorCodec:
             # Tag đóng: /S, /E, /R
             else:
                 close_type = tag_content.lstrip("/")
-                # Tìm tag mở tương ứng trên stack
-                match_idx = -1
-                for idx in range(len(stack) - 1, -1, -1):
-                    if stack[idx][0] == close_type and (not aid or stack[idx][1] == aid):
-                        match_idx = idx
-                        break
-
-                if match_idx != -1:
-                    # Pop tới match_idx
-                    popped_type, popped_id, children = stack.pop(match_idx)
-                    meta = anchor_map.get(popped_id)
-
-                    constructed_node: Optional[NovelInlineNode] = None
-                    if popped_type == "S":
-                        constructed_node = StrongNode(children=children)
-                    elif popped_type == "E":
-                        constructed_node = EmphasisNode(children=children)
-                    elif popped_type == "R":
-                        base_text = "".join(c.to_plain_text() for c in children) if children else ""
-                        constructed_node = RubyNode(
-                            base_text=base_text,
-                            ruby_text=meta.ruby_text if meta and meta.ruby_text else "",
-                            parenthesis_text=meta.parenthesis_text if meta else None,
+                if strict:
+                    # Trong strict mode, thẻ đóng bắt buộc phải khớp với thẻ trên đỉnh stack
+                    if not stack:
+                        raise InlineAnchorMismatchError(f"Thẻ đóng ⟦/{close_type}:{aid}⟧ không có thẻ mở tương ứng.")
+                    popped_type, popped_id, children = stack.pop()
+                    if popped_type != close_type or popped_id != aid:
+                        raise InlineAnchorMismatchError(
+                            f"Sai thứ tự lồng thẻ: mong đợi đóng ⟦/{popped_type}:{popped_id}⟧ nhưng nhận được ⟦/{close_type}:{aid}⟧."
                         )
-
+                    meta = anchor_map.get(popped_id)
+                    constructed_node = cls._construct_node(popped_type, popped_id, children, meta)
                     if constructed_node:
                         if stack:
                             stack[-1][2].append(constructed_node)
                         else:
                             nodes.append(constructed_node)
+                else:
+                    # Tolerant fallback
+                    match_idx = -1
+                    for idx in range(len(stack) - 1, -1, -1):
+                        if stack[idx][0] == close_type and (not aid or stack[idx][1] == aid):
+                            match_idx = idx
+                            break
+
+                    if match_idx != -1:
+                        popped_type, popped_id, children = stack.pop(match_idx)
+                        meta = anchor_map.get(popped_id)
+                        constructed_node = cls._construct_node(popped_type, popped_id, children, meta)
+                        if constructed_node:
+                            if stack:
+                                stack[-1][2].append(constructed_node)
+                            else:
+                                nodes.append(constructed_node)
 
         # Đoạn text còn lại sau tag cuối cùng
         if pos < len(text):
@@ -220,25 +242,119 @@ class InlineAnchorCodec:
                 else:
                     nodes.append(TextNode(trailing_piece))
 
-        # Nếu stack còn sót các tag mở chưa được đóng (do LLM làm mất tag đóng)
-        # Flush an toàn thành TextNode hoặc node tương ứng
+        # Xử lý stack còn sót
+        if strict and stack:
+            raise InlineAnchorMismatchError(f"Thẻ ⟦{stack[-1][0]}:{stack[-1][1]}⟧ chưa được đóng.")
+
         while stack:
             popped_type, popped_id, children = stack.pop(0)
             meta = anchor_map.get(popped_id)
-            if popped_type == "S":
-                nodes.append(StrongNode(children=children))
-            elif popped_type == "E":
-                nodes.append(EmphasisNode(children=children))
-            elif popped_type == "R":
-                base_text = "".join(c.to_plain_text() for c in children) if children else ""
-                nodes.append(
-                    RubyNode(
-                        base_text=base_text,
-                        ruby_text=meta.ruby_text if meta and meta.ruby_text else "",
-                        parenthesis_text=meta.parenthesis_text if meta else None,
-                    )
-                )
+            constructed = cls._construct_node(popped_type, popped_id, children, meta)
+            if constructed:
+                nodes.append(constructed)
             else:
                 nodes.extend(children)
 
         return nodes
+
+    @classmethod
+    def _validate_strict_invariants(
+        cls,
+        text: str,
+        anchor_map: InlineAnchorMap,
+        pattern: re.Pattern,
+    ) -> None:
+        """
+        Kiểm định bất biến nghiêm ngặt của các thẻ inline:
+        1. Mọi tag ID phải tồn tại trong anchor_map (Không chấp nhận Unknown ID).
+        2. Mọi tag ID mở/IMG phải xuất hiện đúng 1 lần (Không Duplicate).
+        3. Kiểu tag (S, E, R, IMG) phải khớp 100% với metadata đã đăng ký.
+        4. Tập hợp IDs xuất hiện phải bằng chính xác tập hợp IDs trong anchor_map.
+        """
+        seen_open_ids: Set[str] = set()
+        seen_close_ids: Set[str] = set()
+        expected_ids = set(anchor_map.items.keys())
+
+        for match in pattern.finditer(text):
+            tag_content = match.group(1)
+            aid = match.group(2)
+
+            if not aid:
+                raise InlineAnchorMismatchError(f"Thẻ inline không có ID hợp lệ: '{match.group(0)}'")
+
+            if aid not in expected_ids:
+                raise InlineAnchorMismatchError(
+                    f"Phát hiện anchor ID lạ '{aid}' không tồn tại trong metadata của block."
+                )
+
+            meta = anchor_map.get(aid)
+            assert meta is not None
+
+            if tag_content == "IMG":
+                if meta.tag_type != "IMG":
+                    raise InlineAnchorMismatchError(
+                        f"Sai kiểu tag cho ID '{aid}': mong đợi {meta.tag_type}, nhận được IMG."
+                    )
+                if aid in seen_open_ids:
+                    raise InlineAnchorMismatchError(f"Anchor ID IMG '{aid}' bị xuất hiện trùng lặp nhiều lần.")
+                seen_open_ids.add(aid)
+
+            elif not tag_content.startswith("/"):
+                if tag_content != meta.tag_type:
+                    raise InlineAnchorMismatchError(
+                        f"Sai kiểu tag mở cho ID '{aid}': mong đợi {meta.tag_type}, nhận được {tag_content}."
+                    )
+                if aid in seen_open_ids:
+                    raise InlineAnchorMismatchError(f"Thẻ mở cho anchor ID '{aid}' bị xuất hiện trùng lặp nhiều lần.")
+                seen_open_ids.add(aid)
+
+            else:
+                close_type = tag_content.lstrip("/")
+                if close_type != meta.tag_type:
+                    raise InlineAnchorMismatchError(
+                        f"Sai kiểu tag đóng cho ID '{aid}': mong đợi /{meta.tag_type}, nhận được /{close_type}."
+                    )
+                if aid in seen_close_ids:
+                    raise InlineAnchorMismatchError(f"Thẻ đóng cho anchor ID '{aid}' bị xuất hiện trùng lặp nhiều lần.")
+                seen_close_ids.add(aid)
+
+        # Kiểm tra exact set equality
+        missing_ids = expected_ids - seen_open_ids
+        if missing_ids:
+            raise InlineAnchorMismatchError(
+                f"Văn bản dịch bị thiếu các anchor IDs bắt buộc: {missing_ids}."
+            )
+
+        # Kiểm tra mọi thẻ mở (trừ IMG) đều có thẻ đóng
+        paired_expected = {aid for aid, m in anchor_map.items.items() if m.tag_type != "IMG"}
+        missing_close = paired_expected - seen_close_ids
+        if missing_close:
+            raise InlineAnchorMismatchError(
+                f"Văn bản dịch bị thiếu thẻ đóng cho các anchor IDs: {missing_close}."
+            )
+
+    @classmethod
+    def _construct_node(
+        cls,
+        tag_type: str,
+        aid: str,
+        children: List[NovelInlineNode],
+        meta: Optional[ProtectedInlineMetadata],
+    ) -> Optional[NovelInlineNode]:
+        if tag_type == "S":
+            return StrongNode(children=children)
+        elif tag_type == "E":
+            return EmphasisNode(children=children)
+        elif tag_type == "R":
+            base_text = "".join(c.to_plain_text() for c in children) if children else ""
+            return RubyNode(
+                base_text=base_text,
+                ruby_text=meta.ruby_text if meta and meta.ruby_text else "",
+                parenthesis_text=meta.parenthesis_text if meta else None,
+            )
+        elif tag_type == "IMG":
+            return InlineImageNode(
+                src=meta.image_src if meta else "",
+                alt=meta.image_alt if meta else None,
+            )
+        return None

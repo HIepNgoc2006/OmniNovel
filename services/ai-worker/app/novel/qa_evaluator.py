@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.novel.ast_parser import (
     BlockquoteBlockNode,
@@ -40,7 +40,7 @@ class NovelQAIssue:
 @dataclass(frozen=True)
 class NovelStructuralFingerprint:
     """
-    Dấu vân tay cấu trúc của một tài liệu Novel Document AST:
+    Dấu vân tay cấu trúc toàn diện của một tài liệu Novel Document AST:
     - total_blocks: Tổng số khối cấp 1.
     - block_sequence: Chuỗi ký hiệu các khối (vd: ['H1', 'P', 'IMG', 'P', 'HR', 'P']).
     - heading_levels: Danh sách các cấp heading.
@@ -50,7 +50,9 @@ class NovelStructuralFingerprint:
     - total_ruby_nodes: Số node phiên âm furigana.
     - total_strong_nodes: Số node in đậm.
     - total_emphasis_nodes: Số node in nghiêng/nhấn mạnh.
-    - asset_sources: Danh sách URI ảnh minh họa nội bộ.
+    - asset_sources: Danh sách URI ảnh minh họa nội bộ và inline images.
+    - ruby_metadata_list: Danh sách chính xác (ruby_text, parenthesis_text) theo thứ tự xuất hiện.
+    - inline_topology: Chuỗi topo biểu diễn cây lồng nhau của các phần tử inline theo từng block.
     """
     total_blocks: int
     block_sequence: List[str]
@@ -62,6 +64,8 @@ class NovelStructuralFingerprint:
     total_strong_nodes: int
     total_emphasis_nodes: int
     asset_sources: List[str]
+    ruby_metadata_list: List[Tuple[str, Optional[str]]]
+    inline_topology: List[str]
 
 
 @dataclass(frozen=True)
@@ -79,9 +83,9 @@ class NovelQAResult:
 class NovelStructuralQAEvaluator:
     """
     Bộ đánh giá toàn vẹn cấu trúc AST cho Light Novel (Novel Structural QA Evaluator):
-    - So sánh dấu vân tay cấu trúc (Structural Fingerprint) giữa tài liệu nguồn và tài liệu dịch.
+    - So sánh dấu vân tay cấu trúc toàn diện (Structural Fingerprint) giữa tài liệu nguồn và dịch.
     - Kiểm tra bảo toàn 100% cấu trúc heading, paragraph, illustration, divider.
-    - Kiểm tra bảo toàn các phần tử inline (Ruby furigana, Strong, Emphasis).
+    - Kiểm tra bảo toàn 100% các phần tử inline (Ruby furigana text, Strong, Emphasis, InlineImage).
     - Thẩm định tính an toàn UTF-8 (chặn null bytes và control characters độc hại).
     - Round-trip AST Verification: Serialize tài liệu dịch thành HTML và parse lại để xác nhận
       tính tái tạo và không thất thoát dữ liệu.
@@ -101,42 +105,63 @@ class NovelStructuralQAEvaluator:
         total_strong = 0
         total_em = 0
         assets: List[str] = []
+        ruby_meta: List[Tuple[str, Optional[str]]] = []
+        topology: List[str] = []
 
-        def _scan_inlines(inlines: List[NovelInlineNode]) -> None:
+        def _scan_inlines(inlines: List[NovelInlineNode]) -> str:
             nonlocal total_ruby, total_strong, total_em
+            parts: List[str] = []
             for node in inlines:
-                if isinstance(node, RubyNode):
-                    total_ruby += 1
+                if isinstance(node, TextNode):
+                    parts.append("T")
                 elif isinstance(node, StrongNode):
                     total_strong += 1
-                    _scan_inlines(node.children)
+                    inner_topo = _scan_inlines(node.children)
+                    parts.append(f"S({inner_topo})")
                 elif isinstance(node, EmphasisNode):
                     total_em += 1
-                    _scan_inlines(node.children)
+                    inner_topo = _scan_inlines(node.children)
+                    parts.append(f"E({inner_topo})")
+                elif isinstance(node, RubyNode):
+                    total_ruby += 1
+                    ruby_meta.append((node.ruby_text, node.parenthesis_text))
+                    parts.append(f"R[{node.ruby_text}]")
+                elif isinstance(node, InlineImageNode):
+                    if node.src:
+                        assets.append(node.src)
+                    parts.append(f"IMG[{node.src}]")
+            return "+".join(parts)
 
         for block in doc.blocks:
             if isinstance(block, HeadingBlockNode):
                 block_sequence.append(f"H{block.level}")
                 heading_levels.append(block.level)
-                _scan_inlines(block.children)
+                topo_str = _scan_inlines(block.children)
+                topology.append(f"H{block.level}:{topo_str}")
             elif isinstance(block, ParagraphBlockNode):
                 block_sequence.append("P")
                 total_p += 1
-                _scan_inlines(block.children)
+                topo_str = _scan_inlines(block.children)
+                topology.append(f"P:{topo_str}")
             elif isinstance(block, BlockquoteBlockNode):
                 block_sequence.append("QUOTE")
+                quote_topos: List[str] = []
                 for sub in block.children:
                     if isinstance(sub, ParagraphBlockNode):
                         total_p += 1
-                        _scan_inlines(sub.children)
+                        q_topo = _scan_inlines(sub.children)
+                        quote_topos.append(f"P:{q_topo}")
+                topology.append(f"QUOTE:{';'.join(quote_topos)}")
             elif isinstance(block, IllustrationBlockNode):
                 block_sequence.append("IMG")
                 total_img += 1
                 if block.src:
                     assets.append(block.src)
+                topology.append(f"IMG:{block.src}")
             elif isinstance(block, DividerBlockNode):
                 block_sequence.append("HR")
                 total_hr += 1
+                topology.append("HR")
 
         return NovelStructuralFingerprint(
             total_blocks=len(doc.blocks),
@@ -149,6 +174,8 @@ class NovelStructuralQAEvaluator:
             total_strong_nodes=total_strong,
             total_emphasis_nodes=total_em,
             asset_sources=assets,
+            ruby_metadata_list=ruby_meta,
+            inline_topology=topology,
         )
 
     def evaluate(
@@ -209,39 +236,82 @@ class NovelStructuralQAEvaluator:
             )
             score -= 0.3
 
+        if src_fp.total_dividers != trans_fp.total_dividers:
+            issues.append(
+                NovelQAIssue(
+                    severity=QASeverity.ERROR,
+                    rule_id="DIVIDER_COUNT_MISMATCH",
+                    message=f"Số lượng thẻ phân đoạn Divider bị mất hoặc thừa: Gốc {src_fp.total_dividers} != Dịch {trans_fp.total_dividers}",
+                )
+            )
+            score -= 0.2
+
         if src_fp.asset_sources != trans_fp.asset_sources:
             issues.append(
                 NovelQAIssue(
                     severity=QASeverity.ERROR,
                     rule_id="ASSET_SOURCE_MISMATCH",
-                    message=f"URI ảnh minh họa bị thay đổi sau khi dịch.",
+                    message=f"URI ảnh minh họa nội bộ bị thay đổi sau khi dịch.",
                     details={"source": src_fp.asset_sources, "translated": trans_fp.asset_sources},
                 )
             )
             score -= 0.2
 
-        # 4. Kiểm tra bảo toàn Thẻ Ruby, Strong, Emphasis
+        # 4. Kiểm tra bảo toàn Thẻ Ruby, Strong, Emphasis & Furigana Metadata
         if src_fp.total_ruby_nodes != trans_fp.total_ruby_nodes:
             issues.append(
                 NovelQAIssue(
-                    severity=QASeverity.WARNING,
+                    severity=QASeverity.ERROR,
                     rule_id="RUBY_NODE_COUNT_MISMATCH",
                     message=f"Số lượng thẻ Ruby thay đổi: Gốc {src_fp.total_ruby_nodes} -> Dịch {trans_fp.total_ruby_nodes}",
                 )
             )
-            score -= 0.1
+            score -= 0.2
+
+        if src_fp.ruby_metadata_list != trans_fp.ruby_metadata_list:
+            issues.append(
+                NovelQAIssue(
+                    severity=QASeverity.ERROR,
+                    rule_id="RUBY_METADATA_MUTATED",
+                    message="Phát hiện nội dung furigana <rt> hoặc dấu ngoặc <rp> bị biến dạng hoặc sửa đổi.",
+                    details={"source": src_fp.ruby_metadata_list, "translated": trans_fp.ruby_metadata_list},
+                )
+            )
+            score -= 0.2
 
         if src_fp.total_strong_nodes != trans_fp.total_strong_nodes:
             issues.append(
                 NovelQAIssue(
-                    severity=QASeverity.WARNING,
+                    severity=QASeverity.ERROR,
                     rule_id="STRONG_NODE_COUNT_MISMATCH",
                     message=f"Số lượng thẻ in đậm Strong thay đổi: Gốc {src_fp.total_strong_nodes} -> Dịch {trans_fp.total_strong_nodes}",
                 )
             )
-            score -= 0.05
+            score -= 0.15
 
-        # 5. Kiểm tra UTF-8 và ký tự điều khiển cấm
+        if src_fp.total_emphasis_nodes != trans_fp.total_emphasis_nodes:
+            issues.append(
+                NovelQAIssue(
+                    severity=QASeverity.ERROR,
+                    rule_id="EMPHASIS_COUNT_MISMATCH",
+                    message=f"Số lượng thẻ in nghiêng Emphasis thay đổi: Gốc {src_fp.total_emphasis_nodes} -> Dịch {trans_fp.total_emphasis_nodes}",
+                )
+            )
+            score -= 0.15
+
+        # 5. Kiểm tra Inline Topology (Cấu trúc lồng ghép và thứ tự inline tags)
+        if src_fp.inline_topology != trans_fp.inline_topology:
+            issues.append(
+                NovelQAIssue(
+                    severity=QASeverity.ERROR,
+                    rule_id="INLINE_TOPOLOGY_MISMATCH",
+                    message="Cấu trúc lồng ghép hoặc thứ tự inline tags trong block bị thay đổi.",
+                    details={"source": src_fp.inline_topology, "translated": trans_fp.inline_topology},
+                )
+            )
+            score -= 0.2
+
+        # 6. Kiểm tra UTF-8 và ký tự điều khiển cấm
         for idx, block in enumerate(translated_doc.blocks):
             plain = block.to_plain_text()
             if any(ord(c) < 32 and c not in "\n\r\t" for c in plain):
@@ -255,7 +325,7 @@ class NovelStructuralQAEvaluator:
                 )
                 score -= 0.2
 
-        # 6. Round-trip Serialization Test
+        # 7. Round-trip Serialization Test
         try:
             rendered_html = NovelDocumentSerializer.serialize_to_html(translated_doc)
             reparsed_doc = NovelAstParser.parse_html(rendered_html)
@@ -265,7 +335,7 @@ class NovelStructuralQAEvaluator:
                     NovelQAIssue(
                         severity=QASeverity.ERROR,
                         rule_id="ROUNDTRIP_SERIALIZATION_MISMATCH",
-                        message="Tuần tự hóa HTML và phân tích lại tạo ra cây AST bị lệch cấu trúc.",
+                        message="Tuần tự hóa HTML và phân tích lại tạo ra cây AST bị lệch cấu trúc block sequence.",
                     )
                 )
                 score -= 0.2
@@ -279,7 +349,19 @@ class NovelStructuralQAEvaluator:
             )
             score -= 0.3
 
-        fingerprint_match = (src_fp.block_sequence == trans_fp.block_sequence) and (src_fp.heading_levels == trans_fp.heading_levels)
+        fingerprint_match = (
+            src_fp.block_sequence == trans_fp.block_sequence
+            and src_fp.heading_levels == trans_fp.heading_levels
+            and src_fp.total_dividers == trans_fp.total_dividers
+            and src_fp.total_illustrations == trans_fp.total_illustrations
+            and src_fp.asset_sources == trans_fp.asset_sources
+            and src_fp.total_ruby_nodes == trans_fp.total_ruby_nodes
+            and src_fp.ruby_metadata_list == trans_fp.ruby_metadata_list
+            and src_fp.total_strong_nodes == trans_fp.total_strong_nodes
+            and src_fp.total_emphasis_nodes == trans_fp.total_emphasis_nodes
+            and src_fp.inline_topology == trans_fp.inline_topology
+        )
+
         final_score = max(0.0, min(1.0, score))
         has_errors = any(i.severity == QASeverity.ERROR for i in issues)
 

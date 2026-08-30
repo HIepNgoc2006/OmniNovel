@@ -5,14 +5,20 @@ from app.novel.ast_parser import (
     DividerBlockNode,
     HeadingBlockNode,
     IllustrationBlockNode,
-    NovelAstParser,
     ParagraphBlockNode,
     RubyNode,
     StrongNode,
     TextNode,
 )
-from app.novel.inline_anchors import InlineAnchorCodec
-from app.novel.rebuilder import MissingAnchorBlockError, NovelDocumentRebuilder
+from app.novel.inline_anchors import (
+    InlineAnchorCodec,
+    InlineAnchorMismatchError,
+)
+from app.novel.rebuilder import (
+    MissingAnchorBlockError,
+    NovelDocumentRebuilder,
+    NovelRebuilderError,
+)
 from app.novel.segmenter import NovelSegmenter
 
 
@@ -136,5 +142,63 @@ def test_rebuilder_missing_anchor_block_raises_error():
     translations = {"blk_0001_h1": "Heading 1 Dịch"}
     rebuilder = NovelDocumentRebuilder(fallback_to_raw_on_missing=False)
 
-    with pytest.raises(MissingAnchorBlockError, match="Thiếu kết quả dịch cho Paragraph block"):
+    with pytest.raises(MissingAnchorBlockError, match="Thiếu kết quả dịch cho các block bắt buộc"):
+        rebuilder.rebuild(source_doc, translations)
+
+
+def test_rebuilder_rejects_extra_translated_blocks():
+    source_doc = CanonicalNovelDocument(
+        blocks=[
+            HeadingBlockNode(level=1, children=[TextNode("Heading 1")]),
+        ]
+    )
+
+    # Dư thừa kết quả cho blk_0099_p
+    translations = {
+        "blk_0001_h1": "Heading 1 Dịch",
+        "blk_0099_p": "Extra translated block",
+    }
+    rebuilder = NovelDocumentRebuilder(fallback_to_raw_on_missing=False)
+
+    with pytest.raises(NovelRebuilderError, match="Phát hiện các translated block IDs dư thừa"):
+        rebuilder.rebuild(source_doc, translations)
+
+
+def test_rebuilder_rejects_duplicate_anchor_blocks_in_list():
+    source_doc = CanonicalNovelDocument(
+        blocks=[
+            HeadingBlockNode(level=1, children=[TextNode("Heading 1")]),
+        ]
+    )
+
+    translations = [
+        {"anchorBlockId": "blk_0001_h1", "translatedText": "Heading 1 Bản A"},
+        {"anchorBlockId": "blk_0001_h1", "translatedText": "Heading 1 Bản B"},
+    ]
+    rebuilder = NovelDocumentRebuilder(fallback_to_raw_on_missing=False)
+
+    with pytest.raises(NovelRebuilderError, match="bị trùng lặp trong input dịch"):
+        rebuilder.rebuild(source_doc, translations)
+
+
+def test_rebuilder_enforces_strict_inline_anchor_mismatch():
+    source_doc = CanonicalNovelDocument(
+        blocks=[
+            ParagraphBlockNode(
+                children=[
+                    TextNode("彼は"),
+                    StrongNode([TextNode("勇者")]),
+                    TextNode("だ。"),
+                ]
+            )
+        ]
+    )
+
+    # LLM làm mất thẻ đóng ⟦/S:0001⟧
+    translations = {
+        "blk_0001_p": "Anh ấy là ⟦S:0001⟧Dũng sĩ không có tag đóng.",
+    }
+    rebuilder = NovelDocumentRebuilder(fallback_to_raw_on_missing=False)
+
+    with pytest.raises(InlineAnchorMismatchError):
         rebuilder.rebuild(source_doc, translations)

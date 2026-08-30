@@ -38,6 +38,7 @@ from app.novel.inline_anchors import (
     ANCHOR_OPEN_TAG_RE,
     InlineAnchorCodec,
     InlineAnchorMap,
+    InlineAnchorMismatchError,
     ProtectedInlineMetadata,
 )
 from app.novel.qa_evaluator import (
@@ -108,6 +109,7 @@ __all__ = [
     "ANCHOR_ANY_TAG_RE",
     "InlineAnchorCodec",
     "InlineAnchorMap",
+    "InlineAnchorMismatchError",
     "ProtectedInlineMetadata",
     "NovelQAIssue",
     "NovelQAResult",

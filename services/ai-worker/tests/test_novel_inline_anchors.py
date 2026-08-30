@@ -6,7 +6,12 @@ from app.novel.ast_parser import (
     StrongNode,
     TextNode,
 )
-from app.novel.inline_anchors import InlineAnchorCodec, InlineAnchorMap, ProtectedInlineMetadata
+from app.novel.inline_anchors import (
+    InlineAnchorCodec,
+    InlineAnchorMap,
+    InlineAnchorMismatchError,
+    ProtectedInlineMetadata,
+)
 
 
 def test_encode_decode_plain_text():
@@ -17,7 +22,7 @@ def test_encode_decode_plain_text():
     assert not amap.has_anchors()
     assert next_idx == 1
 
-    decoded = InlineAnchorCodec.decode(text, amap)
+    decoded = InlineAnchorCodec.decode(text, amap, strict=True)
     assert len(decoded) == 1
     assert isinstance(decoded[0], TextNode)
     assert decoded[0].text == "これは普通のテキストです。"
@@ -40,7 +45,7 @@ def test_encode_decode_strong_and_emphasis():
 
     # Giả lập LLM dịch câu sang tiếng Việt giữ nguyên tags
     translated_text = "Anh ấy là ⟦S:0001⟧Dũng sĩ⟦/S:0001⟧ và là tồn tại ⟦E:0002⟧huyền thoại⟦/E:0002⟧."
-    decoded = InlineAnchorCodec.decode(translated_text, amap)
+    decoded = InlineAnchorCodec.decode(translated_text, amap, strict=True)
 
     assert len(decoded) == 5
     assert isinstance(decoded[0], TextNode) and decoded[0].text == "Anh ấy là "
@@ -69,7 +74,7 @@ def test_encode_decode_ruby_preserves_furigana():
 
     # LLM dịch '魔王' -> 'Ma Vương'
     translated_text = "Hãy nhìn xem, đó là lâu đài của ⟦R:0001⟧Ma Vương⟦/R:0001⟧."
-    decoded = InlineAnchorCodec.decode(translated_text, amap)
+    decoded = InlineAnchorCodec.decode(translated_text, amap, strict=True)
 
     assert len(decoded) == 3
     ruby = decoded[1]
@@ -92,7 +97,7 @@ def test_encode_decode_inline_image():
     assert meta.image_alt == "Ngôi sao"
 
     translated_text = "Biểu tượng ngôi sao ⟦IMG:0001⟧ đang tỏa sáng."
-    decoded = InlineAnchorCodec.decode(translated_text, amap)
+    decoded = InlineAnchorCodec.decode(translated_text, amap, strict=True)
 
     assert len(decoded) == 3
     img = decoded[1]
@@ -101,18 +106,73 @@ def test_encode_decode_inline_image():
     assert img.alt == "Ngôi sao"
 
 
-def test_decoder_resilience_on_dropped_closing_tag():
+def test_strict_rejects_unknown_anchor_id():
+    amap = InlineAnchorMap()
+    amap.items["0001"] = ProtectedInlineMetadata(tag_type="S", anchor_id="0001")
+
+    # LLM sinh ra ID lạ 0099
+    bad_text = "Anh ấy là ⟦S:0099⟧Dũng sĩ⟦/S:0099⟧."
+    with pytest.raises(InlineAnchorMismatchError, match="Phát hiện anchor ID lạ '0099'"):
+        InlineAnchorCodec.decode(bad_text, amap, strict=True)
+
+
+def test_strict_rejects_duplicate_opening_tag():
+    amap = InlineAnchorMap()
+    amap.items["0001"] = ProtectedInlineMetadata(tag_type="S", anchor_id="0001")
+
+    # LLM lặp lại tag mở 0001 hai lần
+    bad_text = "⟦S:0001⟧Dũng sĩ⟦/S:0001⟧ và ⟦S:0001⟧Dũng sĩ 2⟦/S:0001⟧."
+    with pytest.raises(InlineAnchorMismatchError, match="bị xuất hiện trùng lặp"):
+        InlineAnchorCodec.decode(bad_text, amap, strict=True)
+
+
+def test_strict_rejects_tag_type_mismatch():
+    amap = InlineAnchorMap()
+    amap.items["0001"] = ProtectedInlineMetadata(tag_type="S", anchor_id="0001")
+
+    # Đăng ký là S nhưng LLM dịch thành E
+    bad_text = "Anh ấy là ⟦E:0001⟧Dũng sĩ⟦/E:0001⟧."
+    with pytest.raises(InlineAnchorMismatchError, match="Sai kiểu tag mở cho ID '0001'"):
+        InlineAnchorCodec.decode(bad_text, amap, strict=True)
+
+
+def test_strict_rejects_unclosed_tag():
+    amap = InlineAnchorMap()
+    amap.items["0001"] = ProtectedInlineMetadata(tag_type="S", anchor_id="0001")
+
+    # Thiếu tag đóng
+    bad_text = "Anh ấy là ⟦S:0001⟧Dũng sĩ không có tag đóng."
+    with pytest.raises(InlineAnchorMismatchError, match="bị thiếu thẻ đóng"):
+        InlineAnchorCodec.decode(bad_text, amap, strict=True)
+
+
+def test_strict_rejects_improper_nesting_interleaving():
+    amap = InlineAnchorMap()
+    amap.items["0001"] = ProtectedInlineMetadata(tag_type="S", anchor_id="0001")
+    amap.items["0002"] = ProtectedInlineMetadata(tag_type="E", anchor_id="0002")
+
+    # Cắt chéo tag: S mở -> E mở -> S đóng -> E đóng
+    bad_text = "⟦S:0001⟧Dũng sĩ ⟦E:0002⟧Huyền thoại⟦/S:0001⟧⟦/E:0002⟧"
+    with pytest.raises(InlineAnchorMismatchError, match="Sai thứ tự lồng thẻ"):
+        InlineAnchorCodec.decode(bad_text, amap, strict=True)
+
+
+def test_strict_rejects_unexpected_tags_when_no_anchors():
+    amap = InlineAnchorMap()
+    bad_text = "Văn bản này tự dưng có ⟦S:0001⟧tag lạ⟦/S:0001⟧."
+    with pytest.raises(InlineAnchorMismatchError, match="Phát hiện thẻ protected inline tag không mong đợi"):
+        InlineAnchorCodec.decode(bad_text, amap, strict=True)
+
+
+def test_decoder_resilience_in_tolerant_mode():
     """
-    Xác nhận tính chịu lỗi (Fault-tolerance):
-    Khi LLM vô tình làm mất tag đóng ⟦/S:0001⟧, codec vẫn khôi phục an toàn không bị crash.
+    Xác nhận tính chịu lỗi khi strict=False (dành cho Preview/Fallback).
     """
     amap = InlineAnchorMap()
     amap.items["0001"] = ProtectedInlineMetadata(tag_type="S", anchor_id="0001")
 
-    # Mất tag đóng
-    broken_translated_text = "Anh ấy là ⟦S:0001⟧Dũng sĩ không có tag đóng."
-    decoded = InlineAnchorCodec.decode(broken_translated_text, amap)
+    broken_text = "Anh ấy là ⟦S:0001⟧Dũng sĩ không có tag đóng."
+    decoded = InlineAnchorCodec.decode(broken_text, amap, strict=False)
 
     assert len(decoded) >= 1
-    # Vẫn khôi phục được StrongNode hoặc TextNode mà không ném Exception
     assert any(isinstance(n, StrongNode) for n in decoded) or any("Dũng sĩ" in n.to_plain_text() for n in decoded)

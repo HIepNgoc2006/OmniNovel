@@ -1,6 +1,6 @@
 import copy
 import logging
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 from app.novel.ast_parser import (
     BlockquoteBlockNode,
@@ -13,7 +13,11 @@ from app.novel.ast_parser import (
     ParagraphBlockNode,
     TextNode,
 )
-from app.novel.inline_anchors import InlineAnchorCodec, InlineAnchorMap
+from app.novel.inline_anchors import (
+    InlineAnchorCodec,
+    InlineAnchorMap,
+    InlineAnchorMismatchError,
+)
 from app.novel.translator import TranslatedNovelBlock
 
 logger = logging.getLogger(__name__)
@@ -34,9 +38,12 @@ class NovelDocumentRebuilder:
     Bộ tái cấu trúc cây Document AST hoàn chỉnh (Novel Document Rebuilder):
     - Invariant 1 (Source Immutability): Tuyệt đối không mutate cây source AST gốc,
       luôn tạo và trả về một cây CanonicalNovelDocument mới hoàn toàn.
-    - Invariant 2 (Anchor Mapping 1:1): Khớp từng block dịch vào đúng vị trí cây AST qua anchor_block_id.
-    - Invariant 3 (Protected Inline Preservation): Giải mã các protected tags ⟦...⟧ để tái tạo đúng
-      các node StrongNode, EmphasisNode, RubyNode và InlineImageNode với furigana gốc.
+    - Invariant 2 (Defense-in-depth Anchor Mapping 1:1):
+      + Enforce tính duy nhất của expected IDs và supplied IDs.
+      + Enforce Cardinality và Exact Set Equality giữa source blocks và translated blocks.
+      + Bắt lỗi và reject lập tức các block dư thừa (extra) hoặc thiếu (missing).
+    - Invariant 3 (Protected Inline Preservation): Giải mã các protected tags ⟦...⟧ ở chế độ strict
+      để tái tạo đúng các node StrongNode, EmphasisNode, RubyNode và InlineImageNode với furigana gốc.
     - Invariant 4 (Structural Node Preservation): Giữ nguyên 100% IllustrationBlockNode và DividerBlockNode.
     """
 
@@ -46,34 +53,81 @@ class NovelDocumentRebuilder:
     def rebuild(
         self,
         source_doc: CanonicalNovelDocument,
-        translated_blocks: Union[Dict[str, str], List[TranslatedNovelBlock]],
+        translated_blocks: Union[Dict[str, str], List[TranslatedNovelBlock], List[Dict[str, Any]]],
         anchor_maps: Optional[Dict[str, InlineAnchorMap]] = None,
         translated_title: Optional[str] = None,
     ) -> CanonicalNovelDocument:
         """
         Tái tạo cây CanonicalNovelDocument tiếng Việt từ cây nguồn và kết quả dịch.
         """
-        # Chuẩn hóa translated_blocks thành Dict: anchor_block_id -> translated_text
+        # 1. Trích xuất expected segments từ source document để xác định tập hợp anchor IDs cần có
+        from app.novel.segmenter import NovelSegmenter
+        segmenter = NovelSegmenter()
+        expected_segments, expected_maps = segmenter.segment_document_with_inline_anchors(source_doc)
+        expected_ids = [seg.anchor_block_id for seg in expected_segments]
+
+        # Kiểm tra tính duy nhất của expected IDs
+        if len(expected_ids) != len(set(expected_ids)):
+            raise NovelRebuilderError("Phát hiện trùng lặp anchorBlockId trong kết quả phân đoạn của source document.")
+
+        # 2. Chuẩn hóa translated_blocks và kiểm tra trùng lặp supplied keys
         translation_map: Dict[str, str] = {}
+        seen_supplied_keys: Set[str] = set()
+
         if isinstance(translated_blocks, dict):
             translation_map = dict(translated_blocks)
         elif isinstance(translated_blocks, list):
             for item in translated_blocks:
                 if isinstance(item, TranslatedNovelBlock):
-                    translation_map[item.anchor_block_id] = item.translated_text
+                    aid = item.anchor_block_id
+                    txt = item.translated_text
                 elif isinstance(item, dict):
                     aid = item.get("anchor_block_id") or item.get("anchorBlockId")
                     txt = item.get("translated_text") or item.get("translatedText", "")
-                    if aid:
-                        translation_map[aid] = txt
+                else:
+                    raise NovelRebuilderError(f"Kiểu dữ liệu item dịch không hợp lệ: {type(item)}")
 
-        maps = anchor_maps or {}
+                if not aid:
+                    raise NovelRebuilderError("Phát hiện item dịch thiếu anchorBlockId.")
+
+                if aid in seen_supplied_keys:
+                    raise NovelRebuilderError(f"Phát hiện anchorBlockId bị trùng lặp trong input dịch: '{aid}'.")
+                seen_supplied_keys.add(aid)
+                translation_map[aid] = txt
+
+        # 3. Defense-in-depth: Kiểm tra Exact Set & Cardinality
+        if not self.fallback_to_raw_on_missing:
+            expected_set = set(expected_ids)
+            supplied_set = set(translation_map.keys())
+
+            extra_ids = supplied_set - expected_set
+            if extra_ids:
+                raise NovelRebuilderError(
+                    f"Phát hiện các translated block IDs dư thừa không tồn tại trong source document: {extra_ids}."
+                )
+
+            missing_ids = expected_set - supplied_set
+            if missing_ids:
+                raise MissingAnchorBlockError(
+                    f"Thiếu kết quả dịch cho các block bắt buộc: {missing_ids}."
+                )
+
+            if len(translation_map) != len(expected_ids):
+                raise NovelRebuilderError(
+                    f"Số lượng block dịch ({len(translation_map)}) không khớp số lượng block nguồn ({len(expected_ids)})."
+                )
+
+        # Hợp nhất anchor maps (ưu tiên map truyền vào, fallback sang expected_maps)
+        merged_maps = dict(expected_maps)
+        if anchor_maps:
+            merged_maps.update(anchor_maps)
+
         block_counter = 0
         rebuilt_blocks: List[NovelBlockNode] = []
 
         for block in source_doc.blocks:
             rebuilt, block_counter = self._rebuild_block(
-                block, block_counter, translation_map, maps
+                block, block_counter, translation_map, merged_maps
             )
             if rebuilt:
                 rebuilt_blocks.append(rebuilt)
@@ -99,7 +153,7 @@ class NovelDocumentRebuilder:
         """
         Tái tạo một block node đơn lẻ hoặc container blockquote.
         """
-        from typing import Tuple
+        strict_mode = not self.fallback_to_raw_on_missing
 
         if isinstance(block, HeadingBlockNode):
             current_index += 1
@@ -111,15 +165,14 @@ class NovelDocumentRebuilder:
                     raise MissingAnchorBlockError(f"Thiếu kết quả dịch cho Heading block '{block_id}'.")
                 translated_text = block.to_plain_text()
 
-            # Giải mã inline nodes
+            # Giải mã inline nodes với strict mode
             amap = anchor_maps.get(block_id, InlineAnchorMap())
-            new_children = InlineAnchorCodec.decode(translated_text, amap)
+            new_children = InlineAnchorCodec.decode(translated_text, amap, strict=strict_mode)
 
             return HeadingBlockNode(level=block.level, children=new_children), current_index
 
         elif isinstance(block, ParagraphBlockNode):
             current_index += 1
-            # Xác định suffix giống như Segmenter
             raw_text = block.to_plain_text()
             from app.novel.segmenter import JP_DIALOGUE_PATTERN
             is_dialogue = bool(JP_DIALOGUE_PATTERN.match(raw_text))
@@ -133,7 +186,7 @@ class NovelDocumentRebuilder:
                 translated_text = raw_text
 
             amap = anchor_maps.get(block_id, InlineAnchorMap())
-            new_children = InlineAnchorCodec.decode(translated_text, amap)
+            new_children = InlineAnchorCodec.decode(translated_text, amap, strict=strict_mode)
 
             return ParagraphBlockNode(children=new_children), current_index
 
@@ -143,12 +196,10 @@ class NovelDocumentRebuilder:
             translated_text = translations.get(block_id)
 
             if translated_text is not None:
-                # Nếu blockquote được dịch nguyên khối
                 amap = anchor_maps.get(block_id, InlineAnchorMap())
-                new_children = InlineAnchorCodec.decode(translated_text, amap)
+                new_children = InlineAnchorCodec.decode(translated_text, amap, strict=strict_mode)
                 return BlockquoteBlockNode(children=[ParagraphBlockNode(children=new_children)]), current_index
             else:
-                # Nếu blockquote chứa các sub-blocks
                 sub_blocks: List[NovelBlockNode] = []
                 for child in block.children:
                     rebuilt_child, current_index = self._rebuild_block(
@@ -159,7 +210,6 @@ class NovelDocumentRebuilder:
                 return BlockquoteBlockNode(children=sub_blocks), current_index
 
         elif isinstance(block, IllustrationBlockNode):
-            # Sao chép nguyên vẹn node ảnh minh họa
             return IllustrationBlockNode(
                 src=block.src,
                 alt=block.alt,
@@ -169,7 +219,6 @@ class NovelDocumentRebuilder:
             ), current_index
 
         elif isinstance(block, DividerBlockNode):
-            # Sao chép thẻ phân đoạn
             return DividerBlockNode(), current_index
 
         return None, current_index

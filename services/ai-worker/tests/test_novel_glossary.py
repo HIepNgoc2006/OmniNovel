@@ -3,7 +3,12 @@ from app.novel.glossary_engine import GlossaryConstraint, NovelGlossaryEngine
 from app.novel.segmenter import TranslatableBlock
 
 
-def test_glossary_longest_match_first():
+def test_glossary_longest_match_first_non_overlapping():
+    """
+    Xác nhận thuật toán Non-Overlapping Longest-Match-First:
+    - Khi '魔王の城' đã được khớp, term con '魔王' nằm bên trong span đó không được xuất hiện thêm.
+    - Kết quả chỉ có đúng 1 constraint '魔王の城'.
+    """
     entries = [
         {"source_term": "魔王", "target_term": "Ma Vương", "category": "character"},
         {"source_term": "魔王の城", "target_term": "Lâu đài Ma Vương", "category": "location"},
@@ -20,8 +25,35 @@ def test_glossary_longest_match_first():
     matched = engine.match_blocks([block])
     assert "blk_0001_p" in matched
     constraints = matched["blk_0001_p"]
-    # Longest match first: "魔王の城" must be matched first
+    assert len(constraints) == 1
+    assert constraints[0].source_term == "魔王の城"
     assert constraints[0].target_term == "Lâu đài Ma Vương"
+
+
+def test_glossary_multiple_non_overlapping_matches():
+    """
+    Xác nhận trường hợp đoạn văn chứa cả '魔王の城' và '魔王' ở 2 vị trí độc lập không trùng lấn.
+    """
+    entries = [
+        {"source_term": "魔王", "target_term": "Ma Vương", "category": "character"},
+        {"source_term": "魔王の城", "target_term": "Lâu đài Ma Vương", "category": "location"},
+    ]
+    engine = NovelGlossaryEngine(entries)
+
+    block = TranslatableBlock(
+        anchor_block_id="blk_0001_p",
+        sort_order=1,
+        block_type="PARAGRAPH",
+        raw_text="勇者は魔王の城で魔王と対峙した。",
+    )
+
+    matched = engine.match_blocks([block])
+    assert "blk_0001_p" in matched
+    constraints = matched["blk_0001_p"]
+    assert len(constraints) == 2
+    terms = {c.source_term for c in constraints}
+    assert terms == {"魔王の城", "魔王"}
+
 
 
 def test_glossary_shadow_string_nfkc_preserves_raw_text():

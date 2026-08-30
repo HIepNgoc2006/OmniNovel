@@ -29,6 +29,7 @@ def test_context_builder_sliding_window():
     - Batch 0: context_before=[], translate_blocks=[blk1, blk2], context_after=[blk3, blk4]
     - Batch 1: context_before=[blk1, blk2], translate_blocks=[blk3, blk4], context_after=[blk5]
     - Batch 2: context_before=[blk3, blk4], translate_blocks=[blk5], context_after=[]
+    - Invariant: estimated_tokens của mỗi batch luôn <= max_tokens_per_batch.
     """
     blocks = [
         TranslatableBlock("blk_0001_p", 1, "PARAGRAPH", "1" * 50),
@@ -38,21 +39,26 @@ def test_context_builder_sliding_window():
         TranslatableBlock("blk_0005_p", 5, "PARAGRAPH", "5" * 50),
     ]
 
-    # Cấu hình max_tokens_per_batch nhỏ để ngắt 2 blocks mỗi batch
     builder = NovelContextBuilder(
-        max_tokens_per_batch=55,
+        max_tokens_per_batch=120,
+        max_context_tokens=40,
         max_context_blocks=2,
         max_lookahead_blocks=2,
+        framing_overhead_tokens=20,
     )
     batches = builder.build_batches(blocks)
 
     assert len(batches) >= 2
 
+    # Invariant: Tất cả batches đều phải thỏa mãn estimated_tokens <= max_tokens_per_batch
+    for b in batches:
+        assert b.estimated_tokens <= builder.max_tokens_per_batch
+
     # Batch 0
     b0 = batches[0]
     assert len(b0.context_before) == 0
     assert len(b0.context_after) > 0
-    assert b0.context_after[0].anchor_block_id == b0.translate_blocks[-1].anchor_block_id or True
+    assert b0.context_after[0].anchor_block_id == blocks[len(b0.translate_blocks)].anchor_block_id
 
     # Batch 1
     b1 = batches[1]
@@ -61,6 +67,20 @@ def test_context_builder_sliding_window():
     ctx_ids = {it.anchor_block_id for it in b1.context_before}
     trans_ids = {it.anchor_block_id for it in b1.translate_blocks}
     assert ctx_ids.isdisjoint(trans_ids)
+
+
+def test_context_builder_rejects_oversized_block():
+    """
+    Xác nhận ném ValueError rõ ràng khi gặp một block đơn lẻ vượt quá max_tokens_per_batch.
+    """
+    oversized_text = "超巨大段落" * 500  # ~5000 tokens
+    blocks = [
+        TranslatableBlock("blk_0001_p", 1, "PARAGRAPH", oversized_text),
+    ]
+    builder = NovelContextBuilder(max_tokens_per_batch=1000)
+
+    with pytest.raises(ValueError, match="Oversized block detected"):
+        builder.build_batches(blocks)
 
 
 def test_context_builder_with_glossary_constraints():
@@ -78,3 +98,4 @@ def test_context_builder_with_glossary_constraints():
     item = batches[0].translate_blocks[0]
     assert len(item.glossary_constraints) == 1
     assert item.glossary_constraints[0].target_term == "Dũng sĩ"
+

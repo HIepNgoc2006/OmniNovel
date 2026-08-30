@@ -75,6 +75,19 @@ def test_novel_prompt_template_registered():
 
 
 @pytest.mark.asyncio
+async def test_novel_provider_rejects_duplicate_input_keys():
+    provider = MockTranslationProvider()
+    blocks = [
+        TranslatableBlock("blk_0001_p", 1, "PARAGRAPH", "Text 1"),
+        TranslatableBlock("blk_0001_p", 2, "PARAGRAPH", "Text 2 (Duplicate ID)"),
+    ]
+    pipeline = NovelTranslationPipeline(provider=provider)
+
+    with pytest.raises(SchemaMismatchError, match="DUPLICATE_NOVEL_INPUT_KEY"):
+        await pipeline.translate_document(blocks)
+
+
+@pytest.mark.asyncio
 async def test_novel_provider_rejects_duplicate_output_keys():
     class DuplicateKeyProvider(TranslationProvider):
         async def translate_batch(self, batch: Any, prompt_version: str = "manga-ja-vi-v1") -> List[TranslatedSegmentItem]:
@@ -95,6 +108,29 @@ async def test_novel_provider_rejects_duplicate_output_keys():
     pipeline = NovelTranslationPipeline(provider=DuplicateKeyProvider())
 
     with pytest.raises(SchemaMismatchError, match="DUPLICATE_NOVEL_OUTPUT_KEY"):
+        await pipeline.translate_document(blocks)
+
+
+@pytest.mark.asyncio
+async def test_novel_provider_rejects_cardinality_mismatch():
+    class CardinalityMismatchProvider(TranslationProvider):
+        async def translate_batch(self, batch: Any, prompt_version: str = "manga-ja-vi-v1") -> List[TranslatedSegmentItem]:
+            return []
+
+        async def translate_novel_batch(self, batch: Any, prompt_version: str = "novel-ja-vi-v1") -> List[TranslatedNovelBlockItem]:
+            results = [
+                TranslatedNovelBlockItem("blk_0001_p", "Dịch 1"),
+            ]
+            self._validate_novel_output_keys(batch.translate_blocks, results)
+            return results
+
+    blocks = [
+        TranslatableBlock("blk_0001_p", 1, "PARAGRAPH", "Text 1"),
+        TranslatableBlock("blk_0002_p", 2, "PARAGRAPH", "Text 2"),
+    ]
+    pipeline = NovelTranslationPipeline(provider=CardinalityMismatchProvider())
+
+    with pytest.raises(SchemaMismatchError, match="CARDINALITY_MISMATCH"):
         await pipeline.translate_document(blocks)
 
 
@@ -120,6 +156,7 @@ async def test_novel_provider_rejects_missing_or_hallucinated_keys():
 
     with pytest.raises(SchemaMismatchError, match="SCHEMA_NOVEL_KEY_MISMATCH"):
         await pipeline.translate_document(blocks)
+
 
 
 @pytest.mark.asyncio

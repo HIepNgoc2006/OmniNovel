@@ -50,7 +50,8 @@ class NovelContextBuilder:
     - Gom cụm các TranslatableBlock thành các NovelTranslationBatch theo ngân sách token (`max_tokens_per_batch`).
     - Sliding Window Context: Quản lý cửa sổ trượt `context_before` và `context_after` giúp LLM hiểu đại từ xưng hô,
       giọng văn và nhân vật đang nói mà không dịch lặp lại các block cũ.
-    - Độc lập Token Estimator: Hỗ trợ bất kỳ implementation nào của TokenEstimator protocol.
+    - Invariant cứng: estimated_tokens(framing + context_before + translate_blocks + context_after) <= max_tokens_per_batch.
+    - Ném ValueError rõ ràng nếu một block đơn lẻ vượt quá max_tokens_per_batch.
     """
 
     def __init__(
@@ -60,12 +61,14 @@ class NovelContextBuilder:
         max_context_tokens: int = 400,
         max_context_blocks: int = 3,
         max_lookahead_blocks: int = 2,
+        framing_overhead_tokens: int = 50,
     ):
         self.estimator = token_estimator or ConservativeTokenEstimator()
         self.max_tokens_per_batch = max_tokens_per_batch
         self.max_context_tokens = max_context_tokens
         self.max_context_blocks = max_context_blocks
         self.max_lookahead_blocks = max_lookahead_blocks
+        self.framing_overhead_tokens = framing_overhead_tokens
 
     def build_batches(
         self,
@@ -80,11 +83,21 @@ class NovelContextBuilder:
 
         constraints_map = glossary_constraints_map or {}
 
-        # 1. Chuyển đổi toàn bộ blocks thành NovelContextItem
+        # 1. Chuyển đổi toàn bộ blocks thành NovelContextItem và thẩm định kích thước
         context_items: List[NovelContextItem] = []
         for b in blocks:
             constraints = constraints_map.get(b.anchor_block_id, [])
             is_dlg = b.block_type == "DIALOGUE" or bool(b.meta.get("is_dialogue", False))
+            item_tokens = self.estimator.estimate_tokens(b.raw_text)
+
+            # INVARIANT: Block đơn lẻ không được vượt quá max_tokens_per_batch
+            if item_tokens + self.framing_overhead_tokens > self.max_tokens_per_batch:
+                raise ValueError(
+                    f"Oversized block detected: Block '{b.anchor_block_id}' ({item_tokens} tokens) "
+                    f"vượt quá ngân sách tối đa của một batch ({self.max_tokens_per_batch} tokens). "
+                    "Vui lòng phân tách đoạn văn này ở tầng tiền xử lý upstream."
+                )
+
             context_items.append(
                 NovelContextItem(
                     anchor_block_id=b.anchor_block_id,
@@ -97,16 +110,18 @@ class NovelContextBuilder:
                 )
             )
 
-        # 2. Phân cụm các translate_blocks theo token budget
+        # 2. Ngân sách dành riêng cho các khối cần dịch chính (dành chỗ trống cho context & framing)
+        core_translate_budget = max(50, self.max_tokens_per_batch - self.max_context_tokens - self.framing_overhead_tokens)
+
+        # Phân cụm các translate_blocks theo core_translate_budget
         chunks: List[List[NovelContextItem]] = []
         current_chunk: List[NovelContextItem] = []
         current_chunk_tokens = 0
 
         for item in context_items:
-            item_tokens = self.estimator.estimate_tokens(item.raw_text) + 10  # overhead
+            item_tokens = self.estimator.estimate_tokens(item.raw_text) + 10  # overhead per block
 
-            # Nếu thêm item này vượt quá max_tokens_per_batch (và current_chunk không rỗng) -> ngắt chunk mới
-            if current_chunk and (current_chunk_tokens + item_tokens > self.max_tokens_per_batch):
+            if current_chunk and (current_chunk_tokens + item_tokens > core_translate_budget):
                 chunks.append(current_chunk)
                 current_chunk = [item]
                 current_chunk_tokens = item_tokens
@@ -117,32 +132,46 @@ class NovelContextBuilder:
         if current_chunk:
             chunks.append(current_chunk)
 
-        # 3. Gắn Sliding Context Window (context_before & context_after) cho từng batch
+        # 3. Gắn Sliding Context Window (context_before & context_after) bảo đảm ngân sách cứng
         batches: List[NovelTranslationBatch] = []
 
         for batch_idx, active_chunk in enumerate(chunks):
-            # Tìm chỉ số index bắt đầu và kết thúc của active_chunk trong context_items
             start_idx = context_items.index(active_chunk[0])
             end_idx = context_items.index(active_chunk[-1]) + 1
 
-            # context_before: Lấy tối đa max_context_blocks ngay trước start_idx
+            chunk_tokens = sum(self.estimator.estimate_tokens(it.raw_text) + 10 for it in active_chunk)
+            available_context_budget = max(0, self.max_tokens_per_batch - self.framing_overhead_tokens - chunk_tokens)
+
+            # A. Allocation cho context_before
+            context_before_budget = min(self.max_context_tokens, available_context_budget)
             context_before_candidates = context_items[max(0, start_idx - self.max_context_blocks):start_idx]
             context_before: List[NovelContextItem] = []
-            ctx_tokens = 0
+            used_before_tokens = 0
+
             for item in reversed(context_before_candidates):
-                t_count = self.estimator.estimate_tokens(item.raw_text)
-                if ctx_tokens + t_count <= self.max_context_tokens or not context_before:
+                t_count = self.estimator.estimate_tokens(item.raw_text) + 5
+                if used_before_tokens + t_count <= context_before_budget:
                     context_before.insert(0, item)
-                    ctx_tokens += t_count
+                    used_before_tokens += t_count
                 else:
                     break
 
-            # context_after: Lấy tối đa max_lookahead_blocks ngay sau end_idx
-            context_after = context_items[end_idx:min(len(context_items), end_idx + self.max_lookahead_blocks)]
+            # B. Allocation cho context_after (bị giới hạn bởi phần budget còn lại)
+            remaining_after_budget = max(0, available_context_budget - used_before_tokens)
+            context_after_candidates = context_items[end_idx:min(len(context_items), end_idx + self.max_lookahead_blocks)]
+            context_after: List[NovelContextItem] = []
+            used_after_tokens = 0
 
-            # Tính tổng tokens ước tính của toàn bộ batch
-            all_texts = [it.raw_text for it in (context_before + active_chunk + context_after)]
-            total_batch_tokens = sum(self.estimator.estimate_tokens(t) for t in all_texts) + len(active_chunk) * 15
+            for item in context_after_candidates:
+                t_count = self.estimator.estimate_tokens(item.raw_text) + 5
+                if used_after_tokens + t_count <= remaining_after_budget:
+                    context_after.append(item)
+                    used_after_tokens += t_count
+                else:
+                    break
+
+            # Tổng token ước tính toàn bộ batch (framing + before + translate + after)
+            total_batch_tokens = self.framing_overhead_tokens + chunk_tokens + used_before_tokens + used_after_tokens
 
             batches.append(
                 NovelTranslationBatch(
@@ -155,3 +184,4 @@ class NovelContextBuilder:
             )
 
         return batches
+

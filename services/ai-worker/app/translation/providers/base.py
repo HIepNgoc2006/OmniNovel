@@ -98,22 +98,37 @@ class TranslationProvider(ABC):
     ) -> None:
         """
         Xác thực tính toàn vẹn 1:1 của tập hợp anchorBlockId trong NovelTranslationBatch:
-        - Không cho phép trùng anchorBlockId trong output.
-        - Không cho phép thiếu anchorBlockId hoặc xuất hiện anchorBlockId lạ (kể cả context blocks bị nhầm vào).
-        - Kiểm tra tính tương ứng cardinality tuyệt đối.
+        - Invariant 1 (Input Uniqueness): Input không được chứa anchorBlockId trùng lặp.
+        - Invariant 2 (Output Uniqueness): Output không được chứa anchorBlockId trùng lặp.
+        - Invariant 3 (Cardinality Invariant): len(output_items) == len(input_items).
+        - Invariant 4 (Exact Set Equality): set(output_keys) == set(input_keys).
         """
         input_keys = [item.anchor_block_id for item in input_items]
         output_keys = [item.anchor_block_id for item in output_items]
 
-        # 1. Kiểm tra trùng anchorBlockId trong output
-        if len(output_keys) != len(set(output_keys)):
-            seen = set()
-            duplicates = [k for k in output_keys if k in seen or seen.add(k)]
+        # 1. Kiểm tra trùng anchorBlockId trong input
+        if len(input_keys) != len(set(input_keys)):
+            seen_in = set()
+            duplicates_in = [k for k in input_keys if k in seen_in or seen_in.add(k)]
             raise SchemaMismatchError(
-                f"DUPLICATE_NOVEL_OUTPUT_KEY: Provider trả về các anchorBlockId bị trùng lặp: {duplicates}"
+                f"DUPLICATE_NOVEL_INPUT_KEY: Input chứa các anchorBlockId bị trùng lặp: {duplicates_in}"
             )
 
-        # 2. Kiểm tra tập hợp
+        # 2. Kiểm tra trùng anchorBlockId trong output
+        if len(output_keys) != len(set(output_keys)):
+            seen_out = set()
+            duplicates_out = [k for k in output_keys if k in seen_out or seen_out.add(k)]
+            raise SchemaMismatchError(
+                f"DUPLICATE_NOVEL_OUTPUT_KEY: Provider trả về các anchorBlockId bị trùng lặp: {duplicates_out}"
+            )
+
+        # 3. Kiểm tra số lượng block (Cardinality)
+        if len(output_keys) != len(input_keys):
+            raise SchemaMismatchError(
+                f"CARDINALITY_MISMATCH: Số lượng block output ({len(output_keys)}) không khớp với input ({len(input_keys)})."
+            )
+
+        # 4. Kiểm tra tập hợp (Exact Set Equality)
         input_set = set(input_keys)
         output_set = set(output_keys)
 
@@ -128,4 +143,5 @@ class TranslationProvider(ABC):
             raise SchemaMismatchError(
                 f"SCHEMA_NOVEL_KEY_MISMATCH: Tập hợp anchorBlockId không khớp 1:1 giữa input và output. {'; '.join(err_parts)}"
             )
+
 

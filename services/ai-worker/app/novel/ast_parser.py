@@ -2,7 +2,6 @@ from abc import ABC
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 import re
-import unicodedata
 from typing import Any, Dict, List, Optional, Union
 
 
@@ -268,7 +267,7 @@ class _HtmlToAstParser(HTMLParser):
 class NovelAstParser:
     """
     Parser đa định dạng (HTML, XHTML, Markdown, Plain Text) sang Canonical Document AST.
-    Bảo toàn 100% Unicode gốc (raw_text), tuyệt đối không áp dụng NFKC biến dạng ký tự.
+    Bảo toàn nguyên dạng ký tự Unicode (không áp dụng NFKC compatibility transformation, bảo toàn codepoint gốc).
     """
 
     @classmethod

@@ -13,6 +13,7 @@ from app.novel.security import (
     SafeNovelPackageExtractor,
     SymlinkDetectedError,
     ZipBombError,
+    safe_parse_xml_file,
     sanitize_and_resolve_archive_path,
 )
 
@@ -307,4 +308,89 @@ def test_epub_zero_network_io_even_with_adversarial_uris(tmp_path: Path, monkeyp
     # Phải fail-closed với ExternalResourceForbiddenError mà KHÔNG gọi network
     with pytest.raises(ExternalResourceForbiddenError):
         SafeNovelPackageExtractor.extract_and_validate_epub(epub_path, out_dir)
+
+
+@pytest.mark.parametrize(
+    "reserved_entry",
+    [
+        "CON",
+        "con.txt",
+        "AUX.xhtml",
+        "NUL",
+        "prn.png",
+        "COM1.dat",
+        "LPT9.html",
+        "sub/CON/file.txt",
+    ],
+)
+def test_sanitize_path_rejects_windows_reserved_names(tmp_path: Path, reserved_entry: str):
+    with pytest.raises(PathTraversalError, match="Windows reserved device name"):
+        sanitize_and_resolve_archive_path(reserved_entry, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "trailing_entry",
+    [
+        "chapter1. ",
+        "chapter1.",
+        "folder. /file.txt",
+        "folder./file.txt",
+        " leading_space/file.txt",
+    ],
+)
+def test_sanitize_path_rejects_trailing_dot_and_spaces(tmp_path: Path, trailing_entry: str):
+    with pytest.raises(PathTraversalError, match="(trailing dot/space|leading space)"):
+        sanitize_and_resolve_archive_path(trailing_entry, tmp_path)
+
+
+def test_safe_parse_xml_rejects_utf16_xxe_payload(tmp_path: Path):
+    """
+    Xác thực bộ parser XML phát hiện và từ chối XXE/DTD payload được mã hóa dưới dạng UTF-16-LE / UTF-16-BE.
+    """
+    xml_utf16le = tmp_path / "xxe_utf16le.xml"
+    content = '<?xml version="1.0" encoding="utf-16"?><!DOCTYPE test [<!ENTITY xxe "evil">]><test>&xxe;</test>'
+    xml_utf16le.write_bytes(content.encode("utf-16-le"))
+
+    with pytest.raises(MalformedEpubError, match="nguy cơ XXE"):
+        safe_parse_xml_file(xml_utf16le)
+
+    xml_utf16be = tmp_path / "xxe_utf16be.xml"
+    xml_utf16be.write_bytes(content.encode("utf-16-be"))
+
+    with pytest.raises(MalformedEpubError, match="nguy cơ XXE"):
+        safe_parse_xml_file(xml_utf16be)
+
+
+def test_safe_parse_xml_parses_clean_utf16_xml(tmp_path: Path):
+    """
+    Xác thực XML UTF-16 hợp lệ không chứa DTD vẫn được parse chính xác.
+    """
+    xml_clean = tmp_path / "clean_utf16.xml"
+    content = '<?xml version="1.0" encoding="utf-16"?><root><title>第1章</title></root>'
+    xml_clean.write_bytes(content.encode("utf-16-le"))
+
+    tree = safe_parse_xml_file(xml_clean)
+    assert tree.find("title").text == "第1章"
+
+
+def test_extractor_rejects_unicode_casefold_collision(tmp_path: Path):
+    """
+    Xác thực kiểm tra va chạm Unicode canonical equivalence + casefold
+    (ví dụ: 'café.xhtml' [NFC: c-a-f-\u00e9] vs 'cafe\u0301.xhtml' [NFD: c-a-f-e-\u0301]
+    hoặc 'Σ.xhtml' vs 'σ.xhtml').
+    """
+    zip_path = tmp_path / "unicode_collision.zip"
+    out_dir = tmp_path / "extracted"
+
+    # café in NFC vs NFD
+    nfc_name = "OEBPS/caf\u00e9.xhtml"
+    nfd_name = "oebps/cafe\u0301.xhtml"
+
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr(nfc_name, "<p>File NFC</p>")
+        zf.writestr(nfd_name, "<p>File NFD</p>")
+
+    with pytest.raises(PathTraversalError, match="duplicate destination collision"):
+        SafeNovelPackageExtractor.extract_single_chapter_archive(zip_path, out_dir)
+
 

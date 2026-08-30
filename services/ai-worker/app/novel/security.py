@@ -3,6 +3,7 @@ import os
 import posixpath
 import re
 import stat
+import unicodedata
 import urllib.parse
 import xml.etree.ElementTree as ET
 import zipfile
@@ -76,6 +77,11 @@ XXE_DTD_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+WINDOWS_RESERVED_NAMES = re.compile(
+    r"""^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(\..*)?$""",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class ExtractedNovelPackage:
@@ -95,10 +101,33 @@ class ExtractedEpubChapter:
     total_uncompressed_bytes: int = 0
 
 
+def _detect_xml_encoding(raw_bytes: bytes) -> str:
+    """Xác định encoding của tài liệu XML (hỗ trợ UTF-8, UTF-16-LE, UTF-16-BE, ISO-8859-1...)."""
+    if raw_bytes.startswith(b"\xef\xbb\xbf"):
+        return "utf-8-sig"
+    if raw_bytes.startswith(b"\xff\xfe"):
+        return "utf-16-le"
+    if raw_bytes.startswith(b"\xfe\xff"):
+        return "utf-16-be"
+    if raw_bytes.startswith(b"<\x00"):
+        return "utf-16-le"
+    if raw_bytes.startswith(b"\x00<"):
+        return "utf-16-be"
+
+    # Quét XML declaration trong 1KB đầu tiên
+    match = re.search(rb"""<\?xml[^>]+encoding=["']([a-zA-Z0-9_\-]+)["']""", raw_bytes[:1024], re.IGNORECASE)
+    if match:
+        try:
+            return match.group(1).decode("ascii", errors="ignore").lower()
+        except Exception:
+            pass
+    return "utf-8"
+
+
 def safe_parse_xml_file(xml_path: Path) -> ET.ElementTree:
     """
     Thẩm định và parse an toàn file XML (container.xml, OPF, XHTML):
-    - Đọc raw content và quét chặn DOCTYPE, ENTITY definitions, SYSTEM/PUBLIC entities (XXE / Entity Expansion / Billion Laughs).
+    - Đọc raw content, phát hiện encoding chính xác và quét chặn DOCTYPE, ENTITY definitions, SYSTEM/PUBLIC entities (XXE / Entity Expansion / Billion Laughs).
     - Parse bằng XMLParser an toàn (không resolve external DTD hoặc network entities).
     """
     if not xml_path.exists() or not xml_path.is_file():
@@ -109,10 +138,28 @@ def safe_parse_xml_file(xml_path: Path) -> ET.ElementTree:
     except Exception as e:
         raise MalformedEpubError(f"Không thể đọc file XML '{xml_path.name}': {e}") from e
 
-    # Kiểm tra entity expansion / XXE pattern trên toàn bộ nội dung text XML
-    text_content = raw_bytes.decode("utf-8", errors="ignore")
+    # Multi-encoding pre-scan
+    encoding = _detect_xml_encoding(raw_bytes)
+    try:
+        text_content = raw_bytes.decode(encoding, errors="replace")
+    except Exception:
+        text_content = raw_bytes.decode("utf-8", errors="replace")
+
+    # Kiểm tra entity expansion / XXE pattern trên text decoded
     if XXE_DTD_PATTERN.search(text_content):
         raise MalformedEpubError(f"Phát hiện DTD / Entity declaration tiềm ẩn nguy cơ XXE trong file '{xml_path.name}'.")
+
+    # Kiểm tra thêm binary signatures (ASCII, UTF-16LE, UTF-16BE) để fail-closed tuyệt đối
+    dangerous_byte_patterns = [
+        b"<!ENTITY", b"<\x00!\x00E\x00N\x00T\x00I\x00T\x00Y\x00", b"\x00<\x00!\x00E\x00N\x00T\x00I\x00T\x00Y",
+        b"<!DOCTYPE", b"<\x00!\x00D\x00O\x00C\x00T\x00Y\x00P\x00E\x00", b"\x00<\x00!\x00D\x00O\x00C\x00T\x00Y\x00P\x00E",
+        b"SYSTEM", b"S\x00Y\x00S\x00T\x00E\x00M\x00", b"\x00S\x00Y\x00S\x00T\x00E\x00M",
+        b"PUBLIC", b"P\x00U\x00B\x00L\x00I\x00C\x00", b"\x00P\x00U\x00B\x00L\x00I\x00C",
+    ]
+    raw_upper = raw_bytes.upper()
+    for pat in dangerous_byte_patterns:
+        if pat.upper() in raw_upper:
+            raise MalformedEpubError(f"Phát hiện binary DTD/XXE signature trong file '{xml_path.name}'.")
 
     try:
         # Cấu hình parser không mở DTD/entities
@@ -127,6 +174,8 @@ def sanitize_and_resolve_archive_path(entry_name: str, target_dir: Path) -> Path
     """
     Thẩm định nghiêm ngặt tên file trong archive:
     - Chặn null bytes (\x00), URL-encoded traversal (%2e%2e), dấu hai chấm (C:), UNC (\\\\), leading slashes.
+    - Chặn Windows reserved device names (CON, NUL, AUX, PRN, COM1..9, LPT1..9).
+    - Chặn trailing dots/spaces và leading spaces trong từng path segment.
     - Chuẩn hóa đường dẫn và kiểm tra tính trực thuộc tuyệt đối bên trong target_dir.
     """
     if not entry_name or "\x00" in entry_name:
@@ -152,6 +201,18 @@ def sanitize_and_resolve_archive_path(entry_name: str, target_dir: Path) -> Path
     for part in parts:
         if part in ("..", "."):
             raise PathTraversalError(f"Phát hiện relative traversal segment '{part}' trong: '{entry_name}'")
+
+        # Chặn Windows reserved device names
+        if WINDOWS_RESERVED_NAMES.match(part):
+            raise PathTraversalError(f"Phát hiện Windows reserved device name '{part}' trong: '{entry_name}'")
+
+        # Chặn trailing dot / trailing space (Windows path canonicalization vulnerability)
+        if part.endswith(".") or part.endswith(" "):
+            raise PathTraversalError(f"Phát hiện trailing dot/space không an toàn trong path segment '{part}' của '{entry_name}'")
+
+        # Chặn leading space
+        if part.startswith(" "):
+            raise PathTraversalError(f"Phát hiện leading space không an toàn trong path segment '{part}' của '{entry_name}'")
 
     clean_rel_path = posixpath.normpath(normalized_name)
     if clean_rel_path == "." or clean_rel_path.startswith("../"):
@@ -251,8 +312,11 @@ class SafeNovelPackageExtractor:
 
                 dest_file = sanitize_and_resolve_archive_path(info.filename, target_dir_abs)
 
-                # Chống va chạm duplicate normalized paths (Deterministic Cross-Platform)
-                canonical_dest_key = dest_file.as_posix().lower()
+                # Chống va chạm duplicate destination (NFC canonical normalization + casefold)
+                rel_dest = dest_file.relative_to(target_dir_abs)
+                canonical_parts = [unicodedata.normalize("NFC", p).casefold() for p in rel_dest.parts]
+                canonical_dest_key = "/".join(canonical_parts)
+
                 if canonical_dest_key in seen_destinations:
                     raise PathTraversalError(f"Phát hiện duplicate destination collision cho '{info.filename}' (canonical: '{canonical_dest_key}')")
                 seen_destinations.add(canonical_dest_key)

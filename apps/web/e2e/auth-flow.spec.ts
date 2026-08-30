@@ -7,6 +7,28 @@ test.describe('Web Foundation & Authentication E2E Smoke Flow', () => {
     isSessionActive = false;
 
     // Mock Core API Endpoints for deterministic browser testing
+    await page.route('**/api/v1/stories/featured', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          hotStories: [],
+          banners: [],
+        }),
+      });
+    });
+
+    await page.route('**/api/v1/stories/rankings', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          topComics: [],
+          topNovels: [],
+        }),
+      });
+    });
+
     await page.route('**/api/v1/stories**', async (route) => {
       await route.fulfill({
         status: 200,

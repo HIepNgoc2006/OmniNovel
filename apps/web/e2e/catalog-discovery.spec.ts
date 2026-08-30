@@ -239,8 +239,8 @@ test.describe('Discovery, Catalog & Story Details E2E Flow (Phase 4B)', () => {
 
     // 2. Section Mới Cập Nhật & Story Cards
     await expect(page.getByText('Mới Cập Nhật')).toBeVisible();
-    await expect(page.getByText('One Piece Đảo Hải Tặc')).toBeVisible();
-    await expect(page.getByText('Mushoku Tensei - Thất Nghiệp Tái Sinh')).toBeVisible();
+    await expect(page.locator('main').getByRole('link', { name: 'One Piece Đảo Hải Tặc', exact: true })).toBeVisible();
+    await expect(page.locator('main').getByRole('link', { name: 'Mushoku Tensei - Thất Nghiệp Tái Sinh', exact: true })).toBeVisible();
 
     // 3. Bảng Xếp Hạng
     const rankingsSection = page.locator('div').filter({ hasText: /Bảng Xếp Hạng/i });

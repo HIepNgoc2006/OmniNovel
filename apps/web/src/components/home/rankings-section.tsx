@@ -13,7 +13,7 @@ interface RankingsSectionProps {
 export function RankingsSection({ topComics, topNovels }: RankingsSectionProps) {
   const [activeTab, setActiveTab] = useState<'COMIC' | 'NOVEL'>('COMIC');
 
-  const currentList = activeTab === 'COMIC' ? topComics : topNovels;
+  const currentList = (activeTab === 'COMIC' ? topComics : topNovels) || [];
 
   return (
     <div className="bg-slate-900/60 border border-slate-800/80 rounded-3xl p-5 sm:p-6 flex flex-col gap-4 shadow-xl">

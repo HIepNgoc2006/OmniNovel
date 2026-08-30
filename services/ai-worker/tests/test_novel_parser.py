@@ -124,3 +124,27 @@ def test_parser_retry_determinism():
     for b1, b2 in zip(doc1.blocks, doc2.blocks):
         assert type(b1) == type(b2)
         assert b1.to_plain_text() == b2.to_plain_text()
+
+
+def test_parser_preserves_raw_unicode_without_nfkc_mutation():
+    """
+    Xác nhận parser bảo toàn 100% Unicode gốc, không tự ý biến dạng full-width,
+    half-width hay compatibility forms (ví dụ: 'ＡＢＣ' không bị đổi thành 'ABC',
+    '！？' không bị tách/biến đổi, '①' không bị đổi thành '1').
+    """
+    # 1. HTML
+    html_raw = "<p>テスト ＡＢＣ １２３ ！？ ① ㌀</p>"
+    doc_html = NovelAstParser.parse_html(html_raw)
+    assert doc_html.blocks[0].to_plain_text() == "テスト ＡＢＣ １２３ ！？ ① ㌀"
+
+    # 2. Plaintext
+    txt_raw = "テスト ＡＢＣ １２３ ！？ ① ㌀"
+    doc_txt = NovelAstParser.parse_plaintext(txt_raw)
+    assert doc_txt.blocks[0].to_plain_text() == "テスト ＡＢＣ １２３ ！？ ① ㌀"
+
+    # 3. Markdown
+    md_raw = "# 見出し ＡＢＣ\n\nテスト １２３ ！？ ① ㌀"
+    doc_md = NovelAstParser.parse_markdown(md_raw)
+    assert doc_md.blocks[0].to_plain_text() == "見出し ＡＢＣ"
+    assert doc_md.blocks[1].to_plain_text() == "テスト １２３ ！？ ① ㌀"
+

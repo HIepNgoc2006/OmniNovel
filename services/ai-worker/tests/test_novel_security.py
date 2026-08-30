@@ -212,3 +212,99 @@ def test_epub_rejects_external_resources_fail_closed(tmp_path: Path, external_sn
 
     with pytest.raises(ExternalResourceForbiddenError, match="tài nguyên từ xa bị cấm"):
         SafeNovelPackageExtractor.extract_and_validate_epub(epub_path, out_dir)
+
+
+# ============================================================================
+# Checkpoint 3A Security Audit Hardening Tests
+# ============================================================================
+
+@pytest.mark.parametrize(
+    "mode_val, mode_name",
+    [
+        (0o010777, "FIFO / named pipe"),
+        (0o020777, "Character device"),
+        (0o060777, "Block device"),
+        (0o140777, "Socket"),
+        (0o120777, "Symbolic link"),
+    ],
+)
+def test_extractor_rejects_non_regular_file_types(tmp_path: Path, mode_val: int, mode_name: str):
+    zip_path = tmp_path / f"non_regular_{mode_val}.zip"
+    out_dir = tmp_path / "extracted"
+
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zi = zipfile.ZipInfo("special_entry.bin")
+        zi.external_attr = mode_val << 16
+        zf.writestr(zi, "payload")
+
+    with pytest.raises(SymlinkDetectedError):
+        SafeNovelPackageExtractor.extract_single_chapter_archive(zip_path, out_dir)
+
+
+def test_extractor_rejects_cross_platform_path_collision(tmp_path: Path):
+    """
+    Xác thực kiểm tra va chạm tên file sau canonicalization hoạt động nhất quán cross-platform
+    (Ví dụ 'OEBPS/Chap01.xhtml' vs 'oebps/chap01.xhtml' phải bị từ chối 100% trên cả Linux, Windows, macOS).
+    """
+    zip_path = tmp_path / "case_collision.zip"
+    out_dir = tmp_path / "extracted"
+
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        zf.writestr("OEBPS/chapter01.xhtml", "<p>File 1</p>")
+        zf.writestr("oebps/CHAPTER01.xhtml", "<p>File 2</p>")
+
+    with pytest.raises(PathTraversalError, match="duplicate destination collision"):
+        SafeNovelPackageExtractor.extract_single_chapter_archive(zip_path, out_dir)
+
+
+def test_epub_rejects_xxe_dtd_entity_expansion(tmp_path: Path):
+    """
+    Xác thực bộ parser XML fail-closed trước các payload tấn công XXE / Entity Expansion / Billion Laughs.
+    """
+    epub_path = tmp_path / "xxe_payload.epub"
+    out_dir = tmp_path / "extracted"
+
+    malicious_container = """<?xml version="1.0"?>
+    <!DOCTYPE container [
+        <!ENTITY % xxe SYSTEM "file:///etc/passwd">
+        %xxe;
+    ]>
+    <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+        <rootfiles>
+            <rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>
+        </rootfiles>
+    </container>"""
+
+    with zipfile.ZipFile(epub_path, "w") as zf:
+        zf.writestr("mimetype", "application/epub+zip")
+        zf.writestr("META-INF/container.xml", malicious_container)
+        zf.writestr("OEBPS/content.opf", "<package><manifest/><spine/></package>")
+
+    with pytest.raises(MalformedEpubError, match="nguy cơ XXE"):
+        SafeNovelPackageExtractor.extract_and_validate_epub(epub_path, out_dir)
+
+
+def test_epub_zero_network_io_even_with_adversarial_uris(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """
+    Chứng minh bằng cách chặn toàn bộ network primitive (socket, urllib, httpx):
+    Quá trình thẩm định EPUB và quét external resources hoàn toàn không tạo bất kỳ kết nối mạng nào ra ngoài.
+    """
+    import socket
+    import urllib.request
+
+    def forbidden_network(*args, **kwargs):
+        raise RuntimeError("NETWORK I/O ATTEMPTED! Security invariant breached.")
+
+    monkeypatch.setattr(socket, "socket", forbidden_network)
+    monkeypatch.setattr(urllib.request, "urlopen", forbidden_network)
+
+    epub_path = tmp_path / "zero_io.epub"
+    out_dir = tmp_path / "extracted"
+
+    # EPUB chứa link ngoài
+    _create_valid_single_chapter_epub(epub_path, '<p>Text</p><img src="http://169.254.169.254/latest/meta-data/" />')
+
+    # Phải fail-closed với ExternalResourceForbiddenError mà KHÔNG gọi network
+    with pytest.raises(ExternalResourceForbiddenError):
+        SafeNovelPackageExtractor.extract_and_validate_epub(epub_path, out_dir)
+

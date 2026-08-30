@@ -244,21 +244,20 @@ class _HtmlToAstParser(HTMLParser):
             return
 
         if self._current_block is not None:
-            cleaned_text = unicodedata.normalize("NFKC", data)
-            if not cleaned_text:
+            if not data:
                 return
 
             if "strong" in self._inline_stack or "b" in self._inline_stack:
-                self._current_block.children.append(StrongNode(children=[TextNode(text=cleaned_text)]))
+                self._current_block.children.append(StrongNode(children=[TextNode(text=data)]))
             elif "em" in self._inline_stack or "i" in self._inline_stack:
-                self._current_block.children.append(EmphasisNode(children=[TextNode(text=cleaned_text)]))
+                self._current_block.children.append(EmphasisNode(children=[TextNode(text=data)]))
             else:
-                self._current_block.children.append(TextNode(text=cleaned_text))
+                self._current_block.children.append(TextNode(text=data))
         else:
             # Văn bản tự do ngoài thẻ block -> tự động tạo ParagraphBlockNode nếu không chỉ là whitespace
             stripped = data.strip()
             if stripped:
-                p = ParagraphBlockNode(children=[TextNode(text=unicodedata.normalize("NFKC", stripped))])
+                p = ParagraphBlockNode(children=[TextNode(text=stripped)])
                 self.blocks.append(p)
 
 
@@ -269,6 +268,7 @@ class _HtmlToAstParser(HTMLParser):
 class NovelAstParser:
     """
     Parser đa định dạng (HTML, XHTML, Markdown, Plain Text) sang Canonical Document AST.
+    Bảo toàn 100% Unicode gốc (raw_text), tuyệt đối không áp dụng NFKC biến dạng ký tự.
     """
 
     @classmethod
@@ -292,7 +292,7 @@ class NovelAstParser:
         blocks: List[NovelBlockNode] = []
 
         for p_str in raw_paragraphs:
-            cleaned = unicodedata.normalize("NFKC", p_str.strip())
+            cleaned = p_str.strip()
             if cleaned:
                 blocks.append(ParagraphBlockNode(children=[TextNode(text=cleaned)]))
 
@@ -314,7 +314,7 @@ class NovelAstParser:
             if current_para_lines:
                 full_text = " ".join(current_para_lines).strip()
                 if full_text:
-                    blocks.append(ParagraphBlockNode(children=[TextNode(text=unicodedata.normalize("NFKC", full_text))]))
+                    blocks.append(ParagraphBlockNode(children=[TextNode(text=full_text)]))
                 current_para_lines.clear()
 
         for line in lines:
@@ -328,7 +328,7 @@ class NovelAstParser:
             if heading_match:
                 flush_para()
                 level = len(heading_match.group(1))
-                h_text = unicodedata.normalize("NFKC", heading_match.group(2).strip())
+                h_text = heading_match.group(2).strip()
                 blocks.append(HeadingBlockNode(level=level, children=[TextNode(text=h_text)]))
                 continue
 
@@ -341,7 +341,7 @@ class NovelAstParser:
             # Blockquote (> ...)
             if line_str.startswith(">"):
                 flush_para()
-                quote_text = unicodedata.normalize("NFKC", line_str.lstrip(">").strip())
+                quote_text = line_str.lstrip(">").strip()
                 blocks.append(BlockquoteBlockNode(children=[ParagraphBlockNode(children=[TextNode(text=quote_text)])]))
                 continue
 

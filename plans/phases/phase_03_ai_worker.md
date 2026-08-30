@@ -39,8 +39,7 @@
     - 1/1 True Cross-Service End-to-End Orchestration Smoke Test (`translation-cross-service.integration-spec.ts`)
     - 80/80 Core API E2E Lifecycle Tests (`app.e2e-spec.ts`)
     - 9/9 Python FastAPI Pytest Cases (`test_endpoints.py`)
-  - [x] **VERTICAL SLICE 1: FROZEN & 100% HOÀN TẤT**
-- [/] **Vertical Slice 2: Japanese Manga-OCR & AI Processing Engine (PyTorch, Translation & Inpainting)**
+  - [x] **Vertical Slice 2: Japanese Manga-OCR & AI Processing Engine (PyTorch, Translation & Inpainting) (100% HOÀN TẤT & FROZEN)**
   - [x] **Vertical Slice 2A: Japanese Manga-OCR Foundation (100% HOÀN TẤT & FROZEN):**
     - [x] Core Migration 0004: Drop default `confidence`, hỗ trợ nullable semantics cho OCR segments.
     - [x] Core API validation: `WorkerSegmentDto` kiểm tra toạ độ pixel (`INT >= 0`) và `confidence` nullable.

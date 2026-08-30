@@ -71,6 +71,11 @@ EXTERNAL_URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+XXE_DTD_PATTERN = re.compile(
+    r"""(?i)(<!ENTITY|<!DOCTYPE[^>]*\[|\bSYSTEM\b|\bPUBLIC\b)""",
+    re.IGNORECASE,
+)
+
 
 @dataclass(frozen=True)
 class ExtractedNovelPackage:
@@ -88,6 +93,34 @@ class ExtractedEpubChapter:
     language: Optional[str]
     image_assets: Dict[str, Path] = field(default_factory=dict)
     total_uncompressed_bytes: int = 0
+
+
+def safe_parse_xml_file(xml_path: Path) -> ET.ElementTree:
+    """
+    Thẩm định và parse an toàn file XML (container.xml, OPF, XHTML):
+    - Đọc raw content và quét chặn DOCTYPE, ENTITY definitions, SYSTEM/PUBLIC entities (XXE / Entity Expansion / Billion Laughs).
+    - Parse bằng XMLParser an toàn (không resolve external DTD hoặc network entities).
+    """
+    if not xml_path.exists() or not xml_path.is_file():
+        raise MalformedEpubError(f"File XML không tồn tại: {xml_path}")
+
+    try:
+        raw_bytes = xml_path.read_bytes()
+    except Exception as e:
+        raise MalformedEpubError(f"Không thể đọc file XML '{xml_path.name}': {e}") from e
+
+    # Kiểm tra entity expansion / XXE pattern trên toàn bộ nội dung text XML
+    text_content = raw_bytes.decode("utf-8", errors="ignore")
+    if XXE_DTD_PATTERN.search(text_content):
+        raise MalformedEpubError(f"Phát hiện DTD / Entity declaration tiềm ẩn nguy cơ XXE trong file '{xml_path.name}'.")
+
+    try:
+        # Cấu hình parser không mở DTD/entities
+        parser = ET.XMLParser(target=ET.TreeBuilder())
+        tree = ET.parse(xml_path, parser=parser)
+        return tree
+    except Exception as e:
+        raise MalformedEpubError(f"Lỗi parse XML an toàn cho '{xml_path.name}': {e}") from e
 
 
 def sanitize_and_resolve_archive_path(entry_name: str, target_dir: Path) -> Path:
@@ -139,7 +172,7 @@ class SafeNovelPackageExtractor:
     """
     Trích xuất và thẩm định an toàn các gói tài liệu tiểu thuyết (.zip / .epub / single-chapter package).
     Bảo đảm:
-    1. Chặn Path Traversal, Symlinks, Non-regular files.
+    1. Chặn Path Traversal, Symlinks, Non-regular files (FIFO, Socket, Devices).
     2. Chặn Zip Bomb (Aggregate metadata & In-flight stream byte counter).
     3. Thẩm định Single-chapter EPUB scope.
     4. Fail-closed khi phát hiện External Resources (không dereference mạng).
@@ -193,7 +226,7 @@ class SafeNovelPackageExtractor:
             text_files: List[Path] = []
             image_files: List[Path] = []
 
-            seen_destinations: Set[Path] = set()
+            seen_destinations: Set[str] = set()
             actual_total_bytes = 0
             actual_text_bytes = 0
 
@@ -202,18 +235,27 @@ class SafeNovelPackageExtractor:
                 if info.is_dir() or info.filename.endswith("/"):
                     continue
 
-                # Kiểm tra symlink / hardlink qua external_attr
-                # Trong Unix, mode 0o120000 là symlink (S_IFLNK)
+                # Kiểm tra non-regular files qua external_attr (Unix mode bits: S_IFMT)
                 mode = info.external_attr >> 16
-                if mode != 0 and stat.S_ISLNK(mode):
-                    raise SymlinkDetectedError(f"Phát hiện symbolic link trong archive: '{info.filename}'")
+                if mode != 0:
+                    file_type = mode & 0o170000
+                    # Nếu có khai báo file type trong Unix mode bits:
+                    # 0o100000 = S_IFREG, 0o040000 = S_IFDIR
+                    if file_type != 0 and file_type not in (stat.S_IFREG, stat.S_IFDIR):
+                        if file_type == stat.S_IFLNK:
+                            raise SymlinkDetectedError(f"Phát hiện symbolic link trong archive: '{info.filename}'")
+                        raise SymlinkDetectedError(
+                            f"Phát hiện non-regular file (mode: {oct(mode)}) trong archive: '{info.filename}'. "
+                            "Chỉ cho phép regular files."
+                        )
 
                 dest_file = sanitize_and_resolve_archive_path(info.filename, target_dir_abs)
 
-                # Chống va chạm duplicate normalized paths
-                if dest_file in seen_destinations:
-                    raise PathTraversalError(f"Phát hiện duplicate destination collision cho '{info.filename}'")
-                seen_destinations.add(dest_file)
+                # Chống va chạm duplicate normalized paths (Deterministic Cross-Platform)
+                canonical_dest_key = dest_file.as_posix().lower()
+                if canonical_dest_key in seen_destinations:
+                    raise PathTraversalError(f"Phát hiện duplicate destination collision cho '{info.filename}' (canonical: '{canonical_dest_key}')")
+                seen_destinations.add(canonical_dest_key)
 
                 # Tạo thư mục cha an toàn
                 dest_file.parent.mkdir(parents=True, exist_ok=True)
@@ -281,19 +323,21 @@ class SafeNovelPackageExtractor:
         """
         package = cls.extract_single_chapter_archive(epub_path, output_dir)
 
-        # 1. Tìm và parse container.xml
+        # 1. Tìm và parse container.xml qua safe parser
         container_path = package.root_dir / "META-INF" / "container.xml"
         if not container_path.exists():
             raise MalformedEpubError("EPUB không hợp lệ: thiếu file 'META-INF/container.xml'.")
 
         try:
-            container_tree = ET.parse(container_path)
+            container_tree = safe_parse_xml_file(container_path)
             rootfile_el = container_tree.find(".//{urn:oasis:names:tc:opendocument:xmlns:container}rootfile")
             if rootfile_el is None or "full-path" not in rootfile_el.attrib:
                 rootfile_el = container_tree.find(".//rootfile")
             if rootfile_el is None or "full-path" not in rootfile_el.attrib:
                 raise MalformedEpubError("EPUB container.xml không chứa thẻ rootfile hợp lệ.")
             opf_rel_path = rootfile_el.attrib["full-path"]
+        except NovelSecurityError:
+            raise
         except Exception as e:
             raise MalformedEpubError(f"Không thể parse container.xml của EPUB: {e}") from e
 
@@ -301,10 +345,12 @@ class SafeNovelPackageExtractor:
         if not opf_path.exists():
             raise MalformedEpubError(f"Không tìm thấy file OPF tại đường dẫn khai báo: '{opf_rel_path}'")
 
-        # 2. Parse OPF file (Manifest, Spine, Metadata)
+        # 2. Parse OPF file qua safe parser (Manifest, Spine, Metadata)
         try:
-            opf_tree = ET.parse(opf_path)
+            opf_tree = safe_parse_xml_file(opf_path)
             opf_root = opf_tree.getroot()
+        except NovelSecurityError:
+            raise
         except Exception as e:
             raise MalformedEpubError(f"Không thể parse file OPF '{opf_path}': {e}") from e
 

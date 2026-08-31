@@ -7,17 +7,10 @@ export class AddReadingProgress1700000000007
 
   public async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
-      CREATE TABLE IF NOT EXISTS reading_progress (
-        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        story_id UUID NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
-        chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
-        chapter_version_id UUID REFERENCES chapter_versions(id) ON DELETE SET NULL,
-        reading_mode VARCHAR(20) DEFAULT 'WEBTOON',
-        progress_percentage NUMERIC(5,2) DEFAULT 0,
-        scroll_position NUMERIC(10,2) DEFAULT 0,
-        updated_at TIMESTAMPTZ DEFAULT NOW(),
-        PRIMARY KEY (user_id, story_id)
-      );
+      ALTER TABLE reading_progress ADD COLUMN IF NOT EXISTS chapter_version_id UUID REFERENCES chapter_versions(id) ON DELETE SET NULL;
+      ALTER TABLE reading_progress ADD COLUMN IF NOT EXISTS reading_mode VARCHAR(20) DEFAULT 'WEBTOON';
+      ALTER TABLE reading_progress ADD COLUMN IF NOT EXISTS progress_percentage NUMERIC(5,2) DEFAULT 0;
+      ALTER TABLE reading_progress ADD COLUMN IF NOT EXISTS scroll_position NUMERIC(10,2) DEFAULT 0;
 
       CREATE TABLE IF NOT EXISTS chapter_read_states (
         user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -37,7 +30,10 @@ export class AddReadingProgress1700000000007
   public async down(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.query(`
       DROP TABLE IF EXISTS chapter_read_states;
-      DROP TABLE IF EXISTS reading_progress;
+      ALTER TABLE reading_progress DROP COLUMN IF EXISTS scroll_position;
+      ALTER TABLE reading_progress DROP COLUMN IF EXISTS progress_percentage;
+      ALTER TABLE reading_progress DROP COLUMN IF EXISTS reading_mode;
+      ALTER TABLE reading_progress DROP COLUMN IF EXISTS chapter_version_id;
     `);
   }
 }

@@ -801,12 +801,8 @@ describe('OmniNovel Backend Core API (e2e)', () => {
           readingMode: 'WEBTOON',
           progressPercentage: 85.5,
           scrollPosition: 2400,
-        });
-
-      if (saveRes.status !== 200) {
-        console.error('saveReadingProgress FAILED with status:', saveRes.status, 'body:', JSON.stringify(saveRes.body));
-      }
-      expect(saveRes.status).toBe(200);
+        })
+        .expect(200);
 
       expect(saveRes.body.storyId).toBe(storyAId);
       expect(saveRes.body.chapterId).toBe(chapterAId);

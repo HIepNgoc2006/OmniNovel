@@ -177,6 +177,7 @@ export class ChaptersService {
         slug: story.slug,
         title: story.title,
         mediaFormat: story.mediaFormat,
+        visibility: story.visibility,
       },
       chapter: {
         id: chapter.id,

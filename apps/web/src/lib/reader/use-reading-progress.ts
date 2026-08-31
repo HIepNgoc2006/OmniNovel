@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { ServerResumeState } from '@omninovel/shared';
 import { useAuth } from '../auth/auth-context';
 import { saveReadingProgressApi, getReadingProgressApi } from '../api/stories';
 import { rewardReadChapterApi, ReadChapterRewardResponse } from '../api/gamification';
@@ -24,11 +25,7 @@ export function useReadingProgress({
   const [readingDuration, setReadingDuration] = useState(0);
   const [scrollProgress, setScrollProgress] = useState(0);
   const [readChapterIds, setReadChapterIds] = useState<string[]>([]);
-  const [serverResume, setServerResume] = useState<{
-    chapterId: string | null;
-    scrollPosition: number;
-    progressPercentage: number;
-  } | null>(null);
+  const [serverResume, setServerResume] = useState<ServerResumeState | null>(null);
   const [rewardStatus, setRewardStatus] = useState<ReadChapterRewardResponse | null>(null);
   const [showRewardToast, setShowRewardToast] = useState(false);
 
@@ -51,6 +48,8 @@ export function useReadingProgress({
           if (res.chapterId) {
             setServerResume({
               chapterId: res.chapterId,
+              chapterVersionId: res.chapterVersionId || null,
+              readingMode: res.readingMode,
               scrollPosition: res.scrollPosition || 0,
               progressPercentage: res.progressPercentage || 0,
             });
@@ -63,7 +62,13 @@ export function useReadingProgress({
             if (raw) {
               const parsed = JSON.parse(raw);
               if (parsed.chapterId) {
-                setServerResume(parsed);
+                setServerResume({
+                  chapterId: parsed.chapterId,
+                  chapterVersionId: parsed.chapterVersionId || null,
+                  readingMode: parsed.readingMode,
+                  scrollPosition: parsed.scrollPosition || 0,
+                  progressPercentage: parsed.progressPercentage || 0,
+                });
               }
             }
           } catch {}
@@ -74,7 +79,13 @@ export function useReadingProgress({
         if (raw) {
           const parsed = JSON.parse(raw);
           if (parsed.chapterId) {
-            setServerResume(parsed);
+            setServerResume({
+              chapterId: parsed.chapterId,
+              chapterVersionId: parsed.chapterVersionId || null,
+              readingMode: parsed.readingMode,
+              scrollPosition: parsed.scrollPosition || 0,
+              progressPercentage: parsed.progressPercentage || 0,
+            });
           }
         }
       } catch {}
@@ -149,6 +160,7 @@ export function useReadingProgress({
           JSON.stringify({
             chapterId,
             chapterVersionId,
+            readingMode,
             progressPercentage: clamped,
             scrollPosition: scrollPos,
             updatedAt: Date.now(),

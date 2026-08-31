@@ -39,6 +39,7 @@ const mockNovelData: ChapterDetailResponse = {
     title: 'Toàn Chức Cao Thủ',
     slug: 'toan-chuc-cao-thu',
     mediaFormat: MediaFormat.NOVEL,
+    visibility: StoryVisibility.PUBLIC,
   },
   chapter: {
     id: 'c-novel-1',
@@ -114,5 +115,39 @@ describe('NovelReader Component', () => {
 
     const rootDiv = container.querySelector('[data-reader-theme]');
     expect(rootDiv).toHaveAttribute('data-reader-theme', 'dark');
+  });
+
+  it('should mark cache as isRestricted when story visibility is PRIVATE', async () => {
+    const offlineCache = await import('../lib/reader/offline-cache');
+    const setCachedAssetSpy = vi.spyOn(offlineCache, 'setCachedAsset').mockResolvedValue();
+    const chaptersApi = await import('../lib/api/chapters');
+    vi.spyOn(chaptersApi, 'getMediaPresignedUrlApi').mockResolvedValue({
+      downloadUrl: 'https://example.com/ch1.html',
+    } as any);
+
+    // Mock fetch
+    global.fetch = vi.fn().mockResolvedValue({
+      text: () => Promise.resolve('<p>Chương truyện bí mật</p>'),
+    } as any);
+
+    const privateData: ChapterDetailResponse = {
+      ...mockNovelData,
+      story: {
+        ...mockNovelData.story,
+        visibility: StoryVisibility.PRIVATE,
+      },
+    };
+
+    render(<NovelReader initialData={privateData} allChapters={[]} />);
+
+    await vi.waitFor(() => {
+      expect(setCachedAssetSpy).toHaveBeenCalledWith(
+        'asset-novel-html-1',
+        'v-novel-1',
+        '<p>Chương truyện bí mật</p>',
+        'text/html',
+        true, // isRestricted must be true
+      );
+    });
   });
 });

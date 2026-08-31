@@ -63,6 +63,10 @@ describe('Reading Progress & Gamification Lifecycle', () => {
     });
 
     expect(result.current.readChapterIds).toContain('c-0');
+    expect(result.current.serverResume?.chapterId).toBe('c-1');
+    expect(result.current.serverResume?.chapterVersionId).toBe('v-1');
+    expect(result.current.serverResume?.readingMode).toBe('WEBTOON');
+    expect(result.current.serverResume?.scrollPosition).toBe(1500);
 
     act(() => {
       result.current.updateProgress(45.5, 800);
@@ -72,6 +76,7 @@ describe('Reading Progress & Gamification Lifecycle', () => {
 
     const saved = JSON.parse(localStorage.getItem('omninovel_reading_resume_s-1') || '{}');
     expect(saved.chapterId).toBe('c-1');
+    expect(saved.readingMode).toBe('WEBTOON');
     expect(saved.progressPercentage).toBe(45.5);
   });
 

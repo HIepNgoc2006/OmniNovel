@@ -16,6 +16,7 @@ test.describe('Manga Reader Canvas E2E (Phase 4C)', () => {
       title: 'One Piece Đảo Hải Tặc',
       slug: 'one-piece-dao-hai-tac',
       mediaFormat: MediaFormat.COMIC,
+      visibility: StoryVisibility.PUBLIC,
     },
     chapter: {
       id: 'chap-1',

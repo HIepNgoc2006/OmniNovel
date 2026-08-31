@@ -29,11 +29,13 @@ export function MangaReader({ initialData, allChapters = [] }: MangaReaderProps)
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   const lastScrollYRef = useRef(0);
+  const hasRestoredScrollRef = useRef(false);
   const totalPages = data.mediaAssets.length;
 
   const {
     scrollProgress,
     readChapterIds,
+    serverResume,
     rewardStatus,
     showRewardToast,
     dismissRewardToast,
@@ -44,6 +46,29 @@ export function MangaReader({ initialData, allChapters = [] }: MangaReaderProps)
     chapterVersionId: data.activeVersion?.id,
     readingMode: settings.manga.mode.toUpperCase(),
   });
+
+  // Reset scroll restore flag on chapter change
+  useEffect(() => {
+    hasRestoredScrollRef.current = false;
+  }, [data.chapter.id]);
+
+  // Phục hồi vị trí đọc từ Server Resume
+  useEffect(() => {
+    if (serverResume && !hasRestoredScrollRef.current) {
+      if (serverResume.chapterId === data.chapter.id && serverResume.scrollPosition > 0) {
+        hasRestoredScrollRef.current = true;
+        if (settings.manga.mode === 'webtoon') {
+          const timer = setTimeout(() => {
+            window.scrollTo({ top: serverResume.scrollPosition, behavior: 'instant' });
+          }, 50);
+          return () => clearTimeout(timer);
+        } else if (settings.manga.mode === 'paged') {
+          const targetPage = Math.max(1, Math.min(totalPages, Math.round(serverResume.scrollPosition)));
+          setCurrentPage(targetPage);
+        }
+      }
+    }
+  }, [serverResume, data.chapter.id, settings.manga.mode, totalPages]);
 
   // 1. Theo dõi sự kiện cuộn trang để ẩn/hiện HUD tự động trong chế độ Webtoon
   useEffect(() => {

@@ -16,6 +16,7 @@ test.describe('Light Novel Reader Canvas E2E (Phase 4C)', () => {
       title: 'Toàn Chức Cao Thủ',
       slug: 'toan-chuc-cao-thu',
       mediaFormat: MediaFormat.NOVEL,
+      visibility: StoryVisibility.PUBLIC,
     },
     chapter: {
       id: 'chap-novel-1',

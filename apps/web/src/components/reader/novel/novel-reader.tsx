@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { ChapterDetailResponse, MediaAssetType } from '@omninovel/shared';
+import { ChapterDetailResponse, MediaAssetType, StoryVisibility } from '@omninovel/shared';
 import { useReaderSettings } from '../../../lib/reader/use-reader-settings';
 import { useReadingProgress } from '../../../lib/reader/use-reading-progress';
 import { ChapterItem } from '../../../lib/api/stories';
@@ -32,10 +32,12 @@ export function NovelReader({ initialData, allChapters = [] }: NovelReaderProps)
   const [isVersionModalOpen, setIsVersionModalOpen] = useState<boolean>(false);
 
   const lastScrollYRef = useRef(0);
+  const hasRestoredScrollRef = useRef(false);
 
   const {
     scrollProgress,
     readChapterIds,
+    serverResume,
     rewardStatus,
     showRewardToast,
     dismissRewardToast,
@@ -46,6 +48,11 @@ export function NovelReader({ initialData, allChapters = [] }: NovelReaderProps)
     chapterVersionId: data.activeVersion?.id,
     readingMode: 'NOVEL',
   });
+
+  // Reset scroll restore flag on chapter change
+  useEffect(() => {
+    hasRestoredScrollRef.current = false;
+  }, [data.chapter.id]);
 
   // 1. Tải nội dung HTML từ NOVEL_HTML asset
   useEffect(() => {
@@ -62,7 +69,8 @@ export function NovelReader({ initialData, allChapters = [] }: NovelReaderProps)
     }
 
     const versionId = data.activeVersion?.id || 'default';
-    const isRestricted = !data.activeVersion?.isPublished;
+    const isRestricted =
+      data.story?.visibility === StoryVisibility.PRIVATE || !data.activeVersion?.isPublished;
 
     // Thử lấy từ Offline Cache trước
     getCachedAsset(htmlAsset.id, versionId).then((cached) => {
@@ -98,9 +106,22 @@ export function NovelReader({ initialData, allChapters = [] }: NovelReaderProps)
     return () => {
       isMounted = false;
     };
-  }, [data.activeVersion?.id, data.mediaAssets]);
+  }, [data.activeVersion?.id, data.activeVersion?.isPublished, data.mediaAssets, data.story?.visibility, htmlContent]);
 
-  // 2. Theo dõi sự kiện cuộn trang
+  // 2. Phục hồi vị trí đọc từ Server Resume
+  useEffect(() => {
+    if (!isLoadingContent && htmlContent && serverResume && !hasRestoredScrollRef.current) {
+      if (serverResume.chapterId === data.chapter.id && serverResume.scrollPosition > 0) {
+        hasRestoredScrollRef.current = true;
+        const timer = setTimeout(() => {
+          window.scrollTo({ top: serverResume.scrollPosition, behavior: 'instant' });
+        }, 50);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [isLoadingContent, htmlContent, serverResume, data.chapter.id]);
+
+  // 3. Theo dõi sự kiện cuộn trang
   useEffect(() => {
     const handleScroll = () => {
       const currentScrollY = window.scrollY;
@@ -121,7 +142,7 @@ export function NovelReader({ initialData, allChapters = [] }: NovelReaderProps)
     return () => window.removeEventListener('scroll', handleScroll);
   }, [updateProgress]);
 
-  // 3. Phím tắt bàn phím
+  // 4. Phím tắt bàn phím
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (

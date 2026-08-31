@@ -719,6 +719,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(res.body.story.id).toBe(storyAId);
       expect(res.body.story.slug).toBeDefined();
       expect(res.body.story.mediaFormat).toBeDefined();
+      expect(res.body.story.visibility).toBe('PUBLIC');
 
       expect(res.body.chapter.id).toBe(chapterAId);
       expect(res.body.chapter.activeVersionId).toBe(versionA2Id);

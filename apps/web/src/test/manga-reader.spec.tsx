@@ -46,6 +46,7 @@ const mockData: ChapterDetailResponse = {
     title: 'Võ Luyện Đỉnh Phong',
     slug: 'vo-luyen-dinh-phong',
     mediaFormat: MediaFormat.COMIC,
+    visibility: StoryVisibility.PUBLIC,
   },
   chapter: {
     id: 'c-manga-1',

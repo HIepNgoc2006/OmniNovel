@@ -170,6 +170,7 @@ export interface ChapterDetailResponse {
     slug: string;
     title: string;
     mediaFormat: MediaFormat;
+    visibility: StoryVisibility;
   };
   chapter: {
     id: string;
@@ -187,6 +188,14 @@ export interface ChapterDetailResponse {
     previous: ChapterNavigationItem | null;
     next: ChapterNavigationItem | null;
   };
+}
+
+export interface ServerResumeState {
+  chapterId: string | null;
+  chapterVersionId?: string | null;
+  readingMode?: ReadingMode | string;
+  scrollPosition: number;
+  progressPercentage: number;
 }
 
 export interface UpdateReadingProgressDto {

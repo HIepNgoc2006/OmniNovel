@@ -358,7 +358,12 @@ export class StoriesService {
     return { isBookmarked: Boolean(bookmark) };
   }
 
-  async saveReadingProgress(userId: string, dto: UpdateReadingProgressDto) {
+  async saveReadingProgress(userOrId: any, dto: UpdateReadingProgressDto) {
+    const userId = typeof userOrId === 'string' ? userOrId : userOrId?.id;
+    const isGlobalAdmin =
+      typeof userOrId === 'object' &&
+      (userOrId?.role === GlobalRole.ADMIN || userOrId?.globalRole === GlobalRole.ADMIN);
+
     const chapter = await this.chapterRepository.findOne({
       where: { id: dto.chapterId },
       relations: ['storyEdition', 'storyEdition.story'],
@@ -377,14 +382,46 @@ export class StoriesService {
       throw new BadRequestException('storyId không khớp với chương truyện (Hierarchy Mismatch).');
     }
 
-    // Nếu có chapterVersionId, kiểm tra version có thuộc chapter hay không
+    // 1. Kiểm tra quyền truy cập Story (PRIVATE story yêu cầu story member hoặc Admin)
+    let userStoryRole: StoryMemberRole | null = null;
+    if (userId) {
+      const memberRes = await this.dataSource.query(
+        `SELECT role FROM story_members WHERE story_id = $1 AND user_id = $2`,
+        [derivedStoryId, userId],
+      );
+      if (memberRes && memberRes.length > 0) {
+        userStoryRole = memberRes[0].role as StoryMemberRole;
+      }
+    }
+
+    const hasAdminOrStaffAccess =
+      isGlobalAdmin ||
+      userStoryRole === StoryMemberRole.OWNER ||
+      userStoryRole === StoryMemberRole.EDITOR ||
+      userStoryRole === StoryMemberRole.TRANSLATOR;
+
+    if (chapter.storyEdition?.story?.visibility === StoryVisibility.PRIVATE) {
+      if (!isGlobalAdmin && !userStoryRole) {
+        throw new ForbiddenException(
+          'Bạn không có quyền truy cập chương truyện riêng tư này.',
+        );
+      }
+    }
+
+    // 2. Kiểm tra versionId và quyền truy cập Draft version
     if (dto.chapterVersionId) {
-      const versionExists = await this.dataSource.query(
-        `SELECT id FROM chapter_versions WHERE id = $1::uuid AND chapter_id = $2::uuid`,
+      const versionRows = await this.dataSource.query(
+        `SELECT id, is_published AS "isPublished" FROM chapter_versions WHERE id = $1::uuid AND chapter_id = $2::uuid`,
         [dto.chapterVersionId, dto.chapterId],
       );
-      if (!versionExists || versionExists.length === 0) {
+      if (!versionRows || versionRows.length === 0) {
         throw new BadRequestException('chapterVersionId không thuộc về chương truyện này.');
+      }
+      const ver = versionRows[0];
+      if (!ver.isPublished && !hasAdminOrStaffAccess) {
+        throw new ForbiddenException(
+          'Chỉ OWNER, EDITOR, TRANSLATOR hoặc ADMIN mới có quyền truy cập bản nháp này.',
+        );
       }
     }
 
@@ -461,7 +498,30 @@ export class StoriesService {
     });
   }
 
-  async getReadingProgress(userId: string, storyId: string) {
+  async getReadingProgress(userOrId: any, storyId: string) {
+    const userId = typeof userOrId === 'string' ? userOrId : userOrId?.id;
+    const isGlobalAdmin =
+      typeof userOrId === 'object' &&
+      (userOrId?.role === GlobalRole.ADMIN || userOrId?.globalRole === GlobalRole.ADMIN);
+
+    const story = await this.storyRepository.findOne({
+      where: { id: storyId },
+    });
+
+    if (!story) {
+      throw new NotFoundException('Không tìm thấy bộ truyện.');
+    }
+
+    if (story.visibility === StoryVisibility.PRIVATE && !isGlobalAdmin) {
+      const memberRes = await this.dataSource.query(
+        `SELECT role FROM story_members WHERE story_id = $1 AND user_id = $2`,
+        [storyId, userId],
+      );
+      if (!memberRes || memberRes.length === 0) {
+        throw new ForbiddenException('Bạn không có quyền truy cập truyện riêng tư này.');
+      }
+    }
+
     const progress = await this.dataSource.query(
       `SELECT
         rp.story_id AS "storyId",

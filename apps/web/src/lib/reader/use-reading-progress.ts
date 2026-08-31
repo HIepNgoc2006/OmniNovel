@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../auth/auth-context';
-import { saveReadingProgressApi } from '../api/stories';
+import { saveReadingProgressApi, getReadingProgressApi } from '../api/stories';
 import { rewardReadChapterApi, ReadChapterRewardResponse } from '../api/gamification';
 
 interface UseReadingProgressOptions {
@@ -23,6 +23,12 @@ export function useReadingProgress({
   const { isAuthenticated } = useAuth();
   const [readingDuration, setReadingDuration] = useState(0);
   const [scrollProgress, setScrollProgress] = useState(0);
+  const [readChapterIds, setReadChapterIds] = useState<string[]>([]);
+  const [serverResume, setServerResume] = useState<{
+    chapterId: string | null;
+    scrollPosition: number;
+    progressPercentage: number;
+  } | null>(null);
   const [rewardStatus, setRewardStatus] = useState<ReadChapterRewardResponse | null>(null);
   const [showRewardToast, setShowRewardToast] = useState(false);
 
@@ -32,7 +38,53 @@ export function useReadingProgress({
   const isRewardClaimedRef = useRef(false);
   const syncTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 1. Timer đo thời gian đọc thực tế (chỉ đếm khi document visible)
+  // 1. Bootstrap Server Reading Progress & Read Chapters
+  useEffect(() => {
+    let isMounted = true;
+    if (isAuthenticated && storyId) {
+      getReadingProgressApi(storyId)
+        .then((res) => {
+          if (!isMounted) return;
+          if (res.readChapterIds && Array.isArray(res.readChapterIds)) {
+            setReadChapterIds(res.readChapterIds);
+          }
+          if (res.chapterId) {
+            setServerResume({
+              chapterId: res.chapterId,
+              scrollPosition: res.scrollPosition || 0,
+              progressPercentage: res.progressPercentage || 0,
+            });
+          }
+        })
+        .catch(() => {
+          // Fallback to local resume
+          try {
+            const raw = localStorage.getItem(`omninovel_reading_resume_${storyId}`);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              if (parsed.chapterId) {
+                setServerResume(parsed);
+              }
+            }
+          } catch {}
+        });
+    } else if (storyId) {
+      try {
+        const raw = localStorage.getItem(`omninovel_reading_resume_${storyId}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed.chapterId) {
+            setServerResume(parsed);
+          }
+        }
+      } catch {}
+    }
+    return () => {
+      isMounted = false;
+    };
+  }, [isAuthenticated, storyId]);
+
+  // 2. Timer đo thời gian đọc thực tế (chỉ đếm khi document visible)
   useEffect(() => {
     durationRef.current = 0;
     progressRef.current = 0;
@@ -52,7 +104,7 @@ export function useReadingProgress({
     return () => clearInterval(interval);
   }, [chapterId]);
 
-  // 2. Debounced sync lên server
+  // 3. Debounced sync lên server
   const triggerSync = useCallback(() => {
     if (!isAuthenticated || !storyId || !chapterId) return;
 
@@ -76,13 +128,19 @@ export function useReadingProgress({
     }, 2000);
   }, [isAuthenticated, storyId, chapterId, chapterVersionId, readingMode]);
 
-  // 3. Cập nhật tiến độ cuộn trang / trang
+  // 4. Cập nhật tiến độ cuộn trang / trang
   const updateProgress = useCallback(
     (percentage: number, scrollPos = 0) => {
       const clamped = Math.min(100, Math.max(0, percentage));
       progressRef.current = clamped;
       scrollPosRef.current = scrollPos;
       setScrollProgress(clamped);
+
+      if (clamped >= 80) {
+        setReadChapterIds((prev) =>
+          prev.includes(chapterId) ? prev : [...prev, chapterId],
+        );
+      }
 
       // Lưu optimistic vào localStorage
       try {
@@ -101,7 +159,7 @@ export function useReadingProgress({
       // Đồng bộ server
       triggerSync();
 
-      // 4. Kiểm tra điều kiện Gamification: >= 45s && >= 80%
+      // 5. Kiểm tra điều kiện Gamification: >= 45s && >= 80%
       if (
         isAuthenticated &&
         !isRewardClaimedRef.current &&
@@ -116,7 +174,7 @@ export function useReadingProgress({
         })
           .then((res) => {
             setRewardStatus(res);
-            if (res.status === 'SUCCESS' && res.earnedExp > 0) {
+            if (res.success && res.earnedExp > 0) {
               setShowRewardToast(true);
             }
           })
@@ -148,6 +206,8 @@ export function useReadingProgress({
   return {
     readingDuration,
     scrollProgress,
+    readChapterIds,
+    serverResume,
     rewardStatus,
     showRewardToast,
     dismissRewardToast: () => setShowRewardToast(false),

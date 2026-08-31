@@ -80,19 +80,19 @@ export class StoriesController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   saveReadingProgress(
-    @CurrentUser('id') userId: string,
+    @CurrentUser() user: any,
     @Body() dto: UpdateReadingProgressDto,
   ) {
-    return this.storiesService.saveReadingProgress(userId, dto);
+    return this.storiesService.saveReadingProgress(user, dto);
   }
 
   @Get('library/reading-progress/:storyId')
   @UseGuards(JwtAuthGuard)
   getReadingProgress(
     @Param('storyId') storyId: string,
-    @CurrentUser('id') userId: string,
+    @CurrentUser() user: any,
   ) {
-    return this.storiesService.getReadingProgress(userId, storyId);
+    return this.storiesService.getReadingProgress(user, storyId);
   }
 
   // 7. Tạo bộ truyện mới trong Studio (Global TRANSLATOR hoặc Global ADMIN)

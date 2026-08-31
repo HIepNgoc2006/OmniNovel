@@ -33,6 +33,7 @@ export function MangaReader({ initialData, allChapters = [] }: MangaReaderProps)
 
   const {
     scrollProgress,
+    readChapterIds,
     rewardStatus,
     showRewardToast,
     dismissRewardToast,
@@ -195,6 +196,7 @@ export function MangaReader({ initialData, allChapters = [] }: MangaReaderProps)
         storyTitle={data.story.title}
         currentChapterId={data.chapter.id}
         chapters={allChapters}
+        readChapterIds={readChapterIds}
       />
 
       {/* Version Selector Modal */}

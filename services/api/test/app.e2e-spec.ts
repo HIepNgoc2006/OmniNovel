@@ -817,6 +817,51 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       expect(getRes.body.storyId).toBe(storyAId);
       expect(getRes.body.chapterId).toBe(chapterAId);
       expect(getRes.body.readChapterIds).toContain(chapterAId);
+
+      // 5. User cố lưu tiến độ đọc với draft version chưa công bố -> 403 Forbidden
+      // Tạo draft version trên chapterA
+      const draftVerRes = await request(app.getHttpServer())
+        .post(`/api/v1/studio/chapters/${chapterAId}/versions`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({
+          versionType: ChapterVersionType.HUMAN_EDITED,
+          language: 'vi',
+        })
+        .expect(201);
+      const draftVerId = draftVerRes.body.id;
+      await dataSource.query(`UPDATE chapter_versions SET is_published = FALSE WHERE id = $1`, [draftVerId]);
+
+      await request(app.getHttpServer())
+        .put('/api/v1/library/reading-progress')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({
+          chapterId: chapterAId,
+          chapterVersionId: draftVerId,
+          progressPercentage: 50,
+          scrollPosition: 1000,
+        })
+        .expect(403);
+
+      // 6. User không có quyền cố lưu / lấy tiến độ trên truyện PRIVATE -> 403 Forbidden
+      await dataSource.query(`UPDATE stories SET visibility = 'PRIVATE' WHERE id = $1`, [storyBId]);
+
+      await request(app.getHttpServer())
+        .put('/api/v1/library/reading-progress')
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .send({
+          chapterId: chapterBId,
+          progressPercentage: 50,
+          scrollPosition: 1000,
+        })
+        .expect(403);
+
+      await request(app.getHttpServer())
+        .get(`/api/v1/library/reading-progress/${storyBId}`)
+        .set('Authorization', `Bearer ${readerAccessToken}`)
+        .expect(403);
+
+      // Restore storyB visibility
+      await dataSource.query(`UPDATE stories SET visibility = 'PUBLIC' WHERE id = $1`, [storyBId]);
     });
 
     it('GET /api/v1/stories latestChapter invariant: default edition only and ignores unpublished drafts', async () => {

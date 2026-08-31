@@ -15,6 +15,7 @@ interface CachedAssetRecord {
   content: ArrayBuffer | string;
   contentType: string;
   cachedAt: number;
+  isRestricted?: boolean;
 }
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -67,7 +68,13 @@ export async function setCachedAsset(
   versionId: string,
   content: ArrayBuffer | string,
   contentType: string,
+  isRestricted = false,
 ): Promise<void> {
+  // Never persist restricted or private assets to disk to prevent leakage across users
+  if (isRestricted) {
+    return;
+  }
+
   try {
     const db = await openDatabase();
     const key = buildAssetCacheKey(assetId, versionId);
@@ -82,6 +89,7 @@ export async function setCachedAsset(
         content,
         contentType,
         cachedAt: Date.now(),
+        isRestricted: false,
       });
 
       req.onsuccess = () => resolve();

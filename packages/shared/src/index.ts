@@ -216,6 +216,11 @@ export interface ChapterReadStateSummary {
   lastReadAt: string | Date;
 }
 
+export type ReadChapterRewardReason =
+  | 'ALREADY_REWARDED'
+  | 'DAILY_CAP_REACHED'
+  | 'CRITERIA_NOT_MET';
+
 export interface ReadChapterRewardRequest {
   chapterId: string;
   readingDurationSeconds: number;
@@ -223,9 +228,14 @@ export interface ReadChapterRewardRequest {
 }
 
 export interface ReadChapterRewardResponse {
-  status: 'SUCCESS' | 'ALREADY_REWARDED' | 'DAILY_CAP_REACHED' | 'CRITERIA_NOT_MET';
+  success: boolean;
   earnedExp: number;
+  reason?: ReadChapterRewardReason;
   message?: string;
+  totalExp?: string | number;
+  level?: number;
+  todayTotalReadExp?: number;
+  dailyCap?: number;
 }
 
 export interface StandardErrorResponse {

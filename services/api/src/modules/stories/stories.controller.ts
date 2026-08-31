@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Post,
+  Put,
   Patch,
   Body,
   Param,
@@ -14,6 +15,7 @@ import { StoriesService } from './stories.service';
 import { CreateStoryDto } from './dto/create-story.dto';
 import { FindStoriesQueryDto } from './dto/find-stories-query.dto';
 import { SetBookmarkDto } from './dto/set-bookmark.dto';
+import { UpdateReadingProgressDto } from './dto/update-reading-progress.dto';
 import { UpdateVisibilityDto } from './dto/update-visibility.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard';
@@ -73,7 +75,27 @@ export class StoriesController {
     return this.storiesService.getBookmarkStatus(userId, storyId);
   }
 
-  // 5. Tạo bộ truyện mới trong Studio (Global TRANSLATOR hoặc Global ADMIN)
+  // 6. Quản lý Tiến độ đọc (Reading Progress)
+  @Put('library/reading-progress')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  saveReadingProgress(
+    @CurrentUser('id') userId: string,
+    @Body() dto: UpdateReadingProgressDto,
+  ) {
+    return this.storiesService.saveReadingProgress(userId, dto);
+  }
+
+  @Get('library/reading-progress/:storyId')
+  @UseGuards(JwtAuthGuard)
+  getReadingProgress(
+    @Param('storyId') storyId: string,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.storiesService.getReadingProgress(userId, storyId);
+  }
+
+  // 7. Tạo bộ truyện mới trong Studio (Global TRANSLATOR hoặc Global ADMIN)
   @Post('studio/stories')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(GlobalRole.TRANSLATOR, GlobalRole.ADMIN)

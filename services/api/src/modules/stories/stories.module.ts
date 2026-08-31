@@ -9,7 +9,10 @@ import { StoryEdition } from './entities/story-edition.entity';
 import { Genre } from './entities/genre.entity';
 import { Creator } from './entities/creator.entity';
 import { Bookmark } from './entities/bookmark.entity';
+import { ReadingProgress } from './entities/reading-progress.entity';
+import { ChapterReadState } from './entities/chapter-read-state.entity';
 import { Volume } from '../chapters/entities/volume.entity';
+import { Chapter } from '../chapters/entities/chapter.entity';
 import { StoryMemberGuard } from '../../common/guards/story-member.guard';
 
 @Module({
@@ -21,7 +24,10 @@ import { StoryMemberGuard } from '../../common/guards/story-member.guard';
       Genre,
       Creator,
       Bookmark,
+      ReadingProgress,
+      ChapterReadState,
       Volume,
+      Chapter,
     ]),
     JwtModule.register({}),
   ],

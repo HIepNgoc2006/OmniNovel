@@ -8,9 +8,17 @@ import {
   LatestChapterSummary,
   SetBookmarkDto,
   BookmarkStatusResponse,
+  UpdateReadingProgressDto,
+  ReadingProgressResponse,
 } from '@omninovel/shared';
 
-export type { LatestChapterSummary, SetBookmarkDto, BookmarkStatusResponse };
+export type {
+  LatestChapterSummary,
+  SetBookmarkDto,
+  BookmarkStatusResponse,
+  UpdateReadingProgressDto,
+  ReadingProgressResponse,
+};
 
 export interface GenreItem {
   id: number;
@@ -129,11 +137,11 @@ export interface StoryComment {
 export interface GetStoriesParams {
   page?: number;
   limit?: number;
-  format?: string | MediaFormat;
+  format?: MediaFormat;
   mediaFormat?: MediaFormat;
   genre?: string;
-  status?: StoryStatus | string;
-  sort?: 'LATEST' | 'VIEWS' | 'POPULAR' | string;
+  status?: StoryStatus;
+  sort?: 'LATEST' | 'VIEWS' | 'POPULAR';
   search?: string;
   q?: string;
 }
@@ -191,3 +199,18 @@ export async function getBookmarkStatusApi(storyId: string): Promise<BookmarkSta
   const response = await apiClient.get<BookmarkStatusResponse>(`/library/bookmarks/${storyId}`);
   return response.data;
 }
+
+export async function saveReadingProgressApi(
+  dto: UpdateReadingProgressDto,
+): Promise<ReadingProgressResponse> {
+  const response = await apiClient.put<ReadingProgressResponse>('/library/reading-progress', dto);
+  return response.data;
+}
+
+export async function getReadingProgressApi(
+  storyId: string,
+): Promise<ReadingProgressResponse> {
+  const response = await apiClient.get<ReadingProgressResponse>(`/library/reading-progress/${storyId}`);
+  return response.data;
+}
+

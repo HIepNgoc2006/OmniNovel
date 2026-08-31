@@ -1,10 +1,10 @@
 'use client';
 
 import React from 'react';
-import { useAuth } from '../../../lib/auth/auth-context';
-import { useProgression, useCheckinMutation } from '../../../lib/query/hooks';
-import { Badge } from '../../../components/ui/badge';
-import { Button } from '../../../components/ui/button';
+import { useAuth } from '@/lib/auth/auth-context';
+import { useProgression, useCheckinMutation } from '@/lib/query/hooks';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   User,
   Mail,

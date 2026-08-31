@@ -160,17 +160,15 @@ CREATE TABLE IF NOT EXISTS media_assets (
 
 -- 12. Tiến độ Đọc (Reading Progress - Tối ưu cho cả Manga & Novel)
 CREATE TABLE IF NOT EXISTS reading_progress (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     story_id UUID NOT NULL REFERENCES stories(id) ON DELETE CASCADE,
     chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
-    page_index INT DEFAULT 1,
-    anchor_block_id VARCHAR(100),
-    text_offset INT DEFAULT 0,
-    progress_ratio NUMERIC(5,4) DEFAULT 0 CHECK (progress_ratio >= 0 AND progress_ratio <= 1.0),
-    scroll_offset_ratio NUMERIC(5,4) DEFAULT 0,
+    chapter_version_id UUID REFERENCES chapter_versions(id) ON DELETE SET NULL,
+    reading_mode VARCHAR(20) DEFAULT 'WEBTOON',
+    progress_percentage NUMERIC(5,2) DEFAULT 0,
+    scroll_position NUMERIC(10,2) DEFAULT 0,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-    UNIQUE(user_id, story_id)
+    PRIMARY KEY (user_id, story_id)
 );
 
 -- 13. Tủ Sách Cá Nhân & Bookmark
@@ -424,4 +422,19 @@ INSERT INTO level_rewards (milestone_level, reward_coins, reward_badge_id) VALUE
 (50, 500, 'BADGE_LVL_50'),
 (100, 1000, 'BADGE_LVL_100')
 ON CONFLICT (milestone_level) DO NOTHING;
+
+-- 22. TRẠNG THÁI ĐÃ ĐỌC THEO CHƯƠNG (CHAPTER READ STATES)
+CREATE TABLE IF NOT EXISTS chapter_read_states (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+    last_version_id UUID REFERENCES chapter_versions(id) ON DELETE SET NULL,
+    max_progress_percentage NUMERIC(5,2) DEFAULT 0,
+    completed_at TIMESTAMPTZ,
+    last_read_at TIMESTAMPTZ DEFAULT NOW(),
+    PRIMARY KEY (user_id, chapter_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reading_progress_user_updated ON reading_progress (user_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_chapter_read_states_user_last_read ON chapter_read_states (user_id, last_read_at DESC);
+
 

@@ -2,10 +2,10 @@
 
 import React, { useState, useEffect, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { useStories } from '../../../lib/query/hooks';
-import { StoryCard } from '../../../components/story/story-card';
-import { Button } from '../../../components/ui/button';
-import { Skeleton } from '../../../components/ui/skeleton';
+import { useStories } from '@/lib/query/hooks';
+import { StoryCard } from '@/components/story/story-card';
+import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 import { MediaFormat, StoryStatus } from '@omninovel/shared';
 import {
   Search as SearchIcon,
@@ -64,10 +64,10 @@ function SearchCatalogContent() {
     page: pageParam,
     limit: 16,
     q: queryParam || undefined,
-    format: selectedFormat || undefined,
+    format: (selectedFormat as MediaFormat) || undefined,
     genre: selectedGenre || undefined,
     status: (selectedStatus as StoryStatus) || undefined,
-    sort: selectedSort || undefined,
+    sort: (selectedSort as 'LATEST' | 'VIEWS' | 'POPULAR') || undefined,
   });
 
   const stories = storiesResponse?.data || [];

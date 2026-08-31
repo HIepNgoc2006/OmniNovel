@@ -1,5 +1,11 @@
 import { apiClient } from './client';
-import { UserProgressionResponse } from '@omninovel/shared';
+import {
+  UserProgressionResponse,
+  ReadChapterRewardRequest,
+  ReadChapterRewardResponse,
+} from '@omninovel/shared';
+
+export type { ReadChapterRewardRequest, ReadChapterRewardResponse };
 
 export interface CheckinResponse {
   success: boolean;
@@ -18,3 +24,14 @@ export async function checkinApi(): Promise<CheckinResponse> {
   const response = await apiClient.post<CheckinResponse>('/gamification/checkin');
   return response.data;
 }
+
+export async function rewardReadChapterApi(
+  dto: ReadChapterRewardRequest,
+): Promise<ReadChapterRewardResponse> {
+  const response = await apiClient.post<ReadChapterRewardResponse>(
+    '/gamification/read-chapter',
+    dto,
+  );
+  return response.data;
+}
+

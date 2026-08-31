@@ -10,12 +10,17 @@ import { Story } from './entities/story.entity';
 import { StoryMember } from './entities/story-member.entity';
 import { StoryEdition } from './entities/story-edition.entity';
 import { Bookmark } from './entities/bookmark.entity';
+import { ReadingProgress } from './entities/reading-progress.entity';
+import { ChapterReadState } from './entities/chapter-read-state.entity';
 import { Volume } from '../chapters/entities/volume.entity';
+import { Chapter } from '../chapters/entities/chapter.entity';
 import { CreateStoryDto } from './dto/create-story.dto';
 import { FindStoriesQueryDto } from './dto/find-stories-query.dto';
 import { SetBookmarkDto } from './dto/set-bookmark.dto';
+import { UpdateReadingProgressDto } from './dto/update-reading-progress.dto';
 import {
   GlobalRole,
+  MediaFormat,
   StoryMemberRole,
   StoryVisibility,
 } from '@omninovel/shared';
@@ -32,8 +37,14 @@ export class StoriesService {
     private editionRepository: Repository<StoryEdition>,
     @InjectRepository(Bookmark)
     private bookmarkRepository: Repository<Bookmark>,
+    @InjectRepository(ReadingProgress)
+    private readingProgressRepository: Repository<ReadingProgress>,
+    @InjectRepository(ChapterReadState)
+    private chapterReadStateRepository: Repository<ChapterReadState>,
     @InjectRepository(Volume)
     private volumeRepository: Repository<Volume>,
+    @InjectRepository(Chapter)
+    private chapterRepository: Repository<Chapter>,
     private redisService: RedisService,
     private dataSource: DataSource,
   ) {}
@@ -345,6 +356,161 @@ export class StoriesService {
       where: { userId, storyId },
     });
     return { isBookmarked: Boolean(bookmark) };
+  }
+
+  async saveReadingProgress(userId: string, dto: UpdateReadingProgressDto) {
+    const chapter = await this.chapterRepository.findOne({
+      where: { id: dto.chapterId },
+      relations: ['storyEdition', 'storyEdition.story'],
+    });
+
+    if (!chapter) {
+      throw new NotFoundException('Không tìm thấy chương truyện.');
+    }
+
+    const derivedStoryId = chapter.storyEdition?.story?.id;
+    if (!derivedStoryId) {
+      throw new BadRequestException('Chương truyện không liên kết với bộ truyện hợp lệ.');
+    }
+
+    if (dto.storyId && dto.storyId !== derivedStoryId) {
+      throw new BadRequestException('storyId không khớp với chương truyện (Hierarchy Mismatch).');
+    }
+
+    // Nếu có chapterVersionId, kiểm tra version có thuộc chapter hay không
+    if (dto.chapterVersionId) {
+      const versionExists = await this.dataSource.query(
+        `SELECT id FROM chapter_versions WHERE id = $1::uuid AND chapter_id = $2::uuid`,
+        [dto.chapterVersionId, dto.chapterId],
+      );
+      if (!versionExists || versionExists.length === 0) {
+        throw new BadRequestException('chapterVersionId không thuộc về chương truyện này.');
+      }
+    }
+
+    const readingMode =
+      dto.readingMode ||
+      (chapter.storyEdition?.story?.mediaFormat === MediaFormat.NOVEL
+        ? 'NOVEL'
+        : 'WEBTOON');
+    const progressPercentage = Math.min(
+      100,
+      Math.max(0, Number(dto.progressPercentage) || 0),
+    );
+    const scrollPosition = Math.max(0, Number(dto.scrollPosition) || 0);
+
+    const completedAt = progressPercentage >= 80 ? new Date() : null;
+
+    return this.dataSource.transaction(async (manager) => {
+      // 1. Upsert reading_progress (Current resume pointer for user + story)
+      await manager.query(
+        `INSERT INTO reading_progress (
+          user_id, story_id, chapter_id, chapter_version_id,
+          reading_mode, progress_percentage, scroll_position, updated_at
+        ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::varchar, $6::numeric, $7::numeric, NOW())
+        ON CONFLICT (user_id, story_id) DO UPDATE SET
+          chapter_id = EXCLUDED.chapter_id,
+          chapter_version_id = EXCLUDED.chapter_version_id,
+          reading_mode = EXCLUDED.reading_mode,
+          progress_percentage = EXCLUDED.progress_percentage,
+          scroll_position = EXCLUDED.scroll_position,
+          updated_at = NOW()`,
+        [
+          userId,
+          derivedStoryId,
+          dto.chapterId,
+          dto.chapterVersionId || null,
+          readingMode,
+          progressPercentage,
+          scrollPosition,
+        ],
+      );
+
+      // 2. Upsert chapter_read_states (Read history & completion state per chapter)
+      await manager.query(
+        `INSERT INTO chapter_read_states (
+          user_id, chapter_id, last_version_id, max_progress_percentage, completed_at, last_read_at
+        ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::numeric, $5::timestamptz, NOW())
+        ON CONFLICT (user_id, chapter_id) DO UPDATE SET
+          last_version_id = COALESCE(EXCLUDED.last_version_id, chapter_read_states.last_version_id),
+          max_progress_percentage = GREATEST(chapter_read_states.max_progress_percentage, EXCLUDED.max_progress_percentage),
+          completed_at = CASE
+            WHEN chapter_read_states.completed_at IS NOT NULL THEN chapter_read_states.completed_at
+            WHEN EXCLUDED.max_progress_percentage >= 80 THEN NOW()
+            ELSE NULL
+          END,
+          last_read_at = NOW()`,
+        [
+          userId,
+          dto.chapterId,
+          dto.chapterVersionId || null,
+          progressPercentage,
+          completedAt,
+        ],
+      );
+
+      return {
+        storyId: derivedStoryId,
+        chapterId: dto.chapterId,
+        chapterVersionId: dto.chapterVersionId || null,
+        readingMode,
+        progressPercentage: Number(progressPercentage),
+        scrollPosition: Number(scrollPosition),
+        updatedAt: new Date(),
+      };
+    });
+  }
+
+  async getReadingProgress(userId: string, storyId: string) {
+    const progress = await this.dataSource.query(
+      `SELECT
+        rp.story_id AS "storyId",
+        rp.chapter_id AS "chapterId",
+        rp.chapter_version_id AS "chapterVersionId",
+        rp.reading_mode AS "readingMode",
+        CAST(rp.progress_percentage AS FLOAT) AS "progressPercentage",
+        CAST(rp.scroll_position AS FLOAT) AS "scrollPosition",
+        rp.updated_at AS "updatedAt"
+       FROM reading_progress rp
+       WHERE rp.user_id = $1 AND rp.story_id = $2`,
+      [userId, storyId],
+    );
+
+    const readChapters = await this.dataSource.query(
+      `SELECT crs.chapter_id AS "chapterId"
+       FROM chapter_read_states crs
+       JOIN chapters c ON c.id = crs.chapter_id
+       JOIN story_editions se ON se.id = c.story_edition_id
+       WHERE crs.user_id = $1 AND se.story_id = $2 AND crs.max_progress_percentage >= 80`,
+      [userId, storyId],
+    );
+
+    const readChapterIds = readChapters.map((r: any) => r.chapterId);
+
+    if (!progress || progress.length === 0) {
+      return {
+        storyId,
+        chapterId: null,
+        chapterVersionId: null,
+        readingMode: 'WEBTOON',
+        progressPercentage: 0,
+        scrollPosition: 0,
+        updatedAt: null,
+        readChapterIds,
+      };
+    }
+
+    const p = progress[0];
+    return {
+      storyId: p.storyId,
+      chapterId: p.chapterId,
+      chapterVersionId: p.chapterVersionId,
+      readingMode: p.readingMode,
+      progressPercentage: Number(p.progressPercentage) || 0,
+      scrollPosition: Number(p.scrollPosition) || 0,
+      updatedAt: p.updatedAt,
+      readChapterIds,
+    };
   }
 
   async createEdition(storyId: string, editionName: string, language = 'vi') {

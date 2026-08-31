@@ -3,13 +3,13 @@
 import React, { useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 import Link from 'next/link';
-import { useStoryBySlug } from '../../../../lib/query/hooks';
-import { setBookmarkApi, getBookmarkStatusApi } from '../../../../lib/api/stories';
-import { useAuth } from '../../../../lib/auth/auth-context';
-import { ChapterListSection } from '../../../../components/story/chapter-list-section';
-import { StoryCommentSection } from '../../../../components/story/story-comment-section';
-import { Button } from '../../../../components/ui/button';
-import { Skeleton } from '../../../../components/ui/skeleton';
+import { useStoryBySlug } from '@/lib/query/hooks';
+import { setBookmarkApi, getBookmarkStatusApi } from '@/lib/api/stories';
+import { useAuth } from '@/lib/auth/auth-context';
+import { ChapterListSection } from '@/components/story/chapter-list-section';
+import { StoryCommentSection } from '@/components/story/story-comment-section';
+import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 import { MediaFormat, StoryStatus } from '@omninovel/shared';
 import {
   BookOpen,

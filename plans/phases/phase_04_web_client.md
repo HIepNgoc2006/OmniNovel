@@ -15,7 +15,7 @@
     - TanStack Query v5 quản lý Server State & SWR Caching.
     - WebSocket Gateway (`/ws/ai`) xác thực qua `socket.handshake.auth.token` và tự động reconnect khi token xoay vòng.
     - Gamification: Tiêu thụ endpoint chuẩn `/gamification/progression` và `UserProgressionResponse` từ `@omninovel/shared`.
-- **Trạng thái:** [/] Đang thực hiện (Phase 4A & Phase 4B: 100% HOÀN TẤT & FROZEN - 20 Vitest + 7 Playwright + 137 Core API [22 Unit + 115 E2E/Integration] + 184 AI Worker = 348 Total CI Tests Pass 100% | Merge Baseline SHA: `5c9b5fa2b7aa1fb80d2d9474c0c9a37d7609ba3f`)
+- **Trạng thái:** [/] Đang thực hiện (Phase 4A, Phase 4B & Phase 4C: 100% HOÀN TẤT - 33 Vitest + 14 Playwright + 139 Core API [22 Unit + 117 E2E/Integration] + 184 AI Worker = 370 Total CI Tests Pass 100%)
 
 ---
 
@@ -38,10 +38,13 @@
   - [x] Hardening Core API Discovery: Runtime DTO validation `FindStoriesQueryDto`, Idempotent Bookmark state machine (`POST /api/v1/library/bookmarks`), Canonical `latestChapter` projection (chỉ chapter đã xuất bản của default edition), Canonical `sort=LATEST` theo thời gian xuất bản chương mới nhất của default edition, Trigram & index migration `1700000000006-AddStoryDiscoveryIndexes`.
   - [x] Giao diện Bình luận & Thảo luận phân cấp (Comment / Discussion UI Prototype, Persistence API deferred to Community Phase).
 
-- [ ] **Phase 4C: Multimodal Reader Experience (Manga 120Hz & Light Novel Customizer)**
-  - [ ] Manga Reader: Chế độ cuộn dọc (Webtoon mode), lật trang ngang RTL/LTR, bộ chọn máy chủ CDN, phím tắt điều hướng.
-  - [ ] Light Novel Reader: Bộ tùy biến giao diện (Font Serif/Sans, cỡ chữ, khoảng cách dòng, lề trang), render thẻ Ruby chuẩn semantic (`<ruby><rb>...<rt>...`), Mục lục Drawer nhanh.
-  - [ ] Đồng bộ hóa vị trí đọc tự động lên Server API và hỗ trợ Offline Local Caching.
+- [x] **Phase 4C: Multimodal Reader Experience (Manga 120Hz & Light Novel Customizer) (100% HOÀN TẤT - 33 Vitest + 14 Playwright + 139 Core API Tests)**
+  - [x] Tách biệt Layout Route Groups: `app/layout.tsx` (Root shell), `(site)/layout.tsx` (Header/Footer cho public/protected/studio), `(reader)/layout.tsx` (Clean Fullscreen Reader Shell).
+  - [x] Manga Reader Engine: Chế độ cuộn dọc 120Hz (Webtoon mode), lật trang ngang Paged RTL (phải sang trái chuẩn manga Nhật) & LTR, Smart Reading HUD tự động ẩn/hiện, bàn phím điều hướng (ArrowLeft, ArrowRight, F, M).
+  - [x] Light Novel Reader Engine: Tùy biến giao diện (Theme Sepia/Dark/Light, Font Serif/Sans, cỡ chữ 14-28px, khoảng cách dòng 1.4-2.4x, căn lề left/justify, khung đọc narrow/standard/wide), render an toàn thẻ Ruby (`<ruby><rb>...<rt>...`), Tooltip chú thích (Footnote popover).
+  - [x] Bảo mật & An toàn nội dung: Bộ lọc HTML Sanitizer nghiêm ngặt (chỉ cho phép thẻ/thuộc tính trong allowlist, chặn toàn bộ script/iframe/event handlers và XSS).
+  - [x] Đồng bộ tiến độ đọc & Gamification: Hook `useReadingProgress` đo thời gian đọc thực tế, tự động đồng bộ lên Server `PUT /api/v1/library/reading-progress` (Debounced) kèm fallback IndexedDB offline cache, tự động kích hoạt nhận thưởng +5 EXP khi đạt điều kiện (>=45s đọc & >=80% hoàn thành).
+  - [x] Bộ chọn phiên bản bản dịch (`VersionSelectorModal`) và Ngăn kéo mục lục nhảy chương nhanh (`ChapterDrawer`) tích hợp thanh tìm kiếm và đánh dấu đã đọc.
 
 - [ ] **Phase 4D: AI Translation Studio & Apply Management**
   - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).

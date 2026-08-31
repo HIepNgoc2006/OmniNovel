@@ -134,6 +134,100 @@ export interface BookmarkStatusResponse {
   followersCount?: number;
 }
 
+export enum ReadingMode {
+  WEBTOON = 'WEBTOON',
+  PAGED = 'PAGED',
+  NOVEL = 'NOVEL',
+}
+
+export interface ChapterNavigationItem {
+  id: string;
+  chapterNumber: number | string;
+  title: string | null;
+}
+
+export interface ChapterVersionSummary {
+  id: string;
+  versionNumber: number;
+  versionType: ChapterVersionType;
+  language: string;
+  isPublished: boolean;
+  createdAt: string | Date;
+}
+
+export interface MediaAssetSummary {
+  id: string;
+  sortOrder: number;
+  assetType: MediaAssetType;
+  storageKey: string;
+  width: number | null;
+  height: number | null;
+}
+
+export interface ChapterDetailResponse {
+  story: {
+    id: string;
+    slug: string;
+    title: string;
+    mediaFormat: MediaFormat;
+  };
+  chapter: {
+    id: string;
+    storyEditionId: string;
+    chapterNumber: number | string;
+    title: string | null;
+    activeVersionId: string | null;
+    viewsCount?: number | string;
+  };
+  activeVersion: ChapterVersionSummary | null;
+  availableVersions: ChapterVersionSummary[];
+  mediaAssets: MediaAssetSummary[];
+  pages?: MediaAssetSummary[];
+  navigation: {
+    previous: ChapterNavigationItem | null;
+    next: ChapterNavigationItem | null;
+  };
+}
+
+export interface UpdateReadingProgressDto {
+  chapterId: string;
+  chapterVersionId?: string;
+  readingMode?: ReadingMode | string;
+  progressPercentage: number;
+  scrollPosition: number;
+  storyId?: string;
+}
+
+export interface ReadingProgressResponse {
+  storyId: string;
+  chapterId: string;
+  chapterVersionId?: string | null;
+  readingMode: ReadingMode | string;
+  progressPercentage: number;
+  scrollPosition: number;
+  updatedAt: string | Date;
+  readChapterIds?: string[];
+}
+
+export interface ChapterReadStateSummary {
+  chapterId: string;
+  maxProgressPercentage: number;
+  completedAt: string | Date | null;
+  lastReadAt: string | Date;
+}
+
+export interface ReadChapterRewardRequest {
+  chapterId: string;
+  readingDurationSeconds: number;
+  progressPercentage: number;
+}
+
+export interface ReadChapterRewardResponse {
+  status: 'SUCCESS' | 'ALREADY_REWARDED' | 'DAILY_CAP_REACHED' | 'CRITERIA_NOT_MET';
+  earnedExp: number;
+  message?: string;
+}
+
 export interface StandardErrorResponse {
   error: {
     code: string;
@@ -143,4 +237,5 @@ export interface StandardErrorResponse {
     details?: Array<{ field: string; issue: string }>;
   };
 }
+
 

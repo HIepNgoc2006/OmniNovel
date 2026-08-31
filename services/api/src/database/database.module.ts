@@ -11,6 +11,8 @@ import { StoryEdition } from '../modules/stories/entities/story-edition.entity';
 import { Genre } from '../modules/stories/entities/genre.entity';
 import { Creator } from '../modules/stories/entities/creator.entity';
 import { Bookmark } from '../modules/stories/entities/bookmark.entity';
+import { ReadingProgress } from '../modules/stories/entities/reading-progress.entity';
+import { ChapterReadState } from '../modules/stories/entities/chapter-read-state.entity';
 import { Volume } from '../modules/chapters/entities/volume.entity';
 import { Chapter } from '../modules/chapters/entities/chapter.entity';
 import { ChapterVersion } from '../modules/chapters/entities/chapter-version.entity';
@@ -49,6 +51,8 @@ import { TranslationSegment } from '../modules/translation/entities/translation-
           Genre,
           Creator,
           Bookmark,
+          ReadingProgress,
+          ChapterReadState,
           Volume,
           Chapter,
           ChapterVersion,

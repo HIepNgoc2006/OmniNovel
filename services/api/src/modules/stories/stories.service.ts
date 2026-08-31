@@ -399,13 +399,15 @@ export class StoriesService {
     );
     const scrollPosition = Math.max(0, Number(dto.scrollPosition) || 0);
 
+    const completedAt = progressPercentage >= 80 ? new Date() : null;
+
     return this.dataSource.transaction(async (manager) => {
       // 1. Upsert reading_progress (Current resume pointer for user + story)
       await manager.query(
         `INSERT INTO reading_progress (
           user_id, story_id, chapter_id, chapter_version_id,
           reading_mode, progress_percentage, scroll_position, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::varchar, $6::numeric, $7::numeric, NOW())
         ON CONFLICT (user_id, story_id) DO UPDATE SET
           chapter_id = EXCLUDED.chapter_id,
           chapter_version_id = EXCLUDED.chapter_version_id,
@@ -428,11 +430,7 @@ export class StoriesService {
       await manager.query(
         `INSERT INTO chapter_read_states (
           user_id, chapter_id, last_version_id, max_progress_percentage, completed_at, last_read_at
-        ) VALUES (
-          $1, $2, $3, $4,
-          CASE WHEN $4 >= 80 THEN NOW() ELSE NULL END,
-          NOW()
-        )
+        ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::numeric, $5::timestamptz, NOW())
         ON CONFLICT (user_id, chapter_id) DO UPDATE SET
           last_version_id = COALESCE(EXCLUDED.last_version_id, chapter_read_states.last_version_id),
           max_progress_percentage = GREATEST(chapter_read_states.max_progress_percentage, EXCLUDED.max_progress_percentage),
@@ -447,6 +445,7 @@ export class StoriesService {
           dto.chapterId,
           dto.chapterVersionId || null,
           progressPercentage,
+          completedAt,
         ],
       );
 

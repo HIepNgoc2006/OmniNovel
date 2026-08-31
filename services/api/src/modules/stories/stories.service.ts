@@ -401,52 +401,59 @@ export class StoriesService {
 
     return this.dataSource.transaction(async (manager) => {
       // 1. Upsert reading_progress (Current resume pointer for user + story)
-      await manager.query(
-        `INSERT INTO reading_progress (
-          user_id, story_id, chapter_id, chapter_version_id,
-          reading_mode, progress_percentage, scroll_position, updated_at
-        ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6::numeric, $7::numeric, NOW())
-        ON CONFLICT (user_id, story_id) DO UPDATE SET
-          chapter_id = EXCLUDED.chapter_id,
-          chapter_version_id = EXCLUDED.chapter_version_id,
-          reading_mode = EXCLUDED.reading_mode,
-          progress_percentage = EXCLUDED.progress_percentage,
-          scroll_position = EXCLUDED.scroll_position,
-          updated_at = NOW()`,
-        [
+      const existingProgress = await manager.findOne(ReadingProgress, {
+        where: { userId, storyId: derivedStoryId },
+      });
+
+      if (existingProgress) {
+        existingProgress.chapterId = dto.chapterId;
+        existingProgress.chapterVersionId = dto.chapterVersionId || null;
+        existingProgress.readingMode = readingMode;
+        existingProgress.progressPercentage = progressPercentage;
+        existingProgress.scrollPosition = scrollPosition;
+        await manager.save(ReadingProgress, existingProgress);
+      } else {
+        const newProgress = manager.create(ReadingProgress, {
           userId,
-          derivedStoryId,
-          dto.chapterId,
-          dto.chapterVersionId || null,
+          storyId: derivedStoryId,
+          chapterId: dto.chapterId,
+          chapterVersionId: dto.chapterVersionId || null,
           readingMode,
           progressPercentage,
           scrollPosition,
-        ],
-      );
+        });
+        await manager.save(ReadingProgress, newProgress);
+      }
 
       // 2. Upsert chapter_read_states (Read history & completion state per chapter)
-      const initialCompletedAt = progressPercentage >= 80 ? new Date() : null;
-      await manager.query(
-        `INSERT INTO chapter_read_states (
-          user_id, chapter_id, last_version_id, max_progress_percentage, completed_at, last_read_at
-        ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::numeric, $5::timestamptz, NOW())
-        ON CONFLICT (user_id, chapter_id) DO UPDATE SET
-          last_version_id = COALESCE(EXCLUDED.last_version_id, chapter_read_states.last_version_id),
-          max_progress_percentage = GREATEST(chapter_read_states.max_progress_percentage, EXCLUDED.max_progress_percentage),
-          completed_at = CASE
-            WHEN chapter_read_states.completed_at IS NOT NULL THEN chapter_read_states.completed_at
-            WHEN EXCLUDED.max_progress_percentage >= 80 THEN NOW()
-            ELSE NULL
-          END,
-          last_read_at = NOW()`,
-        [
-          userId,
-          dto.chapterId,
-          dto.chapterVersionId || null,
+      const existingState = await manager.findOne(ChapterReadState, {
+        where: { userId, chapterId: dto.chapterId },
+      });
+
+      if (existingState) {
+        if (dto.chapterVersionId) {
+          existingState.lastVersionId = dto.chapterVersionId;
+        }
+        existingState.maxProgressPercentage = Math.max(
+          Number(existingState.maxProgressPercentage) || 0,
           progressPercentage,
-          initialCompletedAt,
-        ],
-      );
+        );
+        if (!existingState.completedAt && progressPercentage >= 80) {
+          existingState.completedAt = new Date();
+        }
+        existingState.lastReadAt = new Date();
+        await manager.save(ChapterReadState, existingState);
+      } else {
+        const newState = manager.create(ChapterReadState, {
+          userId,
+          chapterId: dto.chapterId,
+          lastVersionId: dto.chapterVersionId || null,
+          maxProgressPercentage: progressPercentage,
+          completedAt: progressPercentage >= 80 ? new Date() : null,
+          lastReadAt: new Date(),
+        });
+        await manager.save(ChapterReadState, newState);
+      }
 
       return {
         storyId: derivedStoryId,

@@ -401,67 +401,62 @@ export class StoriesService {
 
     return this.dataSource.transaction(async (manager) => {
       // 1. Upsert reading_progress (Current resume pointer for user + story)
-      const existingProgress = await manager.findOne(ReadingProgress, {
-        where: { userId, storyId: derivedStoryId },
-      });
-
-      if (existingProgress) {
-        existingProgress.chapterId = dto.chapterId;
-        existingProgress.chapterVersionId = dto.chapterVersionId || null;
-        existingProgress.readingMode = readingMode;
-        existingProgress.progressPercentage = progressPercentage;
-        existingProgress.scrollPosition = scrollPosition;
-        await manager.save(ReadingProgress, existingProgress);
-      } else {
-        const newProgress = manager.create(ReadingProgress, {
+      await manager.query(
+        `INSERT INTO reading_progress (
+          user_id, story_id, chapter_id, chapter_version_id,
+          reading_mode, progress_percentage, scroll_position, updated_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        ON CONFLICT (user_id, story_id) DO UPDATE SET
+          chapter_id = EXCLUDED.chapter_id,
+          chapter_version_id = EXCLUDED.chapter_version_id,
+          reading_mode = EXCLUDED.reading_mode,
+          progress_percentage = EXCLUDED.progress_percentage,
+          scroll_position = EXCLUDED.scroll_position,
+          updated_at = NOW()`,
+        [
           userId,
-          storyId: derivedStoryId,
-          chapterId: dto.chapterId,
-          chapterVersionId: dto.chapterVersionId || null,
+          derivedStoryId,
+          dto.chapterId,
+          dto.chapterVersionId || null,
           readingMode,
           progressPercentage,
           scrollPosition,
-        });
-        await manager.save(ReadingProgress, newProgress);
-      }
+        ],
+      );
 
       // 2. Upsert chapter_read_states (Read history & completion state per chapter)
-      const existingState = await manager.findOne(ChapterReadState, {
-        where: { userId, chapterId: dto.chapterId },
-      });
-
-      if (existingState) {
-        if (dto.chapterVersionId) {
-          existingState.lastVersionId = dto.chapterVersionId;
-        }
-        existingState.maxProgressPercentage = Math.max(
-          Number(existingState.maxProgressPercentage) || 0,
-          progressPercentage,
-        );
-        if (!existingState.completedAt && progressPercentage >= 80) {
-          existingState.completedAt = new Date();
-        }
-        existingState.lastReadAt = new Date();
-        await manager.save(ChapterReadState, existingState);
-      } else {
-        const newState = manager.create(ChapterReadState, {
+      await manager.query(
+        `INSERT INTO chapter_read_states (
+          user_id, chapter_id, last_version_id, max_progress_percentage, completed_at, last_read_at
+        ) VALUES (
+          $1, $2, $3, $4,
+          CASE WHEN $4 >= 80 THEN NOW() ELSE NULL END,
+          NOW()
+        )
+        ON CONFLICT (user_id, chapter_id) DO UPDATE SET
+          last_version_id = COALESCE(EXCLUDED.last_version_id, chapter_read_states.last_version_id),
+          max_progress_percentage = GREATEST(chapter_read_states.max_progress_percentage, EXCLUDED.max_progress_percentage),
+          completed_at = CASE
+            WHEN chapter_read_states.completed_at IS NOT NULL THEN chapter_read_states.completed_at
+            WHEN EXCLUDED.max_progress_percentage >= 80 THEN NOW()
+            ELSE NULL
+          END,
+          last_read_at = NOW()`,
+        [
           userId,
-          chapterId: dto.chapterId,
-          lastVersionId: dto.chapterVersionId || null,
-          maxProgressPercentage: progressPercentage,
-          completedAt: progressPercentage >= 80 ? new Date() : null,
-          lastReadAt: new Date(),
-        });
-        await manager.save(ChapterReadState, newState);
-      }
+          dto.chapterId,
+          dto.chapterVersionId || null,
+          progressPercentage,
+        ],
+      );
 
       return {
         storyId: derivedStoryId,
         chapterId: dto.chapterId,
         chapterVersionId: dto.chapterVersionId || null,
         readingMode,
-        progressPercentage,
-        scrollPosition,
+        progressPercentage: Number(progressPercentage),
+        scrollPosition: Number(scrollPosition),
         updatedAt: new Date(),
       };
     });
@@ -474,11 +469,11 @@ export class StoriesService {
         rp.chapter_id AS "chapterId",
         rp.chapter_version_id AS "chapterVersionId",
         rp.reading_mode AS "readingMode",
-        rp.progress_percentage AS "progressPercentage",
-        rp.scroll_position AS "scrollPosition",
+        CAST(rp.progress_percentage AS FLOAT) AS "progressPercentage",
+        CAST(rp.scroll_position AS FLOAT) AS "scrollPosition",
         rp.updated_at AS "updatedAt"
        FROM reading_progress rp
-       WHERE rp.user_id = $1::uuid AND rp.story_id = $2::uuid`,
+       WHERE rp.user_id = $1 AND rp.story_id = $2`,
       [userId, storyId],
     );
 
@@ -487,7 +482,7 @@ export class StoriesService {
        FROM chapter_read_states crs
        JOIN chapters c ON c.id = crs.chapter_id
        JOIN story_editions se ON se.id = c.story_edition_id
-       WHERE crs.user_id = $1::uuid AND se.story_id = $2::uuid AND crs.max_progress_percentage >= 80`,
+       WHERE crs.user_id = $1 AND se.story_id = $2 AND crs.max_progress_percentage >= 80`,
       [userId, storyId],
     );
 

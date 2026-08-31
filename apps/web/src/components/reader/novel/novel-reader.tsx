@@ -35,6 +35,7 @@ export function NovelReader({ initialData, allChapters = [] }: NovelReaderProps)
 
   const {
     scrollProgress,
+    readChapterIds,
     rewardStatus,
     showRewardToast,
     dismissRewardToast,
@@ -61,6 +62,7 @@ export function NovelReader({ initialData, allChapters = [] }: NovelReaderProps)
     }
 
     const versionId = data.activeVersion?.id || 'default';
+    const isRestricted = !data.activeVersion?.isPublished;
 
     // Thử lấy từ Offline Cache trước
     getCachedAsset(htmlAsset.id, versionId).then((cached) => {
@@ -81,7 +83,7 @@ export function NovelReader({ initialData, allChapters = [] }: NovelReaderProps)
         if (isMounted) {
           setHtmlContent(text);
           setIsLoadingContent(false);
-          setCachedAsset(htmlAsset.id, versionId, text, 'text/html');
+          setCachedAsset(htmlAsset.id, versionId, text, 'text/html', isRestricted);
         }
       })
       .catch(() => {
@@ -209,6 +211,7 @@ export function NovelReader({ initialData, allChapters = [] }: NovelReaderProps)
         storyTitle={data.story.title}
         currentChapterId={data.chapter.id}
         chapters={allChapters}
+        readChapterIds={readChapterIds}
       />
 
       {/* Version Selector Modal */}

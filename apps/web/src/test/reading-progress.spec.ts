@@ -20,6 +20,17 @@ describe('Reading Progress & Gamification Lifecycle', () => {
       refetchUser: vi.fn(),
     });
 
+    vi.spyOn(storiesApi, 'getReadingProgressApi').mockResolvedValue({
+      storyId: 's-1',
+      chapterId: 'c-1',
+      chapterVersionId: 'v-1',
+      readingMode: 'WEBTOON',
+      progressPercentage: 85,
+      scrollPosition: 1500,
+      updatedAt: new Date().toISOString(),
+      readChapterIds: ['c-0', 'c-1'],
+    });
+
     vi.spyOn(storiesApi, 'saveReadingProgressApi').mockResolvedValue({
       storyId: 's-1',
       chapterId: 'c-1',
@@ -30,13 +41,14 @@ describe('Reading Progress & Gamification Lifecycle', () => {
     });
 
     vi.spyOn(gamificationApi, 'rewardReadChapterApi').mockResolvedValue({
-      status: 'SUCCESS',
+      success: true,
       earnedExp: 5,
-      message: 'Thành công',
+      totalExp: '105',
+      level: 2,
     });
   });
 
-  it('should calculate progress percentage and update local storage', () => {
+  it('should calculate progress percentage and update local storage', async () => {
     const { result } = renderHook(() =>
       useReadingProgress({
         storyId: 's-1',
@@ -44,6 +56,13 @@ describe('Reading Progress & Gamification Lifecycle', () => {
         readingMode: 'WEBTOON',
       }),
     );
+
+    await act(async () => {
+      // Allow bootstrap promise to resolve
+      await Promise.resolve();
+    });
+
+    expect(result.current.readChapterIds).toContain('c-0');
 
     act(() => {
       result.current.updateProgress(45.5, 800);
@@ -56,7 +75,7 @@ describe('Reading Progress & Gamification Lifecycle', () => {
     expect(saved.progressPercentage).toBe(45.5);
   });
 
-  it('should trigger gamification reward when criteria (>=45s & >=80%) are satisfied', async () => {
+  it('should trigger gamification reward and show toast when criteria (>=45s & >=80%) are satisfied', async () => {
     vi.useFakeTimers();
 
     const { result } = renderHook(() =>
@@ -83,6 +102,10 @@ describe('Reading Progress & Gamification Lifecycle', () => {
         progressPercentage: 85,
       }),
     );
+
+    expect(result.current.rewardStatus?.success).toBe(true);
+    expect(result.current.rewardStatus?.earnedExp).toBe(5);
+    expect(result.current.showRewardToast).toBe(true);
 
     vi.useRealTimers();
   });

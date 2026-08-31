@@ -4,6 +4,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { memoryAuthStore, AuthStatus } from './auth-store';
 import { loginApi, logoutApi, getMeApi, UserProfile, LoginRequest } from '../api/auth';
 import { refreshAccessToken } from '../api/client';
+import { purgeOfflineCache } from '../reader/offline-cache';
 
 interface AuthContextType {
   status: AuthStatus;
@@ -71,6 +72,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       memoryAuthStore.clear();
       setUser(null);
       setStatus('anonymous');
+      purgeOfflineCache().catch(() => {});
     }
   };
 

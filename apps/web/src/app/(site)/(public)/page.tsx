@@ -2,13 +2,13 @@
 
 import React, { useState } from 'react';
 import Link from 'next/link';
-import { useStories, useFeaturedStories, useStoryRankings } from '../../lib/query/hooks';
-import { HeroBannerSlider } from '../../components/home/hero-banner-slider';
-import { RankingsSection } from '../../components/home/rankings-section';
-import { DailyCheckinWidget } from '../../components/home/daily-checkin-widget';
-import { StoryCard } from '../../components/story/story-card';
-import { Button } from '../../components/ui/button';
-import { Skeleton } from '../../components/ui/skeleton';
+import { useStories, useFeaturedStories, useStoryRankings } from '@/lib/query/hooks';
+import { HeroBannerSlider } from '@/components/home/hero-banner-slider';
+import { RankingsSection } from '@/components/home/rankings-section';
+import { DailyCheckinWidget } from '@/components/home/daily-checkin-widget';
+import { StoryCard } from '@/components/story/story-card';
+import { Button } from '@/components/ui/button';
+import { Skeleton } from '@/components/ui/skeleton';
 import { MediaFormat } from '@omninovel/shared';
 import {
   Sparkles,

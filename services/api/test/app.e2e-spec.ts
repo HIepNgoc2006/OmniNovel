@@ -47,6 +47,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
   let editionBId: string;
   let volumeBId: string;
   let chapterBId: string;
+  let versionB1Id: string;
 
   let testAssetId: string;
 
@@ -700,6 +701,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         .post(`/api/v1/studio/chapters/${chapterBId}/versions`)
         .set('Authorization', `Bearer ${translatorBAccessToken}`)
         .send({ versionType: ChapterVersionType.RAW_ORIGINAL, language: 'vi' });
+      versionB1Id = vB.body.id;
 
       await request(app.getHttpServer())
         .patch(`/api/v1/studio/chapters/${chapterAId}/active-version`)
@@ -708,14 +710,113 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         .expect(400);
     });
 
-    it('GET /api/v1/chapters/:id should return chapter details and active version for public readers', async () => {
+    it('GET /api/v1/chapters/:id should return complete ChapterDetailResponse for public readers', async () => {
       const res = await request(app.getHttpServer())
         .get(`/api/v1/chapters/${chapterAId}`)
         .expect(200);
 
+      expect(res.body.story).toBeDefined();
+      expect(res.body.story.id).toBe(storyAId);
+      expect(res.body.story.slug).toBeDefined();
+      expect(res.body.story.mediaFormat).toBeDefined();
+
       expect(res.body.chapter.id).toBe(chapterAId);
       expect(res.body.chapter.activeVersionId).toBe(versionA2Id);
       expect(res.body.activeVersion).toBeDefined();
+      expect(res.body.availableVersions).toBeDefined();
+      expect(Array.isArray(res.body.availableVersions)).toBe(true);
+      expect(res.body.mediaAssets).toBeDefined();
+      expect(res.body.navigation).toBeDefined();
+    });
+
+    it('GET /api/v1/chapters/:id Version Access Policy: public can switch to published version, draft requires staff role, foreign version rejected', async () => {
+      // 1. Tạo published version mới trên Chapter A
+      const pubVer = await request(app.getHttpServer())
+        .post(`/api/v1/studio/chapters/${chapterAId}/versions`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({ versionType: ChapterVersionType.AI_TRANSLATED, language: 'en' });
+      await dataSource.query(`UPDATE chapter_versions SET is_published = TRUE WHERE id = $1`, [pubVer.body.id]);
+
+      // 2. Tạo draft version (isPublished = false) trên Chapter A
+      const draftVer = await request(app.getHttpServer())
+        .post(`/api/v1/studio/chapters/${chapterAId}/versions`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .send({ versionType: ChapterVersionType.HUMAN_EDITED, language: 'vi' });
+      await dataSource.query(`UPDATE chapter_versions SET is_published = FALSE WHERE id = $1`, [draftVer.body.id]);
+
+      // 3. Anonymous public reader chuyển sang published version -> 200 OK
+      const pubRes = await request(app.getHttpServer())
+        .get(`/api/v1/chapters/${chapterAId}?versionId=${pubVer.body.id}`)
+        .expect(200);
+      expect(pubRes.body.activeVersion.id).toBe(pubVer.body.id);
+
+      // 4. Anonymous public reader cố đọc draft version -> 403 Forbidden
+      await request(app.getHttpServer())
+        .get(`/api/v1/chapters/${chapterAId}?versionId=${draftVer.body.id}`)
+        .expect(403);
+
+      // 5. Story Translator (staff) đọc draft version -> 200 OK
+      const staffRes = await request(app.getHttpServer())
+        .get(`/api/v1/chapters/${chapterAId}?versionId=${draftVer.body.id}`)
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .expect(200);
+      expect(staffRes.body.activeVersion.id).toBe(draftVer.body.id);
+
+      // 6. Truyền versionId thuộc Chapter B vào Chapter A -> 400 Bad Request
+      await request(app.getHttpServer())
+        .get(`/api/v1/chapters/${chapterAId}?versionId=${versionB1Id}`)
+        .expect(400);
+    });
+
+    it('PUT & GET /api/v1/library/reading-progress lifecycle and hierarchy invariants', async () => {
+      // 1. Anonymous user cố lưu tiến độ đọc -> 401 Unauthorized
+      await request(app.getHttpServer())
+        .put('/api/v1/library/reading-progress')
+        .send({
+          chapterId: chapterAId,
+          progressPercentage: 50,
+          scrollPosition: 1200,
+        })
+        .expect(401);
+
+      // 2. Truyền storyId không khớp với chapterId -> 400 Bad Request
+      await request(app.getHttpServer())
+        .put('/api/v1/library/reading-progress')
+        .set('Authorization', `Bearer ${translatorBAccessToken}`)
+        .send({
+          chapterId: chapterAId,
+          storyId: storyBId, // Story B không chứa Chapter A
+          progressPercentage: 50,
+          scrollPosition: 1200,
+        })
+        .expect(400);
+
+      // 3. User lưu tiến độ đọc hợp lệ -> 200 OK
+      const saveRes = await request(app.getHttpServer())
+        .put('/api/v1/library/reading-progress')
+        .set('Authorization', `Bearer ${translatorBAccessToken}`)
+        .send({
+          chapterId: chapterAId,
+          chapterVersionId: versionA2Id,
+          readingMode: 'WEBTOON',
+          progressPercentage: 85.5,
+          scrollPosition: 2400,
+        })
+        .expect(200);
+
+      expect(saveRes.body.storyId).toBe(storyAId);
+      expect(saveRes.body.chapterId).toBe(chapterAId);
+      expect(saveRes.body.progressPercentage).toBe(85.5);
+
+      // 4. GET reading-progress theo storyId -> Trả về resume pointer và readChapterIds chứa chapterAId
+      const getRes = await request(app.getHttpServer())
+        .get(`/api/v1/library/reading-progress/${storyAId}`)
+        .set('Authorization', `Bearer ${translatorBAccessToken}`)
+        .expect(200);
+
+      expect(getRes.body.storyId).toBe(storyAId);
+      expect(getRes.body.chapterId).toBe(chapterAId);
+      expect(getRes.body.readChapterIds).toContain(chapterAId);
     });
 
     it('GET /api/v1/stories latestChapter invariant: default edition only and ignores unpublished drafts', async () => {

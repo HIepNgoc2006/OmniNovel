@@ -1,9 +1,9 @@
 'use client';
 
 import React, { useState } from 'react';
-import { useTranslationSocket } from '../../../lib/websocket/use-translation-socket';
-import { Badge } from '../../../components/ui/badge';
-import { Button } from '../../../components/ui/button';
+import { useTranslationSocket } from '@/lib/websocket/use-translation-socket';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import {
   Sliders,
   Radio,

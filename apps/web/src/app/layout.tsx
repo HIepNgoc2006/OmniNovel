@@ -23,13 +23,8 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="vi" data-theme="dark" suppressHydrationWarning>
-      <body className="antialiased flex flex-col min-h-screen">
-        <Providers>
-          <Header />
-          <main className="flex-1 pb-16 md:pb-0">{children}</main>
-          <Footer />
-          <MobileNav />
-        </Providers>
+      <body className="antialiased min-h-screen bg-[var(--bg-primary)] text-[var(--text-primary)]">
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

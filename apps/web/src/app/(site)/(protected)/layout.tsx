@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { AuthBoundary } from '../../lib/auth/auth-boundary';
+import { AuthBoundary } from '@/lib/auth/auth-boundary';
 
 export default function ProtectedLayout({ children }: { children: React.ReactNode }) {
   return (

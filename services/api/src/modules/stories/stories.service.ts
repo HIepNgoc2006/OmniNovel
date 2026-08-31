@@ -380,7 +380,7 @@ export class StoriesService {
     // Nếu có chapterVersionId, kiểm tra version có thuộc chapter hay không
     if (dto.chapterVersionId) {
       const versionExists = await this.dataSource.query(
-        `SELECT id FROM chapter_versions WHERE id = $1 AND chapter_id = $2`,
+        `SELECT id FROM chapter_versions WHERE id = $1::uuid AND chapter_id = $2::uuid`,
         [dto.chapterVersionId, dto.chapterId],
       );
       if (!versionExists || versionExists.length === 0) {
@@ -405,7 +405,7 @@ export class StoriesService {
         `INSERT INTO reading_progress (
           user_id, story_id, chapter_id, chapter_version_id,
           reading_mode, progress_percentage, scroll_position, updated_at
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+        ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6::numeric, $7::numeric, NOW())
         ON CONFLICT (user_id, story_id) DO UPDATE SET
           chapter_id = EXCLUDED.chapter_id,
           chapter_version_id = EXCLUDED.chapter_version_id,
@@ -429,7 +429,7 @@ export class StoriesService {
       await manager.query(
         `INSERT INTO chapter_read_states (
           user_id, chapter_id, last_version_id, max_progress_percentage, completed_at, last_read_at
-        ) VALUES ($1, $2, $3, $4, $5, NOW())
+        ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::numeric, $5::timestamptz, NOW())
         ON CONFLICT (user_id, chapter_id) DO UPDATE SET
           last_version_id = COALESCE(EXCLUDED.last_version_id, chapter_read_states.last_version_id),
           max_progress_percentage = GREATEST(chapter_read_states.max_progress_percentage, EXCLUDED.max_progress_percentage),
@@ -471,7 +471,7 @@ export class StoriesService {
         rp.scroll_position AS "scrollPosition",
         rp.updated_at AS "updatedAt"
        FROM reading_progress rp
-       WHERE rp.user_id = $1 AND rp.story_id = $2`,
+       WHERE rp.user_id = $1::uuid AND rp.story_id = $2::uuid`,
       [userId, storyId],
     );
 
@@ -480,7 +480,7 @@ export class StoriesService {
        FROM chapter_read_states crs
        JOIN chapters c ON c.id = crs.chapter_id
        JOIN story_editions se ON se.id = c.story_edition_id
-       WHERE crs.user_id = $1 AND se.story_id = $2 AND crs.max_progress_percentage >= 80`,
+       WHERE crs.user_id = $1::uuid AND se.story_id = $2::uuid AND crs.max_progress_percentage >= 80`,
       [userId, storyId],
     );
 

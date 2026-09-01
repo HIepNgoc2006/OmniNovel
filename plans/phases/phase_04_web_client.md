@@ -15,7 +15,7 @@
     - TanStack Query v5 quản lý Server State & SWR Caching.
     - WebSocket Gateway (`/ws/ai`) xác thực qua `socket.handshake.auth.token` và tự động reconnect khi token xoay vòng.
     - Gamification: Tiêu thụ endpoint chuẩn `/gamification/progression` và `UserProgressionResponse` từ `@omninovel/shared`.
-- **Trạng thái:** [/] Đang thực hiện (Phase 4A, Phase 4B & Phase 4C: 100% HOÀN TẤT & SẴN SÀNG FREEZE - 36 Vitest + 14 Playwright Browser Tests [with canonical mocks] + 139 Core API [22 Unit + 117 E2E/Integration] + 184 AI Worker = 373 Total CI Tests Pass 100%)
+- **Trạng thái:** [/] Đang thực hiện (Phase 4A, Phase 4B & Phase 4C: 100% HOÀN TẤT & FROZEN tại commit 4cced19e9dfdbb9ec9ec21508236ad1c2f8becff - 36 Vitest + 14 Playwright Browser Tests [with canonical mocks] + 139 Core API [22 Unit + 117 E2E/Integration] + 184 AI Worker = 373 Total CI Tests Pass 100%)
 
 ---
 
@@ -38,7 +38,7 @@
   - [x] Hardening Core API Discovery: Runtime DTO validation `FindStoriesQueryDto`, Idempotent Bookmark state machine (`POST /api/v1/library/bookmarks`), Canonical `latestChapter` projection (chỉ chapter đã xuất bản của default edition), Canonical `sort=LATEST` theo thời gian xuất bản chương mới nhất của default edition, Trigram & index migration `1700000000006-AddStoryDiscoveryIndexes`.
   - [x] Giao diện Bình luận & Thảo luận phân cấp (Comment / Discussion UI Prototype, Persistence API deferred to Community Phase).
 
-- [x] **Phase 4C: Multimodal Reader Experience (Manga 120Hz & Light Novel Customizer) (100% HOÀN TẤT - 36 Vitest + 14 Playwright + 139 Core API Tests)**
+- [x] **Phase 4C: Multimodal Reader Experience (Manga 120Hz & Light Novel Customizer) (100% HOÀN TẤT & FROZEN - 36 Vitest + 14 Playwright + 139 Core API Tests - Functional Baseline SHA 4cced19e9dfdbb9ec9ec21508236ad1c2f8becff)**
   - [x] Tách biệt Layout Route Groups: `app/layout.tsx` (Root shell), `(site)/layout.tsx` (Header/Footer cho public/protected/studio), `(reader)/layout.tsx` (Clean Fullscreen Reader Shell).
   - [x] Manga Reader Engine: Chế độ cuộn dọc mượt mà (mục tiêu 120Hz), lật trang ngang Paged RTL (phải sang trái chuẩn manga Nhật) & LTR, Smart Reading HUD tự động ẩn/hiện, bàn phím điều hướng (ArrowLeft, ArrowRight, F, M), phục hồi vị trí cuộn / số trang từ `serverResume`.
   - [x] Light Novel Reader Engine: Tùy biến giao diện (Theme Sepia/Dark/Light, Font Serif/Sans, cỡ chữ 14-28px, khoảng cách dòng 1.4-2.4x, căn lề left/justify, khung đọc narrow/standard/wide), render an toàn thẻ Ruby (`<ruby><rb>...<rt>...`), Tooltip chú thích (Footnote popover), phục hồi vị trí cuộn chính xác từ `serverResume`.

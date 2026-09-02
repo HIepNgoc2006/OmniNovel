@@ -30,4 +30,8 @@
 - **Đồng bộ Git Tự động & Liên tục (Continuous Commit & Push):**
   - Bất cứ khi nào có thay đổi (tạo mới, sửa đổi, xóa) các file không nằm trong danh sách loại trừ của `.gitignore`, phải lập tức thực hiện `git add`, `git commit` với thông điệp rõ ràng và `git push` lên repository từ xa ngay.
   - **Git Remote / Organization:** `https://github.com/HIepNgoc2006/OmniNovel` (Repository: `https://github.com/HIepNgoc2006/OmniNovel`).
+- **GitHub CLI (`gh`) — Ưu tiên tuyệt đối:**
+  - Luôn dùng `gh` CLI (đã cài sẵn trên máy) cho mọi thao tác GitHub: Issues (tạo/sửa/đóng/xem), Pull Requests, Branches, Labels, Milestones, Releases, v.v.
+  - **Không dùng MCP GitHub tools** trừ khi `gh` CLI gặp lỗi hoặc không hỗ trợ thao tác cần thiết.
+  - Lý do: `gh` CLI nhanh hơn đáng kể, output dễ parse, và chạy trực tiếp trong terminal.
 

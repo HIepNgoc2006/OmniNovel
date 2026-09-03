@@ -58,9 +58,11 @@
     - [x] Strict protected anchor topology validation ported with parity test coverage (#147).
     - [x] Apply freshness gate & zero-leak concurrency invariant (#156 schema & Apply portion; fenced completion pending PR C #161).
     - [x] Hardening: Fail-closed GlobalExceptionFilter metadata allowlist, deterministic DB barrier & PATCH-vs-Apply race test, UUID/int/text boundary validation, SSoT API contracts (#147, #156).
-  - [/] **Phase 4D.3 Contract Stabilization (PR B - IMPLEMENTED & VERIFIED)**:
+  - [x] **Phase 4D.3 Contract Stabilization (COMPLETED — PR #170 `main@e8d3926`, main CI Run #84 `33763179130` SUCCESS)**:
     - [x] Novel segment blockType extension (#160) - Canonical enum: `HEADING`, `DIALOGUE`, `NARRATION`, `BLOCKQUOTE`; Migration 0012 with `novel_block_type_enum`; strict invariants at `READY_FOR_REVIEW` (enforced for Novel, forbidden for Comic).
     - [x] Typed & versioned translation manifests (#164) - Versioned schemas `MangaResultManifestV1` (version: 1, `fileSizeBytes`, `cleanBases`) & `NovelResultManifestV1` (version: 1, `segmentCount`, `charCount`, `qa`, `metrics`), pure runtime validators, discriminated union narrowing, backward-compatible `fileSize` auto-mapping, fail-closed unknown versions. Cross-service parity between TypeScript `@omninovel/shared`, Core API, and Python Worker Pydantic v2 models.
+    - [x] Hardening: 5 audit findings from Run #82 resolved (Novel typed `glossarySnapshot`, callback dropped `message`, READY typed manifest union with unconditional `model_dump()`, RFC3339 timestamp parity with timezone, full regression fixtures migrated to strict V1, Core E2E 172/172 pass).
+    - [ ] *Backlog (P2)*: Core prefix-jail validation độc lập cả `storageKey` lẫn `previewKey` kèm negative E2E.
   - [ ] **Phase 4D.4 Materialization Protocol & Fenced Completion (PR C)**:
     - [ ] Dedicated materialization queue & deterministic custom job ID (#161).
     - [ ] Durable S3 snapshot artifact & internal completion callback (#161, #156 remainder).

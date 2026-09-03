@@ -184,6 +184,8 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
                 sourceLanguage: 'ja',
                 targetLanguage: 'vi',
                 storyEdition: {
+                  id: 'edition-1',
+                  editionName: 'Bản Dịch Chuẩn',
                   story: { id: 'story-1', title: 'One Piece' },
                 },
               },
@@ -212,17 +214,20 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
       expect(qbMock.addOrderBy).toHaveBeenCalledWith('job.id', 'DESC');
       expect(result.data.length).toBe(1);
       expect(result.data[0].storyTitle).toBe('One Piece');
+      expect(result.data[0].storyEditionId).toBe('edition-1');
+      expect(result.data[0].editionName).toBe('Bản Dịch Chuẩn');
       expect(result.data[0].chapterNumber).toBe('100.00');
+      expect(typeof result.data[0].createdAt).toBe('string');
       expect(result.pagination.total).toBe(1);
     });
   });
 
   describe('#148: getJob()', () => {
-    it('should return slim authoritative metadata and SQL aggregate reviewSummary', async () => {
+    it('should return slim authoritative metadata and SQL aggregate reviewSummary with safe error', async () => {
       const mockJob = {
         id: 'job-100',
-        status: TranslationJobStatus.READY_FOR_REVIEW,
-        progressPercentage: 100,
+        status: TranslationJobStatus.FAILED,
+        progressPercentage: 40,
         provider: 'OPENAI',
         modelName: 'gpt-4o-mini',
         promptVersion: 'manga-ja-vi-v1',
@@ -233,7 +238,7 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
         heartbeatAt: new Date('2026-09-01T10:05:00Z'),
         completedAt: new Date('2026-09-01T10:05:00Z'),
         expiresAt: null,
-        errorTrace: 'SyntaxError: Unexpected token\n    at internal/process.js:12:3',
+        errorTrace: 'InternalServerException at /internal/secrets/token=sensitive_token_123',
         inputManifest: {
           glossarySnapshot: [
             { sourceTerm: 'ルフィ', targetTerm: 'Luffy', category: 'CHARACTER_NAME' },
@@ -287,7 +292,8 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
       const result = await service.getJob('job-100', translatorUser);
 
       expect(result.job.id).toBe('job-100');
-      expect(result.job.status).toBe(TranslationJobStatus.READY_FOR_REVIEW);
+      expect(result.job.status).toBe(TranslationJobStatus.FAILED);
+      expect(result.job.createdAt).toBe('2026-09-01T10:00:00.000Z');
       expect(result.context.story.title).toBe('One Piece');
       expect(result.context.chapter.chapterNumber).toBe('1.00');
       expect(result.context.sourceVersion.versionNumber).toBe(1);
@@ -299,10 +305,10 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
         blockCount: null, // Comic format -> blockCount must be null
       });
       expect(result.glossarySnapshot).toHaveLength(1);
-      // Sanitized error summary (never expose full stack trace)
+      // Safe sanitized error (never leak internal tokens or paths)
       expect(result.error).toEqual({
-        code: 'TRANSLATION_JOB_ERROR',
-        message: 'SyntaxError: Unexpected token',
+        code: 'TRANSLATION_JOB_FAILED',
+        message: 'Translation job failed. Please retry or review job diagnostics.',
       });
       // Invariant: segments and diffPreviewUrls must NOT exist on response
       expect((result as any).segments).toBeUndefined();
@@ -319,7 +325,7 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
   });
 
   describe('#155: getJobSegments()', () => {
-    it('should return paginated segments sorted by page_number, sort_order, id for Comic', async () => {
+    it('should return paginated segments sorted by page_number, sort_order, id for Comic with ISO dates', async () => {
       const mockJob = {
         id: 'job-comic',
         project: {
@@ -354,7 +360,7 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
               translatedText: 'Xin chào',
               confidence: 0.95,
               isHumanVerified: false,
-              createdAt: new Date(),
+              createdAt: new Date('2026-09-01T00:00:00Z'),
             },
           ],
           1,
@@ -381,6 +387,34 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
       expect(result.data.length).toBe(1);
       expect(result.data[0].pageNumber).toBe(3);
       expect(result.data[0].translatedText).toBe('Xin chào');
+      expect(result.data[0].createdAt).toBe('2026-09-01T00:00:00.000Z');
+    });
+
+    it('should throw NotFoundException if story context is missing (fail-closed security)', async () => {
+      jobRepo.findOne.mockResolvedValue({
+        id: 'job-broken',
+        project: null,
+      });
+
+      await expect(
+        service.getJobSegments('job-broken', adminUser, { page: 1 }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should reject unauthorized user without story permissions', async () => {
+      jobRepo.findOne.mockResolvedValue({
+        id: 'job-1',
+        project: {
+          storyEdition: {
+            story: { id: 'story-secret', mediaFormat: MediaFormat.COMIC },
+          },
+        },
+      });
+      storyMemberRepo.findOne.mockResolvedValue(null);
+
+      await expect(
+        service.getJobSegments('job-1', translatorUser, { page: 1 }),
+      ).rejects.toThrow(ForbiddenException);
     });
   });
 });

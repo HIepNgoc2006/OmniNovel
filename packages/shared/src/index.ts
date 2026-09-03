@@ -261,6 +261,26 @@ export interface StandardErrorResponse {
 // PHASE 4D: AI TRANSLATION STUDIO & REVIEW CONTRACTS
 // ==========================================
 
+export type IsoDateString = string;
+
+export interface ManagedStorySummaryDto {
+  id: string;
+  title: string;
+  slug: string;
+  mediaFormat: MediaFormat;
+  publicationFormat: PublicationFormat;
+  originCountry: string;
+  originalLanguage: string;
+  coverUrl: string | null;
+  status: StoryStatus;
+  visibility: StoryVisibility;
+  summary: string | null;
+  viewsCount?: string | number;
+  followersCount?: number;
+  createdAt: IsoDateString;
+  updatedAt: IsoDateString;
+}
+
 export enum NovelBlockType {
   HEADING = 'HEADING',
   DIALOGUE = 'DIALOGUE',
@@ -284,7 +304,7 @@ export interface TranslationProjectSummaryDto {
   storyEditionId: string;
   sourceLanguage: string;
   targetLanguage: string;
-  createdAt: string | Date;
+  createdAt: IsoDateString;
   latestJob?: {
     id: string;
     status: TranslationJobStatus;
@@ -297,6 +317,8 @@ export interface TranslationJobSummaryDto {
   projectId: string;
   storyId: string;
   storyTitle: string;
+  storyEditionId: string;
+  editionName: string;
   chapterId: string;
   chapterNumber: string;
   chapterTitle: string | null;
@@ -306,9 +328,9 @@ export interface TranslationJobSummaryDto {
   progressPercentage: number;
   provider: string;
   modelName: string;
-  createdAt: string | Date;
-  startedAt: string | Date | null;
-  completedAt: string | Date | null;
+  createdAt: IsoDateString;
+  startedAt: IsoDateString | null;
+  completedAt: IsoDateString | null;
 }
 
 export interface ReviewSummaryDto {
@@ -328,11 +350,11 @@ export interface TranslationJobReviewDetailResponse {
     promptVersion: string;
     attemptCount: number;
     maxAttempts: number;
-    createdAt: string | Date;
-    startedAt: string | Date | null;
-    heartbeatAt: string | Date | null;
-    completedAt: string | Date | null;
-    expiresAt: string | Date | null;
+    createdAt: IsoDateString;
+    startedAt: IsoDateString | null;
+    heartbeatAt: IsoDateString | null;
+    completedAt: IsoDateString | null;
+    expiresAt: IsoDateString | null;
   };
   context: {
     story: {
@@ -388,7 +410,7 @@ export interface TranslationSegmentDto {
   isHumanVerified: boolean;
   blockType?: NovelBlockType | null;
   version?: number;
-  createdAt?: string | Date;
+  createdAt?: IsoDateString;
 }
 
 export type ReviewAssetDto =

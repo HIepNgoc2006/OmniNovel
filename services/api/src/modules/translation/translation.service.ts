@@ -400,7 +400,7 @@ export class TranslationService {
           storyEditionId: p.storyEditionId,
           sourceLanguage: p.sourceLanguage,
           targetLanguage: p.targetLanguage,
-          createdAt: p.createdAt,
+          createdAt: p.createdAt.toISOString(),
           latestJob: raw?.latest_job_id
             ? {
                 id: raw.latest_job_id,
@@ -486,6 +486,8 @@ export class TranslationService {
       projectId: job.projectId,
       storyId: job.project?.storyEdition?.story?.id,
       storyTitle: job.project?.storyEdition?.story?.title,
+      storyEditionId: job.project?.storyEdition?.id,
+      editionName: job.project?.storyEdition?.editionName,
       chapterId: job.sourceVersion?.chapter?.id,
       chapterNumber: job.sourceVersion?.chapter
         ? String(job.sourceVersion.chapter.chapterNumber)
@@ -497,9 +499,9 @@ export class TranslationService {
       progressPercentage: job.progressPercentage,
       provider: job.provider,
       modelName: job.modelName,
-      createdAt: job.createdAt,
-      startedAt: job.startedAt,
-      completedAt: job.completedAt,
+      createdAt: job.createdAt.toISOString(),
+      startedAt: job.startedAt ? job.startedAt.toISOString() : null,
+      completedAt: job.completedAt ? job.completedAt.toISOString() : null,
     }));
 
     return {
@@ -541,7 +543,7 @@ export class TranslationService {
 
     if (!story || !edition || !chapter) {
       throw new NotFoundException(
-        'Không tìm thấy đầy đủ context của Story/Edition/Chapter cho Job này.',
+        'Không tìm thấy đầy đủ ngữ cảnh Story/Edition/Chapter cho TranslationJob này.',
       );
     }
 
@@ -551,13 +553,13 @@ export class TranslationService {
       'TRANSLATOR',
     ]);
 
-    // SQL aggregate reviewSummary - COUNT trực tiếp trong CSDL
+    // SQL Aggregation trực tiếp để đếm segments/pages mà không load toàn bộ vào RAM
     const aggResult = await this.dataSource.query(
       `SELECT
-        COUNT(*)::int AS segment_count,
-        COUNT(*) FILTER (WHERE is_human_verified = true)::int AS verified_count,
-        COUNT(DISTINCT page_number) FILTER (WHERE page_number IS NOT NULL)::int AS page_count,
-        COUNT(DISTINCT anchor_block_id) FILTER (WHERE anchor_block_id IS NOT NULL)::int AS block_count
+        COUNT(*)::int as segment_count,
+        COUNT(*) FILTER (WHERE is_human_verified = true)::int as verified_count,
+        COUNT(DISTINCT page_number)::int as page_count,
+        COUNT(DISTINCT anchor_block_id)::int as block_count
       FROM translation_segments
       WHERE job_id = $1`,
       [job.id],
@@ -581,10 +583,10 @@ export class TranslationService {
     };
 
     let errorSummary: { code: string; message: string } | undefined;
-    if (job.errorTrace) {
+    if (job.status === TranslationJobStatus.FAILED) {
       errorSummary = {
-        code: 'TRANSLATION_JOB_ERROR',
-        message: job.errorTrace.split('\n')[0].substring(0, 200),
+        code: 'TRANSLATION_JOB_FAILED',
+        message: 'Translation job failed. Please retry or review job diagnostics.',
       };
     }
 
@@ -598,11 +600,11 @@ export class TranslationService {
         promptVersion: job.promptVersion,
         attemptCount: job.attemptCount,
         maxAttempts: job.maxAttempts,
-        createdAt: job.createdAt,
-        startedAt: job.startedAt,
-        heartbeatAt: job.heartbeatAt,
-        completedAt: job.completedAt,
-        expiresAt: job.expiresAt,
+        createdAt: job.createdAt.toISOString(),
+        startedAt: job.startedAt ? job.startedAt.toISOString() : null,
+        heartbeatAt: job.heartbeatAt ? job.heartbeatAt.toISOString() : null,
+        completedAt: job.completedAt ? job.completedAt.toISOString() : null,
+        expiresAt: job.expiresAt ? job.expiresAt.toISOString() : null,
       },
       context: {
         story: {
@@ -666,13 +668,17 @@ export class TranslationService {
     }
 
     const story = job.project?.storyEdition?.story;
-    if (story) {
-      await this.checkStoryPermission(story.id, user, [
-        'OWNER',
-        'EDITOR',
-        'TRANSLATOR',
-      ]);
+    if (!story) {
+      throw new NotFoundException(
+        'Không tìm thấy Story context hợp lệ cho TranslationJob.',
+      );
     }
+
+    await this.checkStoryPermission(story.id, user, [
+      'OWNER',
+      'EDITOR',
+      'TRANSLATOR',
+    ]);
 
     const page = Math.max(1, Number(query.page) || 1);
     const limit = Math.min(200, Math.max(1, Number(query.limit) || 50));
@@ -714,7 +720,7 @@ export class TranslationService {
       translatedText: s.translatedText,
       confidence: s.confidence !== null ? Number(s.confidence) : null,
       isHumanVerified: s.isHumanVerified,
-      createdAt: s.createdAt,
+      createdAt: s.createdAt.toISOString(),
     }));
 
     return {

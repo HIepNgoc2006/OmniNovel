@@ -22,6 +22,8 @@ import { UpdateReadingProgressDto } from './dto/update-reading-progress.dto';
 import {
   GlobalRole,
   MediaFormat,
+  ManagedStorySummaryDto,
+  PaginatedResponse,
   StoryMemberRole,
   StoryVisibility,
 } from '@omninovel/shared';
@@ -131,7 +133,25 @@ export class StoriesService {
       .skip(skip)
       .take(limit);
 
-    const [data, total] = await qb.getManyAndCount();
+    const [stories, total] = await qb.getManyAndCount();
+
+    const data: ManagedStorySummaryDto[] = stories.map((s) => ({
+      id: s.id,
+      title: s.title,
+      slug: s.slug,
+      mediaFormat: s.mediaFormat,
+      publicationFormat: s.publicationFormat,
+      originCountry: s.originCountry,
+      originalLanguage: s.originalLanguage,
+      coverUrl: s.coverUrl || null,
+      status: s.status,
+      visibility: s.visibility,
+      summary: s.summary || null,
+      viewsCount: s.viewsCount,
+      followersCount: s.followersCount,
+      createdAt: s.createdAt.toISOString(),
+      updatedAt: s.updatedAt ? s.updatedAt.toISOString() : s.createdAt.toISOString(),
+    }));
 
     return {
       data,

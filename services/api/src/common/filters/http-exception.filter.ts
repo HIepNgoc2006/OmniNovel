@@ -4,11 +4,13 @@ import {
   ArgumentsHost,
   HttpException,
   HttpStatus,
+  Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
 
 @Catch()
 export class GlobalExceptionFilter implements ExceptionFilter {
+  private readonly logger = new Logger(GlobalExceptionFilter.name);
   catch(exception: unknown, host: ArgumentsHost) {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
@@ -46,11 +48,30 @@ export class GlobalExceptionFilter implements ExceptionFilter {
           details = resObj.details;
         }
 
-        const { code: _c, message: _m, details: _d, error: _e, statusCode: _s, ...rest } = resObj;
-        extraData = rest;
+        // Allowlisted public metadata only under error.meta (Fail-Closed)
+        const PUBLIC_ERROR_META_FIELDS = [
+          'currentVersion',
+          'expectedVersion',
+          'reviewRevision',
+          'materializedRevision',
+        ] as const;
+
+        let meta: Record<string, any> | undefined;
+        for (const field of PUBLIC_ERROR_META_FIELDS) {
+          if (resObj[field] !== undefined) {
+            if (!meta) meta = {};
+            meta[field] = resObj[field];
+          } else if (resObj.meta && resObj.meta[field] !== undefined) {
+            if (!meta) meta = {};
+            meta[field] = resObj.meta[field];
+          }
+        }
+
+        extraData = meta ? { meta } : {};
       }
-    } else if (exception instanceof Error) {
-      message = exception.message;
+    } else {
+      this.logger.error(`[${requestId}] Unhandled Server Error:`, exception);
+      message = 'Đã có lỗi không mong muốn xảy ra từ máy chủ.';
     }
 
     response.status(status).json({

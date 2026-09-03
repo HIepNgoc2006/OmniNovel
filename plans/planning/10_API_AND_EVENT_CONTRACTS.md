@@ -11,19 +11,26 @@ Toàn bộ các API khi gặp lỗi bắt buộc phải trả về định dạn
 ```json
 {
   "error": {
-    "code": "TRANSLATION_JOB_NOT_READY",
-    "message": "Tác vụ dịch thuật chưa hoàn tất để thực hiện xuất bản.",
+    "code": "VERSION_CONFLICT",
+    "message": "Xung đột phiên bản (OCC Conflict). Phiên bản hiện tại: 2, phiên bản gửi lên: 1",
     "requestId": "req-9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
     "timestamp": "2026-08-22T19:00:00.000Z",
+    "meta": {
+      "currentVersion": 2,
+      "expectedVersion": 1
+    },
     "details": [
       {
-        "field": "job_id",
-        "issue": "Job is currently in OCR stage (45%)"
+        "field": "expectedVersion",
+        "issue": "Version mismatch detected"
       }
     ]
   }
 }
 ```
+
+> [!NOTE]
+> **Quy chuẩn Bảo mật Error Metadata:** Trường `error.meta` chỉ cho phép xuất bản các trường public allowlisted (`currentVersion`, `expectedVersion`, `reviewRevision`, `materializedRevision`). Mọi unhandled exception 500 đều được che giấu với thông điệp chung `Đã có lỗi không mong muốn xảy ra từ máy chủ.` để triệt tiêu nguy cơ rò rỉ stack trace, URL nội bộ hoặc token.
 
 ---
 
@@ -86,9 +93,10 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 | `GET` | `/api/v1/ai/jobs` | Auth: Story Member / Global Admin, Query: `page`, `limit`, `storyId`, `projectId`, `status` | `200 OK` + `{ data: TranslationJobSummaryDto[], pagination }` |
 | `POST` | `/api/v1/ai/jobs` | Header: `Idempotency-Key` (UUID-v4), Auth: Story Translator / Story Editor / Story Owner / Global Admin, Body: `{ chapterVersionId, sourceLang, targetLang, provider }` | `202 Accepted` + `{ jobId, status: 'QUEUED' }` |
 | `GET` | `/api/v1/ai/jobs/:id` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` | `200 OK` + `{ job, context, reviewSummary, glossarySnapshot?, error? }` |
-| `GET` | `/api/v1/ai/jobs/:id/segments` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Query: `page`, `limit`, `pageNumber?` | `200 OK` + `{ data: TranslationSegmentDto[], pagination }` |
-| `POST` | `/api/v1/ai/jobs/:id/cancel` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` | `200 OK` + `{ jobId, status: 'CANCELED' }` |
-| `POST` | `/api/v1/ai/jobs/:id/apply` | Header: `Idempotency-Key` (UUID-v4), Auth: Story Editor / Story Owner / Global Admin, Body: `{ mode: 'OVERWRITE_ACTIVE_VERSION' \| 'CREATE_ALTERNATE_VERSION' }` | `200 OK` + `{ chapterId, activeVersionId, versionNumber }` |
+| `GET` | `/api/v1/ai/jobs/:id/segments` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` (UUID), Query: `page`, `limit`, `pageNumber?` | `200 OK` + `{ data: TranslationSegmentDto[], pagination }` |
+| `PATCH`| `/api/v1/ai/jobs/:jobId/segments/:segmentId` | Auth: Story Member (`OWNER`/`EDITOR`/`TRANSLATOR`) / Global Admin, Params: `jobId` (UUID-v4), `segmentId` (UUID-v4), Body: `{ translatedText?: string (max 50k), isHumanVerified?: boolean, expectedVersion: number (min 1, max 2147483647) }` | `200 OK` + `TranslationSegmentDto` (Errors: `400 EMPTY_MUTATION`, `400 ANCHOR_TOPOLOGY_VIOLATION`, `400 Validation/Immutable field`, `403 FORBIDDEN`, `404 NOT_FOUND`, `409 VERSION_CONFLICT` kèm `meta: { currentVersion, expectedVersion }`, `409 NOT_REVIEWABLE`) |
+| `POST` | `/api/v1/ai/jobs/:id/cancel` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` (UUID) | `200 OK` + `{ jobId, status: 'CANCELED' }` |
+| `POST` | `/api/v1/ai/jobs/:id/apply` | Header: `Idempotency-Key` (UUID-v4), Auth: Story Editor / Story Owner / Global Admin, Params: `id` (UUID), Body: `{ mode: 'OVERWRITE_ACTIVE_VERSION' \| 'CREATE_ALTERNATE_VERSION' }` | `200 OK` + `{ chapterId, activeVersionId, versionNumber }` (Errors: `409 ARTIFACT_STALE` khi `materializedRevision !== reviewRevision` kèm `meta: { reviewRevision, materializedRevision }`, `400 / 409 NOT_READY`) |
 | `GET/POST` | `/api/v1/ai/glossary` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Body (POST): `{ projectId, sourceTerm, targetTerm, category }` | `200 OK / 201 Created` + `{ glossaryTerm }` |
 | `POST` | `/internal/v1/ai/jobs/:id/events` | Header: `X-Internal-Service-Key`, Body: `{ eventId, attemptNumber, sequence, stage, progress, resultManifest, segments }` | `200 OK` + `{ received: true, status, sequence }` |
 

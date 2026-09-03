@@ -1,9 +1,20 @@
-import { IsBoolean, IsInt, IsString, Min, ValidateIf } from 'class-validator';
+import {
+  IsBoolean,
+  IsInt,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+  ValidateIf,
+} from 'class-validator';
 import { UpdateTranslationSegmentRequest } from '@omninovel/shared';
 
-export class UpdateTranslationSegmentDto implements UpdateTranslationSegmentRequest {
+export class UpdateTranslationSegmentDto
+  implements UpdateTranslationSegmentRequest
+{
   @ValidateIf((_, val) => val !== undefined)
   @IsString()
+  @MaxLength(50000)
   translatedText?: string;
 
   @ValidateIf((_, val) => val !== undefined)
@@ -12,5 +23,6 @@ export class UpdateTranslationSegmentDto implements UpdateTranslationSegmentRequ
 
   @IsInt()
   @Min(1)
+  @Max(2_147_483_647)
   expectedVersion: number;
 }

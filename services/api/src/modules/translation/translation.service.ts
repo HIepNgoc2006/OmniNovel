@@ -832,8 +832,10 @@ export class TranslationService {
         throw new ConflictException({
           code: 'VERSION_CONFLICT',
           message: `Xung đột phiên bản (OCC Conflict). Phiên bản hiện tại: ${segment.version}, phiên bản gửi lên: ${dto.expectedVersion}`,
-          currentVersion: segment.version,
-          expectedVersion: dto.expectedVersion,
+          meta: {
+            currentVersion: segment.version,
+            expectedVersion: dto.expectedVersion,
+          },
         });
       }
 
@@ -1106,8 +1108,10 @@ export class TranslationService {
         throw new ConflictException({
           code: 'ARTIFACT_STALE',
           message: 'Bản dịch đã có chỉnh sửa mới chưa được tạo artifact.',
-          reviewRevision: job.reviewRevision,
-          materializedRevision: job.materializedRevision,
+          meta: {
+            reviewRevision: job.reviewRevision,
+            materializedRevision: job.materializedRevision,
+          },
         });
       }
 

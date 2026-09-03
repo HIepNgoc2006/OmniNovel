@@ -6,6 +6,14 @@ from pydantic import BaseModel
 import httpx
 from app.core.security import verify_internal_key
 from app.core.config import settings
+from app.models.manifests import (
+    MangaResultManifestV1,
+    MangaResultPageModel,
+    NovelResultManifestV1,
+    NovelResultQaModel,
+    NovelBlockType,
+    TranslationInputManifestV1,
+)
 
 router = APIRouter()
 
@@ -23,7 +31,7 @@ class ProcessJobRequest(BaseModel):
     sourceDownloadUrl: Optional[str] = None
     sourceLang: Optional[str] = "ja"
     targetLang: Optional[str] = "vi"
-    inputManifest: Optional[Dict[str, Any]] = None
+    inputManifest: Optional[TranslationInputManifestV1] = None
 
 class HealthResponse(BaseModel):
     status: str
@@ -107,7 +115,7 @@ async def send_callback_event(
     sequence: int,
     stage: str,
     progress: int,
-    result_manifest: Optional[Dict[str, Any]] = None,
+    result_manifest: Optional[Union[MangaResultManifestV1, NovelResultManifestV1]] = None,
     segments: Optional[List[Dict[str, Any]]] = None,
 ) -> None:
     """
@@ -115,6 +123,11 @@ async def send_callback_event(
     Fail-fast: Ném HTTPException(502) nếu Core API từ chối hoặc trả non-2xx.
     """
     callback_url = f"{settings.CORE_API_INTERNAL_URL}/internal/v1/ai/jobs/{job_id}/events"
+    manifest_payload = (
+        result_manifest.model_dump(mode="json", exclude_none=True, by_alias=True)
+        if result_manifest is not None
+        else None
+    )
     payload = {
         "eventId": str(uuid.uuid4()),
         "attemptNumber": attempt_number,
@@ -122,7 +135,7 @@ async def send_callback_event(
         "stage": stage,
         "progress": progress,
         "heartbeat": True,
-        "resultManifest": result_manifest,
+        "resultManifest": manifest_payload,
         "segments": segments if segments is not None else [],
     }
     headers = {
@@ -214,14 +227,16 @@ async def process_manga_job(req: ProcessJobRequest):
 
     for idx, f in enumerate(uploaded_files, start=1):
         await upload_file_to_presigned_url(f["uploadUrl"], VALID_MOCK_WEBP_BYTES, "image/webp")
-        manifest_pages.append({
-            "page": idx,
-            "storageKey": f["storageKey"],
-            "previewKey": f["storageKey"],
-            "width": 1200,
-            "height": 1800,
-            "fileSize": len(VALID_MOCK_WEBP_BYTES),
-        })
+        manifest_pages.append(
+            MangaResultPageModel(
+                page=idx,
+                storageKey=f["storageKey"],
+                previewKey=f["storageKey"],
+                width=1200,
+                height=1800,
+                fileSizeBytes=len(VALID_MOCK_WEBP_BYTES),
+            )
+        )
 
     stages = [
         ("PREPROCESSING", 10),
@@ -237,9 +252,11 @@ async def process_manga_job(req: ProcessJobRequest):
         await send_callback_event(job_id, attempt_num, seq, stage_name, prog, segments=[])
         seq += 1
 
-    result_manifest = {
-        "pages": manifest_pages,
-    }
+    result_manifest = MangaResultManifestV1(
+        version=1,
+        mediaFormat="COMIC",
+        pages=manifest_pages,
+    )
     segments = [
         {
             "pageNumber": 1,
@@ -350,15 +367,32 @@ async def process_novel_job(req: ProcessJobRequest):
         await send_callback_event(job_id, attempt_num, seq, stage_name, prog)
         seq += 1
 
+    trans_text = "Ngày hôm đó, nhân loại đã nhớ lại. Nỗi sợ hãi khi bị thống trị bởi chúng."
     segments = [
         {
             "sortOrder": 1,
             "anchorBlockId": "blk_0001_p",
+            "blockType": NovelBlockType.NARRATION,
             "rawText": "その日、人類は思い出した。ヤツらに支配されていた恐怖を。",
-            "translatedText": "Ngày hôm đó, nhân loại đã nhớ lại. Nỗi sợ hãi khi bị thống trị bởi chúng.",
+            "translatedText": trans_text,
             "confidence": 0.99,
         }
     ]
+
+    result_manifest = NovelResultManifestV1(
+        version=1,
+        mediaFormat="NOVEL",
+        htmlKey=f"chapters/{job_id}/novel_translated.html",
+        segmentCount=len(segments),
+        charCount=len(trans_text),
+        htmlFileSizeBytes=20480,
+        qa=NovelResultQaModel(
+            passed=True,
+            score=1.0,
+            fingerprintMatch=True,
+            issuesCount=0,
+        ),
+    )
 
     await send_callback_event(
         job_id,
@@ -366,7 +400,7 @@ async def process_novel_job(req: ProcessJobRequest):
         seq,
         "READY_FOR_REVIEW",
         100,
-        result_manifest={"mediaFormat": "NOVEL", "htmlKey": f"chapters/{job_id}/novel_translated.html"},
+        result_manifest=result_manifest,
         segments=segments,
     )
 

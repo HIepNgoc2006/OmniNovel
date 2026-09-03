@@ -278,19 +278,40 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
   });
 
   describe('Novel BlockType Canonical Enum Invariants (#160, #164)', () => {
-    it('should reject READY_FOR_REVIEW novel event if segments are missing blockType', async () => {
+    it('should reject READY_FOR_REVIEW when resultManifest is missing (fail-closed)', async () => {
       const payload = {
         eventId: uuidv4(),
         stage: TranslationJobStatus.READY_FOR_REVIEW,
         progress: 100,
         attemptNumber: 1,
         sequence: 2,
+        segments: [],
+      };
+
+      const res = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${novelJobId}/events`)
+        .set('x-internal-service-key', INTERNAL_KEY)
+        .send(payload)
+        .expect(400);
+
+      expect(res.body.error?.code).toBe('INVALID_TRANSLATION_MANIFEST');
+      expect(res.body.error?.message).toContain('READY_FOR_REVIEW requires resultManifest');
+    });
+
+    it('should reject READY_FOR_REVIEW novel event if segments are missing blockType', async () => {
+      const payload = {
+        eventId: uuidv4(),
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progress: 100,
+        attemptNumber: 1,
+        sequence: 3,
         resultManifest: {
           version: 1,
           mediaFormat: 'NOVEL',
           htmlKey: `ai/jobs/${novelJobId}/attempt-1/translated.html`,
           segmentCount: 1,
           charCount: 20,
+          htmlFileSizeBytes: 10240,
           qa: {
             passed: true,
             score: 1.0,
@@ -324,13 +345,14 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
         stage: TranslationJobStatus.READY_FOR_REVIEW,
         progress: 100,
         attemptNumber: 1,
-        sequence: 3,
+        sequence: 4,
         resultManifest: {
           version: 1,
           mediaFormat: 'NOVEL',
           htmlKey: `ai/jobs/${novelJobId}/attempt-1/translated.html`,
           segmentCount: 1,
           charCount: 20,
+          htmlFileSizeBytes: 10240,
           qa: {
             passed: true,
             score: 1.0,
@@ -364,13 +386,14 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
         stage: TranslationJobStatus.READY_FOR_REVIEW,
         progress: 100,
         attemptNumber: 1,
-        sequence: 4,
+        sequence: 5,
         resultManifest: {
           version: 99, // Unknown manifest version
           mediaFormat: 'NOVEL',
           htmlKey: `ai/jobs/${novelJobId}/attempt-1/translated.html`,
           segmentCount: 1,
           charCount: 20,
+          htmlFileSizeBytes: 10240,
           qa: {
             passed: true,
             score: 1.0,
@@ -398,19 +421,20 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
       expect(res.body.error?.code).toBe('INVALID_TRANSLATION_MANIFEST');
     });
 
-    it('should accept READY_FOR_REVIEW novel event with canonical enum values and persist blockType', async () => {
+    it('should accept READY_FOR_REVIEW novel event with canonical enum values, exact Unicode charCount, and persist blockType', async () => {
       const payload = {
         eventId: uuidv4(),
         stage: TranslationJobStatus.READY_FOR_REVIEW,
         progress: 100,
         attemptNumber: 1,
-        sequence: 5,
+        sequence: 6,
         resultManifest: {
           version: 1,
           mediaFormat: 'NOVEL',
           htmlKey: `ai/jobs/${novelJobId}/attempt-1/translated.html`,
           segmentCount: 4,
-          charCount: 80,
+          charCount: 62, // 14 + 14 (with emoji 😀) + 13 + 21 = 62 Unicode code points
+          htmlFileSizeBytes: 20480,
           qa: {
             passed: true,
             score: 1.0,
@@ -430,7 +454,7 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
             sortOrder: 2,
             anchorBlockId: 'b-dialogue',
             rawText: 'Hello world',
-            translatedText: 'Chào thế giới',
+            translatedText: 'Chào thế giới 😀',
             blockType: NovelBlockType.DIALOGUE,
           },
           {
@@ -449,6 +473,12 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
           },
         ],
       };
+
+      const computedCharCount = payload.segments.reduce(
+        (sum, s) => sum + [...(s.translatedText ?? '')].length,
+        0,
+      );
+      payload.resultManifest.charCount = computedCharCount;
 
       const res = await request(app.getHttpServer())
         .post(`/internal/v1/ai/jobs/${novelJobId}/events`)

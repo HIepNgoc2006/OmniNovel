@@ -5,6 +5,8 @@ export enum NovelBlockType {
   BLOCKQUOTE = 'BLOCKQUOTE',
 }
 
+export const JS_MAX_SAFE_INTEGER = 9007199254740991; // 2^53 - 1
+
 // ----------------------------------------------------------------------
 // Manga Result Manifest (Version 1)
 // ----------------------------------------------------------------------
@@ -51,6 +53,7 @@ export interface NovelResultQaV1 {
 export interface NovelResultAssetV1 {
   storageKey: string;
   contentType?: string;
+  fileSizeBytes: number;
 }
 
 export interface NovelResultMetricsV1 {
@@ -66,6 +69,7 @@ export interface NovelResultManifestV1 {
   htmlKey: string;
   segmentCount: number;
   charCount: number;
+  htmlFileSizeBytes: number;
   title?: string;
   language?: string;
   assets?: NovelResultAssetV1[];
@@ -108,8 +112,14 @@ export interface TranslationGlossaryTermSnapshot {
   category: string;
 }
 
+export interface TranslationExternalConsentSnapshotV1 {
+  consented: boolean;
+  consentedAt: string | null;
+  provider: string;
+}
+
 export interface TranslationInputManifestV1 {
-  version?: 1;
+  version: 1;
   sourceLang: string;
   targetLang: string;
   provider: string;
@@ -117,17 +127,49 @@ export interface TranslationInputManifestV1 {
   promptVersion: string;
   glossarySnapshot: TranslationGlossaryTermSnapshot[];
   glossaryHash: string;
-  externalConsent: boolean;
+  externalConsent: TranslationExternalConsentSnapshotV1;
 }
 
 // ----------------------------------------------------------------------
-// Validation Result Interface
+// Validation Result Interface & Internal Helpers
 // ----------------------------------------------------------------------
 
 export interface ValidationResult<T> {
   valid: boolean;
   errors: string[];
   value?: T;
+}
+
+function assertNoUnknownKeys(
+  obj: Record<string, any>,
+  allowedKeys: string[],
+  context: string,
+  errors: string[],
+): void {
+  const allowedSet = new Set(allowedKeys);
+  for (const key of Object.keys(obj)) {
+    if (!allowedSet.has(key)) {
+      errors.push(`UNKNOWN_FIELD: Unexpected field '${key}' in ${context}`);
+    }
+  }
+}
+
+function isSafePositiveInteger(val: unknown): val is number {
+  return (
+    typeof val === 'number' &&
+    Number.isSafeInteger(val) &&
+    val > 0 &&
+    val <= JS_MAX_SAFE_INTEGER
+  );
+}
+
+function isSafeNonNegativeInteger(val: unknown): val is number {
+  return (
+    typeof val === 'number' &&
+    Number.isSafeInteger(val) &&
+    val >= 0 &&
+    val <= JS_MAX_SAFE_INTEGER
+  );
 }
 
 // ----------------------------------------------------------------------
@@ -145,16 +187,26 @@ export function validateMangaResultManifestV1(
 
   const obj = data as Record<string, any>;
 
-  // Check version (Fail-closed on unknown versions)
-  if (obj.version !== undefined && obj.version !== 1) {
+  // Allowed keys checking at root
+  assertNoUnknownKeys(
+    obj,
+    ['version', 'mediaFormat', 'pages', 'cleanBases'],
+    'MangaResultManifestV1',
+    errors,
+  );
+
+  // Strict version check (no default, must be 1)
+  if (obj.version !== 1) {
     return {
       valid: false,
-      errors: [`UNKNOWN_MANIFEST_VERSION: Expected version 1, got ${obj.version}`],
+      errors: [
+        `MISSING_OR_INVALID_VERSION: Expected version 1, got ${obj.version}`,
+      ],
     };
   }
 
-  // Check mediaFormat if present
-  if (obj.mediaFormat !== undefined && obj.mediaFormat !== 'COMIC') {
+  // Strict mediaFormat check (no default, must be COMIC)
+  if (obj.mediaFormat !== 'COMIC') {
     errors.push(`mediaFormat must be 'COMIC', got '${obj.mediaFormat}'`);
   }
 
@@ -166,16 +218,37 @@ export function validateMangaResultManifestV1(
   }
 
   const validatedPages: MangaResultManifestPageV1[] = [];
+  const seenPages = new Set<number>();
 
   if (Array.isArray(obj.pages)) {
     obj.pages.forEach((p: any, idx: number) => {
-      if (!p || typeof p !== 'object') {
+      if (!p || typeof p !== 'object' || Array.isArray(p)) {
         errors.push(`pages[${idx}] must be an object`);
         return;
       }
 
-      if (typeof p.page !== 'number' || !Number.isInteger(p.page) || p.page < 1) {
+      assertNoUnknownKeys(
+        p,
+        [
+          'page',
+          'storageKey',
+          'previewKey',
+          'width',
+          'height',
+          'fileSizeBytes',
+          'fileSize',
+        ],
+        `pages[${idx}]`,
+        errors,
+      );
+
+      if (!isSafePositiveInteger(p.page)) {
         errors.push(`pages[${idx}].page must be an integer >= 1`);
+      } else {
+        if (seenPages.has(p.page)) {
+          errors.push(`DUPLICATE_PAGE_NUMBER: Duplicate page number ${p.page}`);
+        }
+        seenPages.add(p.page);
       }
 
       if (typeof p.storageKey !== 'string' || p.storageKey.trim() === '') {
@@ -186,22 +259,30 @@ export function validateMangaResultManifestV1(
         errors.push(`pages[${idx}].previewKey must be a non-empty string`);
       }
 
-      if (typeof p.width !== 'number' || !Number.isInteger(p.width) || p.width < 1) {
+      if (!isSafePositiveInteger(p.width)) {
         errors.push(`pages[${idx}].width must be a positive integer`);
       }
 
-      if (typeof p.height !== 'number' || !Number.isInteger(p.height) || p.height < 1) {
+      if (!isSafePositiveInteger(p.height)) {
         errors.push(`pages[${idx}].height must be a positive integer`);
       }
 
-      // Backward compatibility: map fileSize -> fileSizeBytes
+      // Legacy fileSize alias & conflict detection
       let fileSizeBytes = p.fileSizeBytes;
-      if (fileSizeBytes === undefined && typeof p.fileSize === 'number') {
+      if (p.fileSize !== undefined && p.fileSizeBytes !== undefined) {
+        if (p.fileSize !== p.fileSizeBytes) {
+          errors.push(
+            `CONFLICTING_LEGACY_FILE_SIZE: Conflicting fileSize (${p.fileSize}) and fileSizeBytes (${p.fileSizeBytes}) in pages[${idx}]`,
+          );
+        }
+      } else if (p.fileSizeBytes === undefined && p.fileSize !== undefined) {
         fileSizeBytes = p.fileSize;
       }
 
-      if (typeof fileSizeBytes !== 'number' || fileSizeBytes < 0) {
-        errors.push(`pages[${idx}].fileSizeBytes must be a non-negative number`);
+      if (!isSafePositiveInteger(fileSizeBytes)) {
+        errors.push(
+          `pages[${idx}].fileSizeBytes must be a positive safe integer`,
+        );
       }
 
       if (errors.length === 0) {
@@ -225,15 +306,25 @@ export function validateMangaResultManifestV1(
     } else {
       validatedCleanBases = [];
       obj.cleanBases.forEach((cb: any, idx: number) => {
-        if (!cb || typeof cb !== 'object') {
+        if (!cb || typeof cb !== 'object' || Array.isArray(cb)) {
           errors.push(`cleanBases[${idx}] must be an object`);
           return;
         }
-        if (typeof cb.page !== 'number' || !Number.isInteger(cb.page) || cb.page < 1) {
+
+        assertNoUnknownKeys(
+          cb,
+          ['page', 'cleanBaseKey'],
+          `cleanBases[${idx}]`,
+          errors,
+        );
+
+        if (!isSafePositiveInteger(cb.page)) {
           errors.push(`cleanBases[${idx}].page must be an integer >= 1`);
         }
         if (typeof cb.cleanBaseKey !== 'string' || cb.cleanBaseKey.trim() === '') {
-          errors.push(`cleanBases[${idx}].cleanBaseKey must be a non-empty string`);
+          errors.push(
+            `cleanBases[${idx}].cleanBaseKey must be a non-empty string`,
+          );
         }
         if (errors.length === 0) {
           validatedCleanBases!.push({
@@ -272,16 +363,37 @@ export function validateNovelResultManifestV1(
 
   const obj = data as Record<string, any>;
 
-  // Check version (Fail-closed on unknown versions)
-  if (obj.version !== undefined && obj.version !== 1) {
+  assertNoUnknownKeys(
+    obj,
+    [
+      'version',
+      'mediaFormat',
+      'htmlKey',
+      'segmentCount',
+      'charCount',
+      'htmlFileSizeBytes',
+      'title',
+      'language',
+      'assets',
+      'qa',
+      'metrics',
+    ],
+    'NovelResultManifestV1',
+    errors,
+  );
+
+  // Strict version check (no default, must be 1)
+  if (obj.version !== 1) {
     return {
       valid: false,
-      errors: [`UNKNOWN_MANIFEST_VERSION: Expected version 1, got ${obj.version}`],
+      errors: [
+        `MISSING_OR_INVALID_VERSION: Expected version 1, got ${obj.version}`,
+      ],
     };
   }
 
-  // Check mediaFormat
-  if (obj.mediaFormat !== undefined && obj.mediaFormat !== 'NOVEL') {
+  // Strict mediaFormat check (no default, must be NOVEL)
+  if (obj.mediaFormat !== 'NOVEL') {
     errors.push(`mediaFormat must be 'NOVEL', got '${obj.mediaFormat}'`);
   }
 
@@ -291,21 +403,26 @@ export function validateNovelResultManifestV1(
   }
 
   // Check segmentCount
-  if (
-    typeof obj.segmentCount !== 'number' ||
-    !Number.isInteger(obj.segmentCount) ||
-    obj.segmentCount < 0
-  ) {
+  if (!isSafeNonNegativeInteger(obj.segmentCount)) {
     errors.push('segmentCount must be a non-negative integer');
   }
 
   // Check charCount
-  if (
-    typeof obj.charCount !== 'number' ||
-    !Number.isInteger(obj.charCount) ||
-    obj.charCount < 0
-  ) {
+  if (!isSafeNonNegativeInteger(obj.charCount)) {
     errors.push('charCount must be a non-negative integer');
+  }
+
+  // Check htmlFileSizeBytes (required)
+  if (!isSafePositiveInteger(obj.htmlFileSizeBytes)) {
+    errors.push('htmlFileSizeBytes must be a positive safe integer');
+  }
+
+  // Check optional title and language
+  if (obj.title !== undefined && typeof obj.title !== 'string') {
+    errors.push('title must be a string if provided');
+  }
+  if (obj.language !== undefined && typeof obj.language !== 'string') {
+    errors.push('language must be a string if provided');
   }
 
   // Check QA
@@ -313,44 +430,196 @@ export function validateNovelResultManifestV1(
   if (!obj.qa || typeof obj.qa !== 'object' || Array.isArray(obj.qa)) {
     errors.push('qa must be an object');
   } else {
+    assertNoUnknownKeys(
+      obj.qa,
+      ['passed', 'score', 'fingerprintMatch', 'issuesCount', 'issues'],
+      'NovelResultQaV1',
+      errors,
+    );
+
     if (typeof obj.qa.passed !== 'boolean') {
       errors.push('qa.passed must be a boolean');
     }
-    if (obj.qa.score !== undefined && typeof obj.qa.score !== 'number') {
-      errors.push('qa.score must be a number');
+    if (
+      typeof obj.qa.score !== 'number' ||
+      Number.isNaN(obj.qa.score) ||
+      obj.qa.score < 0.0 ||
+      obj.qa.score > 1.0
+    ) {
+      errors.push('qa.score must be a number between 0.0 and 1.0');
     }
     if (typeof obj.qa.fingerprintMatch !== 'boolean') {
       errors.push('qa.fingerprintMatch must be a boolean');
     }
-    if (obj.qa.issuesCount !== undefined && typeof obj.qa.issuesCount !== 'number') {
-      errors.push('qa.issuesCount must be a number');
+    if (!isSafeNonNegativeInteger(obj.qa.issuesCount)) {
+      errors.push('qa.issuesCount must be a non-negative integer');
     }
-    if (obj.qa.issues !== undefined && !Array.isArray(obj.qa.issues)) {
-      errors.push('qa.issues must be an array if provided');
+
+    let validatedIssues: NovelResultQaIssueV1[] | undefined;
+    if (obj.qa.issues !== undefined) {
+      if (!Array.isArray(obj.qa.issues)) {
+        errors.push('qa.issues must be an array if provided');
+      } else {
+        validatedIssues = [];
+        obj.qa.issues.forEach((iss: any, idx: number) => {
+          if (!iss || typeof iss !== 'object' || Array.isArray(iss)) {
+            errors.push(`qa.issues[${idx}] must be an object`);
+            return;
+          }
+          assertNoUnknownKeys(
+            iss,
+            ['severity', 'ruleId', 'message'],
+            `qa.issues[${idx}]`,
+            errors,
+          );
+          if (typeof iss.severity !== 'string') {
+            errors.push(`qa.issues[${idx}].severity must be a string`);
+          }
+          if (typeof iss.ruleId !== 'string') {
+            errors.push(`qa.issues[${idx}].ruleId must be a string`);
+          }
+          if (typeof iss.message !== 'string') {
+            errors.push(`qa.issues[${idx}].message must be a string`);
+          }
+          if (errors.length === 0) {
+            validatedIssues!.push({
+              severity: iss.severity,
+              ruleId: iss.ruleId,
+              message: iss.message,
+            });
+          }
+        });
+      }
     }
 
     if (errors.length === 0) {
       validatedQa = {
         passed: obj.qa.passed,
-        score:
-          typeof obj.qa.score === 'number'
-            ? obj.qa.score
-            : obj.qa.passed
-            ? 1.0
-            : 0.0,
+        score: obj.qa.score,
         fingerprintMatch: obj.qa.fingerprintMatch,
-        issuesCount:
-          typeof obj.qa.issuesCount === 'number'
-            ? obj.qa.issuesCount
-            : obj.qa.issues?.length ?? 0,
-        issues: obj.qa.issues,
+        issuesCount: obj.qa.issuesCount,
+        ...(validatedIssues ? { issues: validatedIssues } : {}),
       };
     }
   }
 
   // Check assets if present
-  if (obj.assets !== undefined && !Array.isArray(obj.assets)) {
-    errors.push('assets must be an array if provided');
+  let validatedAssets: NovelResultAssetV1[] | undefined;
+  if (obj.assets !== undefined) {
+    if (!Array.isArray(obj.assets)) {
+      errors.push('assets must be an array if provided');
+    } else {
+      validatedAssets = [];
+      obj.assets.forEach((ast: any, idx: number) => {
+        if (!ast || typeof ast !== 'object' || Array.isArray(ast)) {
+          errors.push(`assets[${idx}] must be an object`);
+          return;
+        }
+
+        assertNoUnknownKeys(
+          ast,
+          ['storageKey', 'contentType', 'fileSizeBytes', 'fileSize'],
+          `assets[${idx}]`,
+          errors,
+        );
+
+        if (typeof ast.storageKey !== 'string' || ast.storageKey.trim() === '') {
+          errors.push(`assets[${idx}].storageKey must be a non-empty string`);
+        }
+
+        if (
+          ast.contentType !== undefined &&
+          typeof ast.contentType !== 'string'
+        ) {
+          errors.push(`assets[${idx}].contentType must be a string`);
+        }
+
+        let fileSizeBytes = ast.fileSizeBytes;
+        if (ast.fileSize !== undefined && ast.fileSizeBytes !== undefined) {
+          if (ast.fileSize !== ast.fileSizeBytes) {
+            errors.push(
+              `CONFLICTING_LEGACY_FILE_SIZE: Conflicting fileSize and fileSizeBytes in assets[${idx}]`,
+            );
+          }
+        } else if (ast.fileSizeBytes === undefined && ast.fileSize !== undefined) {
+          fileSizeBytes = ast.fileSize;
+        }
+
+        if (!isSafePositiveInteger(fileSizeBytes)) {
+          errors.push(
+            `assets[${idx}].fileSizeBytes must be a positive safe integer`,
+          );
+        }
+
+        if (errors.length === 0) {
+          validatedAssets!.push({
+            storageKey: ast.storageKey,
+            ...(ast.contentType ? { contentType: ast.contentType } : {}),
+            fileSizeBytes,
+          });
+        }
+      });
+    }
+  }
+
+  // Check metrics if present
+  let validatedMetrics: NovelResultMetricsV1 | undefined;
+  if (obj.metrics !== undefined) {
+    if (
+      !obj.metrics ||
+      typeof obj.metrics !== 'object' ||
+      Array.isArray(obj.metrics)
+    ) {
+      errors.push('metrics must be an object if provided');
+    } else {
+      assertNoUnknownKeys(
+        obj.metrics,
+        ['totalBlocks', 'totalBatches', 'glossaryHits', 'promptVersion'],
+        'NovelResultMetricsV1',
+        errors,
+      );
+      if (
+        obj.metrics.totalBlocks !== undefined &&
+        !isSafeNonNegativeInteger(obj.metrics.totalBlocks)
+      ) {
+        errors.push('metrics.totalBlocks must be a non-negative integer');
+      }
+      if (
+        obj.metrics.totalBatches !== undefined &&
+        !isSafeNonNegativeInteger(obj.metrics.totalBatches)
+      ) {
+        errors.push('metrics.totalBatches must be a non-negative integer');
+      }
+      if (
+        obj.metrics.glossaryHits !== undefined &&
+        !isSafeNonNegativeInteger(obj.metrics.glossaryHits)
+      ) {
+        errors.push('metrics.glossaryHits must be a non-negative integer');
+      }
+      if (
+        obj.metrics.promptVersion !== undefined &&
+        typeof obj.metrics.promptVersion !== 'string'
+      ) {
+        errors.push('metrics.promptVersion must be a string');
+      }
+
+      if (errors.length === 0) {
+        validatedMetrics = {
+          ...(obj.metrics.totalBlocks !== undefined
+            ? { totalBlocks: obj.metrics.totalBlocks }
+            : {}),
+          ...(obj.metrics.totalBatches !== undefined
+            ? { totalBatches: obj.metrics.totalBatches }
+            : {}),
+          ...(obj.metrics.glossaryHits !== undefined
+            ? { glossaryHits: obj.metrics.glossaryHits }
+            : {}),
+          ...(obj.metrics.promptVersion !== undefined
+            ? { promptVersion: obj.metrics.promptVersion }
+            : {}),
+        };
+      }
+    }
   }
 
   if (errors.length > 0) {
@@ -366,11 +635,12 @@ export function validateNovelResultManifestV1(
       htmlKey: obj.htmlKey,
       segmentCount: obj.segmentCount,
       charCount: obj.charCount,
-      title: obj.title,
-      language: obj.language,
-      assets: obj.assets,
+      htmlFileSizeBytes: obj.htmlFileSizeBytes,
+      ...(obj.title ? { title: obj.title } : {}),
+      ...(obj.language ? { language: obj.language } : {}),
+      ...(validatedAssets ? { assets: validatedAssets } : {}),
       qa: validatedQa!,
-      metrics: obj.metrics,
+      ...(validatedMetrics ? { metrics: validatedMetrics } : {}),
     },
   };
 }
@@ -386,7 +656,344 @@ export function validateTranslationResultManifest(
   } else {
     return {
       valid: false,
-      errors: [`Unsupported media format: ${mediaFormat}. Must be 'COMIC' or 'NOVEL'`],
+      errors: [
+        `Unsupported media format: ${mediaFormat}. Must be 'COMIC' or 'NOVEL'`,
+      ],
     };
   }
+}
+
+export function validateTranslationInputManifestV1(
+  data: unknown,
+): ValidationResult<TranslationInputManifestV1> {
+  const errors: string[] = [];
+
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return {
+      valid: false,
+      errors: ['Input manifest data must be a non-null object'],
+    };
+  }
+
+  const obj = data as Record<string, any>;
+
+  assertNoUnknownKeys(
+    obj,
+    [
+      'version',
+      'sourceLang',
+      'targetLang',
+      'provider',
+      'model',
+      'promptVersion',
+      'glossarySnapshot',
+      'glossaryHash',
+      'externalConsent',
+    ],
+    'TranslationInputManifestV1',
+    errors,
+  );
+
+  if (obj.version !== 1) {
+    return {
+      valid: false,
+      errors: [
+        `MISSING_OR_INVALID_VERSION: Expected version 1, got ${obj.version}`,
+      ],
+    };
+  }
+
+  if (typeof obj.sourceLang !== 'string' || obj.sourceLang.trim() === '') {
+    errors.push('sourceLang must be a non-empty string');
+  }
+  if (typeof obj.targetLang !== 'string' || obj.targetLang.trim() === '') {
+    errors.push('targetLang must be a non-empty string');
+  }
+  if (typeof obj.provider !== 'string' || obj.provider.trim() === '') {
+    errors.push('provider must be a non-empty string');
+  }
+  if (typeof obj.model !== 'string' || obj.model.trim() === '') {
+    errors.push('model must be a non-empty string');
+  }
+  if (typeof obj.promptVersion !== 'string' || obj.promptVersion.trim() === '') {
+    errors.push('promptVersion must be a non-empty string');
+  }
+
+  // Check glossaryHash: strict sha256 format
+  if (
+    typeof obj.glossaryHash !== 'string' ||
+    !/^sha256:[0-9a-f]{64}$/.test(obj.glossaryHash)
+  ) {
+    errors.push(
+      `glossaryHash must match format /^sha256:[0-9a-f]{64}$/, got '${obj.glossaryHash}'`,
+    );
+  }
+
+  // Check glossarySnapshot
+  const validatedGlossary: TranslationGlossaryTermSnapshot[] = [];
+  if (!Array.isArray(obj.glossarySnapshot)) {
+    errors.push('glossarySnapshot must be an array');
+  } else {
+    obj.glossarySnapshot.forEach((term: any, idx: number) => {
+      if (!term || typeof term !== 'object' || Array.isArray(term)) {
+        errors.push(`glossarySnapshot[${idx}] must be an object`);
+        return;
+      }
+      assertNoUnknownKeys(
+        term,
+        ['sourceTerm', 'targetTerm', 'category'],
+        `glossarySnapshot[${idx}]`,
+        errors,
+      );
+      if (typeof term.sourceTerm !== 'string') {
+        errors.push(`glossarySnapshot[${idx}].sourceTerm must be a string`);
+      }
+      if (typeof term.targetTerm !== 'string') {
+        errors.push(`glossarySnapshot[${idx}].targetTerm must be a string`);
+      }
+      if (typeof term.category !== 'string') {
+        errors.push(`glossarySnapshot[${idx}].category must be a string`);
+      }
+      if (errors.length === 0) {
+        validatedGlossary.push({
+          sourceTerm: term.sourceTerm,
+          targetTerm: term.targetTerm,
+          category: term.category,
+        });
+      }
+    });
+  }
+
+  // Check externalConsent
+  let validatedConsent: TranslationExternalConsentSnapshotV1 | undefined;
+  if (
+    !obj.externalConsent ||
+    typeof obj.externalConsent !== 'object' ||
+    Array.isArray(obj.externalConsent)
+  ) {
+    errors.push('externalConsent must be an object');
+  } else {
+    assertNoUnknownKeys(
+      obj.externalConsent,
+      ['consented', 'consentedAt', 'provider'],
+      'TranslationExternalConsentSnapshotV1',
+      errors,
+    );
+
+    if (typeof obj.externalConsent.consented !== 'boolean') {
+      errors.push('externalConsent.consented must be a boolean');
+    }
+
+    if (
+      typeof obj.externalConsent.provider !== 'string' ||
+      obj.externalConsent.provider !== obj.provider
+    ) {
+      errors.push(
+        `externalConsent.provider ('${obj.externalConsent?.provider}') must match root provider ('${obj.provider}')`,
+      );
+    }
+
+    if (obj.externalConsent.consented === true) {
+      if (
+        typeof obj.externalConsent.consentedAt !== 'string' ||
+        Number.isNaN(Date.parse(obj.externalConsent.consentedAt))
+      ) {
+        errors.push(
+          'externalConsent.consentedAt must be a valid ISO date string when consented is true',
+        );
+      }
+    } else if (obj.externalConsent.consented === false) {
+      if (obj.externalConsent.consentedAt !== null) {
+        errors.push(
+          'externalConsent.consentedAt must be null when consented is false',
+        );
+      }
+    }
+
+    if (errors.length === 0) {
+      validatedConsent = {
+        consented: obj.externalConsent.consented,
+        consentedAt: obj.externalConsent.consentedAt,
+        provider: obj.externalConsent.provider,
+      };
+    }
+  }
+
+  if (errors.length > 0) {
+    return { valid: false, errors };
+  }
+
+  return {
+    valid: true,
+    errors: [],
+    value: {
+      version: 1,
+      sourceLang: obj.sourceLang,
+      targetLang: obj.targetLang,
+      provider: obj.provider,
+      model: obj.model,
+      promptVersion: obj.promptVersion,
+      glossarySnapshot: validatedGlossary,
+      glossaryHash: obj.glossaryHash,
+      externalConsent: validatedConsent!,
+    },
+  };
+}
+
+export function validateMangaReviewSourceManifestV1(
+  data: unknown,
+): ValidationResult<MangaReviewSourceManifestV1> {
+  const errors: string[] = [];
+
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { valid: false, errors: ['Manifest data must be a non-null object'] };
+  }
+
+  const obj = data as Record<string, any>;
+
+  assertNoUnknownKeys(
+    obj,
+    ['version', 'pages'],
+    'MangaReviewSourceManifestV1',
+    errors,
+  );
+
+  if (obj.version !== 1) {
+    return {
+      valid: false,
+      errors: [
+        `MISSING_OR_INVALID_VERSION: Expected version 1, got ${obj.version}`,
+      ],
+    };
+  }
+
+  if (!Array.isArray(obj.pages)) {
+    errors.push('pages must be an array');
+  }
+
+  const validatedPages: MangaReviewSourcePageV1[] = [];
+  if (Array.isArray(obj.pages)) {
+    obj.pages.forEach((p: any, idx: number) => {
+      if (!p || typeof p !== 'object' || Array.isArray(p)) {
+        errors.push(`pages[${idx}] must be an object`);
+        return;
+      }
+      assertNoUnknownKeys(
+        p,
+        ['page', 'storageKey', 'width', 'height'],
+        `pages[${idx}]`,
+        errors,
+      );
+
+      if (!isSafePositiveInteger(p.page)) {
+        errors.push(`pages[${idx}].page must be an integer >= 1`);
+      }
+      if (typeof p.storageKey !== 'string' || p.storageKey.trim() === '') {
+        errors.push(`pages[${idx}].storageKey must be a non-empty string`);
+      }
+      if (p.width !== undefined && !isSafePositiveInteger(p.width)) {
+        errors.push(`pages[${idx}].width must be a positive integer`);
+      }
+      if (p.height !== undefined && !isSafePositiveInteger(p.height)) {
+        errors.push(`pages[${idx}].height must be a positive integer`);
+      }
+
+      if (errors.length === 0) {
+        validatedPages.push({
+          page: p.page,
+          storageKey: p.storageKey,
+          ...(p.width ? { width: p.width } : {}),
+          ...(p.height ? { height: p.height } : {}),
+        });
+      }
+    });
+  }
+
+  if (errors.length > 0) {
+    return { valid: false, errors };
+  }
+
+  return {
+    valid: true,
+    errors: [],
+    value: {
+      version: 1,
+      pages: validatedPages,
+    },
+  };
+}
+
+export function validateMangaCleanBaseManifestV1(
+  data: unknown,
+): ValidationResult<MangaCleanBaseManifestV1> {
+  const errors: string[] = [];
+
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { valid: false, errors: ['Manifest data must be a non-null object'] };
+  }
+
+  const obj = data as Record<string, any>;
+
+  assertNoUnknownKeys(
+    obj,
+    ['version', 'pages'],
+    'MangaCleanBaseManifestV1',
+    errors,
+  );
+
+  if (obj.version !== 1) {
+    return {
+      valid: false,
+      errors: [
+        `MISSING_OR_INVALID_VERSION: Expected version 1, got ${obj.version}`,
+      ],
+    };
+  }
+
+  if (!Array.isArray(obj.pages)) {
+    errors.push('pages must be an array');
+  }
+
+  const validatedPages: MangaCleanBasePageV1[] = [];
+  if (Array.isArray(obj.pages)) {
+    obj.pages.forEach((p: any, idx: number) => {
+      if (!p || typeof p !== 'object' || Array.isArray(p)) {
+        errors.push(`pages[${idx}] must be an object`);
+        return;
+      }
+      assertNoUnknownKeys(
+        p,
+        ['page', 'cleanBaseKey'],
+        `pages[${idx}]`,
+        errors,
+      );
+
+      if (!isSafePositiveInteger(p.page)) {
+        errors.push(`pages[${idx}].page must be an integer >= 1`);
+      }
+      if (typeof p.cleanBaseKey !== 'string' || p.cleanBaseKey.trim() === '') {
+        errors.push(`cleanBaseKey must be a non-empty string`);
+      }
+
+      if (errors.length === 0) {
+        validatedPages.push({
+          page: p.page,
+          cleanBaseKey: p.cleanBaseKey,
+        });
+      }
+    });
+  }
+
+  if (errors.length > 0) {
+    return { valid: false, errors };
+  }
+
+  return {
+    valid: true,
+    errors: [],
+    value: {
+      version: 1,
+      pages: validatedPages,
+    },
+  };
 }

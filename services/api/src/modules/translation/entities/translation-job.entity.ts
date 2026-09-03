@@ -101,10 +101,10 @@ export class TranslationJob {
   promptVersion: string;
 
   @Column({ name: 'input_manifest', type: 'jsonb', nullable: true })
-  inputManifest: TranslationInputManifestV1 | Record<string, any> | null;
+  inputManifest: TranslationInputManifestV1 | null;
 
   @Column({ name: 'result_manifest', type: 'jsonb', nullable: true })
-  resultManifest: TranslationResultManifestV1 | Record<string, any> | null;
+  resultManifest: TranslationResultManifestV1 | null;
 
   @Column({ name: 'error_trace', type: 'text', nullable: true })
   errorTrace: string | null;

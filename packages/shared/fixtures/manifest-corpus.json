@@ -1,0 +1,831 @@
+[
+  {
+    "id": "valid-manga-result-v1",
+    "schema": "MANGA_RESULT_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ]
+    },
+    "canonical": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ]
+    }
+  },
+  {
+    "id": "valid-manga-result-with-clean-bases",
+    "schema": "MANGA_RESULT_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ],
+      "cleanBases": [
+        {
+          "page": 1,
+          "cleanBaseKey": "ai/jobs/job-1/clean-001.webp"
+        }
+      ]
+    },
+    "canonical": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ],
+      "cleanBases": [
+        {
+          "page": 1,
+          "cleanBaseKey": "ai/jobs/job-1/clean-001.webp"
+        }
+      ]
+    }
+  },
+  {
+    "id": "valid-manga-legacy-file-size",
+    "schema": "MANGA_RESULT_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSize": 204800
+        }
+      ]
+    },
+    "canonical": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 204800
+        }
+      ]
+    }
+  },
+  {
+    "id": "valid-manga-same-file-size-and-bytes",
+    "schema": "MANGA_RESULT_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSize": 100000,
+          "fileSizeBytes": 100000
+        }
+      ]
+    },
+    "canonical": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 100000
+        }
+      ]
+    }
+  },
+  {
+    "id": "valid-novel-result-v1",
+    "schema": "NOVEL_RESULT_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "ai/jobs/job-2/novel_translated.html",
+      "segmentCount": 10,
+      "charCount": 2500,
+      "htmlFileSizeBytes": 15400,
+      "qa": {
+        "passed": true,
+        "score": 0.98,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      }
+    },
+    "canonical": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "ai/jobs/job-2/novel_translated.html",
+      "segmentCount": 10,
+      "charCount": 2500,
+      "htmlFileSizeBytes": 15400,
+      "qa": {
+        "passed": true,
+        "score": 0.98,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      }
+    }
+  },
+  {
+    "id": "valid-novel-result-with-assets-and-metrics",
+    "schema": "NOVEL_RESULT_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "ai/jobs/job-2/novel_translated.html",
+      "segmentCount": 15,
+      "charCount": 3200,
+      "htmlFileSizeBytes": 20480,
+      "title": "Chương 1",
+      "language": "vi",
+      "assets": [
+        {
+          "storageKey": "ai/jobs/job-2/illus-001.webp",
+          "contentType": "image/webp",
+          "fileSizeBytes": 51200
+        }
+      ],
+      "qa": {
+        "passed": true,
+        "score": 1.0,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      },
+      "metrics": {
+        "totalBlocks": 15,
+        "totalBatches": 2,
+        "glossaryHits": 5,
+        "promptVersion": "novel-ja-vi-v2"
+      }
+    },
+    "canonical": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "ai/jobs/job-2/novel_translated.html",
+      "segmentCount": 15,
+      "charCount": 3200,
+      "htmlFileSizeBytes": 20480,
+      "title": "Chương 1",
+      "language": "vi",
+      "assets": [
+        {
+          "storageKey": "ai/jobs/job-2/illus-001.webp",
+          "contentType": "image/webp",
+          "fileSizeBytes": 51200
+        }
+      ],
+      "qa": {
+        "passed": true,
+        "score": 1.0,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      },
+      "metrics": {
+        "totalBlocks": 15,
+        "totalBatches": 2,
+        "glossaryHits": 5,
+        "promptVersion": "novel-ja-vi-v2"
+      }
+    }
+  },
+  {
+    "id": "valid-novel-result-legacy-asset-file-size",
+    "schema": "NOVEL_RESULT_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "ai/jobs/job-2/novel_translated.html",
+      "segmentCount": 5,
+      "charCount": 1200,
+      "htmlFileSizeBytes": 12000,
+      "assets": [
+        {
+          "storageKey": "ai/jobs/job-2/illus-001.webp",
+          "fileSize": 45000
+        }
+      ],
+      "qa": {
+        "passed": true,
+        "score": 0.95,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      }
+    },
+    "canonical": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "ai/jobs/job-2/novel_translated.html",
+      "segmentCount": 5,
+      "charCount": 1200,
+      "htmlFileSizeBytes": 12000,
+      "assets": [
+        {
+          "storageKey": "ai/jobs/job-2/illus-001.webp",
+          "fileSizeBytes": 45000
+        }
+      ],
+      "qa": {
+        "passed": true,
+        "score": 0.95,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      }
+    }
+  },
+  {
+    "id": "valid-input-manifest-v1",
+    "schema": "INPUT_MANIFEST_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "sourceLang": "ja",
+      "targetLang": "vi",
+      "provider": "OPENAI",
+      "model": "gpt-4o-mini",
+      "promptVersion": "novel-ja-vi-v2",
+      "glossarySnapshot": [
+        {
+          "sourceTerm": "エレン",
+          "targetTerm": "Eren",
+          "category": "CHARACTER_NAME"
+        }
+      ],
+      "glossaryHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "externalConsent": {
+        "consented": true,
+        "consentedAt": "2026-09-03T12:00:00.000Z",
+        "provider": "OPENAI"
+      }
+    },
+    "canonical": {
+      "version": 1,
+      "sourceLang": "ja",
+      "targetLang": "vi",
+      "provider": "OPENAI",
+      "model": "gpt-4o-mini",
+      "promptVersion": "novel-ja-vi-v2",
+      "glossarySnapshot": [
+        {
+          "sourceTerm": "エレン",
+          "targetTerm": "Eren",
+          "category": "CHARACTER_NAME"
+        }
+      ],
+      "glossaryHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "externalConsent": {
+        "consented": true,
+        "consentedAt": "2026-09-03T12:00:00.000Z",
+        "provider": "OPENAI"
+      }
+    }
+  },
+  {
+    "id": "valid-input-manifest-no-consent",
+    "schema": "INPUT_MANIFEST_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "sourceLang": "ja",
+      "targetLang": "vi",
+      "provider": "LOCAL",
+      "model": "mock-model-v1",
+      "promptVersion": "manga-ja-vi-v1",
+      "glossarySnapshot": [],
+      "glossaryHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "externalConsent": {
+        "consented": false,
+        "consentedAt": null,
+        "provider": "LOCAL"
+      }
+    },
+    "canonical": {
+      "version": 1,
+      "sourceLang": "ja",
+      "targetLang": "vi",
+      "provider": "LOCAL",
+      "model": "mock-model-v1",
+      "promptVersion": "manga-ja-vi-v1",
+      "glossarySnapshot": [],
+      "glossaryHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "externalConsent": {
+        "consented": false,
+        "consentedAt": null,
+        "provider": "LOCAL"
+      }
+    }
+  },
+  {
+    "id": "valid-review-source-v1",
+    "schema": "MANGA_REVIEW_SOURCE_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "raw/job-1/page-001.jpg",
+          "width": 1200,
+          "height": 1800
+        }
+      ]
+    },
+    "canonical": {
+      "version": 1,
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "raw/job-1/page-001.jpg",
+          "width": 1200,
+          "height": 1800
+        }
+      ]
+    }
+  },
+  {
+    "id": "valid-clean-base-v1",
+    "schema": "MANGA_CLEAN_BASE_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "pages": [
+        {
+          "page": 1,
+          "cleanBaseKey": "ai/jobs/job-1/clean-001.webp"
+        }
+      ]
+    },
+    "canonical": {
+      "version": 1,
+      "pages": [
+        {
+          "page": 1,
+          "cleanBaseKey": "ai/jobs/job-1/clean-001.webp"
+        }
+      ]
+    }
+  },
+  {
+    "id": "missing-version",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ]
+    }
+  },
+  {
+    "id": "missing-media-format",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ]
+    }
+  },
+  {
+    "id": "unknown-version",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 99,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ]
+    }
+  },
+  {
+    "id": "result-mediaFormat-mismatch",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ]
+    }
+  },
+  {
+    "id": "unknown-extra-field",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ],
+      "extraUnexpectedProperty": "fail_here"
+    }
+  },
+  {
+    "id": "unknown-extra-field-in-nested-page",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400,
+          "extraPageMetadata": 123
+        }
+      ]
+    }
+  },
+  {
+    "id": "numeric-string-instead-of-number",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": "1",
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ]
+    }
+  },
+  {
+    "id": "boolean-instead-of-number",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": true
+        }
+      ]
+    }
+  },
+  {
+    "id": "duplicate-page-number",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        },
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001-dup.webp",
+          "previewKey": "ai/jobs/job-1/preview-001-dup.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ]
+    }
+  },
+  {
+    "id": "conflicting-fileSize-and-fileSizeBytes",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSize": 100000,
+          "fileSizeBytes": 200000
+        }
+      ]
+    }
+  },
+  {
+    "id": "max-safe-integer-plus-one",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 9007199254740992
+        }
+      ]
+    }
+  },
+  {
+    "id": "file-size-bytes-zero",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 0
+        }
+      ]
+    }
+  },
+  {
+    "id": "qa-score-negative",
+    "schema": "NOVEL_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "ai/jobs/job-2/novel_translated.html",
+      "segmentCount": 10,
+      "charCount": 2500,
+      "htmlFileSizeBytes": 15400,
+      "qa": {
+        "passed": true,
+        "score": -0.1,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      }
+    }
+  },
+  {
+    "id": "qa-score-over-one",
+    "schema": "NOVEL_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "ai/jobs/job-2/novel_translated.html",
+      "segmentCount": 10,
+      "charCount": 2500,
+      "htmlFileSizeBytes": 15400,
+      "qa": {
+        "passed": true,
+        "score": 1.1,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      }
+    }
+  },
+  {
+    "id": "qa-score-wrong-type",
+    "schema": "NOVEL_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "ai/jobs/job-2/novel_translated.html",
+      "segmentCount": 10,
+      "charCount": 2500,
+      "htmlFileSizeBytes": 15400,
+      "qa": {
+        "passed": true,
+        "score": "1.0",
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      }
+    }
+  },
+  {
+    "id": "missing-html-file-size",
+    "schema": "NOVEL_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "ai/jobs/job-2/novel_translated.html",
+      "segmentCount": 10,
+      "charCount": 2500,
+      "qa": {
+        "passed": true,
+        "score": 0.98,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      }
+    }
+  },
+  {
+    "id": "missing-html-key",
+    "schema": "NOVEL_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "",
+      "segmentCount": 10,
+      "charCount": 2500,
+      "htmlFileSizeBytes": 15400,
+      "qa": {
+        "passed": true,
+        "score": 0.98,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      }
+    }
+  },
+  {
+    "id": "external-consent-provider-mismatch",
+    "schema": "INPUT_MANIFEST_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "sourceLang": "ja",
+      "targetLang": "vi",
+      "provider": "OPENAI",
+      "model": "gpt-4o-mini",
+      "promptVersion": "novel-ja-vi-v2",
+      "glossarySnapshot": [],
+      "glossaryHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "externalConsent": {
+        "consented": true,
+        "consentedAt": "2026-09-03T12:00:00.000Z",
+        "provider": "GOOGLE"
+      }
+    }
+  },
+  {
+    "id": "consented-true-null-timestamp",
+    "schema": "INPUT_MANIFEST_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "sourceLang": "ja",
+      "targetLang": "vi",
+      "provider": "OPENAI",
+      "model": "gpt-4o-mini",
+      "promptVersion": "novel-ja-vi-v2",
+      "glossarySnapshot": [],
+      "glossaryHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "externalConsent": {
+        "consented": true,
+        "consentedAt": null,
+        "provider": "OPENAI"
+      }
+    }
+  },
+  {
+    "id": "consented-false-non-null-timestamp",
+    "schema": "INPUT_MANIFEST_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "sourceLang": "ja",
+      "targetLang": "vi",
+      "provider": "LOCAL",
+      "model": "mock-model-v1",
+      "promptVersion": "manga-ja-vi-v1",
+      "glossarySnapshot": [],
+      "glossaryHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "externalConsent": {
+        "consented": false,
+        "consentedAt": "2026-09-03T12:00:00.000Z",
+        "provider": "LOCAL"
+      }
+    }
+  },
+  {
+    "id": "invalid-glossary-hash",
+    "schema": "INPUT_MANIFEST_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "sourceLang": "ja",
+      "targetLang": "vi",
+      "provider": "OPENAI",
+      "model": "gpt-4o-mini",
+      "promptVersion": "novel-ja-vi-v2",
+      "glossarySnapshot": [],
+      "glossaryHash": "md5:notasha256hash",
+      "externalConsent": {
+        "consented": true,
+        "consentedAt": "2026-09-03T12:00:00.000Z",
+        "provider": "OPENAI"
+      }
+    }
+  }
+]

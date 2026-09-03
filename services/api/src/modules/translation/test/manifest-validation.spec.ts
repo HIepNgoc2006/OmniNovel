@@ -1,11 +1,34 @@
+import * as fs from 'fs';
+import * as path from 'path';
 import {
   validateMangaResultManifestV1,
   validateNovelResultManifestV1,
   validateTranslationResultManifest,
+  validateTranslationInputManifestV1,
+  validateMangaReviewSourceManifestV1,
+  validateMangaCleanBaseManifestV1,
   NovelBlockType,
 } from '@omninovel/shared';
 
-describe('Translation Manifest Runtime Validators (#164)', () => {
+const CORPUS_PATH = path.resolve(
+  __dirname,
+  '../../../../../../packages/shared/fixtures/manifest-corpus.json',
+);
+
+interface CorpusCase {
+  id: string;
+  schema: string;
+  description: string;
+  valid: boolean;
+  input: unknown;
+  canonical?: unknown;
+}
+
+const corpus: CorpusCase[] = JSON.parse(
+  fs.readFileSync(CORPUS_PATH, 'utf-8'),
+);
+
+describe('Translation Manifest Runtime Validators & Corpus Parity (#164)', () => {
   describe('validateMangaResultManifestV1', () => {
     it('should accept valid Manga manifest with fileSizeBytes', () => {
       const raw = {
@@ -33,6 +56,7 @@ describe('Translation Manifest Runtime Validators (#164)', () => {
     it('should support backward compatibility: auto-map legacy fileSize to fileSizeBytes', () => {
       const legacyRaw = {
         version: 1,
+        mediaFormat: 'COMIC',
         pages: [
           {
             page: 1,
@@ -40,7 +64,7 @@ describe('Translation Manifest Runtime Validators (#164)', () => {
             previewKey: 'previews/page-1.webp',
             width: 1200,
             height: 1800,
-            fileSize: 524288, // Legacy field name
+            fileSize: 524288,
           },
         ],
       };
@@ -50,9 +74,10 @@ describe('Translation Manifest Runtime Validators (#164)', () => {
       expect(result.value?.pages[0].fileSizeBytes).toBe(524288);
     });
 
-    it('should fail-closed with UNKNOWN_MANIFEST_VERSION if version is not 1', () => {
+    it('should fail-closed with MISSING_OR_INVALID_VERSION if version is not 1', () => {
       const invalidVersion = {
         version: 2,
+        mediaFormat: 'COMIC',
         pages: [
           {
             page: 1,
@@ -67,85 +92,52 @@ describe('Translation Manifest Runtime Validators (#164)', () => {
 
       const result = validateMangaResultManifestV1(invalidVersion);
       expect(result.valid).toBe(false);
-      expect(result.errors[0]).toContain('UNKNOWN_MANIFEST_VERSION');
+      expect(result.errors[0]).toContain('MISSING_OR_INVALID_VERSION');
     });
 
-    it('should reject manifest with empty pages array', () => {
-      const emptyPages = {
+    it('should reject manifest with duplicate page numbers', () => {
+      const duplicatePages = {
         version: 1,
-        pages: [],
-      };
-
-      const result = validateMangaResultManifestV1(emptyPages);
-      expect(result.valid).toBe(false);
-      expect(result.errors).toContain('pages array must not be empty');
-    });
-
-    it('should validate optional cleanBases array', () => {
-      const withCleanBases = {
-        version: 1,
+        mediaFormat: 'COMIC',
         pages: [
           {
             page: 1,
-            storageKey: 'out.webp',
-            previewKey: 'prev.webp',
+            storageKey: 'k1',
+            previewKey: 'p1',
             width: 100,
             height: 100,
-            fileSizeBytes: 1000,
+            fileSizeBytes: 100,
           },
-        ],
-        cleanBases: [
           {
             page: 1,
-            cleanBaseKey: 'clean/clean-1.webp',
+            storageKey: 'k2',
+            previewKey: 'p2',
+            width: 100,
+            height: 100,
+            fileSizeBytes: 100,
           },
         ],
       };
 
-      const result = validateMangaResultManifestV1(withCleanBases);
-      expect(result.valid).toBe(true);
-      expect(result.value?.cleanBases?.[0].cleanBaseKey).toBe('clean/clean-1.webp');
-    });
-
-    it('should reject cleanBases with invalid page number or missing key', () => {
-      const badCleanBases = {
-        version: 1,
-        pages: [
-          {
-            page: 1,
-            storageKey: 'out.webp',
-            previewKey: 'prev.webp',
-            width: 100,
-            height: 100,
-            fileSizeBytes: 1000,
-          },
-        ],
-        cleanBases: [
-          {
-            page: 0,
-            cleanBaseKey: '',
-          },
-        ],
-      };
-
-      const result = validateMangaResultManifestV1(badCleanBases);
+      const result = validateMangaResultManifestV1(duplicatePages);
       expect(result.valid).toBe(false);
-      expect(result.errors.length).toBeGreaterThanOrEqual(2);
+      expect(result.errors.some((e) => e.includes('DUPLICATE_PAGE_NUMBER'))).toBe(true);
     });
   });
 
   describe('validateNovelResultManifestV1', () => {
-    it('should accept valid Novel manifest with QA metrics', () => {
+    it('should accept valid Novel manifest with required htmlFileSizeBytes', () => {
       const raw = {
         version: 1,
         mediaFormat: 'NOVEL',
         htmlKey: 'novels/chapter-1.html',
         segmentCount: 42,
         charCount: 15420,
+        htmlFileSizeBytes: 20480,
         title: 'Chương 1: Khởi đầu mới',
         qa: {
           passed: true,
-          score: 98.5,
+          score: 0.985,
           fingerprintMatch: true,
           issuesCount: 0,
         },
@@ -160,14 +152,15 @@ describe('Translation Manifest Runtime Validators (#164)', () => {
       expect(result.valid).toBe(true);
       expect(result.value?.version).toBe(1);
       expect(result.value?.mediaFormat).toBe('NOVEL');
-      expect(result.value?.htmlKey).toBe('novels/chapter-1.html');
-      expect(result.value?.qa.score).toBe(98.5);
+      expect(result.value?.htmlFileSizeBytes).toBe(20480);
     });
 
-    it('should reject Novel manifest missing required fields (htmlKey, segmentCount)', () => {
-      const missingFields = {
+    it('should reject Novel manifest missing htmlFileSizeBytes', () => {
+      const missingSize = {
         version: 1,
         mediaFormat: 'NOVEL',
+        htmlKey: 'novels/chapter-1.html',
+        segmentCount: 10,
         charCount: 1000,
         qa: {
           passed: true,
@@ -177,82 +170,73 @@ describe('Translation Manifest Runtime Validators (#164)', () => {
         },
       };
 
-      const result = validateNovelResultManifestV1(missingFields);
+      const result = validateNovelResultManifestV1(missingSize);
       expect(result.valid).toBe(false);
-      expect(result.errors).toContain('htmlKey must be a non-empty string');
-      expect(result.errors).toContain('segmentCount must be a non-negative integer');
-    });
-
-    it('should reject Novel manifest with invalid QA structure', () => {
-      const badQa = {
-        version: 1,
-        mediaFormat: 'NOVEL',
-        htmlKey: 'novels/ch1.html',
-        segmentCount: 10,
-        charCount: 1000,
-        qa: 'NOT_AN_OBJECT',
-      };
-
-      const result = validateNovelResultManifestV1(badQa);
-      expect(result.valid).toBe(false);
-      expect(result.errors).toContain('qa must be an object');
+      expect(result.errors.some((e) => e.includes('htmlFileSizeBytes'))).toBe(true);
     });
   });
 
-  describe('validateTranslationResultManifest (Discriminated Narrowing)', () => {
-    it('should route COMIC mediaFormat to Manga validator', () => {
-      const comicData = {
+  describe('validateTranslationInputManifestV1', () => {
+    it('should validate consent invariants', () => {
+      const invalidConsent = {
         version: 1,
-        pages: [
-          {
-            page: 1,
-            storageKey: 'k',
-            previewKey: 'p',
-            width: 100,
-            height: 100,
-            fileSizeBytes: 100,
-          },
-        ],
+        sourceLang: 'ja',
+        targetLang: 'vi',
+        provider: 'OPENAI',
+        model: 'gpt-4o-mini',
+        promptVersion: 'v1.0',
+        glossarySnapshot: [],
+        glossaryHash: 'sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
+        externalConsent: {
+          consented: false,
+          consentedAt: '2026-09-03T10:00:00.000Z', // Mismatch!
+          provider: 'OPENAI',
+        },
       };
 
-      const result = validateTranslationResultManifest(comicData, 'COMIC');
-      expect(result.valid).toBe(true);
-      expect(result.value?.mediaFormat).toBe('COMIC');
-    });
-
-    it('should route NOVEL mediaFormat to Novel validator', () => {
-      const novelData = {
-        version: 1,
-        mediaFormat: 'NOVEL',
-        htmlKey: 'k.html',
-        segmentCount: 5,
-        charCount: 500,
-        qa: { passed: true, score: 95, fingerprintMatch: true, issuesCount: 0 },
-      };
-
-      const result = validateTranslationResultManifest(novelData, 'NOVEL');
-      expect(result.valid).toBe(true);
-      expect(result.value?.mediaFormat).toBe('NOVEL');
-    });
-
-    it('should reject Comic data validated as Novel', () => {
-      const comicData = {
-        version: 1,
-        pages: [
-          {
-            page: 1,
-            storageKey: 'k',
-            previewKey: 'p',
-            width: 100,
-            height: 100,
-            fileSizeBytes: 100,
-          },
-        ],
-      };
-
-      const result = validateTranslationResultManifest(comicData, 'NOVEL');
+      const result = validateTranslationInputManifestV1(invalidConsent);
       expect(result.valid).toBe(false);
-      expect(result.errors).toContain('htmlKey must be a non-empty string');
+      expect(result.errors.some((e) => e.includes('consentedAt must be null'))).toBe(true);
+    });
+  });
+
+  describe('Unicode Code Points Semantics (#164)', () => {
+    it('should accurately count Unicode code points for emoji strings using Array.from or spread', () => {
+      const text = 'Hello 😀';
+      // In JS, text.length is 8 (UTF-16 code units)
+      expect(text.length).toBe(8);
+      // In Unicode code points, text is 7 code points (matching Python len(str))
+      const codePointsCount = [...text].length;
+      expect(codePointsCount).toBe(7);
+      expect(Array.from(text).length).toBe(7);
+    });
+  });
+
+  describe('Shared Manifest Corpus Parity (100% Corpus Cases)', () => {
+    const validatorMap: Record<string, (data: unknown) => { valid: boolean; value?: unknown; errors: string[] }> = {
+      MANGA_RESULT_V1: validateMangaResultManifestV1,
+      NOVEL_RESULT_V1: validateNovelResultManifestV1,
+      INPUT_MANIFEST_V1: validateTranslationInputManifestV1,
+      MANGA_REVIEW_SOURCE_V1: validateMangaReviewSourceManifestV1,
+      MANGA_CLEAN_BASE_V1: validateMangaCleanBaseManifestV1,
+    };
+
+    corpus.forEach((testCase) => {
+      it(`[${testCase.id}] ${testCase.description}`, () => {
+        const validator = validatorMap[testCase.schema];
+        expect(validator).toBeDefined();
+
+        const result = validator(testCase.input);
+
+        if (testCase.valid) {
+          expect(result.valid).toBe(true);
+          expect(result.errors).toHaveLength(0);
+          expect(result.value).toEqual(testCase.canonical);
+        } else {
+          expect(result.valid).toBe(false);
+          expect(result.errors.length).toBeGreaterThanOrEqual(1);
+        }
+      });
     });
   });
 

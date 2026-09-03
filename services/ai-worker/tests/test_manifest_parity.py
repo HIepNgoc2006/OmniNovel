@@ -1,7 +1,10 @@
 """
 Test parity of versioned translation manifests and NovelBlockType with TypeScript shared contract (#160, #164).
+Executes shared test corpus packages/shared/fixtures/manifest-corpus.json.
 """
 
+import json
+from pathlib import Path
 import pytest
 from pydantic import ValidationError, TypeAdapter
 
@@ -12,7 +15,27 @@ from app.models.manifests import (
     NovelResultQaModel,
     NovelResultManifestV1,
     TranslationResultManifestV1,
+    TranslationInputManifestV1,
+    MangaReviewSourceManifestV1,
+    MangaCleanBaseManifestV1,
 )
+
+CORPUS_PATH = Path(__file__).resolve().parents[3] / "packages" / "shared" / "fixtures" / "manifest-corpus.json"
+
+SCHEMA_MODEL_MAP = {
+    "MANGA_RESULT_V1": MangaResultManifestV1,
+    "NOVEL_RESULT_V1": NovelResultManifestV1,
+    "INPUT_MANIFEST_V1": TranslationInputManifestV1,
+    "MANGA_REVIEW_SOURCE_V1": MangaReviewSourceManifestV1,
+    "MANGA_CLEAN_BASE_V1": MangaCleanBaseManifestV1,
+}
+
+
+def load_corpus_cases():
+    if not CORPUS_PATH.exists():
+        pytest.fail(f"Corpus fixture not found at {CORPUS_PATH}")
+    with open(CORPUS_PATH, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 class TestNovelBlockTypeCanonicalEnum:
@@ -94,6 +117,7 @@ class TestNovelResultManifestV1:
             "htmlKey": "ai/jobs/job-1/attempt-1/translated.html",
             "segmentCount": 10,
             "charCount": 2500,
+            "htmlFileSizeBytes": 15400,
             "title": "Chương 1",
             "language": "vi",
             "qa": {
@@ -114,6 +138,7 @@ class TestNovelResultManifestV1:
         assert manifest.mediaFormat == "NOVEL"
         assert manifest.segmentCount == 10
         assert manifest.charCount == 2500
+        assert manifest.htmlFileSizeBytes == 15400
         assert manifest.qa.passed is True
 
     def test_reject_missing_html_key(self):
@@ -121,6 +146,23 @@ class TestNovelResultManifestV1:
             NovelResultManifestV1.model_validate({
                 "version": 1,
                 "mediaFormat": "NOVEL",
+                "segmentCount": 10,
+                "charCount": 2500,
+                "htmlFileSizeBytes": 15400,
+                "qa": {
+                    "passed": True,
+                    "score": 0.95,
+                    "fingerprintMatch": True,
+                    "issuesCount": 0,
+                },
+            })
+
+    def test_reject_missing_html_file_size_bytes(self):
+        with pytest.raises(ValidationError):
+            NovelResultManifestV1.model_validate({
+                "version": 1,
+                "mediaFormat": "NOVEL",
+                "htmlKey": "ai/jobs/job-1/attempt-1/translated.html",
                 "segmentCount": 10,
                 "charCount": 2500,
                 "qa": {
@@ -162,6 +204,7 @@ class TestDiscriminatedUnionParity:
             "htmlKey": "k",
             "segmentCount": 1,
             "charCount": 10,
+            "htmlFileSizeBytes": 500,
             "qa": {
                 "passed": True,
                 "score": 1.0,
@@ -171,3 +214,42 @@ class TestDiscriminatedUnionParity:
         }
         parsed = adapter.validate_python(data)
         assert isinstance(parsed, NovelResultManifestV1)
+
+
+class TestUnicodeCodePointsSemantics:
+    """Ensure Unicode supplementary characters (emoji) count as code points."""
+
+    def test_emoji_code_point_count(self):
+        text = "Hello 😀"
+        # In Python 3, len(str) returns number of Unicode code points (7 code points)
+        assert len(text) == 7
+
+
+class TestSharedCorpusParity:
+    """
+    Run 100% of test cases in packages/shared/fixtures/manifest-corpus.json.
+    Verifies verdict parity and canonical normalized output equivalence (#164).
+    """
+
+    @pytest.mark.parametrize("case", load_corpus_cases(), ids=lambda c: c["id"])
+    def test_corpus_case(self, case):
+        model_cls = SCHEMA_MODEL_MAP.get(case["schema"])
+        assert model_cls is not None, f"Unknown schema: {case['schema']}"
+
+        if case["valid"]:
+            # Must validate successfully
+            instance = model_cls.model_validate(case["input"])
+            if case["schema"] == "INPUT_MANIFEST_V1":
+                dumped = instance.model_dump(mode="json")
+            else:
+                dumped = instance.model_dump(mode="json", exclude_none=True)
+            # Canonical output must match fixture exactly
+            assert dumped == case["canonical"], (
+                f"Canonical mismatch for {case['id']}:\n"
+                f"Expected: {case['canonical']}\n"
+                f"Got:      {dumped}"
+            )
+        else:
+            # Must raise ValidationError (fail-closed)
+            with pytest.raises(ValidationError):
+                model_cls.model_validate(case["input"])

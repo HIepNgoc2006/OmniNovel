@@ -1,9 +1,10 @@
 import uuid
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 import httpx
 from fastapi import HTTPException
 from app.core.config import settings
+from app.models.manifests import MangaResultManifestV1, NovelResultManifestV1
 
 
 class ProgressSink(ABC):
@@ -17,10 +18,19 @@ class ProgressSink(ABC):
         heartbeat: bool = False,
         message: str = "",
         sequence: Optional[int] = None,
-        result_manifest: Optional[Dict[str, Any]] = None,
         segments: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        """Gửi cập nhật tiến độ hoặc trạng thái."""
+        """Gửi cập nhật tiến độ hoặc trạng thái (chỉ dành cho intermediate stages)."""
+        pass
+
+    async def emit_ready(
+        self,
+        result_manifest: Any,
+        segments: Optional[List[Dict[str, Any]]] = None,
+        message: str = "All stages completed and verified",
+        sequence: Optional[int] = None,
+    ) -> None:
+        """Gửi final event READY_FOR_REVIEW với typed Pydantic result manifest."""
         pass
 
     async def emit_heartbeat(
@@ -48,8 +58,16 @@ class NoopProgressSink(ProgressSink):
         heartbeat: bool = False,
         message: str = "",
         sequence: Optional[int] = None,
-        result_manifest: Optional[Dict[str, Any]] = None,
         segments: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
+        pass
+
+    async def emit_ready(
+        self,
+        result_manifest: Union[MangaResultManifestV1, NovelResultManifestV1],
+        segments: Optional[List[Dict[str, Any]]] = None,
+        message: str = "All stages completed and verified",
+        sequence: Optional[int] = None,
     ) -> None:
         pass
 
@@ -67,7 +85,6 @@ class RecordingProgressSink(ProgressSink):
         heartbeat: bool = False,
         message: str = "",
         sequence: Optional[int] = None,
-        result_manifest: Optional[Dict[str, Any]] = None,
         segments: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         self.events.append(
@@ -77,7 +94,30 @@ class RecordingProgressSink(ProgressSink):
                 "heartbeat": heartbeat,
                 "message": message,
                 "sequence": sequence,
-                "resultManifest": result_manifest,
+                "segments": segments or [],
+            }
+        )
+
+    async def emit_ready(
+        self,
+        result_manifest: Any,
+        segments: Optional[List[Dict[str, Any]]] = None,
+        message: str = "All stages completed and verified",
+        sequence: Optional[int] = None,
+    ) -> None:
+        if hasattr(result_manifest, "model_dump"):
+            dumped_manifest = result_manifest.model_dump(mode="json", exclude_none=True, by_alias=True)
+        else:
+            dumped_manifest = result_manifest
+
+        self.events.append(
+            {
+                "progress": 100,
+                "stage": "READY_FOR_REVIEW",
+                "heartbeat": False,
+                "message": message,
+                "sequence": sequence,
+                "resultManifest": dumped_manifest,
                 "segments": segments or [],
             }
         )
@@ -105,7 +145,6 @@ class CoreCallbackProgressSink(ProgressSink):
         heartbeat: bool = False,
         message: str = "",
         sequence: Optional[int] = None,
-        result_manifest: Optional[Dict[str, Any]] = None,
         segments: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         seq = sequence if sequence is not None else self.sequence
@@ -119,10 +158,48 @@ class CoreCallbackProgressSink(ProgressSink):
             "stage": stage,
             "progress": progress,
             "heartbeat": heartbeat,
-            "resultManifest": result_manifest,
+            "message": message,
             "segments": segments if segments is not None else [],
         }
 
+        await self._send_payload(payload, stage, seq)
+
+    async def emit_ready(
+        self,
+        result_manifest: Any,
+        segments: Optional[List[Dict[str, Any]]] = None,
+        message: str = "All stages completed and verified",
+        sequence: Optional[int] = None,
+    ) -> None:
+        seq = sequence if sequence is not None else self.sequence
+        if sequence is None:
+            self.sequence += 1
+
+        # Duy nhất tại đây model_dump() sang JSON Dict trước khi gửi qua HTTP
+        if hasattr(result_manifest, "model_dump"):
+            manifest_payload = result_manifest.model_dump(
+                mode="json",
+                exclude_none=True,
+                by_alias=True,
+            )
+        else:
+            manifest_payload = result_manifest
+
+        payload: Dict[str, Any] = {
+            "eventId": str(uuid.uuid4()),
+            "attemptNumber": self.attempt_number,
+            "sequence": seq,
+            "stage": "READY_FOR_REVIEW",
+            "progress": 100,
+            "heartbeat": False,
+            "message": message,
+            "resultManifest": manifest_payload,
+            "segments": segments if segments is not None else [],
+        }
+
+        await self._send_payload(payload, "READY_FOR_REVIEW", seq)
+
+    async def _send_payload(self, payload: Dict[str, Any], stage: str, seq: int) -> None:
         url = f"{settings.CORE_API_INTERNAL_URL}/internal/v1/ai/jobs/{self.job_id}/events"
         headers = {
             "Content-Type": "application/json",

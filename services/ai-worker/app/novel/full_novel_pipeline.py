@@ -17,6 +17,13 @@ from app.novel.security import ExtractedEpubChapter, SafeNovelPackageExtractor
 from app.novel.segmenter import NovelSegmenter, TranslatableBlock
 from app.novel.serializer import NovelDocumentSerializer
 from app.novel.translator import NovelTranslationPipeline, NovelTranslationResult
+from app.models.manifests import (
+    NovelResultManifestV1,
+    NovelResultAssetModel,
+    NovelResultQaModel,
+    NovelResultQaIssueModel,
+    NovelResultMetricsModel,
+)
 from app.pipeline.attempt_coordinator import AttemptProgressCoordinator
 from app.translation.providers.base import TranslationProvider
 from app.translation.providers.mock_provider import MockTranslationProvider
@@ -237,11 +244,13 @@ class FullNovelPipeline:
                         if basename_counts[base_name] == 1:
                             asset_map[base_name] = storage_key
 
-                        uploaded_assets.append({
-                            "filename": slot_name,
-                            "originalHref": href,
-                            "storageKey": storage_key,
-                        })
+                        uploaded_assets.append(
+                            NovelResultAssetModel(
+                                storageKey=storage_key,
+                                contentType=ct,
+                                fileSizeBytes=asset_path.stat().st_size,
+                            )
+                        )
 
                 # Tuần tự hóa cây AST với asset_map đã ánh xạ storageKey thực tế
                 serialized_html = NovelDocumentSerializer.serialize_to_html(
@@ -278,36 +287,39 @@ class FullNovelPipeline:
                     "confidence": 0.99,
                 })
 
-            result_manifest = {
-                "version": 1,
-                "mediaFormat": "NOVEL",
-                "htmlKey": uploaded_html_key,
-                "segmentCount": len(segments_payload),
-                "charCount": sum(len(s.get("translatedText") or "") for s in segments_payload),
-                "title": translated_doc.title or extracted_chapter.title,
-                "language": translated_doc.language,
-                "assets": uploaded_assets,
-                "qa": {
-                    "passed": qa_result.passed,
-                    "score": qa_result.score,
-                    "fingerprintMatch": qa_result.fingerprint_match,
-                    "issuesCount": len(qa_result.issues),
-                    "issues": [
-                        {
-                            "severity": i.severity.value,
-                            "ruleId": i.rule_id,
-                            "message": i.message,
-                        }
+            html_file_size_bytes = len(output_html_path.read_bytes()) if output_html_path.exists() else 0
+
+            result_manifest = NovelResultManifestV1(
+                version=1,
+                mediaFormat="NOVEL",
+                htmlKey=uploaded_html_key,
+                segmentCount=len(segments_payload),
+                charCount=sum(len(s.get("translatedText") or "") for s in segments_payload),
+                htmlFileSizeBytes=html_file_size_bytes,
+                title=translated_doc.title or extracted_chapter.title,
+                language=translated_doc.language,
+                assets=uploaded_assets if uploaded_assets else None,
+                qa=NovelResultQaModel(
+                    passed=qa_result.passed,
+                    score=qa_result.score,
+                    fingerprintMatch=qa_result.fingerprint_match,
+                    issuesCount=len(qa_result.issues),
+                    issues=[
+                        NovelResultQaIssueModel(
+                            severity=i.severity.value,
+                            ruleId=i.rule_id,
+                            message=i.message,
+                        )
                         for i in qa_result.issues
                     ],
-                },
-                "metrics": {
-                    "totalBlocks": translation_result.total_blocks,
-                    "totalBatches": translation_result.total_batches,
-                    "glossaryHits": translation_result.glossary_hits,
-                    "promptVersion": self.prompt_version,
-                },
-            }
+                ),
+                metrics=NovelResultMetricsModel(
+                    totalBlocks=translation_result.total_blocks,
+                    totalBatches=translation_result.total_batches,
+                    glossaryHits=translation_result.glossary_hits,
+                    promptVersion=self.prompt_version,
+                ),
+            )
 
             # Bắn sự kiện READY_FOR_REVIEW hoàn tất attempt
             await self.coordinator.emit_ready(

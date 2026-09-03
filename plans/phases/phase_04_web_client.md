@@ -51,13 +51,13 @@
     - [x] Studio Story/Project/Job listings contracts (#144).
     - [x] Safe sanitized job review detail & SQL aggregate counters (#148).
     - [x] Paginated review segments with composite indexes (#155 read-only portion).
-  - [/] **Phase 4D.2 Backend Mutation & Freshness Core (PR #168 Merged `main@6ba9764`, Hardening PR in Progress)**:
+  - [x] **Phase 4D.2 Backend Mutation & Freshness Core (COMPLETED — PR #168 `main@6ba9764`, PR #169 `main@d910562`, main CI Run #33742944139)**:
     - [x] Migration 0010 (Job revisions) & Migration 0011 (Segment OCC version).
     - [x] Per-Job `FOR UPDATE` mutex canonical locking protocol (#147).
     - [x] Semantic counter separation (version vs reviewRevision) & no-op PATCH semantics (#147).
     - [x] Strict protected anchor topology validation ported with parity test coverage (#147).
-    - [x] Apply freshness gate & zero-leak concurrency invariant (#156 schema & Apply portion).
-    - [/] Hardening: Fail-closed GlobalExceptionFilter metadata allowlist, deterministic DB barrier & PATCH-vs-Apply race test, UUID/int boundary validation, SSoT API contracts (#147, #156).
+    - [x] Apply freshness gate & zero-leak concurrency invariant (#156 schema & Apply portion; fenced completion pending PR C #161).
+    - [x] Hardening: Fail-closed GlobalExceptionFilter metadata allowlist, deterministic DB barrier & PATCH-vs-Apply race test, UUID/int/text boundary validation, SSoT API contracts (#147, #156).
   - [ ] **Phase 4D.3 Contract Stabilization (PR B)**:
     - [ ] Novel segment blockType extension (#160).
     - [ ] Typed & versioned translation manifests (#164).

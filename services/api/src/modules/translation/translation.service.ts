@@ -29,6 +29,7 @@ import {
   NovelBlockType,
   validateTranslationResultManifest,
   validateTranslationInputManifestV1,
+  TranslationResultManifestV1,
   MangaResultManifestV1,
   NovelResultManifestV1,
   MaterializationSnapshotV1,
@@ -39,6 +40,7 @@ import {
   validateMaterializationSnapshotV1,
   validateComicMaterializationResultV1,
   validateNovelMaterializationResultV1,
+  isMaterializationResultEqual,
 } from '@omninovel/shared';
 import { TranslationJob } from './entities/translation-job.entity';
 import { TranslationProject } from './entities/translation-project.entity';
@@ -2142,7 +2144,56 @@ export class TranslationService {
       );
     }
 
-    // 2. Preflight Stale Check (NO MinIO HEAD calls! Discards before payload parsing)
+    // 2. Validate Candidate Payload (Pure schema validation without storage calls)
+    let validatedComicResult: ComicMaterializationResultV1 | null = null;
+    let validatedNovelResult: NovelMaterializationResultV1 | null = null;
+
+    if (!isNovel) {
+      const comicVal = validateComicMaterializationResultV1(dto.result);
+      if (!comicVal.valid) {
+        throw new BadRequestException(
+          `Comic materialization result không hợp lệ: ${comicVal.errors.join('; ')}`,
+        );
+      }
+      validatedComicResult = comicVal.value!;
+    } else {
+      const novelVal = validateNovelMaterializationResultV1(dto.result);
+      if (!novelVal.valid) {
+        throw new BadRequestException(
+          `Novel materialization result không hợp lệ: ${novelVal.errors.join('; ')}`,
+        );
+      }
+      validatedNovelResult = novelVal.value!;
+    }
+
+    const candidateResult = isNovel ? validatedNovelResult! : validatedComicResult!;
+
+    // 3. Preflight Idempotency Check FIRST (NO MinIO HEAD calls!)
+    // If targetRevision === materializedRevision: check result equality
+    // - If identical: return ALREADY_APPLIED (200), even after Job status is APPLIED
+    // - If different: throw MATERIALIZATION_RESULT_CONFLICT (409)
+    if (dto.targetRevision === jobPreflight.materializedRevision) {
+      const isIdentical = isMaterializationResultEqual(
+        jobPreflight.resultManifest as TranslationResultManifestV1 | null,
+        candidateResult,
+        storyMediaFormat,
+      );
+      if (isIdentical) {
+        return {
+          outcome: 'ALREADY_APPLIED' as const,
+          targetRevision: dto.targetRevision,
+          materializedRevision: jobPreflight.materializedRevision,
+        };
+      }
+      throw new ConflictException({
+        code: 'MATERIALIZATION_RESULT_CONFLICT',
+        message:
+          'Target revision is already materialized with different output artifacts.',
+      });
+    }
+
+    // 4. Preflight Stale Check AFTER Idempotency (NO MinIO HEAD calls!)
+    // If targetRevision < materializedRevision OR targetRevision !== reviewRevision OR status !== READY_FOR_REVIEW
     if (
       jobPreflight.status !== TranslationJobStatus.READY_FOR_REVIEW ||
       dto.targetRevision !== jobPreflight.reviewRevision ||
@@ -2156,88 +2207,12 @@ export class TranslationService {
       };
     }
 
-    // 3. Preflight Idempotency Check with Result Equality (NO MinIO HEAD calls!)
-    if (dto.targetRevision === jobPreflight.materializedRevision) {
-      let isResultIdentical = false;
-      if (!isNovel) {
-        const comicVal = validateComicMaterializationResultV1(dto.result);
-        if (!comicVal.valid) {
-          throw new BadRequestException(
-            `Comic materialization result không hợp lệ: ${comicVal.errors.join('; ')}`,
-          );
-        }
-        const currentManifest = jobPreflight.resultManifest as MangaResultManifestV1 | null;
-        if (
-          currentManifest?.pages &&
-          currentManifest.pages.length === comicVal.value!.pages.length &&
-          currentManifest.pages.every((cp, i) => {
-            const np = comicVal.value!.pages[i];
-            return (
-              cp.page === np.page &&
-              cp.storageKey === np.storageKey &&
-              cp.previewKey === np.previewKey &&
-              Number(cp.width) === Number(np.width) &&
-              Number(cp.height) === Number(np.height) &&
-              Number(cp.fileSizeBytes) === Number(np.fileSizeBytes)
-            );
-          })
-        ) {
-          isResultIdentical = true;
-        }
-      } else {
-        const novelVal = validateNovelMaterializationResultV1(dto.result);
-        if (!novelVal.valid) {
-          throw new BadRequestException(
-            `Novel materialization result không hợp lệ: ${novelVal.errors.join('; ')}`,
-          );
-        }
-        const currentManifest = jobPreflight.resultManifest as NovelResultManifestV1 | null;
-        if (
-          currentManifest &&
-          currentManifest.htmlKey === novelVal.value!.htmlKey &&
-          Number(currentManifest.htmlFileSizeBytes) === Number(novelVal.value!.htmlFileSizeBytes) &&
-          Number(currentManifest.segmentCount) === Number(novelVal.value!.segmentCount) &&
-          Number(currentManifest.charCount) === Number(novelVal.value!.charCount) &&
-          currentManifest.qa?.passed === novelVal.value!.qa.passed &&
-          Number(currentManifest.qa?.score) === Number(novelVal.value!.qa.score) &&
-          currentManifest.qa?.fingerprintMatch === novelVal.value!.qa.fingerprintMatch &&
-          Number(currentManifest.qa?.issuesCount) === Number(novelVal.value!.qa.issuesCount)
-        ) {
-          isResultIdentical = true;
-        }
-      }
-
-      if (isResultIdentical) {
-        return {
-          outcome: 'ALREADY_APPLIED' as const,
-          targetRevision: dto.targetRevision,
-          materializedRevision: jobPreflight.materializedRevision,
-        };
-      } else {
-        throw new ConflictException({
-          code: 'MATERIALIZATION_RESULT_CONFLICT',
-          message:
-            'Target revision is already materialized with different output artifacts.',
-        });
-      }
-    }
-
-    // 4. For Candidates for APPLIED: Validate Result, Prefix-Jail & Exact Size Verification
+    // 5. For Candidates for APPLIED: Prefix-Jail & Exact Size Verification
     const expectedPrefix = `ai/jobs/${jobId}/materializations/rev-${dto.targetRevision}/`;
-    let validatedComicResult: ComicMaterializationResultV1 | null = null;
-    let validatedNovelResult: NovelMaterializationResultV1 | null = null;
 
     if (!isNovel) {
-      const comicVal = validateComicMaterializationResultV1(dto.result);
-      if (!comicVal.valid) {
-        throw new BadRequestException(
-          `Comic materialization result không hợp lệ: ${comicVal.errors.join('; ')}`,
-        );
-      }
-      validatedComicResult = comicVal.value!;
-
       // Prefix-jail
-      for (const p of validatedComicResult.pages) {
+      for (const p of validatedComicResult!.pages) {
         if (!p.storageKey.startsWith(expectedPrefix)) {
           throw new BadRequestException(
             `PREFIX_JAIL_VIOLATION: storageKey '${p.storageKey}' không nằm trong prefix '${expectedPrefix}'.`,
@@ -2251,7 +2226,7 @@ export class TranslationService {
       }
 
       // Pre-transaction HEAD & Exact Size Verification
-      for (const p of validatedComicResult.pages) {
+      for (const p of validatedComicResult!.pages) {
         const stat = await this.storageService.statInternalObject(p.storageKey, true);
         if (!stat.exists) {
           throw new BadRequestException(
@@ -2275,37 +2250,29 @@ export class TranslationService {
         }
       }
     } else {
-      const novelVal = validateNovelMaterializationResultV1(dto.result);
-      if (!novelVal.valid) {
-        throw new BadRequestException(
-          `Novel materialization result không hợp lệ: ${novelVal.errors.join('; ')}`,
-        );
-      }
-      validatedNovelResult = novelVal.value!;
-
       // Prefix-jail
-      if (!validatedNovelResult.htmlKey.startsWith(expectedPrefix)) {
+      if (!validatedNovelResult!.htmlKey.startsWith(expectedPrefix)) {
         throw new BadRequestException(
-          `PREFIX_JAIL_VIOLATION: htmlKey '${validatedNovelResult.htmlKey}' không nằm trong prefix '${expectedPrefix}'.`,
+          `PREFIX_JAIL_VIOLATION: htmlKey '${validatedNovelResult!.htmlKey}' không nằm trong prefix '${expectedPrefix}'.`,
         );
       }
 
       // Pre-transaction HEAD & Exact Size Verification
-      const stat = await this.storageService.statInternalObject(validatedNovelResult.htmlKey, false);
+      const stat = await this.storageService.statInternalObject(validatedNovelResult!.htmlKey, false);
       if (!stat.exists) {
         throw new BadRequestException(
-          `ARTIFACT_NOT_FOUND_IN_STORAGE: Novel HTML artifact ${validatedNovelResult.htmlKey} không tồn tại trong MinIO storage.`,
+          `ARTIFACT_NOT_FOUND_IN_STORAGE: Novel HTML artifact ${validatedNovelResult!.htmlKey} không tồn tại trong MinIO storage.`,
         );
       }
-      if (stat.contentLength !== validatedNovelResult.htmlFileSizeBytes) {
+      if (stat.contentLength !== validatedNovelResult!.htmlFileSizeBytes) {
         throw new BadRequestException({
           code: 'ARTIFACT_SIZE_MISMATCH',
-          message: `ARTIFACT_SIZE_MISMATCH: Novel htmlKey contentLength (${stat.contentLength}) không khớp với khai báo htmlFileSizeBytes (${validatedNovelResult.htmlFileSizeBytes}).`,
+          message: `ARTIFACT_SIZE_MISMATCH: Novel htmlKey contentLength (${stat.contentLength}) không khớp với khai báo htmlFileSizeBytes (${validatedNovelResult!.htmlFileSizeBytes}).`,
         });
       }
     }
 
-    // 5. DB Transaction (FOR UPDATE trên cùng connection/manager)
+    // 6. DB Transaction (FOR UPDATE trên cùng connection/manager)
     return await this.dataSource.transaction(async (manager) => {
       const job = await manager
         .getRepository(TranslationJob)
@@ -2319,8 +2286,28 @@ export class TranslationService {
         throw new NotFoundException('Translation job không tồn tại.');
       }
 
-      // Re-verify idempotency under lock
-      // Re-verify stale status under lock
+      // Re-verify Idempotency FIRST under lock with canonical result equality!
+      if (dto.targetRevision === job.materializedRevision) {
+        const isIdentical = isMaterializationResultEqual(
+          job.resultManifest as TranslationResultManifestV1 | null,
+          candidateResult,
+          storyMediaFormat,
+        );
+        if (isIdentical) {
+          return {
+            outcome: 'ALREADY_APPLIED' as const,
+            targetRevision: dto.targetRevision,
+            materializedRevision: job.materializedRevision,
+          };
+        }
+        throw new ConflictException({
+          code: 'MATERIALIZATION_RESULT_CONFLICT',
+          message:
+            'Target revision is already materialized with different output artifacts.',
+        });
+      }
+
+      // Re-verify Stale status AFTER Idempotency under lock!
       if (
         job.status !== TranslationJobStatus.READY_FOR_REVIEW ||
         dto.targetRevision !== job.reviewRevision ||
@@ -2334,17 +2321,8 @@ export class TranslationService {
         };
       }
 
-      // Re-verify idempotency under lock
-      if (dto.targetRevision === job.materializedRevision) {
-        return {
-          outcome: 'ALREADY_APPLIED' as const,
-          targetRevision: dto.targetRevision,
-          materializedRevision: job.materializedRevision,
-        };
-      }
-
-      // Selective Manifest Merge
-      let mergedManifest: any;
+      // Selective Manifest Merge (Strictly typed as TranslationResultManifestV1)
+      let mergedManifest: TranslationResultManifestV1;
       if (!isNovel) {
         const currentManifest = job.resultManifest as MangaResultManifestV1 | null;
         mergedManifest = {

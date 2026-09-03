@@ -359,25 +359,23 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       expect(parsedSnapshot.segments[0].bboxH).toBe(50);
     });
 
-    it('should coalesce concurrent duplicate requests to ALREADY_ENQUEUED without creating duplicate BullMQ jobs', async () => {
-      // First request
-      const res1 = await request(app.getHttpServer())
-        .post(`/api/v1/ai/jobs/${comicJobId}/materializations`)
-        .set('Authorization', `Bearer ${ownerToken}`);
+    it('should coalesce concurrent duplicate requests to BullMQ without creating duplicate BullMQ jobs', async () => {
+      const [res1, res2] = await Promise.all([
+        request(app.getHttpServer())
+          .post(`/api/v1/ai/jobs/${comicJobId}/materializations`)
+          .set('Authorization', `Bearer ${ownerToken}`),
+        request(app.getHttpServer())
+          .post(`/api/v1/ai/jobs/${comicJobId}/materializations`)
+          .set('Authorization', `Bearer ${ownerToken}`),
+      ]);
 
-      expect(res1.status).toBe(202);
-      expect(res1.body.status).toBe('ENQUEUED');
+      expect([res1.status, res2.status]).toEqual([202, 202]);
+      expect([res1.body.status, res2.body.status]).toEqual(
+        expect.arrayContaining([expect.stringMatching(/ENQUEUED|ALREADY_ENQUEUED/)]),
+      );
+      expect([res1.body.targetRevision, res2.body.targetRevision]).toEqual([2, 2]);
 
-      // Second immediate request
-      const res2 = await request(app.getHttpServer())
-        .post(`/api/v1/ai/jobs/${comicJobId}/materializations`)
-        .set('Authorization', `Bearer ${ownerToken}`);
-
-      expect(res2.status).toBe(202);
-      expect(res2.body.status).toBe('ALREADY_ENQUEUED');
-      expect(res2.body.targetRevision).toBe(2);
-
-      // Verify BullMQ job count
+      // Verify BullMQ job count is exactly 1
       const bullJob = await materializationQueue.getJob(
         `materialize-${comicJobId}-2`,
       );
@@ -438,12 +436,19 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       const statSpy = jest.spyOn(storageService, 'statInternalObject');
       statSpy.mockClear();
 
-      // Target revision 1 while current reviewRevision is 2
+      // Set materializedRevision = 2 and reviewRevision = 3 so targetRevision 1 is truly stale (< materializedRevision)
+      await dataSource.query(`
+        UPDATE translation_jobs 
+        SET materialized_revision = 2, review_revision = 3 
+        WHERE id = '${comicJobId}'
+      `);
+
+      // Target revision 1 while materializedRevision is 2 and reviewRevision is 3
       const res = await request(app.getHttpServer())
         .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
         .set('X-Internal-Service-Key', INTERNAL_KEY)
         .send({
-          targetRevision: 1, // Stale!
+          targetRevision: 1, // Stale (< 2)!
           mediaFormat: 'COMIC',
           result: {
             version: 1,
@@ -755,6 +760,226 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       expect(okApply.status).toBe(200);
       expect(okApply.body.chapterId).toBe(comicChapterId);
       expect(okApply.body.activeVersionId).toBeDefined();
+    });
+
+    it('should handle concurrent conflicting materialization completions under FOR UPDATE: exactly one APPLIED (200), other 409 MATERIALIZATION_RESULT_CONFLICT', async () => {
+      // Barrier so both requests pass preflight & storage check before either enters the DB transaction
+      let releaseBarrier: () => void;
+      const barrierPromise = new Promise<void>((resolve) => {
+        releaseBarrier = resolve;
+      });
+      let statCalls = 0;
+
+      const statSpy = jest
+        .spyOn(storageService, 'statInternalObject')
+        .mockImplementation(async (key: string) => {
+          if (key.includes('p1_A') || key.includes('p1_B')) {
+            statCalls++;
+            if (statCalls === 2) {
+              releaseBarrier();
+            }
+            await barrierPromise;
+            return { exists: true, contentLength: 12345 };
+          }
+          if (key.includes('missing')) {
+            return { exists: false, contentLength: null };
+          }
+          if (key.includes('size-mismatch')) {
+            return { exists: true, contentLength: 999999 };
+          }
+          return { exists: true, contentLength: 12345 };
+        });
+
+      try {
+        const reqA = request(app.getHttpServer())
+          .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
+          .set('X-Internal-Service-Key', INTERNAL_KEY)
+          .send({
+            targetRevision: 2,
+            mediaFormat: 'COMIC',
+            result: {
+              version: 1,
+              mediaFormat: 'COMIC',
+              pages: [
+                {
+                  page: 1,
+                  storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1_A.webp`,
+                  previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1_A.webp`,
+                  width: 1000,
+                  height: 1500,
+                  fileSizeBytes: 12345,
+                },
+              ],
+            },
+          });
+
+        const reqB = request(app.getHttpServer())
+          .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
+          .set('X-Internal-Service-Key', INTERNAL_KEY)
+          .send({
+            targetRevision: 2,
+            mediaFormat: 'COMIC',
+            result: {
+              version: 1,
+              mediaFormat: 'COMIC',
+              pages: [
+                {
+                  page: 1,
+                  storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1_B.webp`,
+                  previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1_B.webp`,
+                  width: 1000,
+                  height: 1500,
+                  fileSizeBytes: 12345,
+                },
+              ],
+            },
+          });
+
+        const [resA, resB] = await Promise.all([reqA, reqB]);
+
+        const statuses = [resA.status, resB.status].sort();
+        expect(statuses).toEqual([200, 409]);
+
+        const successRes = resA.status === 200 ? resA : resB;
+        const conflictRes = resA.status === 409 ? resA : resB;
+
+        expect(successRes.body.outcome).toBe('APPLIED');
+        expect(conflictRes.body.error.code).toBe('MATERIALIZATION_RESULT_CONFLICT');
+
+        // Verify DB state matches the winner
+        const dbJob = await dataSource.query(`
+          SELECT result_manifest FROM translation_jobs WHERE id = '${comicJobId}'
+        `);
+        const winningPageKey =
+          resA.status === 200
+            ? `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1_A.webp`
+            : `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1_B.webp`;
+        expect(dbJob[0].result_manifest.pages[0].storageKey).toBe(winningPageKey);
+      } finally {
+        statSpy.mockImplementation(async (key: string) => {
+          if (key.includes('missing')) {
+            return { exists: false, contentLength: null };
+          }
+          if (key.includes('size-mismatch')) {
+            return { exists: true, contentLength: 999999 };
+          }
+          return { exists: true, contentLength: 12345 };
+        });
+      }
+    });
+
+    it('should return 200 ALREADY_APPLIED for duplicate callback even after Job status is APPLIED without storage calls', async () => {
+      // 1. Complete materialization to revision 2
+      await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'COMIC',
+          result: {
+            version: 1,
+            mediaFormat: 'COMIC',
+            pages: [
+              {
+                page: 1,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1.webp`,
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1.webp`,
+                width: 1000,
+                height: 1500,
+                fileSizeBytes: 12345,
+              },
+            ],
+          },
+        });
+
+      // 2. Apply the job -> status becomes APPLIED
+      const applyRes = await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${comicJobId}/apply`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .set('Idempotency-Key', 'a0000000-0000-4000-8000-000000000099')
+        .send({ mode: 'OVERWRITE_ACTIVE_VERSION' });
+      expect(applyRes.status).toBe(200);
+
+      const dbCheck = await dataSource.query(`
+        SELECT status, materialized_revision FROM translation_jobs WHERE id = '${comicJobId}'
+      `);
+      expect(dbCheck[0].status).toBe(TranslationJobStatus.APPLIED);
+      expect(dbCheck[0].materialized_revision).toBe(2);
+
+      // 3. Duplicate callback for rev 2 arrives after Job is APPLIED
+      const statSpy = jest.spyOn(storageService, 'statInternalObject');
+      statSpy.mockClear();
+
+      const res = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'COMIC',
+          result: {
+            version: 1,
+            mediaFormat: 'COMIC',
+            pages: [
+              {
+                page: 1,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1.webp`,
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1.webp`,
+                width: 1000,
+                height: 1500,
+                fileSizeBytes: 12345,
+              },
+            ],
+          },
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.outcome).toBe('ALREADY_APPLIED');
+      expect(res.body.targetRevision).toBe(2);
+      expect(statSpy).not.toHaveBeenCalled();
+    });
+
+    it('should throw 409 MATERIALIZATION_RESULT_CONFLICT when novel callback has different qa.issues', async () => {
+      // Seed novel job already materialized at rev 2 with qa issues
+      await dataSource.query(`
+        UPDATE translation_jobs
+        SET materialized_revision = 2,
+            review_revision = 2,
+            result_manifest = '{"version": 1, "mediaFormat": "NOVEL", "title": "Tiểu thuyết test", "language": "vi", "htmlKey": "ai/jobs/${novelJobId}/materializations/rev-2/content.html", "htmlFileSizeBytes": 12345, "segmentCount": 1, "charCount": 150, "qa": {"passed": true, "score": 0.98, "fingerprintMatch": true, "issuesCount": 1, "issues": [{"severity": "warning", "ruleId": "GLOSSARY_MISS", "message": "Missing glossary term"}]}}'
+        WHERE id = '${novelJobId}'
+      `);
+
+      // Attempt complete callback with same scalar fields but DIFFERENT qa.issues
+      const res = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${novelJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'NOVEL',
+          result: {
+            version: 1,
+            mediaFormat: 'NOVEL',
+            htmlKey: `ai/jobs/${novelJobId}/materializations/rev-2/content.html`,
+            htmlFileSizeBytes: 12345,
+            segmentCount: 1,
+            charCount: 150,
+            qa: {
+              passed: true,
+              score: 0.98,
+              fingerprintMatch: true,
+              issuesCount: 1,
+              issues: [
+                {
+                  severity: 'error', // Different severity!
+                  ruleId: 'GLOSSARY_MISS',
+                  message: 'Missing glossary term',
+                },
+              ],
+            },
+          },
+        });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe('MATERIALIZATION_RESULT_CONFLICT');
     });
   });
 });

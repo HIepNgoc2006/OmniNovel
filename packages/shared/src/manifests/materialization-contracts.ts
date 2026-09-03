@@ -4,6 +4,9 @@ import {
   ValidationResult,
   MangaResultManifestPageV1,
   NovelResultQaV1,
+  TranslationResultManifestV1,
+  MangaResultManifestV1,
+  NovelResultManifestV1,
 } from './translation-manifests';
 
 // ----------------------------------------------------------------------
@@ -518,3 +521,87 @@ export function validateNovelMaterializationResultV1(
     },
   };
 }
+
+/**
+ * Canonical Result Equality Checker
+ * Pure function comparing the authoritative DB manifest with the materialization candidate.
+ * Used identically in both read-only preflight and under-lock FOR UPDATE transaction.
+ */
+export function isMaterializationResultEqual(
+  currentManifest: TranslationResultManifestV1 | null | undefined,
+  candidate: ComicMaterializationResultV1 | NovelMaterializationResultV1,
+  mediaFormat: 'COMIC' | 'NOVEL' | string,
+): boolean {
+  if (!currentManifest) return false;
+
+  if (mediaFormat === 'COMIC') {
+    if (currentManifest.mediaFormat !== 'COMIC') return false;
+    const curPages = (currentManifest as MangaResultManifestV1).pages;
+    const canPages = (candidate as ComicMaterializationResultV1).pages;
+    if (!curPages || !canPages) return false;
+    if (curPages.length !== canPages.length) return false;
+
+    for (let i = 0; i < curPages.length; i++) {
+      const cp = curPages[i];
+      const np = canPages[i];
+      if (
+        cp.page !== np.page ||
+        cp.storageKey !== np.storageKey ||
+        cp.previewKey !== np.previewKey ||
+        Number(cp.width) !== Number(np.width) ||
+        Number(cp.height) !== Number(np.height) ||
+        Number(cp.fileSizeBytes) !== Number(np.fileSizeBytes)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  if (mediaFormat === 'NOVEL') {
+    if (currentManifest.mediaFormat !== 'NOVEL') return false;
+    const cur = currentManifest as NovelResultManifestV1;
+    const can = candidate as NovelMaterializationResultV1;
+
+    if (
+      cur.htmlKey !== can.htmlKey ||
+      Number(cur.htmlFileSizeBytes) !== Number(can.htmlFileSizeBytes) ||
+      Number(cur.segmentCount) !== Number(can.segmentCount) ||
+      Number(cur.charCount) !== Number(can.charCount)
+    ) {
+      return false;
+    }
+
+    // QA Comparison
+    if (!cur.qa || !can.qa) return false;
+    if (
+      cur.qa.passed !== can.qa.passed ||
+      Number(cur.qa.score) !== Number(can.qa.score) ||
+      cur.qa.fingerprintMatch !== can.qa.fingerprintMatch ||
+      Number(cur.qa.issuesCount) !== Number(can.qa.issuesCount)
+    ) {
+      return false;
+    }
+
+    // QA Issues Deep Comparison
+    const curIssues = cur.qa.issues || [];
+    const canIssues = can.qa.issues || [];
+    if (curIssues.length !== canIssues.length) return false;
+    for (let i = 0; i < curIssues.length; i++) {
+      const ci = curIssues[i];
+      const ni = canIssues[i];
+      if (
+        ci.severity !== ni.severity ||
+        ci.ruleId !== ni.ruleId ||
+        ci.message !== ni.message
+      ) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  return false;
+}
+

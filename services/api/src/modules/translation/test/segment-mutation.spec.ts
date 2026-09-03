@@ -60,6 +60,7 @@ describe('Segment Mutation & Freshness Gate (#147, #156)', () => {
         { provide: TranslationGateway, useValue: { broadcastJobFailed: jest.fn() } },
         { provide: TranslationProcessor, useValue: {} },
         { provide: 'BullQueue_translation', useValue: { add: jest.fn() } },
+        { provide: 'BullQueue_translation-materialization', useValue: { add: jest.fn(), getJob: jest.fn() } },
         {
           provide: DataSource,
           useFactory: () => {

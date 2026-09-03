@@ -11,6 +11,8 @@ import { InternalServiceKeyGuard } from '../../common/guards/internal-service-ke
 import { TranslationService } from './translation.service';
 import { WorkerEventCallbackDto } from './dto/worker-event-callback.dto';
 import { RequestOutputUploadsDto } from './dto/request-output-uploads.dto';
+import { CompleteMaterializationDto } from './dto/complete-materialization.dto';
+import { ParseUUIDPipe } from '@nestjs/common';
 
 @Controller('internal/v1/ai')
 @UseGuards(InternalServiceKeyGuard)
@@ -37,5 +39,14 @@ export class InternalAiController {
       dto.attemptNumber,
       dto.files,
     );
+  }
+
+  @Post('jobs/:id/materializations/complete')
+  @HttpCode(HttpStatus.OK)
+  async completeMaterialization(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: CompleteMaterializationDto,
+  ) {
+    return await this.translationService.completeMaterialization(id, dto);
   }
 }

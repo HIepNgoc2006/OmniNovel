@@ -570,19 +570,71 @@ export class StorageService {
     return await getSignedUrl(this.s3Client, command, { expiresIn: expiresInSeconds });
   }
 
-  async headInternalObject(key: string, isManga = true): Promise<boolean> {
+  async statInternalObject(key: string, isManga = true): Promise<InternalObjectMetadata> {
     const bucket = this.getInternalBucket(isManga);
     try {
-      await this.s3Client.send(
+      const res = await this.s3Client.send(
         new HeadObjectCommand({
           Bucket: bucket,
           Key: key,
         }),
       );
-      return true;
-    } catch {
-      return false;
+      return {
+        exists: true,
+        contentLength: typeof res.ContentLength === 'number' ? res.ContentLength : null,
+        contentType: res.ContentType,
+      };
+    } catch (err: any) {
+      if (
+        err.name === 'NotFound' ||
+        err.name === 'NoSuchKey' ||
+        err.$metadata?.httpStatusCode === 404
+      ) {
+        return { exists: false, contentLength: null };
+      }
+      throw err;
     }
   }
+
+  async headInternalObject(key: string, isManga = true): Promise<boolean> {
+    const stat = await this.statInternalObject(key, isManga);
+    return stat.exists;
+  }
+
+  async uploadInternalBuffer(
+    key: string,
+    buffer: Buffer,
+    contentType = 'application/json',
+    isManga = true,
+  ): Promise<void> {
+    const bucket = this.getInternalBucket(isManga);
+    await this.s3Client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: key,
+        Body: buffer,
+        ContentType: contentType,
+      }),
+    );
+  }
+
+  async getSignedUrlForInternalRead(
+    key: string,
+    isManga = true,
+    expiresInSeconds = 3600,
+  ): Promise<string> {
+    const bucket = this.getInternalBucket(isManga);
+    const command = new GetObjectCommand({
+      Bucket: bucket,
+      Key: key,
+    });
+    return await getSignedUrl(this.s3Client, command, { expiresIn: expiresInSeconds });
+  }
+}
+
+export interface InternalObjectMetadata {
+  exists: boolean;
+  contentLength: number | null;
+  contentType?: string;
 }
 

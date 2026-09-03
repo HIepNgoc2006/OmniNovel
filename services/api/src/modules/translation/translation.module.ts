@@ -34,9 +34,14 @@ import { InternalServiceKeyGuard } from '../../common/guards/internal-service-ke
       UploadSession,
       StoryMember,
     ]),
-    BullModule.registerQueue({
-      name: 'translation',
-    }),
+    BullModule.registerQueue(
+      {
+        name: 'translation',
+      },
+      {
+        name: 'translation-materialization',
+      },
+    ),
     StorageModule,
     JwtModule.registerAsync({
       inject: [ConfigService],

@@ -46,8 +46,25 @@
   - [x] Đồng bộ tiến độ đọc & Gamification: Hook `useReadingProgress` đo thời gian đọc thực tế, bootstrap tiến độ (`serverResume` bao gồm `chapterVersionId` & `readingMode`) và `readChapterIds` từ server, tự động đồng bộ lên Server `PUT /api/v1/library/reading-progress` (Debounced) kèm fallback IndexedDB offline cache, tự động kích hoạt nhận thưởng +5 EXP khi đạt điều kiện (>=45s đọc & >=80% hoàn thành) theo contract `{ success: true, earnedExp: 5 }`.
   - [x] Bộ chọn phiên bản bản dịch (`VersionSelectorModal`) và Ngăn kéo mục lục nhảy chương nhanh (`ChapterDrawer`) tích hợp thanh tìm kiếm và hiển thị chính xác trạng thái "Đang đọc" / "Đã đọc".
 
-- [ ] **Phase 4D: AI Translation Studio & Apply Management**
-  - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).
-  - [ ] Manga Translation Studio: Trình xem ảnh gốc vs ảnh đã dịch, xem vùng nhận diện thoại OCR, chỉnh sửa bản dịch từng ô thoại.
-  - [ ] Novel Translation Studio: Trình đối chiếu AST đoạn văn bản song ngữ, đánh dấu thuật ngữ Glossary, kiểm tra protected inline tags (`⟦...⟧`).
-  - [ ] Modal xuất bản chương: Lựa chọn 2 chiến lược `OVERWRITE_ACTIVE_VERSION` vs `CREATE_ALTERNATE_VERSION` kèm preview trực quan.
+- [/] **Phase 4D: AI Translation Studio & Apply Management**
+  - [x] **Phase 4D.1 Backend Foundation (PR #167 - MERGED `main@e490136`)**:
+    - [x] Studio Story/Project/Job listings contracts (#144).
+    - [x] Safe sanitized job review detail & SQL aggregate counters (#148).
+    - [x] Paginated review segments with composite indexes (#155 read-only portion).
+  - [x] **Phase 4D.2 Backend Mutation & Freshness Core (PR #168 - OPEN)**:
+    - [x] Migration 0010 (Job revisions) & Migration 0011 (Segment OCC version).
+    - [x] Per-Job `FOR UPDATE` mutex canonical locking protocol (#147).
+    - [x] Semantic counter separation (version vs reviewRevision) & no-op PATCH semantics (#147).
+    - [x] Strict protected anchor topology validation parity with Python (#147).
+    - [x] Apply freshness gate & zero-leak concurrency invariant (#156 schema & Apply portion).
+  - [ ] **Phase 4D.3 Contract Stabilization (PR B)**:
+    - [ ] Novel segment blockType extension (#160).
+    - [ ] Typed & versioned translation manifests (#164).
+  - [ ] **Phase 4D.4 Materialization Protocol & Fenced Completion (PR C)**:
+    - [ ] Dedicated materialization queue & deterministic custom job ID (#161).
+    - [ ] Durable S3 snapshot artifact & internal completion callback (#161, #156 remainder).
+  - [ ] **Phase 4D.5 Studio Frontend UI**:
+    - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).
+    - [ ] Manga Translation Studio: Trình xem ảnh gốc vs ảnh đã dịch, xem vùng nhận diện thoại OCR, chỉnh sửa bản dịch từng ô thoại.
+    - [ ] Novel Translation Studio: Trình đối chiếu AST đoạn văn bản song ngữ, đánh dấu thuật ngữ Glossary, kiểm tra protected inline tags (`⟦...⟧`).
+    - [ ] Modal xuất bản chương: Lựa chọn 2 chiến lược `OVERWRITE_ACTIVE_VERSION` vs `CREATE_ALTERNATE_VERSION` kèm preview trực quan.

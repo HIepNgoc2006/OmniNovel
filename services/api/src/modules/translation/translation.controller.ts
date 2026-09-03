@@ -2,6 +2,7 @@ import {
   Controller,
   Post,
   Get,
+  Patch,
   Body,
   Param,
   Headers,
@@ -21,6 +22,7 @@ import { CreateGlossaryDto } from './dto/create-glossary.dto';
 import { FindTranslationProjectsQueryDto } from './dto/find-translation-projects-query.dto';
 import { FindTranslationJobsQueryDto } from './dto/find-translation-jobs-query.dto';
 import { FindJobSegmentsQueryDto } from './dto/find-job-segments-query.dto';
+import { UpdateTranslationSegmentDto } from './dto/update-translation-segment.dto';
 
 const UUID_V4_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -86,6 +88,22 @@ export class TranslationController {
     @Query() query: FindJobSegmentsQueryDto,
   ) {
     return await this.translationService.getJobSegments(id, user, query);
+  }
+
+  @Patch('jobs/:jobId/segments/:segmentId')
+  @HttpCode(HttpStatus.OK)
+  async updateSegment(
+    @Param('jobId') jobId: string,
+    @Param('segmentId') segmentId: string,
+    @Body() dto: UpdateTranslationSegmentDto,
+    @CurrentUser() user: any,
+  ) {
+    return await this.translationService.updateSegment(
+      jobId,
+      segmentId,
+      user,
+      dto,
+    );
   }
 
   @Post('jobs/:id/apply')

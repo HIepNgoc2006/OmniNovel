@@ -5,6 +5,7 @@ import {
   CreateDateColumn,
   ManyToOne,
   JoinColumn,
+  VersionColumn,
 } from 'typeorm';
 import { TranslationJob } from './translation-job.entity';
 
@@ -52,6 +53,9 @@ export class TranslationSegment {
 
   @Column({ name: 'is_human_verified', default: false })
   isHumanVerified: boolean;
+
+  @VersionColumn({ default: 1 })
+  version: number;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;

@@ -7,7 +7,7 @@ import pytest
 from app.novel.ast_parser import NovelAstParser
 from app.novel.segmenter import TranslatableBlock
 from app.novel.translator import NovelTranslationPipeline, NovelTranslationResult
-from app.pipeline.progress_sink import ProgressSink
+from app.pipeline.progress_sink import ProgressSink, NoopProgressSink
 from app.translation.prompt_registry import get_prompt_template
 from app.translation.providers.base import (
     AuthenticationError,
@@ -41,7 +41,7 @@ async def test_novel_pipeline_with_mock_provider():
     pipeline = NovelTranslationPipeline(provider=provider)
 
     sink_events = []
-    class CustomSink(ProgressSink):
+    class CustomSink(NoopProgressSink):
         async def emit_progress(
             self,
             progress: int,

@@ -14,7 +14,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import { TranslationJobStatus } from '@omninovel/shared';
+import { TranslationJobStatus, NovelBlockType, TranslationResultManifestV1 } from '@omninovel/shared';
 
 export class WorkerSegmentDto {
   @IsOptional()
@@ -27,8 +27,8 @@ export class WorkerSegmentDto {
   anchorBlockId?: string;
 
   @IsOptional()
-  @IsString()
-  blockType?: string;
+  @IsEnum(NovelBlockType)
+  blockType?: NovelBlockType;
 
   @IsInt()
   @Min(1)
@@ -95,7 +95,7 @@ export class WorkerEventCallbackDto {
 
   @IsOptional()
   @IsObject()
-  resultManifest?: Record<string, any>;
+  resultManifest?: TranslationResultManifestV1;
 
   @IsOptional()
   @IsArray()

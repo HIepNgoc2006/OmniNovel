@@ -1,7 +1,8 @@
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
+from app.models.manifests import MangaResultManifestV1, NovelResultManifestV1
 from app.pipeline.progress_sink import ProgressSink
 
 logger = logging.getLogger(__name__)
@@ -122,8 +123,9 @@ class AttemptProgressCoordinator:
 
     async def emit_ready(
         self,
-        result_manifest: Dict[str, Any],
+        result_manifest: Union[MangaResultManifestV1, NovelResultManifestV1],
         segments: List[Dict[str, Any]],
+        message: str = "All pages translated, inpainted, typeset and verified",
     ) -> None:
         """
         Hoàn tất toàn bộ attempt:
@@ -137,13 +139,11 @@ class AttemptProgressCoordinator:
             self._current_progress = 100
             seq = self._sequence
 
-            await self.sink.emit_progress(
-                progress=100,
-                stage="READY_FOR_REVIEW",
-                message="All pages translated, inpainted, typeset and verified",
-                sequence=seq,
+            await self.sink.emit_ready(
                 result_manifest=result_manifest,
                 segments=segments,
+                message=message,
+                sequence=seq,
             )
             logger.info(
                 f"[Coordinator] Hoàn tất attempt với READY_FOR_REVIEW (seq={seq}, segments={len(segments)})"

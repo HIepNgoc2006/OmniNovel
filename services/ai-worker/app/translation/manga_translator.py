@@ -74,7 +74,10 @@ class MangaTranslationPipeline:
         input_manifest: Optional[Dict[str, Any]] = None,
     ) -> MangaTranslationResult:
         start_time = time.perf_counter()
-        manifest = input_manifest or {}
+        if hasattr(input_manifest, "model_dump"):
+            manifest = input_manifest.model_dump(mode="json")
+        else:
+            manifest = input_manifest or {}
 
         # 1. Trích xuất glossary snapshot từ manifest
         raw_glossary = manifest.get("glossarySnapshot", [])

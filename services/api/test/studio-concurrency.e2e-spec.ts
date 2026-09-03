@@ -461,7 +461,7 @@ describe('Studio Concurrency & Review Mutation E2E (#147, #156)', () => {
         ) VALUES (
           '${projectId}', '${sourceVersionId}', '${TranslationJobStatus.READY_FOR_REVIEW}', 100, 0, 0,
           'OPENAI', 'gpt-4o-mini', 'v1.0', 1, 3, 10,
-          '{"pages":[{"page":1,"storageKey":"output-1.webp","previewKey":"output-1.webp","width":1200,"height":1800,"fileSize":2048}]}'::jsonb
+          '{"version":1,"mediaFormat":"COMIC","pages":[{"page":1,"storageKey":"output-1.webp","previewKey":"output-1.webp","width":1200,"height":1800,"fileSizeBytes":2048}]}'::jsonb
         )
         RETURNING id;
       `);

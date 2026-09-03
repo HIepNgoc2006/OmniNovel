@@ -7,6 +7,7 @@ import {
   JoinColumn,
   VersionColumn,
 } from 'typeorm';
+import { NovelBlockType } from '@omninovel/shared';
 import { TranslationJob } from './translation-job.entity';
 
 @Entity('translation_segments')
@@ -53,6 +54,15 @@ export class TranslationSegment {
 
   @Column({ name: 'is_human_verified', default: false })
   isHumanVerified: boolean;
+
+  @Column({
+    name: 'block_type',
+    type: 'enum',
+    enum: NovelBlockType,
+    enumName: 'novel_block_type_enum',
+    nullable: true,
+  })
+  blockType: NovelBlockType | null;
 
   @VersionColumn({ default: 1 })
   version: number;

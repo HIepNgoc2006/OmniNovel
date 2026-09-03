@@ -1998,6 +1998,8 @@ describe('OmniNovel Backend Core API (e2e)', () => {
 
       // 3. Gửi event sequence 6: READY_FOR_REVIEW với result_manifest và segments
       const validResultManifest = {
+        version: 1,
+        mediaFormat: 'COMIC',
         pages: [
           {
             page: 1,
@@ -2005,7 +2007,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
             storageKey: outputStorageKey,
             width: 1200,
             height: 1800,
-            fileSize: validWebpBytes.length,
+            fileSizeBytes: validWebpBytes.length,
           },
         ],
       };
@@ -2283,7 +2285,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       // Chuẩn bị job ở trạng thái READY_FOR_REVIEW
       const altJob = await dataSource.query(
         `INSERT INTO translation_jobs (project_id, source_version_id, status, result_manifest)
-         VALUES ($1, $2, 'READY_FOR_REVIEW', '{"pages":[{"page":1,"previewKey":"ai/jobs/alt/page-1.webp"}]}')
+         VALUES ($1, $2, 'READY_FOR_REVIEW', '{"version":1,"mediaFormat":"COMIC","pages":[{"page":1,"storageKey":"ai/jobs/alt/page-1.webp","previewKey":"ai/jobs/alt/page-1.webp","width":1200,"height":1800,"fileSizeBytes":102400}]}')
          RETURNING id`,
         [projectId, versionA1Id],
       );

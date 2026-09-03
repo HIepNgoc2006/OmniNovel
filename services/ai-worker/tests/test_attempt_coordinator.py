@@ -3,6 +3,7 @@ import pytest
 
 from app.pipeline.attempt_coordinator import AttemptProgressCoordinator
 from app.pipeline.progress_sink import RecordingProgressSink
+from app.models.manifests import MangaResultManifestV1, MangaResultPageModel
 
 
 @pytest.mark.asyncio
@@ -26,7 +27,20 @@ async def test_attempt_coordinator_monotonic_sequence_and_transitions():
     await coordinator.transition_stage("INPAINTING", 70, "Inpainting")
 
     # Hoàn tất READY
-    manifest = {"pages": [{"page": 1, "storageKey": "ai/jobs/1/att-1/p1.webp"}]}
+    manifest = MangaResultManifestV1(
+        version=1,
+        mediaFormat="COMIC",
+        pages=[
+            MangaResultPageModel(
+                page=1,
+                storageKey="ai/jobs/1/att-1/p1.webp",
+                previewKey="ai/jobs/1/att-1/p1.webp",
+                width=1200,
+                height=1800,
+                fileSizeBytes=102400,
+            )
+        ]
+    )
     segments = [{"pageNumber": 1, "sortOrder": 1, "rawText": "abc", "translatedText": "xyz"}]
     await coordinator.emit_ready(manifest, segments)
 
@@ -46,7 +60,7 @@ async def test_attempt_coordinator_monotonic_sequence_and_transitions():
     last_event = events[-1]
     assert last_event["stage"] == "READY_FOR_REVIEW"
     assert last_event["progress"] == 100
-    assert last_event["resultManifest"] == manifest
+    assert last_event["resultManifest"] == manifest.model_dump(mode="json", exclude_none=True, by_alias=True)
     assert len(last_event["segments"]) == 1
 
 

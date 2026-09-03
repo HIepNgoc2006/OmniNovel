@@ -26,6 +26,10 @@ import {
   TranslationSegmentDto,
   PaginatedResponse,
   validateProtectedAnchorTopology,
+  NovelBlockType,
+  validateTranslationResultManifest,
+  MangaResultManifestV1,
+  NovelResultManifestV1,
 } from '@omninovel/shared';
 import { TranslationJob } from './entities/translation-job.entity';
 import { TranslationProject } from './entities/translation-project.entity';
@@ -738,6 +742,7 @@ export class TranslationService {
       translatedText: s.translatedText,
       confidence: s.confidence !== null ? Number(s.confidence) : null,
       isHumanVerified: s.isHumanVerified,
+      blockType: s.blockType ?? null,
       version: s.version ?? 1,
       createdAt: s.createdAt.toISOString(),
     }));
@@ -881,6 +886,7 @@ export class TranslationService {
           confidence:
             segment.confidence !== null ? Number(segment.confidence) : null,
           isHumanVerified: segment.isHumanVerified,
+          blockType: segment.blockType ?? null,
           version: segment.version,
           createdAt: segment.createdAt.toISOString(),
         };
@@ -958,6 +964,7 @@ export class TranslationService {
             ? Number(updatedSegment.confidence)
             : null,
         isHumanVerified: updatedSegment.isHumanVerified,
+        blockType: updatedSegment.blockType ?? null,
         version: updatedSegment.version,
         createdAt: updatedSegment.createdAt.toISOString(),
       };
@@ -1120,23 +1127,24 @@ export class TranslationService {
       const isNovelJob = storyMediaFormat === MediaFormat.NOVEL;
 
       if (isNovelJob) {
+        const manifest = job.resultManifest as NovelResultManifestV1 | null;
         if (
-          !job.resultManifest ||
-          typeof job.resultManifest !== 'object' ||
-          job.resultManifest.mediaFormat !== 'NOVEL'
+          !manifest ||
+          typeof manifest !== 'object' ||
+          manifest.mediaFormat !== 'NOVEL'
         ) {
           throw new BadRequestException(
             'Không thể apply Novel translation job: Result manifest không tồn tại hoặc sai mediaFormat.',
           );
         }
-        if (!job.resultManifest.htmlKey || typeof job.resultManifest.htmlKey !== 'string') {
+        if (!manifest.htmlKey || typeof manifest.htmlKey !== 'string') {
           throw new BadRequestException(
             'Không thể apply Novel translation job: Thiếu htmlKey trong result_manifest.',
           );
         }
         if (
-          job.resultManifest?.qa?.passed !== true ||
-          job.resultManifest?.qa?.fingerprintMatch !== true
+          manifest.qa?.passed !== true ||
+          manifest.qa?.fingerprintMatch !== true
         ) {
           throw new BadRequestException(
             'Không thể apply Novel translation job: Kiểm định chất lượng cấu trúc (Structural QA) không đạt yêu cầu (passed=false hoặc fingerprintMatch=false).',
@@ -1178,35 +1186,43 @@ export class TranslationService {
 
       // 4. Materialize MediaAssets từ result_manifest (Manga Pages hoặc Novel HTML & Assets)
       if (job.resultManifest) {
-        if (Array.isArray(job.resultManifest.pages) && job.resultManifest.pages.length > 0) {
-          for (const page of job.resultManifest.pages) {
-            const mediaAsset = manager.create(MediaAsset, {
-              versionId: savedVersion.id,
-              assetType: MediaAssetType.MANGA_PAGE,
-              storageKey: page.previewKey || page.storageKey,
-              sortOrder: page.page || 1,
-              width: page.width || 1200,
-              height: page.height || 1800,
-              fileSizeBytes: (page.fileSize || 102400).toString(),
-            });
-            await manager.save(MediaAsset, mediaAsset);
+        if (!isNovelJob) {
+          const mangaManifest = job.resultManifest as MangaResultManifestV1;
+          if (Array.isArray(mangaManifest.pages) && mangaManifest.pages.length > 0) {
+            for (const page of mangaManifest.pages) {
+              const fileSizeBytes =
+                page.fileSizeBytes ??
+                (page as any).fileSize ??
+                102400;
+              const mediaAsset = manager.create(MediaAsset, {
+                versionId: savedVersion.id,
+                assetType: MediaAssetType.MANGA_PAGE,
+                storageKey: page.previewKey || page.storageKey,
+                sortOrder: page.page || 1,
+                width: page.width || 1200,
+                height: page.height || 1800,
+                fileSizeBytes: fileSizeBytes.toString(),
+              });
+              await manager.save(MediaAsset, mediaAsset);
+            }
           }
-        } else if (isNovelJob) {
-          if (job.resultManifest.htmlKey) {
+        } else {
+          const novelManifest = job.resultManifest as NovelResultManifestV1;
+          if (novelManifest.htmlKey) {
             const htmlAsset = manager.create(MediaAsset, {
               versionId: savedVersion.id,
               assetType: MediaAssetType.NOVEL_HTML,
-              storageKey: job.resultManifest.htmlKey,
+              storageKey: novelManifest.htmlKey,
               sortOrder: 1,
               width: null,
               height: null,
-              fileSizeBytes: (job.resultManifest.fileSize || 20480).toString(),
+              fileSizeBytes: ((novelManifest as any).fileSize || 20480).toString(),
             });
             await manager.save(MediaAsset, htmlAsset);
           }
-          if (Array.isArray(job.resultManifest.assets)) {
+          if (Array.isArray(novelManifest.assets)) {
             let sortIdx = 2;
-            for (const assetItem of job.resultManifest.assets) {
+            for (const assetItem of novelManifest.assets) {
               const imgAsset = manager.create(MediaAsset, {
                 versionId: savedVersion.id,
                 assetType: MediaAssetType.ILLUSTRATION,
@@ -1214,7 +1230,7 @@ export class TranslationService {
                 sortOrder: sortIdx++,
                 width: 1200,
                 height: 1800,
-                fileSizeBytes: (assetItem.fileSize || 51200).toString(),
+                fileSizeBytes: ((assetItem as any).fileSize || 51200).toString(),
               });
               await manager.save(MediaAsset, imgAsset);
             }
@@ -1344,18 +1360,22 @@ export class TranslationService {
     const storyMediaFormat = jobInfo.project?.storyEdition?.story?.mediaFormat;
     const isNovel = storyMediaFormat === MediaFormat.NOVEL;
 
-    // 2. Validate prefix jail & mediaFormat consistency trên result_manifest (Cả Manga và Novel)
+    // 2. Validate prefix jail & typed manifest validation (Cả Manga và Novel)
     const allowedPrefix = `ai/jobs/${jobId}/attempt-${eventDto.attemptNumber}/`;
     if (eventDto.resultManifest) {
-      if (
-        eventDto.resultManifest.mediaFormat &&
-        ((isNovel && eventDto.resultManifest.mediaFormat !== 'NOVEL') ||
-          (!isNovel && eventDto.resultManifest.mediaFormat !== 'COMIC'))
-      ) {
-        throw new BadRequestException(
-          `MediaFormat trong result_manifest (${eventDto.resultManifest.mediaFormat}) không khớp với loại tác phẩm (${storyMediaFormat}).`,
-        );
+      const manifestValidation = validateTranslationResultManifest(
+        eventDto.resultManifest,
+        isNovel ? 'NOVEL' : 'COMIC',
+      );
+      if (!manifestValidation.valid) {
+        throw new BadRequestException({
+          code: 'INVALID_TRANSLATION_MANIFEST',
+          message: `Result manifest không hợp lệ cho ${isNovel ? 'NOVEL' : 'COMIC'}: ${manifestValidation.errors.join('; ')}`,
+          errors: manifestValidation.errors,
+        });
       }
+      // Áp dụng canonicalized manifest (ví dụ tự động ánh xạ fileSize -> fileSizeBytes)
+      eventDto.resultManifest = manifestValidation.value as any;
 
       if (
         eventDto.resultManifest.pages &&
@@ -1366,6 +1386,19 @@ export class TranslationService {
           if (key && !key.startsWith(allowedPrefix)) {
             throw new BadRequestException(
               `Storage key trong result_manifest (${key}) không nằm trong prefix được cấp phép: ${allowedPrefix}`,
+            );
+          }
+        }
+      }
+
+      if (
+        eventDto.resultManifest.cleanBases &&
+        Array.isArray(eventDto.resultManifest.cleanBases)
+      ) {
+        for (const cb of eventDto.resultManifest.cleanBases) {
+          if (cb.cleanBaseKey && !cb.cleanBaseKey.startsWith(allowedPrefix)) {
+            throw new BadRequestException(
+              `CleanBase storage key trong result_manifest (${cb.cleanBaseKey}) không nằm trong prefix được cấp phép: ${allowedPrefix}`,
             );
           }
         }
@@ -1539,6 +1572,40 @@ export class TranslationService {
 
       // Lưu segments atomic & idempotent khi READY_FOR_REVIEW
       if (eventDto.stage === TranslationJobStatus.READY_FOR_REVIEW) {
+        // Enforce invariants theo mediaFormat (#160)
+        if (isNovel) {
+          if (!eventDto.segments || eventDto.segments.length === 0) {
+            throw new BadRequestException({
+              code: 'NOVEL_JOB_MISSING_SEGMENTS',
+              message:
+                'Novel job bắt buộc phải có danh sách segments khi ở trạng thái READY_FOR_REVIEW.',
+            });
+          }
+          for (const seg of eventDto.segments) {
+            if (
+              !seg.blockType ||
+              !Object.values(NovelBlockType).includes(seg.blockType)
+            ) {
+              throw new BadRequestException({
+                code: 'NOVEL_SEGMENT_MISSING_BLOCK_TYPE',
+                message: `Novel segment (sortOrder: ${seg.sortOrder}) thiếu hoặc có blockType không hợp lệ: ${seg.blockType}. Yêu cầu: HEADING, DIALOGUE, NARRATION, BLOCKQUOTE`,
+              });
+            }
+          }
+        } else {
+          // COMIC: Tuyệt đối không được chứa blockType
+          if (eventDto.segments) {
+            for (const seg of eventDto.segments) {
+              if (seg.blockType !== undefined && seg.blockType !== null) {
+                throw new BadRequestException({
+                  code: 'COMIC_SEGMENT_UNEXPECTED_BLOCK_TYPE',
+                  message: `Comic segment (sortOrder: ${seg.sortOrder}) không được phép chứa blockType: ${seg.blockType}`,
+                });
+              }
+            }
+          }
+        }
+
         await manager.delete(TranslationSegment, { jobId: job.id });
         if (eventDto.segments && eventDto.segments.length > 0) {
           for (const seg of eventDto.segments) {
@@ -1547,6 +1614,7 @@ export class TranslationService {
               pageNumber: seg.pageNumber ?? null,
               anchorBlockId: seg.anchorBlockId ?? null,
               sortOrder: seg.sortOrder,
+              blockType: seg.blockType ?? null,
               bboxX: seg.bboxX ?? null,
               bboxY: seg.bboxY ?? null,
               bboxW: seg.bboxW ?? null,

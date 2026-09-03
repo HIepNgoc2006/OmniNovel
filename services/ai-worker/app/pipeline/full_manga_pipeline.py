@@ -242,6 +242,7 @@ class FullMangaPipeline:
                             "previewKey": slot["storageKey"],
                             "width": prec["width"],
                             "height": prec["height"],
+                            "fileSizeBytes": prec["fileSize"],
                             "fileSize": prec["fileSize"],
                         }
                     )
@@ -254,6 +255,7 @@ class FullMangaPipeline:
                         "previewKey": f"ai/jobs/{job_id}/attempt-{attempt_number}/page_{prec['page']:04d}.webp",
                         "width": prec["width"],
                         "height": prec["height"],
+                        "fileSizeBytes": prec["fileSize"],
                         "fileSize": prec["fileSize"],
                     }
                     for prec in page_records
@@ -273,7 +275,11 @@ class FullMangaPipeline:
                 output_segment_keys=output_keys,
             )
 
-            result_manifest = {"pages": manifest_pages}
+            result_manifest = {
+                "version": 1,
+                "mediaFormat": "COMIC",
+                "pages": manifest_pages,
+            }
 
             # 9. TẬP HỢP FINAL SEGMENTS VÀ PHÁT CALLBACK READY_FOR_REVIEW
             final_segments_payload = [

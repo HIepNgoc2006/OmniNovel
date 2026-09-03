@@ -422,6 +422,7 @@ export interface UpdateTranslationSegmentRequest {
 }
 
 export * from './validators/protected-anchor';
+export * from './manifests/translation-manifests';
 
 export type ReviewAssetDto =
   | {

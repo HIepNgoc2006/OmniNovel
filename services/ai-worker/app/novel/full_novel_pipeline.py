@@ -279,8 +279,11 @@ class FullNovelPipeline:
                 })
 
             result_manifest = {
+                "version": 1,
                 "mediaFormat": "NOVEL",
                 "htmlKey": uploaded_html_key,
+                "segmentCount": len(segments_payload),
+                "charCount": sum(len(s.get("translatedText") or "") for s in segments_payload),
                 "title": translated_doc.title or extracted_chapter.title,
                 "language": translated_doc.language,
                 "assets": uploaded_assets,

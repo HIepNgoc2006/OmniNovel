@@ -58,9 +58,9 @@
     - [x] Strict protected anchor topology validation ported with parity test coverage (#147).
     - [x] Apply freshness gate & zero-leak concurrency invariant (#156 schema & Apply portion; fenced completion pending PR C #161).
     - [x] Hardening: Fail-closed GlobalExceptionFilter metadata allowlist, deterministic DB barrier & PATCH-vs-Apply race test, UUID/int/text boundary validation, SSoT API contracts (#147, #156).
-  - [ ] **Phase 4D.3 Contract Stabilization (PR B)**:
-    - [ ] Novel segment blockType extension (#160).
-    - [ ] Typed & versioned translation manifests (#164).
+  - [/] **Phase 4D.3 Contract Stabilization (PR B - IMPLEMENTED & VERIFIED)**:
+    - [x] Novel segment blockType extension (#160) - Canonical enum: `HEADING`, `DIALOGUE`, `NARRATION`, `BLOCKQUOTE`; Migration 0012 with `novel_block_type_enum`; strict invariants at `READY_FOR_REVIEW` (enforced for Novel, forbidden for Comic).
+    - [x] Typed & versioned translation manifests (#164) - Versioned schemas `MangaResultManifestV1` (version: 1, `fileSizeBytes`, `cleanBases`) & `NovelResultManifestV1` (version: 1, `segmentCount`, `charCount`, `qa`, `metrics`), pure runtime validators, discriminated union narrowing, backward-compatible `fileSize` auto-mapping, fail-closed unknown versions. Cross-service parity between TypeScript `@omninovel/shared`, Core API, and Python Worker Pydantic v2 models.
   - [ ] **Phase 4D.4 Materialization Protocol & Fenced Completion (PR C)**:
     - [ ] Dedicated materialization queue & deterministic custom job ID (#161).
     - [ ] Durable S3 snapshot artifact & internal completion callback (#161, #156 remainder).

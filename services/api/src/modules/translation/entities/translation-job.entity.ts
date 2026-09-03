@@ -8,7 +8,11 @@ import {
   JoinColumn,
   Unique,
 } from 'typeorm';
-import { TranslationJobStatus } from '@omninovel/shared';
+import {
+  TranslationJobStatus,
+  TranslationInputManifestV1,
+  TranslationResultManifestV1,
+} from '@omninovel/shared';
 import { TranslationProject } from './translation-project.entity';
 import { ChapterVersion } from '../../chapters/entities/chapter-version.entity';
 import { UploadSession } from '../../storage/entities/upload-session.entity';
@@ -97,10 +101,10 @@ export class TranslationJob {
   promptVersion: string;
 
   @Column({ name: 'input_manifest', type: 'jsonb', nullable: true })
-  inputManifest: Record<string, any> | null;
+  inputManifest: TranslationInputManifestV1 | Record<string, any> | null;
 
   @Column({ name: 'result_manifest', type: 'jsonb', nullable: true })
-  resultManifest: Record<string, any> | null;
+  resultManifest: TranslationResultManifestV1 | Record<string, any> | null;
 
   @Column({ name: 'error_trace', type: 'text', nullable: true })
   errorTrace: string | null;

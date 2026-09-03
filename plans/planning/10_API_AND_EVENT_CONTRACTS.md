@@ -76,14 +76,17 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 ### 3.5. Phân Hệ Studio & Dịch Thuật AI (Studio & AI)
 | Method | Endpoint | Yêu Cầu Body / Header | Response Thành Công |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/studio/stories` | Auth: Global Translator / Global Admin | `200 OK` + `{ managedStories: [...] }` |
+| `GET` | `/api/v1/studio/stories` | Auth: Story Member (OWNER/EDITOR/TRANSLATOR) / Global Admin, Query: `page`, `limit`, `search` | `200 OK` + `{ data: ManagedStorySummaryDto[], pagination }` |
 | `POST` | `/api/v1/studio/stories` | Auth: Global Translator / Global Admin, Body: `{ title, mediaFormat, publicationFormat, originCountry, originalLanguage, summary, coverUrl }` | `201 Created` + `{ storyId }` |
 | `POST` | `/api/v1/studio/stories/:id/editions` | Auth: Story Owner / Global Admin, Body: `{ editionName, language, isDefault }` | `201 Created` + `{ editionId }` |
 | `POST` | `/api/v1/studio/editions/:id/volumes` | Auth: Story Editor / Story Owner / Global Admin, Body: `{ volumeNumber, title, coverUrl }` | `201 Created` + `{ volumeId }` |
 | `POST` | `/api/v1/studio/volumes/:id/chapters` | Auth: Story Editor / Story Owner / Global Admin, Body: `{ chapterNumber, title }` | `201 Created` + `{ chapterId }` |
 | `POST` | `/api/v1/uploads/sessions`| Auth: Story Uploader / Story Translator / Story Editor / Story Owner / Global Admin, Body: `{ storyEditionId, chapterNumber, fileType: 'ZIP' \| 'TEXT' \| 'EPUB' \| 'MARKDOWN', fileSize }` | `201 Created` + `{ uploadId, presignedUrls: [...] }` |
+| `GET` | `/api/v1/ai/projects` | Auth: Story Member / Global Admin, Query: `page`, `limit`, `storyId` | `200 OK` + `{ data: TranslationProjectSummaryDto[], pagination }` |
+| `GET` | `/api/v1/ai/jobs` | Auth: Story Member / Global Admin, Query: `page`, `limit`, `storyId`, `projectId`, `status` | `200 OK` + `{ data: TranslationJobSummaryDto[], pagination }` |
 | `POST` | `/api/v1/ai/jobs` | Header: `Idempotency-Key` (UUID-v4), Auth: Story Translator / Story Editor / Story Owner / Global Admin, Body: `{ chapterVersionId, sourceLang, targetLang, provider }` | `202 Accepted` + `{ jobId, status: 'QUEUED' }` |
-| `GET` | `/api/v1/ai/jobs/:id` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` | `200 OK` + `{ job, segments, diffPreviewUrls }` |
+| `GET` | `/api/v1/ai/jobs/:id` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` | `200 OK` + `{ job, context, reviewSummary, glossarySnapshot?, error? }` |
+| `GET` | `/api/v1/ai/jobs/:id/segments` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Query: `page`, `limit`, `pageNumber?` | `200 OK` + `{ data: TranslationSegmentDto[], pagination }` |
 | `POST` | `/api/v1/ai/jobs/:id/cancel` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` | `200 OK` + `{ jobId, status: 'CANCELED' }` |
 | `POST` | `/api/v1/ai/jobs/:id/apply` | Header: `Idempotency-Key` (UUID-v4), Auth: Story Editor / Story Owner / Global Admin, Body: `{ mode: 'OVERWRITE_ACTIVE_VERSION' \| 'CREATE_ALTERNATE_VERSION' }` | `200 OK` + `{ chapterId, activeVersionId, versionNumber }` |
 | `GET/POST` | `/api/v1/ai/glossary` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Body (POST): `{ projectId, sourceTerm, targetTerm, category }` | `200 OK / 201 Created` + `{ glossaryTerm }` |

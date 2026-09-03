@@ -1823,7 +1823,8 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         TranslationJobStatus.QUEUED,
         TranslationJobStatus.PREPROCESSING,
       ]).toContain(res.body.job.status);
-      expect(res.body.segments).toBeDefined();
+      expect(res.body.segments).toBeUndefined();
+      expect(res.body.reviewSummary).toBeDefined();
     });
 
     it('POST /internal/v1/ai/jobs/:id/events without X-Internal-Service-Key should return 401 Unauthorized', async () => {

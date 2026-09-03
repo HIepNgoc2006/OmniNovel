@@ -257,4 +257,183 @@ export interface StandardErrorResponse {
   };
 }
 
+// ==========================================
+// PHASE 4D: AI TRANSLATION STUDIO & REVIEW CONTRACTS
+// ==========================================
 
+export type IsoDateString = string;
+
+export interface ManagedStorySummaryDto {
+  id: string;
+  title: string;
+  slug: string;
+  mediaFormat: MediaFormat;
+  publicationFormat: PublicationFormat;
+  originCountry: string;
+  originalLanguage: string;
+  coverUrl: string | null;
+  status: StoryStatus;
+  visibility: StoryVisibility;
+  summary: string | null;
+  viewsCount: string;
+  followersCount?: number;
+  createdAt: IsoDateString;
+  updatedAt: IsoDateString;
+}
+
+export enum NovelBlockType {
+  HEADING = 'HEADING',
+  DIALOGUE = 'DIALOGUE',
+  NARRATION = 'NARRATION',
+  BLOCKQUOTE = 'BLOCKQUOTE',
+}
+
+export interface PaginatedResponse<T> {
+  data: T[];
+  pagination: {
+    total: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  };
+}
+
+export interface TranslationProjectSummaryDto {
+  id: string;
+  storyId: string;
+  storyEditionId: string;
+  sourceLanguage: string;
+  targetLanguage: string;
+  createdAt: IsoDateString;
+  latestJob?: {
+    id: string;
+    status: TranslationJobStatus;
+    progressPercentage: number;
+  };
+}
+
+export interface TranslationJobSummaryDto {
+  id: string;
+  projectId: string;
+  storyId: string;
+  storyTitle: string;
+  storyEditionId: string;
+  editionName: string;
+  chapterId: string;
+  chapterNumber: string;
+  chapterTitle: string | null;
+  sourceLanguage: string;
+  targetLanguage: string;
+  status: TranslationJobStatus;
+  progressPercentage: number;
+  provider: string;
+  modelName: string;
+  createdAt: IsoDateString;
+  startedAt: IsoDateString | null;
+  completedAt: IsoDateString | null;
+}
+
+export interface ReviewSummaryDto {
+  segmentCount: number;
+  verifiedCount: number;
+  pageCount: number | null;
+  blockCount: number | null;
+}
+
+export interface TranslationJobReviewDetailResponse {
+  job: {
+    id: string;
+    status: TranslationJobStatus;
+    progressPercentage: number;
+    provider: string;
+    modelName: string;
+    promptVersion: string;
+    attemptCount: number;
+    maxAttempts: number;
+    createdAt: IsoDateString;
+    startedAt: IsoDateString | null;
+    heartbeatAt: IsoDateString | null;
+    completedAt: IsoDateString | null;
+    expiresAt: IsoDateString | null;
+  };
+  context: {
+    story: {
+      id: string;
+      title: string;
+      slug: string;
+      mediaFormat: MediaFormat;
+    };
+    edition: {
+      id: string;
+      editionName: string;
+      language: string;
+      isDefault: boolean;
+    };
+    chapter: {
+      id: string;
+      chapterNumber: string;
+      title: string | null;
+    };
+    project: {
+      id: string;
+      sourceLanguage: string;
+      targetLanguage: string;
+    };
+    sourceVersion: { id: string; versionNumber: number };
+    targetVersion: { id: string; versionNumber: number } | null;
+  };
+  reviewSummary: ReviewSummaryDto;
+  glossarySnapshot?: Array<{
+    sourceTerm: string;
+    targetTerm: string;
+    category: string;
+  }>;
+  error?: {
+    code: string;
+    message: string;
+  };
+}
+
+export interface TranslationSegmentDto {
+  id: string;
+  jobId: string;
+  pageNumber: number | null;
+  anchorBlockId: string | null;
+  sortOrder: number;
+  bboxX: number | null;
+  bboxY: number | null;
+  bboxW: number | null;
+  bboxH: number | null;
+  rawText: string;
+  translatedText: string | null;
+  confidence: number | null;
+  isHumanVerified: boolean;
+  blockType?: NovelBlockType | null;
+  version?: number;
+  createdAt?: IsoDateString;
+}
+
+export type ReviewAssetDto =
+  | {
+      kind: 'SOURCE_MEDIA';
+      id: string;
+      pageNumber: number;
+      width: number | null;
+      height: number | null;
+      url: string;
+    }
+  | {
+      kind: 'SOURCE_REVIEW';
+      pageNumber: number;
+      width: number | null;
+      height: number | null;
+      url: string;
+    }
+  | {
+      kind: 'RESULT';
+      pageNumber: number;
+      width: number | null;
+      height: number | null;
+      fileSizeBytes?: number;
+      url: string;
+    };

@@ -18,6 +18,9 @@ import { TranslationService } from './translation.service';
 import { CreateTranslationJobDto } from './dto/create-translation-job.dto';
 import { ApplyTranslationJobDto } from './dto/apply-translation-job.dto';
 import { CreateGlossaryDto } from './dto/create-glossary.dto';
+import { FindTranslationProjectsQueryDto } from './dto/find-translation-projects-query.dto';
+import { FindTranslationJobsQueryDto } from './dto/find-translation-jobs-query.dto';
+import { FindJobSegmentsQueryDto } from './dto/find-job-segments-query.dto';
 
 const UUID_V4_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -26,6 +29,22 @@ const UUID_V4_REGEX =
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class TranslationController {
   constructor(private readonly translationService: TranslationService) {}
+
+  @Get('projects')
+  async getProjects(
+    @CurrentUser() user: any,
+    @Query() query: FindTranslationProjectsQueryDto,
+  ) {
+    return await this.translationService.getProjects(user, query);
+  }
+
+  @Get('jobs')
+  async getJobs(
+    @CurrentUser() user: any,
+    @Query() query: FindTranslationJobsQueryDto,
+  ) {
+    return await this.translationService.getJobs(user, query);
+  }
 
   @Post('jobs')
   @HttpCode(HttpStatus.ACCEPTED)
@@ -58,6 +77,15 @@ export class TranslationController {
   @Get('jobs/:id')
   async getJob(@Param('id') id: string, @CurrentUser() user: any) {
     return await this.translationService.getJob(id, user);
+  }
+
+  @Get('jobs/:id/segments')
+  async getJobSegments(
+    @Param('id') id: string,
+    @CurrentUser() user: any,
+    @Query() query: FindJobSegmentsQueryDto,
+  ) {
+    return await this.translationService.getJobSegments(id, user, query);
   }
 
   @Post('jobs/:id/apply')

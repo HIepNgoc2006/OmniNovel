@@ -14,6 +14,7 @@ import {
 import { StoriesService } from './stories.service';
 import { CreateStoryDto } from './dto/create-story.dto';
 import { FindStoriesQueryDto } from './dto/find-stories-query.dto';
+import { FindManagedStoriesQueryDto } from './dto/find-managed-stories-query.dto';
 import { SetBookmarkDto } from './dto/set-bookmark.dto';
 import { UpdateReadingProgressDto } from './dto/update-reading-progress.dto';
 import { UpdateVisibilityDto } from './dto/update-visibility.dto';
@@ -95,7 +96,16 @@ export class StoriesController {
     return this.storiesService.getReadingProgress(user, storyId);
   }
 
-  // 7. Tạo bộ truyện mới trong Studio (Global TRANSLATOR hoặc Global ADMIN)
+  // 7. Quản lý bộ truyện trong Studio (Global ADMIN hoặc StoryMember: OWNER/EDITOR/TRANSLATOR)
+  @Get('studio/stories')
+  @UseGuards(JwtAuthGuard)
+  getManagedStories(
+    @CurrentUser() user: any,
+    @Query() query: FindManagedStoriesQueryDto,
+  ) {
+    return this.storiesService.findManagedStories(user, query);
+  }
+
   @Post('studio/stories')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(GlobalRole.TRANSLATOR, GlobalRole.ADMIN)

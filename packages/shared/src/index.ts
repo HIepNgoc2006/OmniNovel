@@ -355,6 +355,8 @@ export interface TranslationJobReviewDetailResponse {
     heartbeatAt: IsoDateString | null;
     completedAt: IsoDateString | null;
     expiresAt: IsoDateString | null;
+    reviewRevision: number;
+    materializedRevision: number;
   };
   context: {
     story: {
@@ -409,9 +411,17 @@ export interface TranslationSegmentDto {
   confidence: number | null;
   isHumanVerified: boolean;
   blockType?: NovelBlockType | null;
-  version?: number;
+  version: number;
   createdAt?: IsoDateString;
 }
+
+export interface UpdateTranslationSegmentRequest {
+  translatedText?: string;
+  isHumanVerified?: boolean;
+  expectedVersion: number;
+}
+
+export * from './validators/protected-anchor';
 
 export type ReviewAssetDto =
   | {

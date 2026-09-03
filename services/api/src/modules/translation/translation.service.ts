@@ -25,6 +25,7 @@ import {
   TranslationJobReviewDetailResponse,
   TranslationSegmentDto,
   PaginatedResponse,
+  validateProtectedAnchorTopology,
 } from '@omninovel/shared';
 import { TranslationJob } from './entities/translation-job.entity';
 import { TranslationProject } from './entities/translation-project.entity';
@@ -51,6 +52,7 @@ import { WorkerEventCallbackDto } from './dto/worker-event-callback.dto';
 import { FindTranslationProjectsQueryDto } from './dto/find-translation-projects-query.dto';
 import { FindTranslationJobsQueryDto } from './dto/find-translation-jobs-query.dto';
 import { FindJobSegmentsQueryDto } from './dto/find-job-segments-query.dto';
+import { UpdateTranslationSegmentDto } from './dto/update-translation-segment.dto';
 import {
   assertWorkerReportableState,
   assertTransitionAllowed,
@@ -619,6 +621,8 @@ export class TranslationService {
         heartbeatAt: job.heartbeatAt ? job.heartbeatAt.toISOString() : null,
         completedAt: job.completedAt ? job.completedAt.toISOString() : null,
         expiresAt: job.expiresAt ? job.expiresAt.toISOString() : null,
+        reviewRevision: Number(job.reviewRevision || 0),
+        materializedRevision: Number(job.materializedRevision || 0),
       },
       context: {
         story: {
@@ -734,6 +738,7 @@ export class TranslationService {
       translatedText: s.translatedText,
       confidence: s.confidence !== null ? Number(s.confidence) : null,
       isHumanVerified: s.isHumanVerified,
+      version: s.version ?? 1,
       createdAt: s.createdAt.toISOString(),
     }));
 
@@ -746,6 +751,215 @@ export class TranslationService {
         totalPages: Math.ceil(total / limit),
       },
     };
+  }
+
+  /**
+   * Cập nhật bản dịch của một Translation Segment (OCC + Per-Job Mutex) (#147)
+   */
+  async updateSegment(
+    jobId: string,
+    segmentId: string,
+    user: any,
+    dto: UpdateTranslationSegmentDto,
+  ): Promise<TranslationSegmentDto> {
+    // 0. Defense-in-depth: empty mutation check
+    if (dto.translatedText === undefined && dto.isHumanVerified === undefined) {
+      throw new BadRequestException({
+        code: 'EMPTY_MUTATION',
+        message:
+          'Yêu cầu cập nhật phải chứa ít nhất translatedText hoặc isHumanVerified.',
+      });
+    }
+
+    return await this.dataSource.transaction(async (manager) => {
+      // 1. Canonical Lock Order: Per-Job Mutex FIRST (triệt tiêu deadlock & race condition)
+      await manager.query(
+        `SELECT id FROM translation_jobs WHERE id = $1 FOR UPDATE`,
+        [jobId],
+      );
+
+      const job = await manager.findOne(TranslationJob, {
+        where: { id: jobId },
+        relations: [
+          'project',
+          'project.storyEdition',
+          'project.storyEdition.story',
+        ],
+      });
+
+      if (!job) {
+        throw new NotFoundException(
+          `Không tìm thấy TranslationJob với ID: ${jobId}`,
+        );
+      }
+
+      const story = job.project?.storyEdition?.story;
+      if (!story) {
+        throw new NotFoundException(
+          'Không tìm thấy Story context hợp lệ cho TranslationJob.',
+        );
+      }
+
+      // 2. Check RBAC
+      await this.checkStoryPermission(story.id, user, [
+        'OWNER',
+        'EDITOR',
+        'TRANSLATOR',
+      ]);
+
+      // 3. Check Job Status: Chỉ duy nhất READY_FOR_REVIEW được phép mutate
+      if (job.status !== TranslationJobStatus.READY_FOR_REVIEW) {
+        throw new ConflictException({
+          code: 'NOT_REVIEWABLE',
+          message: `Chỉ có thể chỉnh sửa segment khi Job ở trạng thái READY_FOR_REVIEW. Trạng thái hiện tại: ${job.status}`,
+        });
+      }
+
+      // 4. Canonical Lock Order: Child resource Segment FOR UPDATE
+      const segment = await manager.findOne(TranslationSegment, {
+        where: { id: segmentId, jobId },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (!segment) {
+        throw new NotFoundException(
+          `Không tìm thấy TranslationSegment với ID: ${segmentId} thuộc Job: ${jobId}`,
+        );
+      }
+
+      // 5. Check OCC Version: Phải kiểm tra trước khi check no-op!
+      if (segment.version !== dto.expectedVersion) {
+        throw new ConflictException({
+          code: 'VERSION_CONFLICT',
+          message: `Xung đột phiên bản (OCC Conflict). Phiên bản hiện tại: ${segment.version}, phiên bản gửi lên: ${dto.expectedVersion}`,
+          currentVersion: segment.version,
+          expectedVersion: dto.expectedVersion,
+        });
+      }
+
+      // 6. Novel Inline Protected Anchors Strict Validation
+      if (
+        story.mediaFormat === MediaFormat.NOVEL &&
+        dto.translatedText !== undefined
+      ) {
+        const anchorCheck = validateProtectedAnchorTopology(
+          segment.rawText,
+          dto.translatedText,
+        );
+        if (!anchorCheck.valid) {
+          throw new BadRequestException({
+            code: 'ANCHOR_TOPOLOGY_VIOLATION',
+            message: `Vi phạm cấu trúc protected anchor: ${anchorCheck.error}`,
+          });
+        }
+      }
+
+      // 7. Determine Changes & No-Op Semantics
+      const textChanged =
+        dto.translatedText !== undefined &&
+        dto.translatedText !== segment.translatedText;
+      const verificationChanged =
+        dto.isHumanVerified !== undefined &&
+        dto.isHumanVerified !== segment.isHumanVerified;
+
+      // No-op: Nếu không có gì thay đổi, không tăng version, không tăng reviewRevision
+      if (!textChanged && !verificationChanged) {
+        return {
+          id: segment.id,
+          jobId: segment.jobId,
+          pageNumber: segment.pageNumber,
+          anchorBlockId: segment.anchorBlockId,
+          sortOrder: segment.sortOrder,
+          bboxX: segment.bboxX !== null ? Number(segment.bboxX) : null,
+          bboxY: segment.bboxY !== null ? Number(segment.bboxY) : null,
+          bboxW: segment.bboxW !== null ? Number(segment.bboxW) : null,
+          bboxH: segment.bboxH !== null ? Number(segment.bboxH) : null,
+          rawText: segment.rawText,
+          translatedText: segment.translatedText,
+          confidence:
+            segment.confidence !== null ? Number(segment.confidence) : null,
+          isHumanVerified: segment.isHumanVerified,
+          version: segment.version,
+          createdAt: segment.createdAt.toISOString(),
+        };
+      }
+
+      // 8. Atomic Conditional SQL UPDATE
+      const newText =
+        dto.translatedText !== undefined
+          ? dto.translatedText
+          : segment.translatedText;
+      let newVerification: boolean;
+      if (dto.isHumanVerified !== undefined) {
+        newVerification = dto.isHumanVerified;
+      } else if (textChanged) {
+        newVerification = false; // Auto-reset verification when text is modified without explicit verification
+      } else {
+        newVerification = segment.isHumanVerified;
+      }
+
+      const updateResult = await manager
+        .createQueryBuilder()
+        .update(TranslationSegment)
+        .set({
+          translatedText: newText,
+          isHumanVerified: newVerification,
+          version: () => 'version + 1',
+        })
+        .where('id = :id AND jobId = :jobId AND version = :expectedVersion', {
+          id: segmentId,
+          jobId,
+          expectedVersion: dto.expectedVersion,
+        })
+        .execute();
+
+      if (updateResult.affected === 0) {
+        throw new ConflictException({
+          code: 'VERSION_CONFLICT',
+          message:
+            'Xung đột phiên bản khi cập nhật segment (OCC Atomic Update Failed).',
+        });
+      }
+
+      // 9. Freshness Counter Semantic Separation:
+      // Chỉ tăng reviewRevision của Job khi translatedText thực sự thay đổi!
+      if (textChanged) {
+        await manager.query(
+          `UPDATE translation_jobs SET review_revision = review_revision + 1 WHERE id = $1`,
+          [jobId],
+        );
+      }
+
+      // Đọc lại segment vừa cập nhật
+      const updatedSegment = await manager.findOneOrFail(TranslationSegment, {
+        where: { id: segmentId },
+      });
+
+      return {
+        id: updatedSegment.id,
+        jobId: updatedSegment.jobId,
+        pageNumber: updatedSegment.pageNumber,
+        anchorBlockId: updatedSegment.anchorBlockId,
+        sortOrder: updatedSegment.sortOrder,
+        bboxX:
+          updatedSegment.bboxX !== null ? Number(updatedSegment.bboxX) : null,
+        bboxY:
+          updatedSegment.bboxY !== null ? Number(updatedSegment.bboxY) : null,
+        bboxW:
+          updatedSegment.bboxW !== null ? Number(updatedSegment.bboxW) : null,
+        bboxH:
+          updatedSegment.bboxH !== null ? Number(updatedSegment.bboxH) : null,
+        rawText: updatedSegment.rawText,
+        translatedText: updatedSegment.translatedText,
+        confidence:
+          updatedSegment.confidence !== null
+            ? Number(updatedSegment.confidence)
+            : null,
+        isHumanVerified: updatedSegment.isHumanVerified,
+        version: updatedSegment.version,
+        createdAt: updatedSegment.createdAt.toISOString(),
+      };
+    });
   }
 
   /**
@@ -885,6 +1099,16 @@ export class TranslationService {
         throw new BadRequestException(
           `Chỉ có thể apply job khi đã hoàn thành ở trạng thái READY_FOR_REVIEW. Trạng thái hiện tại: ${job.status}`,
         );
+      }
+
+      // Invariant #156: Review-Revision Freshness Gate (materializedRevision === reviewRevision)
+      if (job.materializedRevision !== job.reviewRevision) {
+        throw new ConflictException({
+          code: 'ARTIFACT_STALE',
+          message: 'Bản dịch đã có chỉnh sửa mới chưa được tạo artifact.',
+          reviewRevision: job.reviewRevision,
+          materializedRevision: job.materializedRevision,
+        });
       }
 
       // Invariant P0: Defense-in-depth gate cho Novel Structural QA (authoritative DB source)

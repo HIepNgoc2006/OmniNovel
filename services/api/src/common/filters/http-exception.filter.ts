@@ -22,6 +22,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
     let code = 'INTERNAL_SERVER_ERROR';
     let message = 'Đã có lỗi không mong muốn xảy ra từ máy chủ.';
     let details: Array<{ field: string; issue: string }> | undefined;
+    let extraData: Record<string, any> = {};
 
     if (exception instanceof HttpException) {
       status = exception.getStatus();
@@ -44,6 +45,9 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         } else if (resObj.details) {
           details = resObj.details;
         }
+
+        const { code: _c, message: _m, details: _d, error: _e, statusCode: _s, ...rest } = resObj;
+        extraData = rest;
       }
     } else if (exception instanceof Error) {
       message = exception.message;
@@ -55,6 +59,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
         message,
         requestId,
         timestamp: new Date().toISOString(),
+        ...extraData,
         ...(details ? { details } : {}),
       },
     });

@@ -81,6 +81,12 @@ export class TranslationJob {
   @Column({ name: 'last_sequence', default: 0 })
   lastSequence: number;
 
+  @Column({ name: 'review_revision', type: 'int', default: 0 })
+  reviewRevision: number;
+
+  @Column({ name: 'materialized_revision', type: 'int', default: 0 })
+  materializedRevision: number;
+
   @Column({ length: 50, default: 'OPENAI' })
   provider: string;
 

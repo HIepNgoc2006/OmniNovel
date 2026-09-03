@@ -157,8 +157,8 @@ describe('Studio Foundation E2E (#144, #148, #155)', () => {
          input_manifest, result_manifest, created_by
        )
        VALUES ($1, $2, 'READY_FOR_REVIEW', 100, 'OPENAI', 'gpt-4o-mini',
-         '{"glossarySnapshot":[{"sourceTerm":"こんにちは","targetTerm":"Xin chào","category":"COMMON"}]}'::jsonb,
-         '{"mediaFormat":"COMIC","pages":[{"pageNumber":1,"storageKey":"ai/jobs/fake/page1.webp"}]}'::jsonb,
+          '{"version":1,"sourceLang":"ja","targetLang":"vi","provider":"OPENAI","model":"gpt-4o-mini","promptVersion":"v1.0","glossarySnapshot":[{"sourceTerm":"こんにちは","targetTerm":"Xin chào","category":"COMMON"}],"glossaryHash":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","externalConsent":{"consented":false,"consentedAt":null,"provider":"OPENAI"}}'::jsonb,
+          '{"version":1,"mediaFormat":"COMIC","pages":[{"page":1,"storageKey":"ai/jobs/fake/page1.webp","previewKey":"ai/jobs/fake/page1.webp","width":1200,"height":1800,"fileSizeBytes":102400}]}'::jsonb,
          $3
        )
        RETURNING id`,

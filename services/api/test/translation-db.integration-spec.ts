@@ -145,6 +145,21 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
       [testJobId],
     );
 
+    // Upload mock WebP artifact vào MinIO để vượt qua storage verification ở READY_FOR_REVIEW
+    const presign = await service.createOutputUploadUrls(testJobId, 1, [
+      { filename: 'p1.webp', contentType: 'image/webp' },
+    ]);
+    await fetch(presign.files[0].uploadUrl, {
+      method: 'PUT',
+      body: Buffer.from([
+        0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+        0x56, 0x50, 0x38, 0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00,
+        0x00, 0x07, 0x00, 0x00, 0x00, 0x00,
+      ]),
+      headers: { 'Content-Type': 'image/webp' },
+    });
+    const mockStorageKey = presign.files[0].storageKey;
+
     // Gửi đồng thời 4 callback cùng một lúc (Same-stage heartbeat progression -> READY_FOR_REVIEW)
     const events = [
       {
@@ -174,6 +189,20 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
         sequence: 4,
         stage: TranslationJobStatus.READY_FOR_REVIEW,
         progress: 100,
+        resultManifest: {
+          version: 1 as const,
+          mediaFormat: 'COMIC' as const,
+          pages: [
+            {
+              page: 1,
+              storageKey: mockStorageKey,
+              previewKey: mockStorageKey,
+              width: 1200,
+              height: 1800,
+              fileSizeBytes: 102400,
+            },
+          ],
+        },
         segments: [
           {
             pageNumber: 1,
@@ -190,7 +219,7 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
     ];
 
     // Chạy đồng thời Promise.all
-    await Promise.all(events.map((ev) => service.handleWorkerEvent(testJobId, ev)));
+    await Promise.all(events.map((ev) => service.handleWorkerEvent(testJobId, ev as any)));
 
     // Kiểm tra trạng thái DB sau khi tất cả Promise hoàn thành
     const finalJob = await dataSource.query(
@@ -229,6 +258,8 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
       `UPDATE translation_jobs SET status = 'READY_FOR_REVIEW', result_manifest = $1 WHERE id = $2`,
       [
         JSON.stringify({
+          version: 1,
+          mediaFormat: 'COMIC',
           pages: [
             {
               page: 1,
@@ -236,6 +267,7 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
               previewKey: `ai/jobs/${testJobId}/attempt-1/p1.webp`,
               width: 1200,
               height: 1800,
+              fileSizeBytes: 102400,
             },
           ],
         }),

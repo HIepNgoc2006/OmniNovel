@@ -7,6 +7,12 @@ from app.core.config import settings
 from app.models.manifests import MangaResultManifestV1, NovelResultManifestV1
 
 
+TranslationResultManifestModel = Union[
+    MangaResultManifestV1,
+    NovelResultManifestV1,
+]
+
+
 class ProgressSink(ABC):
     """Abstraction tiếp nhận tiến độ và heartbeat của pipeline xử lý AI."""
 
@@ -23,9 +29,10 @@ class ProgressSink(ABC):
         """Gửi cập nhật tiến độ hoặc trạng thái (chỉ dành cho intermediate stages)."""
         pass
 
+    @abstractmethod
     async def emit_ready(
         self,
-        result_manifest: Any,
+        result_manifest: TranslationResultManifestModel,
         segments: Optional[List[Dict[str, Any]]] = None,
         message: str = "All stages completed and verified",
         sequence: Optional[int] = None,
@@ -64,7 +71,7 @@ class NoopProgressSink(ProgressSink):
 
     async def emit_ready(
         self,
-        result_manifest: Union[MangaResultManifestV1, NovelResultManifestV1],
+        result_manifest: TranslationResultManifestModel,
         segments: Optional[List[Dict[str, Any]]] = None,
         message: str = "All stages completed and verified",
         sequence: Optional[int] = None,
@@ -100,16 +107,11 @@ class RecordingProgressSink(ProgressSink):
 
     async def emit_ready(
         self,
-        result_manifest: Any,
+        result_manifest: TranslationResultManifestModel,
         segments: Optional[List[Dict[str, Any]]] = None,
         message: str = "All stages completed and verified",
         sequence: Optional[int] = None,
     ) -> None:
-        if hasattr(result_manifest, "model_dump"):
-            dumped_manifest = result_manifest.model_dump(mode="json", exclude_none=True, by_alias=True)
-        else:
-            dumped_manifest = result_manifest
-
         self.events.append(
             {
                 "progress": 100,
@@ -117,7 +119,11 @@ class RecordingProgressSink(ProgressSink):
                 "heartbeat": False,
                 "message": message,
                 "sequence": sequence,
-                "resultManifest": dumped_manifest,
+                "resultManifest": result_manifest.model_dump(
+                    mode="json",
+                    exclude_none=True,
+                    by_alias=True,
+                ),
                 "segments": segments or [],
             }
         )
@@ -158,7 +164,6 @@ class CoreCallbackProgressSink(ProgressSink):
             "stage": stage,
             "progress": progress,
             "heartbeat": heartbeat,
-            "message": message,
             "segments": segments if segments is not None else [],
         }
 
@@ -166,7 +171,7 @@ class CoreCallbackProgressSink(ProgressSink):
 
     async def emit_ready(
         self,
-        result_manifest: Any,
+        result_manifest: TranslationResultManifestModel,
         segments: Optional[List[Dict[str, Any]]] = None,
         message: str = "All stages completed and verified",
         sequence: Optional[int] = None,
@@ -176,14 +181,11 @@ class CoreCallbackProgressSink(ProgressSink):
             self.sequence += 1
 
         # Duy nhất tại đây model_dump() sang JSON Dict trước khi gửi qua HTTP
-        if hasattr(result_manifest, "model_dump"):
-            manifest_payload = result_manifest.model_dump(
-                mode="json",
-                exclude_none=True,
-                by_alias=True,
-            )
-        else:
-            manifest_payload = result_manifest
+        manifest_payload = result_manifest.model_dump(
+            mode="json",
+            exclude_none=True,
+            by_alias=True,
+        )
 
         payload: Dict[str, Any] = {
             "eventId": str(uuid.uuid4()),
@@ -192,7 +194,6 @@ class CoreCallbackProgressSink(ProgressSink):
             "stage": "READY_FOR_REVIEW",
             "progress": 100,
             "heartbeat": False,
-            "message": message,
             "resultManifest": manifest_payload,
             "segments": segments if segments is not None else [],
         }

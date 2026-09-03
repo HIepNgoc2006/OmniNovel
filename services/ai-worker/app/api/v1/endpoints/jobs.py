@@ -341,12 +341,24 @@ async def process_novel_job(req: ProcessJobRequest):
         )
 
         try:
+            glossary_entries = (
+                [
+                    {
+                        "sourceTerm": x.sourceTerm,
+                        "targetTerm": x.targetTerm,
+                        "category": x.category,
+                    }
+                    for x in req.inputManifest.glossarySnapshot
+                ]
+                if req.inputManifest and req.inputManifest.glossarySnapshot
+                else []
+            )
             return await pipeline.execute(
                 job_id=job_id,
                 attempt_number=attempt_num,
                 source_download_url=req.sourceDownloadUrl,
                 input_manifest=req.inputManifest,
-                glossary_entries=(req.inputManifest or {}).get("glossary"),
+                glossary_entries=glossary_entries,
             )
         except Exception as e:
             await coordinator.stop()

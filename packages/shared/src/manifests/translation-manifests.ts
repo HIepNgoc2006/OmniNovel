@@ -172,6 +172,26 @@ function isSafeNonNegativeInteger(val: unknown): val is number {
   );
 }
 
+const RFC3339_REGEX =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+
+function isValidRfc3339WithTimezone(val: unknown): boolean {
+  if (typeof val !== 'string') return false;
+  if (!RFC3339_REGEX.test(val)) return false;
+  if (Number.isNaN(Date.parse(val))) return false;
+  const [datePart] = val.split('T');
+  const [yearStr, monthStr, dayStr] = datePart.split('-');
+  const year = parseInt(yearStr, 10);
+  const month = parseInt(monthStr, 10);
+  const day = parseInt(dayStr, 10);
+  const check = new Date(Date.UTC(year, month - 1, day));
+  return (
+    check.getUTCFullYear() === year &&
+    check.getUTCMonth() + 1 === month &&
+    check.getUTCDate() === day
+  );
+}
+
 // ----------------------------------------------------------------------
 // Runtime Validators
 // ----------------------------------------------------------------------
@@ -794,12 +814,9 @@ export function validateTranslationInputManifestV1(
     }
 
     if (obj.externalConsent.consented === true) {
-      if (
-        typeof obj.externalConsent.consentedAt !== 'string' ||
-        Number.isNaN(Date.parse(obj.externalConsent.consentedAt))
-      ) {
+      if (!isValidRfc3339WithTimezone(obj.externalConsent.consentedAt)) {
         errors.push(
-          'externalConsent.consentedAt must be a valid ISO date string when consented is true',
+          'externalConsent.consentedAt must be a valid RFC3339 timestamp string with timezone when consented is true',
         );
       }
     } else if (obj.externalConsent.consented === false) {

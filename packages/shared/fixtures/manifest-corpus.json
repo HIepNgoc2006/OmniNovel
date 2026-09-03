@@ -827,5 +827,100 @@
         "provider": "OPENAI"
       }
     }
+  },
+  {
+    "id": "valid-input-manifest-with-offset-timezone",
+    "schema": "INPUT_MANIFEST_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "sourceLang": "ja",
+      "targetLang": "vi",
+      "provider": "OPENAI",
+      "model": "gpt-4o-mini",
+      "promptVersion": "novel-ja-vi-v2",
+      "glossarySnapshot": [],
+      "glossaryHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "externalConsent": {
+        "consented": true,
+        "consentedAt": "2026-09-03T17:00:00+07:00",
+        "provider": "OPENAI"
+      }
+    },
+    "canonical": {
+      "version": 1,
+      "sourceLang": "ja",
+      "targetLang": "vi",
+      "provider": "OPENAI",
+      "model": "gpt-4o-mini",
+      "promptVersion": "novel-ja-vi-v2",
+      "glossarySnapshot": [],
+      "glossaryHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "externalConsent": {
+        "consented": true,
+        "consentedAt": "2026-09-03T17:00:00+07:00",
+        "provider": "OPENAI"
+      }
+    }
+  },
+  {
+    "id": "invalid-consent-non-iso-text",
+    "schema": "INPUT_MANIFEST_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "sourceLang": "ja",
+      "targetLang": "vi",
+      "provider": "OPENAI",
+      "model": "gpt-4o-mini",
+      "promptVersion": "novel-ja-vi-v2",
+      "glossarySnapshot": [],
+      "glossaryHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "externalConsent": {
+        "consented": true,
+        "consentedAt": "hello",
+        "provider": "OPENAI"
+      }
+    }
+  },
+  {
+    "id": "invalid-consent-missing-timezone",
+    "schema": "INPUT_MANIFEST_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "sourceLang": "ja",
+      "targetLang": "vi",
+      "provider": "OPENAI",
+      "model": "gpt-4o-mini",
+      "promptVersion": "novel-ja-vi-v2",
+      "glossarySnapshot": [],
+      "glossaryHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "externalConsent": {
+        "consented": true,
+        "consentedAt": "2026-09-03T10:00:00",
+        "provider": "OPENAI"
+      }
+    }
+  },
+  {
+    "id": "invalid-consent-invalid-calendar-date",
+    "schema": "INPUT_MANIFEST_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "sourceLang": "ja",
+      "targetLang": "vi",
+      "provider": "OPENAI",
+      "model": "gpt-4o-mini",
+      "promptVersion": "novel-ja-vi-v2",
+      "glossarySnapshot": [],
+      "glossaryHash": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "externalConsent": {
+        "consented": true,
+        "consentedAt": "2026-02-31T10:00:00Z",
+        "provider": "OPENAI"
+      }
+    }
   }
 ]

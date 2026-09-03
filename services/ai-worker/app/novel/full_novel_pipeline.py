@@ -18,6 +18,7 @@ from app.novel.segmenter import NovelSegmenter, TranslatableBlock
 from app.novel.serializer import NovelDocumentSerializer
 from app.novel.translator import NovelTranslationPipeline, NovelTranslationResult
 from app.models.manifests import (
+    TranslationInputManifestV1,
     NovelResultManifestV1,
     NovelResultAssetModel,
     NovelResultQaModel,
@@ -68,13 +69,37 @@ class FullNovelPipeline:
         job_id: str,
         attempt_number: int,
         source_download_url: str,
-        input_manifest: Optional[Dict[str, Any]] = None,
+        input_manifest: Optional[Union[TranslationInputManifestV1, Dict[str, Any]]] = None,
         glossary_entries: Optional[List[Dict[str, Any]]] = None,
     ) -> Dict[str, Any]:
         """
         Thực thi toàn bộ pipeline xử lý Light Novel end-to-end cho 1 job attempt.
         """
-        manifest = input_manifest or {}
+        if glossary_entries is not None:
+            effective_glossary = glossary_entries
+        elif isinstance(input_manifest, TranslationInputManifestV1):
+            effective_glossary = [
+                {
+                    "sourceTerm": x.sourceTerm,
+                    "targetTerm": x.targetTerm,
+                    "category": x.category,
+                }
+                for x in (input_manifest.glossarySnapshot or [])
+            ]
+        elif isinstance(input_manifest, dict):
+            raw_g = input_manifest.get("glossarySnapshot") or input_manifest.get("glossary") or []
+            effective_glossary = [
+                {
+                    "sourceTerm": g.get("sourceTerm") or g.get("source_term", ""),
+                    "targetTerm": g.get("targetTerm") or g.get("target_term", ""),
+                    "category": g.get("category", "CHARACTER_NAME"),
+                }
+                if isinstance(g, dict) else g
+                for g in raw_g
+            ]
+        else:
+            effective_glossary = []
+
         work_dir = Path(tempfile.mkdtemp(prefix=f"novel_job_{job_id}_att_{attempt_number}_"))
 
         # Bắt đầu background heartbeat loop
@@ -122,7 +147,7 @@ class FullNovelPipeline:
 
             translation_result: NovelTranslationResult = await self.translator.translate_document(
                 document_or_blocks=blocks,
-                glossary_entries=glossary_entries or manifest.get("glossary"),
+                glossary_entries=effective_glossary,
                 job_id=job_id,
             )
 

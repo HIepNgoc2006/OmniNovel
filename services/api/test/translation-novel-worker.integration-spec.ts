@@ -350,7 +350,7 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
         timestamp: new Date().toISOString(),
         resultManifest: {},
       } as any),
-    ).rejects.toThrow('Result manifest không được để trống khi hoàn thành job Novel');
+    ).rejects.toThrow('Result manifest không hợp lệ cho NOVEL');
 
     // 8. Negative Test: handleWorkerEvent từ chối Novel READY_FOR_REVIEW khi giả mạo mediaFormat: 'COMIC'
     await expect(
@@ -361,11 +361,21 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
         sequence: 999,
         timestamp: new Date().toISOString(),
         resultManifest: {
+          version: 1,
           mediaFormat: 'COMIC',
-          pages: [],
+          pages: [
+            {
+              page: 1,
+              storageKey: `ai/jobs/${jobId}/attempt-1/p1.webp`,
+              previewKey: `ai/jobs/${jobId}/attempt-1/p1.webp`,
+              width: 1200,
+              height: 1800,
+              fileSizeBytes: 1024,
+            },
+          ],
         },
       } as any),
-    ).rejects.toThrow('không khớp với loại tác phẩm');
+    ).rejects.toThrow("mediaFormat must be 'NOVEL', got 'COMIC'");
 
     // 9. Negative Test: handleWorkerEvent từ chối Novel READY_FOR_REVIEW khi thiếu htmlKey
     await expect(
@@ -376,11 +386,15 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
         sequence: 1000,
         timestamp: new Date().toISOString(),
         resultManifest: {
+          version: 1,
           mediaFormat: 'NOVEL',
-          qa: { passed: true, fingerprintMatch: true },
+          segmentCount: 1,
+          charCount: 10,
+          htmlFileSizeBytes: 1024,
+          qa: { passed: true, score: 1, fingerprintMatch: true, issuesCount: 0 },
         },
       } as any),
-    ).rejects.toThrow('Novel result manifest bắt buộc phải có htmlKey');
+    ).rejects.toThrow('htmlKey');
 
     // 10. Negative Test: handleWorkerEvent từ chối Novel READY_FOR_REVIEW khi QA failed
     await expect(
@@ -391,9 +405,13 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
         sequence: 1001,
         timestamp: new Date().toISOString(),
         resultManifest: {
+          version: 1,
           mediaFormat: 'NOVEL',
           htmlKey: `ai/jobs/${jobId}/attempt-1/novel_translated.html`,
-          qa: { passed: false, fingerprintMatch: false },
+          htmlFileSizeBytes: 10240,
+          segmentCount: 1,
+          charCount: 10,
+          qa: { passed: false, score: 0.5, fingerprintMatch: false, issuesCount: 1 },
         },
       } as any),
     ).rejects.toThrow('Structural QA không đạt yêu cầu');
@@ -413,9 +431,13 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
         rawVersionId,
         ownerUser.id,
         JSON.stringify({
+          version: 1,
           mediaFormat: 'NOVEL',
           htmlKey: `ai/jobs/${jobId}/attempt-1/novel_translated.html`,
-          qa: { passed: false, fingerprintMatch: false },
+          htmlFileSizeBytes: 10240,
+          segmentCount: 1,
+          charCount: 10,
+          qa: { passed: false, score: 0.5, fingerprintMatch: false, issuesCount: 1 },
         }),
       ],
     );
@@ -443,7 +465,7 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
         jobId,
         rawVersionId,
         ownerUser.id,
-        JSON.stringify({}),
+        null,
       ],
     );
 

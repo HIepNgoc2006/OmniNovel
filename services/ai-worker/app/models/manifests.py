@@ -3,11 +3,14 @@ Versioned Manifest Models for AI Worker (Pydantic v2).
 Strict parity with @omninovel/shared translation-manifests.ts (#160, #164).
 """
 
+import re
+from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Union, Literal, Annotated, Any, Set
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 
 JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991  # 2^53 - 1
+RFC3339_REGEX = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$")
 
 
 class NovelBlockType(str, Enum):
@@ -180,8 +183,17 @@ class TranslationExternalConsentSnapshotModel(StrictManifestModel):
     @model_validator(mode="after")
     def validate_consent_timestamp(self) -> "TranslationExternalConsentSnapshotModel":
         if self.consented is True:
-            if not self.consentedAt:
-                raise ValueError("consentedAt must be provided when consented is True")
+            if not self.consentedAt or not isinstance(self.consentedAt, str):
+                raise ValueError("consentedAt must be provided as a string when consented is True")
+            if not RFC3339_REGEX.match(self.consentedAt):
+                raise ValueError(
+                    "consentedAt must match RFC3339 format with timezone (e.g. '2026-09-03T10:00:00Z' or '2026-09-03T17:00:00+07:00')"
+                )
+            try:
+                dt_str = self.consentedAt.replace("Z", "+00:00")
+                datetime.fromisoformat(dt_str)
+            except Exception as e:
+                raise ValueError(f"consentedAt contains invalid calendar date or time: {e}")
         else:
             if self.consentedAt is not None:
                 raise ValueError("consentedAt must be None when consented is False")

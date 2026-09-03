@@ -138,6 +138,8 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
                 progress: 100,
                 heartbeat: true,
                 resultManifest: {
+                  version: 1,
+                  mediaFormat: 'COMIC',
                   pages: [
                     {
                       page: 1,
@@ -145,7 +147,7 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
                       previewKey: uploadedFile.storageKey,
                       width: 1200,
                       height: 1800,
-                      fileSize: VALID_WEBP_BUFFER.length,
+                      fileSizeBytes: VALID_WEBP_BUFFER.length,
                     },
                   ],
                 },

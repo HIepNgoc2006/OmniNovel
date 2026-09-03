@@ -76,7 +76,7 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 ### 3.5. Phân Hệ Studio & Dịch Thuật AI (Studio & AI)
 | Method | Endpoint | Yêu Cầu Body / Header | Response Thành Công |
 | :--- | :--- | :--- | :--- |
-| `GET` | `/api/v1/studio/stories` | Auth: Story Member (OWNER/EDITOR/TRANSLATOR) / Global Admin, Query: `page`, `limit`, `search` | `200 OK` + `{ data: Story[], pagination }` |
+| `GET` | `/api/v1/studio/stories` | Auth: Story Member (OWNER/EDITOR/TRANSLATOR) / Global Admin, Query: `page`, `limit`, `search` | `200 OK` + `{ data: ManagedStorySummaryDto[], pagination }` |
 | `POST` | `/api/v1/studio/stories` | Auth: Global Translator / Global Admin, Body: `{ title, mediaFormat, publicationFormat, originCountry, originalLanguage, summary, coverUrl }` | `201 Created` + `{ storyId }` |
 | `POST` | `/api/v1/studio/stories/:id/editions` | Auth: Story Owner / Global Admin, Body: `{ editionName, language, isDefault }` | `201 Created` + `{ editionId }` |
 | `POST` | `/api/v1/studio/editions/:id/volumes` | Auth: Story Editor / Story Owner / Global Admin, Body: `{ volumeNumber, title, coverUrl }` | `201 Created` + `{ volumeId }` |

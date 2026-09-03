@@ -57,6 +57,7 @@ describe('StoriesService.findManagedStories (#144)', () => {
             id: 'story-1',
             title: 'Chainsaw Man',
             createdAt: new Date('2026-09-01T00:00:00Z'),
+            updatedAt: new Date('2026-09-01T00:00:00Z'),
           },
         ],
         1,

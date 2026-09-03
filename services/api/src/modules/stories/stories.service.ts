@@ -147,10 +147,10 @@ export class StoriesService {
       status: s.status,
       visibility: s.visibility,
       summary: s.summary || null,
-      viewsCount: s.viewsCount,
+      viewsCount: s.viewsCount || '0',
       followersCount: s.followersCount,
       createdAt: s.createdAt.toISOString(),
-      updatedAt: s.updatedAt ? s.updatedAt.toISOString() : s.createdAt.toISOString(),
+      updatedAt: s.updatedAt.toISOString(),
     }));
 
     return {

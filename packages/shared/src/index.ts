@@ -275,7 +275,7 @@ export interface ManagedStorySummaryDto {
   status: StoryStatus;
   visibility: StoryVisibility;
   summary: string | null;
-  viewsCount?: string | number;
+  viewsCount: string;
   followersCount?: number;
   createdAt: IsoDateString;
   updatedAt: IsoDateString;

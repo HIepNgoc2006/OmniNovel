@@ -1360,9 +1360,53 @@ export class TranslationService {
     const storyMediaFormat = jobInfo.project?.storyEdition?.story?.mediaFormat;
     const isNovel = storyMediaFormat === MediaFormat.NOVEL;
 
-    // 2. Validate prefix jail & typed manifest validation (Cả Manga và Novel)
+    // 2. Validate prefix jail & mediaFormat consistency trên result_manifest (Cả Manga và Novel)
     const allowedPrefix = `ai/jobs/${jobId}/attempt-${eventDto.attemptNumber}/`;
     if (eventDto.resultManifest) {
+      if (
+        eventDto.resultManifest.mediaFormat &&
+        ((isNovel && eventDto.resultManifest.mediaFormat !== 'NOVEL') ||
+          (!isNovel && eventDto.resultManifest.mediaFormat !== 'COMIC'))
+      ) {
+        throw new BadRequestException(
+          `MediaFormat trong result_manifest (${eventDto.resultManifest.mediaFormat}) không khớp với loại tác phẩm (${storyMediaFormat}).`,
+        );
+      }
+
+      if (
+        eventDto.stage === TranslationJobStatus.READY_FOR_REVIEW &&
+        isNovel
+      ) {
+        if (
+          !eventDto.resultManifest ||
+          typeof eventDto.resultManifest !== 'object' ||
+          Object.keys(eventDto.resultManifest).length === 0
+        ) {
+          throw new BadRequestException(
+            'Result manifest không được để trống khi hoàn thành job Novel (READY_FOR_REVIEW).',
+          );
+        }
+
+        if (
+          !eventDto.resultManifest.htmlKey ||
+          typeof eventDto.resultManifest.htmlKey !== 'string'
+        ) {
+          throw new BadRequestException(
+            'Novel result manifest bắt buộc phải có htmlKey hợp lệ khi ở trạng thái READY_FOR_REVIEW.',
+          );
+        }
+
+        if (
+          eventDto.resultManifest.qa &&
+          (eventDto.resultManifest.qa.passed !== true ||
+            eventDto.resultManifest.qa.fingerprintMatch !== true)
+        ) {
+          throw new BadRequestException(
+            'Novel job không thể chuyển sang READY_FOR_REVIEW khi Structural QA không đạt yêu cầu (passed=false hoặc fingerprintMatch=false).',
+          );
+        }
+      }
+
       const manifestValidation = validateTranslationResultManifest(
         eventDto.resultManifest,
         isNovel ? 'NOVEL' : 'COMIC',

@@ -291,33 +291,60 @@ export function validateNovelResultManifestV1(
   }
 
   // Check segmentCount
-  if (typeof obj.segmentCount !== 'number' || !Number.isInteger(obj.segmentCount) || obj.segmentCount < 0) {
+  if (
+    typeof obj.segmentCount !== 'number' ||
+    !Number.isInteger(obj.segmentCount) ||
+    obj.segmentCount < 0
+  ) {
     errors.push('segmentCount must be a non-negative integer');
   }
 
   // Check charCount
-  if (typeof obj.charCount !== 'number' || !Number.isInteger(obj.charCount) || obj.charCount < 0) {
+  if (
+    typeof obj.charCount !== 'number' ||
+    !Number.isInteger(obj.charCount) ||
+    obj.charCount < 0
+  ) {
     errors.push('charCount must be a non-negative integer');
   }
 
   // Check QA
+  let validatedQa: NovelResultQaV1 | undefined;
   if (!obj.qa || typeof obj.qa !== 'object' || Array.isArray(obj.qa)) {
     errors.push('qa must be an object');
   } else {
     if (typeof obj.qa.passed !== 'boolean') {
       errors.push('qa.passed must be a boolean');
     }
-    if (typeof obj.qa.score !== 'number') {
+    if (obj.qa.score !== undefined && typeof obj.qa.score !== 'number') {
       errors.push('qa.score must be a number');
     }
     if (typeof obj.qa.fingerprintMatch !== 'boolean') {
       errors.push('qa.fingerprintMatch must be a boolean');
     }
-    if (typeof obj.qa.issuesCount !== 'number') {
+    if (obj.qa.issuesCount !== undefined && typeof obj.qa.issuesCount !== 'number') {
       errors.push('qa.issuesCount must be a number');
     }
     if (obj.qa.issues !== undefined && !Array.isArray(obj.qa.issues)) {
       errors.push('qa.issues must be an array if provided');
+    }
+
+    if (errors.length === 0) {
+      validatedQa = {
+        passed: obj.qa.passed,
+        score:
+          typeof obj.qa.score === 'number'
+            ? obj.qa.score
+            : obj.qa.passed
+            ? 1.0
+            : 0.0,
+        fingerprintMatch: obj.qa.fingerprintMatch,
+        issuesCount:
+          typeof obj.qa.issuesCount === 'number'
+            ? obj.qa.issuesCount
+            : obj.qa.issues?.length ?? 0,
+        issues: obj.qa.issues,
+      };
     }
   }
 
@@ -342,13 +369,7 @@ export function validateNovelResultManifestV1(
       title: obj.title,
       language: obj.language,
       assets: obj.assets,
-      qa: {
-        passed: obj.qa.passed,
-        score: obj.qa.score,
-        fingerprintMatch: obj.qa.fingerprintMatch,
-        issuesCount: obj.qa.issuesCount,
-        issues: obj.qa.issues,
-      },
+      qa: validatedQa!,
       metrics: obj.metrics,
     },
   };

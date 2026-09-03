@@ -325,9 +325,13 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
     );
     expect(existsInMinio).toBe(true);
 
-    // 7. Kiểm tra getJob trả về diffPreviewUrls hợp lệ
+    // 7. Kiểm tra getJob trả về canonical review detail & metadata contract (#148)
     const jobDetail = await service.getJob(jobId, ownerUser);
-    expect(jobDetail.diffPreviewUrls.length).toBe(1);
-    expect(jobDetail.diffPreviewUrls[0]).toContain('/manga-media/');
+    expect(jobDetail.job.id).toBe(jobId);
+    expect(jobDetail.context.story.id).toBe(storyId);
+    expect(jobDetail.context.chapter.id).toBe(chapterId);
+    expect(jobDetail.reviewSummary).toBeDefined();
+    expect(typeof jobDetail.reviewSummary.segmentCount).toBe('number');
+    expect(typeof jobDetail.reviewSummary.verifiedCount).toBe('number');
   }, 30000);
 });

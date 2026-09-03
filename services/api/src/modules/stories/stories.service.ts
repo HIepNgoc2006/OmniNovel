@@ -16,6 +16,7 @@ import { Volume } from '../chapters/entities/volume.entity';
 import { Chapter } from '../chapters/entities/chapter.entity';
 import { CreateStoryDto } from './dto/create-story.dto';
 import { FindStoriesQueryDto } from './dto/find-stories-query.dto';
+import { FindManagedStoriesQueryDto } from './dto/find-managed-stories-query.dto';
 import { SetBookmarkDto } from './dto/set-bookmark.dto';
 import { UpdateReadingProgressDto } from './dto/update-reading-progress.dto';
 import {
@@ -91,6 +92,56 @@ export class StoriesService {
         defaultEditionId: savedEdition.id,
       };
     });
+  }
+
+  async findManagedStories(user: any, query: FindManagedStoriesQueryDto) {
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
+    const skip = (page - 1) * limit;
+
+    const qb = this.storyRepository.createQueryBuilder('story');
+
+    if (user.role !== GlobalRole.ADMIN) {
+      qb.andWhere(
+        `EXISTS (
+          SELECT 1 FROM story_members sm
+          WHERE sm.story_id = story.id
+            AND sm.user_id = :userId
+            AND sm.role IN (:...roles)
+        )`,
+        {
+          userId: user.id,
+          roles: [
+            StoryMemberRole.OWNER,
+            StoryMemberRole.EDITOR,
+            StoryMemberRole.TRANSLATOR,
+          ],
+        },
+      );
+    }
+
+    if (query.search && query.search.trim()) {
+      qb.andWhere('story.title ILIKE :search', {
+        search: `%${query.search.trim()}%`,
+      });
+    }
+
+    qb.orderBy('story.createdAt', 'DESC')
+      .addOrderBy('story.id', 'DESC')
+      .skip(skip)
+      .take(limit);
+
+    const [data, total] = await qb.getManyAndCount();
+
+    return {
+      data,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
   }
 
   async findAll(query: FindStoriesQueryDto) {

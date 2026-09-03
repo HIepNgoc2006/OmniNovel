@@ -18,6 +18,13 @@ import {
   ChapterVersionType,
   MediaAssetType,
   MediaFormat,
+  GlobalRole,
+  StoryMemberRole,
+  TranslationProjectSummaryDto,
+  TranslationJobSummaryDto,
+  TranslationJobReviewDetailResponse,
+  TranslationSegmentDto,
+  PaginatedResponse,
 } from '@omninovel/shared';
 import { TranslationJob } from './entities/translation-job.entity';
 import { TranslationProject } from './entities/translation-project.entity';
@@ -41,6 +48,9 @@ import {
 } from './dto/apply-translation-job.dto';
 import { CreateGlossaryDto } from './dto/create-glossary.dto';
 import { WorkerEventCallbackDto } from './dto/worker-event-callback.dto';
+import { FindTranslationProjectsQueryDto } from './dto/find-translation-projects-query.dto';
+import { FindTranslationJobsQueryDto } from './dto/find-translation-jobs-query.dto';
+import { FindJobSegmentsQueryDto } from './dto/find-job-segments-query.dto';
 import {
   assertWorkerReportableState,
   assertTransitionAllowed,
@@ -316,9 +326,199 @@ export class TranslationService {
   }
 
   /**
-   * Truy vấn chi tiết Job
+   * Danh sách Translation Projects trong Studio (#144)
+   * Single-query latestJob (LATERAL / DISTINCT ON subquery, không N+1), count query riêng,
+   * deterministic sorting, bounded pagination.
    */
-  async getJob(id: string, user: any) {
+  async getProjects(
+    user: any,
+    query: FindTranslationProjectsQueryDto,
+  ): Promise<PaginatedResponse<TranslationProjectSummaryDto>> {
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
+    const skip = (page - 1) * limit;
+
+    const qb = this.projectRepo
+      .createQueryBuilder('project')
+      .innerJoinAndSelect('project.storyEdition', 'edition')
+      .innerJoinAndSelect('edition.story', 'story');
+
+    if (user.role !== GlobalRole.ADMIN) {
+      qb.andWhere(
+        `EXISTS (
+          SELECT 1 FROM story_members sm
+          WHERE sm.story_id = story.id
+            AND sm.user_id = :userId
+            AND sm.role IN (:...roles)
+        )`,
+        {
+          userId: user.id,
+          roles: [
+            StoryMemberRole.OWNER,
+            StoryMemberRole.EDITOR,
+            StoryMemberRole.TRANSLATOR,
+          ],
+        },
+      );
+    }
+
+    if (query.storyId) {
+      qb.andWhere('story.id = :storyId', { storyId: query.storyId });
+    }
+
+    // Count query độc lập (không tốn chi phí JOIN LATERAL)
+    const total = await qb.getCount();
+
+    // Data query với subquery lấy latestJob duy nhất cho mỗi project
+    qb.leftJoin(
+      `(SELECT DISTINCT ON (j.project_id)
+          j.id AS latest_job_id,
+          j.status AS latest_job_status,
+          j.progress_percentage AS latest_job_progress,
+          j.project_id AS latest_job_project_id
+        FROM translation_jobs j
+        ORDER BY j.project_id, j.created_at DESC, j.id DESC)`,
+      'latest_job',
+      'latest_job.latest_job_project_id = project.id',
+    )
+      .addSelect('latest_job.latest_job_id', 'latest_job_id')
+      .addSelect('latest_job.latest_job_status', 'latest_job_status')
+      .addSelect('latest_job.latest_job_progress', 'latest_job_progress')
+      .orderBy('project.createdAt', 'DESC')
+      .addOrderBy('project.id', 'DESC')
+      .skip(skip)
+      .take(limit);
+
+    const rawAndEntities = await qb.getRawAndEntities();
+
+    const data: TranslationProjectSummaryDto[] = rawAndEntities.entities.map(
+      (p, index) => {
+        const raw = rawAndEntities.raw[index];
+        return {
+          id: p.id,
+          storyId: p.storyEdition?.story?.id,
+          storyEditionId: p.storyEditionId,
+          sourceLanguage: p.sourceLanguage,
+          targetLanguage: p.targetLanguage,
+          createdAt: p.createdAt,
+          latestJob: raw?.latest_job_id
+            ? {
+                id: raw.latest_job_id,
+                status: raw.latest_job_status as TranslationJobStatus,
+                progressPercentage: Number(raw.latest_job_progress || 0),
+              }
+            : undefined,
+        };
+      },
+    );
+
+    return {
+      data,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Danh sách Translation Jobs trong Studio (#144)
+   * Phân trang bounded, sắp xếp deterministic, filter storyId, projectId, status.
+   */
+  async getJobs(
+    user: any,
+    query: FindTranslationJobsQueryDto,
+  ): Promise<PaginatedResponse<TranslationJobSummaryDto>> {
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(100, Math.max(1, Number(query.limit) || 20));
+    const skip = (page - 1) * limit;
+
+    const qb = this.jobRepo
+      .createQueryBuilder('job')
+      .innerJoinAndSelect('job.project', 'project')
+      .innerJoinAndSelect('project.storyEdition', 'edition')
+      .innerJoinAndSelect('edition.story', 'story')
+      .leftJoinAndSelect('job.sourceVersion', 'sourceVersion')
+      .leftJoinAndSelect('sourceVersion.chapter', 'chapter');
+
+    if (user.role !== GlobalRole.ADMIN) {
+      qb.andWhere(
+        `EXISTS (
+          SELECT 1 FROM story_members sm
+          WHERE sm.story_id = story.id
+            AND sm.user_id = :userId
+            AND sm.role IN (:...roles)
+        )`,
+        {
+          userId: user.id,
+          roles: [
+            StoryMemberRole.OWNER,
+            StoryMemberRole.EDITOR,
+            StoryMemberRole.TRANSLATOR,
+          ],
+        },
+      );
+    }
+
+    if (query.storyId) {
+      qb.andWhere('story.id = :storyId', { storyId: query.storyId });
+    }
+
+    if (query.projectId) {
+      qb.andWhere('job.projectId = :projectId', { projectId: query.projectId });
+    }
+
+    if (query.status) {
+      qb.andWhere('job.status = :status', { status: query.status });
+    }
+
+    qb.orderBy('job.createdAt', 'DESC')
+      .addOrderBy('job.id', 'DESC')
+      .skip(skip)
+      .take(limit);
+
+    const [jobs, total] = await qb.getManyAndCount();
+
+    const data: TranslationJobSummaryDto[] = jobs.map((job) => ({
+      id: job.id,
+      projectId: job.projectId,
+      storyId: job.project?.storyEdition?.story?.id,
+      storyTitle: job.project?.storyEdition?.story?.title,
+      chapterId: job.sourceVersion?.chapter?.id,
+      chapterNumber: job.sourceVersion?.chapter
+        ? String(job.sourceVersion.chapter.chapterNumber)
+        : '',
+      chapterTitle: job.sourceVersion?.chapter?.title || null,
+      sourceLanguage: job.project?.sourceLanguage,
+      targetLanguage: job.project?.targetLanguage,
+      status: job.status,
+      progressPercentage: job.progressPercentage,
+      provider: job.provider,
+      modelName: job.modelName,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+    }));
+
+    return {
+      data,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Truy vấn chi tiết TranslationJob (#148)
+   * Slim response: Chỉ trả metadata & reviewSummary (aggregate SQL),
+   * KHÔNG load segments relation, KHÔNG sign 200 diff URLs, KHÔNG expose raw errorTrace/storageKey.
+   */
+  async getJob(id: string, user: any): Promise<TranslationJobReviewDetailResponse> {
     const job = await this.jobRepo.findOne({
       where: { id },
       relations: [
@@ -326,8 +526,8 @@ export class TranslationService {
         'project.storyEdition',
         'project.storyEdition.story',
         'sourceVersion',
+        'sourceVersion.chapter',
         'targetVersion',
-        'segments',
       ],
     });
 
@@ -335,55 +535,196 @@ export class TranslationService {
       throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
     }
 
-    const storyId = job.project?.storyEdition?.story?.id;
-    if (storyId) {
-      await this.checkStoryPermission(storyId, user, [
+    const story = job.project?.storyEdition?.story;
+    const edition = job.project?.storyEdition;
+    const chapter = job.sourceVersion?.chapter;
+
+    if (!story || !edition || !chapter) {
+      throw new NotFoundException(
+        'Không tìm thấy đầy đủ context của Story/Edition/Chapter cho Job này.',
+      );
+    }
+
+    await this.checkStoryPermission(story.id, user, [
+      'OWNER',
+      'EDITOR',
+      'TRANSLATOR',
+    ]);
+
+    // SQL aggregate reviewSummary - COUNT trực tiếp trong CSDL
+    const aggResult = await this.dataSource.query(
+      `SELECT
+        COUNT(*)::int AS segment_count,
+        COUNT(*) FILTER (WHERE is_human_verified = true)::int AS verified_count,
+        COUNT(DISTINCT page_number) FILTER (WHERE page_number IS NOT NULL)::int AS page_count,
+        COUNT(DISTINCT anchor_block_id) FILTER (WHERE anchor_block_id IS NOT NULL)::int AS block_count
+      FROM translation_segments
+      WHERE job_id = $1`,
+      [job.id],
+    );
+
+    const agg = aggResult[0] || {
+      segment_count: 0,
+      verified_count: 0,
+      page_count: 0,
+      block_count: 0,
+    };
+
+    const isComic = story.mediaFormat === MediaFormat.COMIC;
+    const isNovel = story.mediaFormat === MediaFormat.NOVEL;
+
+    const reviewSummary = {
+      segmentCount: Number(agg.segment_count || 0),
+      verifiedCount: Number(agg.verified_count || 0),
+      pageCount: isComic ? Number(agg.page_count || 0) : null,
+      blockCount: isNovel ? Number(agg.block_count || 0) : null,
+    };
+
+    let errorSummary: { code: string; message: string } | undefined;
+    if (job.errorTrace) {
+      errorSummary = {
+        code: 'TRANSLATION_JOB_ERROR',
+        message: job.errorTrace.split('\n')[0].substring(0, 200),
+      };
+    }
+
+    return {
+      job: {
+        id: job.id,
+        status: job.status,
+        progressPercentage: job.progressPercentage,
+        provider: job.provider,
+        modelName: job.modelName,
+        promptVersion: job.promptVersion,
+        attemptCount: job.attemptCount,
+        maxAttempts: job.maxAttempts,
+        createdAt: job.createdAt,
+        startedAt: job.startedAt,
+        heartbeatAt: job.heartbeatAt,
+        completedAt: job.completedAt,
+        expiresAt: job.expiresAt,
+      },
+      context: {
+        story: {
+          id: story.id,
+          title: story.title,
+          slug: story.slug,
+          mediaFormat: story.mediaFormat,
+        },
+        edition: {
+          id: edition.id,
+          editionName: edition.editionName,
+          language: edition.language,
+          isDefault: edition.isDefault,
+        },
+        chapter: {
+          id: chapter.id,
+          chapterNumber: String(chapter.chapterNumber),
+          title: chapter.title || null,
+        },
+        project: {
+          id: job.project.id,
+          sourceLanguage: job.project.sourceLanguage,
+          targetLanguage: job.project.targetLanguage,
+        },
+        sourceVersion: {
+          id: job.sourceVersion.id,
+          versionNumber: job.sourceVersion.versionNumber,
+        },
+        targetVersion: job.targetVersion
+          ? {
+              id: job.targetVersion.id,
+              versionNumber: job.targetVersion.versionNumber,
+            }
+          : null,
+      },
+      reviewSummary,
+      glossarySnapshot: job.inputManifest?.glossarySnapshot || undefined,
+      error: errorSummary,
+    };
+  }
+
+  /**
+   * Danh sách Translation Segments phân trang (#155)
+   */
+  async getJobSegments(
+    id: string,
+    user: any,
+    query: FindJobSegmentsQueryDto,
+  ): Promise<PaginatedResponse<TranslationSegmentDto>> {
+    const job = await this.jobRepo.findOne({
+      where: { id },
+      relations: [
+        'project',
+        'project.storyEdition',
+        'project.storyEdition.story',
+      ],
+    });
+
+    if (!job) {
+      throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
+    }
+
+    const story = job.project?.storyEdition?.story;
+    if (story) {
+      await this.checkStoryPermission(story.id, user, [
         'OWNER',
         'EDITOR',
         'TRANSLATOR',
       ]);
     }
 
-    // Generate Presigned GET URLs cho diff previews (thời hạn 15 phút)
-    const diffPreviewUrls: string[] = [];
-    if (job.resultManifest?.pages && Array.isArray(job.resultManifest.pages)) {
-      for (const page of job.resultManifest.pages) {
-        const key = page.previewKey || page.storageKey;
-        if (key) {
-          try {
-            const url = await this.storageService.createInternalDownloadUrl(
-              key,
-              true,
-              900,
-            );
-            diffPreviewUrls.push(url);
-          } catch {}
-        }
-      }
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(200, Math.max(1, Number(query.limit) || 50));
+    const skip = (page - 1) * limit;
+
+    const qb = this.segmentRepo
+      .createQueryBuilder('segment')
+      .where('segment.jobId = :jobId', { jobId: job.id });
+
+    if (query.pageNumber !== undefined && query.pageNumber !== null) {
+      qb.andWhere('segment.pageNumber = :pageNumber', {
+        pageNumber: query.pageNumber,
+      });
     }
 
+    if (story?.mediaFormat === MediaFormat.COMIC) {
+      qb.orderBy('segment.pageNumber', 'ASC')
+        .addOrderBy('segment.sortOrder', 'ASC')
+        .addOrderBy('segment.id', 'ASC');
+    } else {
+      qb.orderBy('segment.sortOrder', 'ASC').addOrderBy('segment.id', 'ASC');
+    }
+
+    qb.skip(skip).take(limit);
+
+    const [segments, total] = await qb.getManyAndCount();
+
+    const data: TranslationSegmentDto[] = segments.map((s) => ({
+      id: s.id,
+      jobId: s.jobId,
+      pageNumber: s.pageNumber,
+      anchorBlockId: s.anchorBlockId,
+      sortOrder: s.sortOrder,
+      bboxX: s.bboxX !== null ? Number(s.bboxX) : null,
+      bboxY: s.bboxY !== null ? Number(s.bboxY) : null,
+      bboxW: s.bboxW !== null ? Number(s.bboxW) : null,
+      bboxH: s.bboxH !== null ? Number(s.bboxH) : null,
+      rawText: s.rawText,
+      translatedText: s.translatedText,
+      confidence: s.confidence !== null ? Number(s.confidence) : null,
+      isHumanVerified: s.isHumanVerified,
+      createdAt: s.createdAt,
+    }));
+
     return {
-      job: {
-        id: job.id,
-        projectId: job.projectId,
-        sourceVersionId: job.sourceVersionId,
-        targetVersionId: job.targetVersionId,
-        sourceUploadSessionId: job.sourceUploadSessionId,
-        status: job.status,
-        progressPercentage: job.progressPercentage,
-        attemptCount: job.attemptCount,
-        maxAttempts: job.maxAttempts,
-        provider: job.provider,
-        modelName: job.modelName,
-        promptVersion: job.promptVersion,
-        errorTrace: job.errorTrace,
-        startedAt: job.startedAt,
-        heartbeatAt: job.heartbeatAt,
-        completedAt: job.completedAt,
-        createdAt: job.createdAt,
+      data,
+      pagination: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
       },
-      segments: job.segments || [],
-      diffPreviewUrls,
     };
   }
 

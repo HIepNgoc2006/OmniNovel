@@ -14,6 +14,8 @@ import {
 } from '@omninovel/shared';
 
 describe('Studio Concurrency & Review Mutation E2E (#147, #156)', () => {
+  jest.setTimeout(30000);
+
   let app: INestApplication;
   let dataSource: DataSource;
   let jwtService: JwtService;
@@ -270,6 +272,38 @@ describe('Studio Concurrency & Review Mutation E2E (#147, #156)', () => {
         })
         .expect(400);
     });
+
+    it('should reject malformed jobId UUID with 400 Bad Request', async () => {
+      await request(app.getHttpServer())
+        .patch(`/api/v1/ai/jobs/not-a-valid-uuid/segments/${seg1Id}`)
+        .set('Authorization', `Bearer ${editorToken}`)
+        .send({ translatedText: 'New', expectedVersion: 1 })
+        .expect(400);
+    });
+
+    it('should reject malformed segmentId UUID with 400 Bad Request', async () => {
+      await request(app.getHttpServer())
+        .patch(`/api/v1/ai/jobs/${comicJobId}/segments/not-a-valid-uuid`)
+        .set('Authorization', `Bearer ${editorToken}`)
+        .send({ translatedText: 'New', expectedVersion: 1 })
+        .expect(400);
+    });
+
+    it('should reject integer overflow on expectedVersion (> 2147483647) with 400 Bad Request', async () => {
+      await request(app.getHttpServer())
+        .patch(`/api/v1/ai/jobs/${comicJobId}/segments/${seg1Id}`)
+        .set('Authorization', `Bearer ${editorToken}`)
+        .send({ translatedText: 'New', expectedVersion: 3000000000 })
+        .expect(400);
+    });
+
+    it('should reject translatedText exceeding max length of 50000 characters with 400 Bad Request', async () => {
+      await request(app.getHttpServer())
+        .patch(`/api/v1/ai/jobs/${comicJobId}/segments/${seg1Id}`)
+        .set('Authorization', `Bearer ${editorToken}`)
+        .send({ translatedText: 'a'.repeat(50001), expectedVersion: 1 })
+        .expect(400);
+    });
   });
 
   describe('OCC Version Conflict (#147)', () => {
@@ -284,7 +318,8 @@ describe('Studio Concurrency & Review Mutation E2E (#147, #156)', () => {
         .expect(409);
 
       expect(res.body.error.code).toBe('VERSION_CONFLICT');
-      expect(res.body.error.currentVersion).toBe(1);
+      expect(res.body.error.meta.currentVersion).toBe(1);
+      expect(res.body.error.meta.expectedVersion).toBe(99);
     });
   });
 
@@ -379,7 +414,7 @@ describe('Studio Concurrency & Review Mutation E2E (#147, #156)', () => {
     });
   });
 
-  describe('Concurrent Overlapping Transactions (Per-Job Mutex Proof)', () => {
+  describe('Concurrent Overlapping Transactions & Deterministic DB Barrier (Per-Job Mutex Proof)', () => {
     it('should serialize concurrent PATCH requests on different segments without deadlock and increment reviewRevision accurately', async () => {
       // Current state:
       // comicJobId review_revision = 1
@@ -415,6 +450,113 @@ describe('Studio Concurrency & Review Mutation E2E (#147, #156)', () => {
       const jobRows = await dataSource.query(`SELECT review_revision FROM translation_jobs WHERE id = '${comicJobId}'`);
       expect(jobRows[0].review_revision).toBe(3);
     });
+
+    it('should deterministically block concurrent PATCH and Apply at row lock barrier and enforce strict race serialization', async () => {
+      // Seed dedicated race job with comic projectId and sourceVersionId
+      const raceJobRes = await dataSource.query(`
+        INSERT INTO translation_jobs (
+          project_id, source_version_id, status, progress_percentage, review_revision, materialized_revision,
+          provider, model_name, prompt_version, attempt_count, max_attempts, last_sequence,
+          result_manifest
+        ) VALUES (
+          '${projectId}', '${sourceVersionId}', '${TranslationJobStatus.READY_FOR_REVIEW}', 100, 0, 0,
+          'OPENAI', 'gpt-4o-mini', 'v1.0', 1, 3, 10,
+          '{"pages":[{"page":1,"storageKey":"output-1.webp","previewKey":"output-1.webp","width":1200,"height":1800,"fileSize":2048}]}'::jsonb
+        )
+        RETURNING id;
+      `);
+      const raceJobId = raceJobRes[0].id;
+
+      const raceSegRes = await dataSource.query(`
+        INSERT INTO translation_segments (job_id, page_number, sort_order, raw_text, translated_text, is_human_verified, version)
+        VALUES ('${raceJobId}', 1, 1, 'Race Raw Text', 'Race Translated Text', false, 1)
+        RETURNING id;
+      `);
+      const raceSegId = raceSegRes[0].id;
+
+      // 1. Establish deterministic lock barrier via separate QueryRunner
+      const barrierRunner = dataSource.createQueryRunner();
+      await barrierRunner.connect();
+      await barrierRunner.startTransaction();
+      await barrierRunner.query(`SELECT id FROM translation_jobs WHERE id = $1 FOR UPDATE`, [raceJobId]);
+
+      let barrierReleased = false;
+      try {
+        // 2. Fire simultaneous PATCH and Apply HTTP requests against raceJobId immediately via .end()
+        const patchPromise = new Promise<request.Response>((resolve, reject) => {
+          request(app.getHttpServer())
+            .patch(`/api/v1/ai/jobs/${raceJobId}/segments/${raceSegId}`)
+            .set('Authorization', `Bearer ${editorToken}`)
+            .send({
+              translatedText: 'Text updated during barrier race',
+              expectedVersion: 1,
+            })
+            .end((err, res) => (err ? reject(err) : resolve(res)));
+        });
+
+        const applyPromise = new Promise<request.Response>((resolve, reject) => {
+          request(app.getHttpServer())
+            .post(`/api/v1/ai/jobs/${raceJobId}/apply`)
+            .set('Authorization', `Bearer ${editorToken}`)
+            .set('idempotency-key', '77777777-7777-4777-8777-777777777777')
+            .send({
+              mode: 'OVERWRITE_ACTIVE_VERSION',
+            })
+            .end((err, res) => (err ? reject(err) : resolve(res)));
+        });
+
+        // 3. Deterministically verify that at least one request is actively blocked on the row lock
+        let blockedCount = 0;
+        for (let i = 0; i < 30; i++) {
+          await new Promise((r) => setTimeout(r, 100));
+          const lockCheck = await dataSource.query(`
+            SELECT count(*)::int AS count 
+            FROM pg_locks 
+            WHERE NOT granted
+          `);
+          blockedCount = lockCheck[0]?.count || 0;
+          if (blockedCount >= 1) {
+            break;
+          }
+        }
+        expect(blockedCount).toBeGreaterThanOrEqual(1);
+
+        // 4. Release barrier — both requests now race and serialize at the Job mutex boundary
+        await barrierRunner.rollbackTransaction();
+        await barrierRunner.release();
+        barrierReleased = true;
+
+        const [patchRes, applyRes] = await Promise.all([patchPromise, applyPromise]);
+
+        // 5. Assert strict serialization outcome
+        if (patchRes.status === 200) {
+          expect(patchRes.body.version).toBe(2);
+          expect(applyRes.status).toBe(409);
+          expect(applyRes.body.error.code).toBe('ARTIFACT_STALE');
+          expect(applyRes.body.error.meta.reviewRevision).toBe(1);
+          expect(applyRes.body.error.meta.materializedRevision).toBe(0);
+
+          const finalJob = await dataSource.query(`SELECT status, review_revision FROM translation_jobs WHERE id = '${raceJobId}'`);
+          expect(finalJob[0].status).toBe(TranslationJobStatus.READY_FOR_REVIEW);
+          expect(finalJob[0].review_revision).toBe(1);
+        } else {
+          expect(applyRes.status).toBe(200);
+          expect(patchRes.status).toBe(409);
+          expect(patchRes.body.error.code).toBe('NOT_REVIEWABLE');
+
+          const finalJob = await dataSource.query(`SELECT status FROM translation_jobs WHERE id = '${raceJobId}'`);
+          expect(finalJob[0].status).toBe(TranslationJobStatus.APPLIED);
+        }
+      } finally {
+        if (!barrierReleased) {
+          await barrierRunner.rollbackTransaction().catch(() => {});
+          await barrierRunner.release().catch(() => {});
+        }
+        // Cleanup race test records
+        await dataSource.query(`DELETE FROM translation_segments WHERE job_id = '${raceJobId}'`).catch(() => {});
+        await dataSource.query(`DELETE FROM translation_jobs WHERE id = '${raceJobId}'`).catch(() => {});
+      }
+    });
   });
 
   describe('Apply Freshness Gate & Invariant Protection (#156)', () => {
@@ -430,8 +572,8 @@ describe('Studio Concurrency & Review Mutation E2E (#147, #156)', () => {
         .expect(409);
 
       expect(res.body.error.code).toBe('ARTIFACT_STALE');
-      expect(res.body.error.reviewRevision).toBe(3);
-      expect(res.body.error.materializedRevision).toBe(0);
+      expect(res.body.error.meta.reviewRevision).toBe(3);
+      expect(res.body.error.meta.materializedRevision).toBe(0);
     });
 
     it('should allow Apply when materializedRevision === reviewRevision', async () => {

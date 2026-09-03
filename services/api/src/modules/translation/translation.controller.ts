@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
@@ -77,13 +78,16 @@ export class TranslationController {
   }
 
   @Get('jobs/:id')
-  async getJob(@Param('id') id: string, @CurrentUser() user: any) {
+  async getJob(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: any,
+  ) {
     return await this.translationService.getJob(id, user);
   }
 
   @Get('jobs/:id/segments')
   async getJobSegments(
-    @Param('id') id: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() user: any,
     @Query() query: FindJobSegmentsQueryDto,
   ) {
@@ -93,8 +97,8 @@ export class TranslationController {
   @Patch('jobs/:jobId/segments/:segmentId')
   @HttpCode(HttpStatus.OK)
   async updateSegment(
-    @Param('jobId') jobId: string,
-    @Param('segmentId') segmentId: string,
+    @Param('jobId', new ParseUUIDPipe({ version: '4' })) jobId: string,
+    @Param('segmentId', new ParseUUIDPipe({ version: '4' })) segmentId: string,
     @Body() dto: UpdateTranslationSegmentDto,
     @CurrentUser() user: any,
   ) {
@@ -109,7 +113,7 @@ export class TranslationController {
   @Post('jobs/:id/apply')
   @HttpCode(HttpStatus.OK)
   async applyJob(
-    @Param('id') id: string,
+    @Param('id', new ParseUUIDPipe()) id: string,
     @Body() dto: ApplyTranslationJobDto,
     @CurrentUser() user: any,
     @Headers('idempotency-key') idempotencyKey?: string,
@@ -133,7 +137,10 @@ export class TranslationController {
 
   @Post('jobs/:id/cancel')
   @HttpCode(HttpStatus.OK)
-  async cancelJob(@Param('id') id: string, @CurrentUser() user: any) {
+  async cancelJob(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: any,
+  ) {
     return await this.translationService.cancelJob(id, user);
   }
 

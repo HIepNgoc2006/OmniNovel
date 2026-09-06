@@ -1884,15 +1884,14 @@ export class TranslationService {
 
     // 5. Phát tán WebSocket sau khi commit thành công
     if (result.status === TranslationJobStatus.READY_FOR_REVIEW) {
-      this.gateway.broadcastJobReady(jobId, {
-        resultManifest: result.manifest,
-      });
+      this.gateway.broadcastJobReady(jobId);
     } else {
-      this.gateway.broadcastJobProgress(jobId, {
-        stage: result.status,
-        progress: eventDto.progress,
-        heartbeatAt: new Date(),
-      });
+      this.gateway.broadcastJobProgress(
+        jobId,
+        result.status,
+        eventDto.progress,
+        new Date(),
+      );
     }
 
     return {
@@ -2002,7 +2001,7 @@ export class TranslationService {
    * Đánh dấu Job thất bại khi hết số lần retry BullMQ
    */
   async handleJobFailure(jobId: string, errorTrace: string) {
-    await this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       await manager.query(
         `SELECT id FROM translation_jobs WHERE id = $1 FOR UPDATE`,
         [jobId],
@@ -2012,7 +2011,9 @@ export class TranslationService {
         where: { id: jobId },
       });
 
-      if (!job) return;
+      if (!job) {
+        return { transitioned: false, jobId };
+      }
 
       // Không đổi sang FAILED nếu job đã READY_FOR_REVIEW hoặc ở các Terminal States (CANCELED, APPLIED, EXPIRED, FAILED)
       const allowedFailureOriginStates = [
@@ -2031,7 +2032,7 @@ export class TranslationService {
         this.logger.warn(
           `[BullMQ] Bỏ qua handleJobFailure cho TranslationJob ${job.id}: Job đang ở trạng thái ${job.status}, không thể chuyển sang FAILED.`,
         );
-        return;
+        return { transitioned: false, jobId: job.id };
       }
 
       job.status = TranslationJobStatus.FAILED;
@@ -2039,8 +2040,12 @@ export class TranslationService {
       job.completedAt = new Date();
       await manager.save(TranslationJob, job);
 
-      this.gateway.broadcastJobFailed(job.id, { errorTrace });
+      return { transitioned: true, jobId: job.id };
     });
+
+    if (result?.transitioned && result.jobId) {
+      this.gateway.broadcastJobFailed(result.jobId);
+    }
   }
 
   /**

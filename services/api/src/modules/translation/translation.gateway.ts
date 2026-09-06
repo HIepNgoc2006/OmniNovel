@@ -13,7 +13,14 @@ import { Logger, UseFilters } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { DataSource } from 'typeorm';
-import { GlobalRole } from '@omninovel/shared';
+import {
+  GlobalRole,
+  TranslationJobStatus,
+  JobProgressWsEvent,
+  JobReadyWsEvent,
+  JobFailedWsEvent,
+  JobCanceledWsEvent,
+} from '@omninovel/shared';
 
 @WebSocketGateway({
   namespace: '/ws/ai',
@@ -212,46 +219,54 @@ export class TranslationGateway
 
   broadcastJobProgress(
     jobId: string,
-    payload: { stage: string; progress: number; heartbeatAt?: Date },
+    status: TranslationJobStatus,
+    progress: number,
+    heartbeatAt?: Date,
   ) {
     if (this.server) {
-      this.server.to(`job_${jobId}`).emit('job_progress', {
+      const payload: JobProgressWsEvent = {
         jobId,
-        ...payload,
+        status,
+        progress,
         timestamp: new Date().toISOString(),
-      });
+      };
+      if (heartbeatAt) {
+        payload.heartbeatAt = heartbeatAt.toISOString();
+      }
+      this.server.to(`job_${jobId}`).emit('job_progress', payload);
     }
   }
 
-  broadcastJobReady(
-    jobId: string,
-    payload: { targetVersionId?: string; resultManifest?: any },
-  ) {
+  broadcastJobReady(jobId: string) {
     if (this.server) {
-      this.server.to(`job_${jobId}`).emit('job_ready_for_review', {
+      const payload: JobReadyWsEvent = {
         jobId,
-        ...payload,
+        status: TranslationJobStatus.READY_FOR_REVIEW,
         timestamp: new Date().toISOString(),
-      });
+      };
+      this.server.to(`job_${jobId}`).emit('job_ready_for_review', payload);
     }
   }
 
-  broadcastJobFailed(jobId: string, payload: { errorTrace: string }) {
+  broadcastJobFailed(jobId: string) {
     if (this.server) {
-      this.server.to(`job_${jobId}`).emit('job_failed', {
+      const payload: JobFailedWsEvent = {
         jobId,
-        ...payload,
+        status: TranslationJobStatus.FAILED,
         timestamp: new Date().toISOString(),
-      });
+      };
+      this.server.to(`job_${jobId}`).emit('job_failed', payload);
     }
   }
 
   broadcastJobCanceled(jobId: string) {
     if (this.server) {
-      this.server.to(`job_${jobId}`).emit('job_canceled', {
+      const payload: JobCanceledWsEvent = {
         jobId,
+        status: TranslationJobStatus.CANCELED,
         timestamp: new Date().toISOString(),
-      });
+      };
+      this.server.to(`job_${jobId}`).emit('job_canceled', payload);
     }
   }
 }

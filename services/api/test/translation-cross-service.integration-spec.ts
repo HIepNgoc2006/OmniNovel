@@ -78,7 +78,7 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
             const { jobId, attemptNumber } = data;
             const secret = 'internal_ai_worker_secret_secure_2026';
 
-            // Bước A: Worker gọi Core API xin Presigned Upload URLs
+            // Bước A1: Worker gọi Core API xin Presigned Upload URLs cho output
             const presignResp = await axios.post(
               `http://localhost:${corePort}/internal/v1/ai/jobs/${jobId}/output-uploads`,
               {
@@ -94,8 +94,27 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
             );
             const uploadedFile = presignResp.data.files[0];
 
-            // Bước B: Worker thực hiện PUT WebP buffer thật lên MinIO qua Presigned URL
+            // Bước A2: Worker gọi Core API xin Presigned Upload URLs cho clean bases (#162)
+            const cleanBaseResp = await axios.post(
+              `http://localhost:${corePort}/internal/v1/ai/jobs/${jobId}/clean-base-uploads`,
+              {
+                attemptNumber,
+                pages: [1],
+              },
+              {
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-Internal-Service-Key': secret,
+                },
+              },
+            );
+            const cleanBaseFile = cleanBaseResp.data.cleanBases[0];
+
+            // Bước B: Worker thực hiện PUT WebP buffer thật lên MinIO qua Presigned URLs
             await axios.put(uploadedFile.uploadUrl, VALID_WEBP_BUFFER, {
+              headers: { 'Content-Type': 'image/webp' },
+            });
+            await axios.put(cleanBaseFile.uploadUrl, VALID_WEBP_BUFFER, {
               headers: { 'Content-Type': 'image/webp' },
             });
 
@@ -150,6 +169,12 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
                       width: 1200,
                       height: 1800,
                       fileSizeBytes: VALID_WEBP_BUFFER.length,
+                    },
+                  ],
+                  cleanBases: [
+                    {
+                      page: 1,
+                      cleanBaseKey: cleanBaseFile.storageKey,
                     },
                   ],
                 },
@@ -287,10 +312,20 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
         expect(jobCheck[0].progress_percentage).toBe(100);
         expect(jobCheck[0].last_sequence).toBe(7);
         expect(jobCheck[0].result_manifest.pages.length).toBe(1);
+        expect(jobCheck[0].result_manifest.cleanBases?.length).toBe(1);
+        expect(jobCheck[0].result_manifest.cleanBases[0].page).toBe(1);
+        expect(jobCheck[0].result_manifest.cleanBases[0].cleanBaseKey).toBe(
+          `ai/jobs/${jobId}/review-base/page_1.webp`,
+        );
         break;
       }
     }
     expect(isReady).toBe(true);
+
+    // Verify clean base object exists before apply
+    const cleanBaseKey = `ai/jobs/${jobId}/review-base/page_1.webp`;
+    const cleanBaseBeforeApply = await storageService.headInternalObject(cleanBaseKey, true);
+    expect(cleanBaseBeforeApply).toBe(true);
 
     // 3. Apply Job với CREATE_ALTERNATE_VERSION (Immutable Versioning)
     const applyRes = await service.applyJob(
@@ -328,6 +363,10 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
       true,
     );
     expect(existsInMinio).toBe(true);
+
+    // 6b. Kiểm tra Clean Base đã được xóa an toàn sau khi Apply hoàn tất (#162 Lifecycle Cleanup)
+    const cleanBaseAfterApply = await storageService.headInternalObject(cleanBaseKey, true);
+    expect(cleanBaseAfterApply).toBe(false);
 
     // 7. Kiểm tra getJob trả về canonical review detail & metadata contract (#148)
     const jobDetail = await service.getJob(jobId, ownerUser);

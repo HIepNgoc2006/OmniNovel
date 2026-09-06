@@ -1072,6 +1072,113 @@ export class TranslationService {
   }
 
   /**
+   * Cấp danh sách Presigned PUT URLs cho Clean Base Manga backgrounds (#162)
+   */
+  async createCleanBaseUploadUrls(
+    id: string,
+    attemptNumber: number,
+    pages: number[],
+  ) {
+    if (!pages || !Array.isArray(pages) || pages.length === 0) {
+      throw new BadRequestException('Danh sách pages yêu cầu không được rỗng.');
+    }
+    if (pages.length > 200) {
+      throw new BadRequestException(
+        'Vượt quá giới hạn số lượng pages tối đa (tối đa 200 pages).',
+      );
+    }
+
+    const job = await this.jobRepo.findOne({
+      where: { id },
+      relations: [
+        'project',
+        'project.storyEdition',
+        'project.storyEdition.story',
+        'sourceVersion',
+        'sourceVersion.chapter',
+        'sourceVersion.chapter.storyEdition',
+        'sourceVersion.chapter.storyEdition.story',
+      ],
+    });
+    if (!job) {
+      throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
+    }
+
+    // Chặn nghiêm ngặt: Không cấp slot nếu job đã vào Review hoặc Terminal states
+    const ALLOWED_CLEAN_BASE_STATUSES = [
+      TranslationJobStatus.CREATED,
+      TranslationJobStatus.VALIDATING,
+      TranslationJobStatus.QUEUED,
+      TranslationJobStatus.PREPROCESSING,
+      TranslationJobStatus.OCR,
+      TranslationJobStatus.TRANSLATING,
+      TranslationJobStatus.INPAINTING,
+      TranslationJobStatus.TYPESETTING,
+      TranslationJobStatus.QUALITY_CHECK,
+    ];
+    if (!ALLOWED_CLEAN_BASE_STATUSES.includes(job.status)) {
+      throw new BadRequestException(
+        `Không thể cấp clean base upload slots khi job ở trạng thái: ${job.status}. Chỉ cho phép trong quá trình xử lý của Worker trước khi vào Review.`,
+      );
+    }
+
+    if (attemptNumber !== job.attemptCount) {
+      throw new BadRequestException(
+        `Attempt ${attemptNumber} không khớp với attempt hiện tại của job (${job.attemptCount}).`,
+      );
+    }
+
+    // Fail-closed: Chỉ hỗ trợ COMIC, mọi format khác hoặc thiếu story đều reject
+    const story =
+      job.project?.storyEdition?.story ||
+      job.sourceVersion?.chapter?.storyEdition?.story;
+    if (story?.mediaFormat !== MediaFormat.COMIC) {
+      throw new BadRequestException(
+        'Clean base upload slots chỉ hỗ trợ cho định dạng COMIC / Manga.',
+      );
+    }
+
+    // Validate duplicate & valid page numbers (>= 1)
+    const seenPages = new Set<number>();
+    for (const page of pages) {
+      if (typeof page !== 'number' || !Number.isInteger(page) || page < 1) {
+        throw new BadRequestException(
+          `Page number không hợp lệ: ${page}. Phải là số nguyên >= 1.`,
+        );
+      }
+      if (seenPages.has(page)) {
+        throw new BadRequestException(
+          `Duplicate page number trong danh sách clean base: ${page}`,
+        );
+      }
+      seenPages.add(page);
+    }
+
+    // Core độc quyền sinh canonical keys & cấp Presigned PUT URLs
+    const presignedCleanBases = [];
+    for (const page of pages) {
+      const storageKey = `ai/jobs/${id}/review-base/page_${page}.webp`;
+      const uploadUrl = await this.storageService.createInternalUploadUrl(
+        storageKey,
+        'image/webp',
+        true,
+        1800,
+      );
+      presignedCleanBases.push({
+        page,
+        storageKey,
+        uploadUrl,
+      });
+    }
+
+    return {
+      jobId: id,
+      attemptNumber,
+      cleanBases: presignedCleanBases,
+    };
+  }
+
+  /**
    * Xuất bản kết quả dịch (Immutable ChapterVersion)
    */
   async applyJob(
@@ -1080,7 +1187,7 @@ export class TranslationService {
     user: any,
     idempotencyKey?: string,
   ) {
-    return await this.dataSource.transaction(async (manager) => {
+    const result = await this.dataSource.transaction(async (manager) => {
       // 1. Pessimistic lock trên TranslationJob (chống concurrent apply)
       await manager.query(
         `SELECT id FROM translation_jobs WHERE id = $1 FOR UPDATE`,
@@ -1224,6 +1331,7 @@ export class TranslationService {
           });
         }
 
+        let cleanBaseKeysToCleanup: string[] = [];
         if (!isNovelJob) {
           const mangaManifest = validatedResult.value as MangaResultManifestV1;
           if (Array.isArray(mangaManifest.pages) && mangaManifest.pages.length > 0) {
@@ -1239,6 +1347,11 @@ export class TranslationService {
               });
               await manager.save(MediaAsset, mediaAsset);
             }
+          }
+          if (Array.isArray(mangaManifest.cleanBases)) {
+            cleanBaseKeysToCleanup = mangaManifest.cleanBases.map(
+              (cb) => cb.cleanBaseKey,
+            );
           }
         } else {
           const novelManifest = validatedResult.value as NovelResultManifestV1;
@@ -1270,16 +1383,38 @@ export class TranslationService {
             }
           }
         }
+
+        // 5. Phân nhánh Apply Mode
+        if (dto.mode === ApplyTranslationMode.OVERWRITE_ACTIVE_VERSION) {
+          chapter.activeVersionId = savedVersion.id;
+          await manager.save(Chapter, chapter);
+        }
+        // Mode CREATE_ALTERNATE_VERSION -> Giữ nguyên chapter.activeVersionId
+
+        // 6. Cập nhật TranslationJob sang APPLIED
+        job.targetVersionId = savedVersion.id;
+        job.status = TranslationJobStatus.APPLIED;
+        job.applyIdempotencyKey = idempotencyKey || null;
+        job.completedAt = new Date();
+        await manager.save(TranslationJob, job);
+
+        return {
+          chapterId: chapter.id,
+          activeVersionId: chapter.activeVersionId,
+          versionNumber: savedVersion.versionNumber,
+          versionType: savedVersion.versionType,
+          targetVersionId: savedVersion.id,
+          isAlreadyApplied: false,
+          cleanBaseKeysToCleanup,
+        };
       }
 
-      // 5. Phân nhánh Apply Mode
+      // Trường hợp không có resultManifest
       if (dto.mode === ApplyTranslationMode.OVERWRITE_ACTIVE_VERSION) {
         chapter.activeVersionId = savedVersion.id;
         await manager.save(Chapter, chapter);
       }
-      // Mode CREATE_ALTERNATE_VERSION -> Giữ nguyên chapter.activeVersionId
 
-      // 6. Cập nhật TranslationJob sang APPLIED
       job.targetVersionId = savedVersion.id;
       job.status = TranslationJobStatus.APPLIED;
       job.applyIdempotencyKey = idempotencyKey || null;
@@ -1293,8 +1428,28 @@ export class TranslationService {
         versionType: savedVersion.versionType,
         targetVersionId: savedVersion.id,
         isAlreadyApplied: false,
+        cleanBaseKeysToCleanup: [] as string[],
       };
     });
+
+    // 7. Post-commit lifecycle cleanup for clean bases (#162): hoàn toàn ngoài DB transaction
+    if (
+      result.cleanBaseKeysToCleanup &&
+      result.cleanBaseKeysToCleanup.length > 0
+    ) {
+      for (const key of result.cleanBaseKeysToCleanup) {
+        try {
+          await this.storageService.deleteInternalObject(key, true);
+        } catch (err: any) {
+          this.logger.warn(
+            `Failed to cleanup clean base object ${key} after apply: ${err.message}`,
+          );
+        }
+      }
+    }
+
+    const { cleanBaseKeysToCleanup, ...clientResponse } = result;
+    return clientResponse;
   }
 
   /**
@@ -1432,9 +1587,10 @@ export class TranslationService {
         }
         if (comicManifest.cleanBases) {
           for (const cb of comicManifest.cleanBases) {
-            if (cb.cleanBaseKey && !cb.cleanBaseKey.startsWith(allowedPrefix)) {
+            const expectedKey = `ai/jobs/${jobId}/review-base/page_${cb.page}.webp`;
+            if (cb.cleanBaseKey !== expectedKey) {
               throw new BadRequestException(
-                `CleanBase storage key trong result_manifest (${cb.cleanBaseKey}) không nằm trong prefix được cấp phép: ${allowedPrefix}`,
+                `CleanBase storage key trong result_manifest (${cb.cleanBaseKey}) không khớp với canonical path: ${expectedKey}`,
               );
             }
           }
@@ -1471,6 +1627,41 @@ export class TranslationService {
             'Novel job không thể chuyển sang READY_FOR_REVIEW khi Structural QA không đạt yêu cầu (passed=false hoặc fingerprintMatch=false).',
           );
         }
+
+        if (!eventDto.segments || eventDto.segments.length === 0) {
+          throw new BadRequestException({
+            code: 'NOVEL_MISSING_SEGMENTS',
+            message:
+              'Novel job bắt buộc phải có danh sách segments khi ở trạng thái READY_FOR_REVIEW.',
+          });
+        }
+        for (const seg of eventDto.segments) {
+          if (
+            !seg.blockType ||
+            !Object.values(NovelBlockType).includes(seg.blockType)
+          ) {
+            throw new BadRequestException({
+              code: 'NOVEL_SEGMENT_MISSING_BLOCK_TYPE',
+              message: `Novel segment (sortOrder: ${seg.sortOrder}) thiếu hoặc có blockType không hợp lệ: ${seg.blockType}. Yêu cầu: HEADING, DIALOGUE, NARRATION, BLOCKQUOTE`,
+            });
+          }
+        }
+      } else {
+        // COMIC: Tuyệt đối không được chứa blockType
+        if (eventDto.segments) {
+          for (const seg of eventDto.segments) {
+            if (seg.blockType !== undefined && seg.blockType !== null) {
+              throw new BadRequestException({
+                code: 'COMIC_SEGMENT_UNEXPECTED_BLOCK_TYPE',
+                message: `Comic segment (sortOrder: ${seg.sortOrder}) không được phép chứa blockType: ${seg.blockType}`,
+              });
+            }
+          }
+        }
+      }
+
+      if (isNovel) {
+        const novelManifest = eventDto.resultManifest as NovelResultManifestV1;
 
         // Cross-object count checks
         const eventSegments = eventDto.segments || [];
@@ -1540,6 +1731,47 @@ export class TranslationService {
             }
           }
         }
+
+        // Invariant #162: Full clean base coverage & existence in MinIO storage
+        if (!comicManifest.cleanBases || comicManifest.cleanBases.length === 0) {
+          throw new BadRequestException(
+            'Comic result manifest bắt buộc phải có cleanBases khi READY_FOR_REVIEW (#162).',
+          );
+        }
+
+        if (comicManifest.cleanBases.length !== comicManifest.pages.length) {
+          throw new BadRequestException(
+            `Số lượng cleanBases (${comicManifest.cleanBases.length}) không khớp với số lượng pages (${comicManifest.pages.length}).`,
+          );
+        }
+
+        const pageNumbers = new Set(comicManifest.pages.map((p) => p.page));
+        const cleanBasePageNumbers = new Set(
+          comicManifest.cleanBases.map((cb) => cb.page),
+        );
+        for (const p of pageNumbers) {
+          if (!cleanBasePageNumbers.has(p)) {
+            throw new BadRequestException(
+              `Thiếu clean base cho trang ${p}. Toàn bộ các trang phải có clean base tương ứng khi READY_FOR_REVIEW.`,
+            );
+          }
+        }
+
+        for (const cb of comicManifest.cleanBases) {
+          const stat = await this.storageService.statInternalObject(
+            cb.cleanBaseKey,
+            true,
+          );
+          if (
+            !stat.exists ||
+            stat.contentLength === null ||
+            stat.contentLength <= 0
+          ) {
+            throw new BadRequestException(
+              `ARTIFACT_NOT_FOUND_IN_STORAGE: Clean base ${cb.cleanBaseKey} không tồn tại hoặc rỗng trong MinIO storage.`,
+            );
+          }
+        }
       }
     }
 
@@ -1596,39 +1828,6 @@ export class TranslationService {
       // Lưu segments atomic & idempotent khi READY_FOR_REVIEW
       if (eventDto.stage === TranslationJobStatus.READY_FOR_REVIEW) {
         // Enforce invariants theo mediaFormat (#160)
-        if (isNovel) {
-          if (!eventDto.segments || eventDto.segments.length === 0) {
-            throw new BadRequestException({
-              code: 'NOVEL_JOB_MISSING_SEGMENTS',
-              message:
-                'Novel job bắt buộc phải có danh sách segments khi ở trạng thái READY_FOR_REVIEW.',
-            });
-          }
-          for (const seg of eventDto.segments) {
-            if (
-              !seg.blockType ||
-              !Object.values(NovelBlockType).includes(seg.blockType)
-            ) {
-              throw new BadRequestException({
-                code: 'NOVEL_SEGMENT_MISSING_BLOCK_TYPE',
-                message: `Novel segment (sortOrder: ${seg.sortOrder}) thiếu hoặc có blockType không hợp lệ: ${seg.blockType}. Yêu cầu: HEADING, DIALOGUE, NARRATION, BLOCKQUOTE`,
-              });
-            }
-          }
-        } else {
-          // COMIC: Tuyệt đối không được chứa blockType
-          if (eventDto.segments) {
-            for (const seg of eventDto.segments) {
-              if (seg.blockType !== undefined && seg.blockType !== null) {
-                throw new BadRequestException({
-                  code: 'COMIC_SEGMENT_UNEXPECTED_BLOCK_TYPE',
-                  message: `Comic segment (sortOrder: ${seg.sortOrder}) không được phép chứa blockType: ${seg.blockType}`,
-                });
-              }
-            }
-          }
-        }
-
         await manager.delete(TranslationSegment, { jobId: job.id });
         if (eventDto.segments && eventDto.segments.length > 0) {
           for (const seg of eventDto.segments) {

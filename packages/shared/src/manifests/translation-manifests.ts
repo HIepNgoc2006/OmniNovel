@@ -325,6 +325,7 @@ export function validateMangaResultManifestV1(
       errors.push('cleanBases must be an array if provided');
     } else {
       validatedCleanBases = [];
+      const seenCleanBasePages = new Set<number>();
       obj.cleanBases.forEach((cb: any, idx: number) => {
         if (!cb || typeof cb !== 'object' || Array.isArray(cb)) {
           errors.push(`cleanBases[${idx}] must be an object`);
@@ -340,7 +341,15 @@ export function validateMangaResultManifestV1(
 
         if (!isSafePositiveInteger(cb.page)) {
           errors.push(`cleanBases[${idx}].page must be an integer >= 1`);
+        } else {
+          if (seenCleanBasePages.has(cb.page)) {
+            errors.push(
+              `DUPLICATE_CLEAN_BASE_PAGE_NUMBER: Duplicate page number ${cb.page} in cleanBases`,
+            );
+          }
+          seenCleanBasePages.add(cb.page);
         }
+
         if (typeof cb.cleanBaseKey !== 'string' || cb.cleanBaseKey.trim() === '') {
           errors.push(
             `cleanBases[${idx}].cleanBaseKey must be a non-empty string`,

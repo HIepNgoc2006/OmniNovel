@@ -49,6 +49,7 @@ async def test_full_manga_pipeline_execution_all_stages(tmp_path: Path, monkeypa
     coordinator = AttemptProgressCoordinator(sink=sink)
 
     uploaded_payloads = {}
+    uploaded_clean_bases = {}
 
     async def mock_request_upload_urls(job_id, attempt_num, filenames):
         return [
@@ -60,13 +61,27 @@ async def test_full_manga_pipeline_execution_all_stages(tmp_path: Path, monkeypa
             for fn in filenames
         ]
 
+    async def mock_request_clean_base_upload_urls(job_id, attempt_num, pages):
+        return [
+            {
+                "page": p,
+                "storageKey": f"ai/jobs/{job_id}/review-base/page_{p}.webp",
+                "uploadUrl": f"http://localhost:9000/clean-base/{p}",
+            }
+            for p in pages
+        ]
+
     async def mock_upload_file(url, data, content_type):
-        uploaded_payloads[url] = data
+        if "clean-base" in url:
+            uploaded_clean_bases[url] = (data, content_type)
+        else:
+            uploaded_payloads[url] = (data, content_type)
 
     pipeline = FullMangaPipeline(
         coordinator=coordinator,
         translation_pipeline=MangaTranslationPipeline(provider=MockTranslationProvider()),
         upload_urls_requester=mock_request_upload_urls,
+        clean_base_urls_requester=mock_request_clean_base_upload_urls,
         uploader_func=mock_upload_file,
     )
 
@@ -88,6 +103,26 @@ async def test_full_manga_pipeline_execution_all_stages(tmp_path: Path, monkeypa
     assert result["success"] is True
     assert result["status"] == "READY_FOR_REVIEW"
     assert result["pagesProcessed"] == 2
+
+    # Verify clean bases uploaded as lossless WebP
+    assert len(uploaded_clean_bases) == 2
+    for page in (1, 2):
+        clean_url = f"http://localhost:9000/clean-base/{page}"
+        assert clean_url in uploaded_clean_bases
+        data, c_type = uploaded_clean_bases[clean_url]
+        assert c_type == "image/webp"
+        with Image.open(io.BytesIO(data)) as img:
+            assert img.format == "WEBP"
+            assert img.size == (400, 600)
+
+    # Verify READY_FOR_REVIEW manifest has cleanBases with full coverage
+    ready_event = [e for e in sink.events if e.get("stage") == "READY_FOR_REVIEW"][0]
+    result_manifest = ready_event["resultManifest"]
+    assert "cleanBases" in result_manifest
+    assert len(result_manifest["cleanBases"]) == 2
+    assert [cb["page"] for cb in result_manifest["cleanBases"]] == [1, 2]
+    assert result_manifest["cleanBases"][0]["cleanBaseKey"] == "ai/jobs/job-uuid-123/review-base/page_1.webp"
+    assert result_manifest["cleanBases"][1]["cleanBaseKey"] == "ai/jobs/job-uuid-123/review-base/page_2.webp"
 
     # Kiểm tra chuỗi các stages trong events
     stages = [e["stage"] for e in sink.events if not e["heartbeat"]]
@@ -189,9 +224,13 @@ async def test_full_manga_pipeline_failure_at_quality_check(tmp_path: Path, monk
     sink = RecordingProgressSink()
     coordinator = AttemptProgressCoordinator(sink=sink)
 
+    from unittest.mock import AsyncMock
+    mock_clean_base_requester = AsyncMock()
+
     pipeline = FullMangaPipeline(
         coordinator=coordinator,
         translation_pipeline=MangaTranslationPipeline(provider=MockTranslationProvider()),
+        clean_base_urls_requester=mock_clean_base_requester,
     )
 
     # Giả lập lỗi tại stage QUALITY_CHECK
@@ -208,3 +247,5 @@ async def test_full_manga_pipeline_failure_at_quality_check(tmp_path: Path, monk
     assert coordinator.current_stage == "QUALITY_CHECK"
     last_stage_event = [e for e in sink.events if not e["heartbeat"]][-1]
     assert last_stage_event["stage"] == "QUALITY_CHECK"
+    # Clean base slots must not be requested if QA fails
+    assert not mock_clean_base_requester.called

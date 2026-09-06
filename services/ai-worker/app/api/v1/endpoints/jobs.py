@@ -7,6 +7,7 @@ import httpx
 from app.core.security import verify_internal_key
 from app.core.config import settings
 from app.models.manifests import (
+    MangaCleanBasePageModel,
     MangaResultManifestV1,
     MangaResultPageModel,
     NovelResultManifestV1,
@@ -90,6 +91,45 @@ async def request_output_upload_urls(
         raise
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to connect to Core API for output upload URLs: {e}")
+
+async def request_clean_base_upload_urls(
+    job_id: str,
+    attempt_number: int,
+    pages: List[int],
+) -> List[Dict[str, Any]]:
+    """
+    Xin Core API cấp Presigned PUT URLs cho các file Manga clean bases (#162).
+    Path: /internal/v1/ai/jobs/{job_id}/clean-base-uploads
+    Payload: {"attemptNumber": attempt_number, "pages": pages}
+    Fail-fast: Ném HTTPException(502) nếu Core API trả lỗi hoặc không cấp được URLs.
+    """
+    url = f"{settings.CORE_API_INTERNAL_URL}/internal/v1/ai/jobs/{job_id}/clean-base-uploads"
+    payload = {
+        "attemptNumber": attempt_number,
+        "pages": pages,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "X-Internal-Service-Key": settings.AI_WORKER_SECRET,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                clean_bases = data.get("cleanBases", [])
+                if not clean_bases:
+                    raise HTTPException(status_code=502, detail="Core API returned empty cleanBases list")
+                return clean_bases
+            else:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Core API request clean base uploads failed with status {resp.status_code}: {resp.text}"
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to connect to Core API for clean base upload URLs: {e}")
 
 async def upload_file_to_presigned_url(upload_url: str, data: bytes, content_type: str = "image/webp") -> None:
     """
@@ -203,6 +243,7 @@ async def process_manga_job(req: ProcessJobRequest):
             coordinator=coordinator,
             translation_pipeline=trans_pipe,
             upload_urls_requester=request_output_upload_urls,
+            clean_base_urls_requester=request_clean_base_upload_urls,
             uploader_func=upload_file_to_presigned_url,
         )
 
@@ -223,7 +264,9 @@ async def process_manga_job(req: ProcessJobRequest):
 
     # Fallback cho mock isolation trong ENV=test (legacy endpoint tests)
     uploaded_files = await request_output_upload_urls(job_id, attempt_num, ["page-001.webp"])
+    clean_base_slots = await request_clean_base_upload_urls(job_id, attempt_num, [1])
     manifest_pages = []
+    clean_bases_manifest = []
 
     for idx, f in enumerate(uploaded_files, start=1):
         await upload_file_to_presigned_url(f["uploadUrl"], VALID_MOCK_WEBP_BYTES, "image/webp")
@@ -235,6 +278,15 @@ async def process_manga_job(req: ProcessJobRequest):
                 width=1200,
                 height=1800,
                 fileSizeBytes=len(VALID_MOCK_WEBP_BYTES),
+            )
+        )
+
+    for cb in clean_base_slots:
+        await upload_file_to_presigned_url(cb["uploadUrl"], VALID_MOCK_WEBP_BYTES, "image/webp")
+        clean_bases_manifest.append(
+            MangaCleanBasePageModel(
+                page=cb["page"],
+                cleanBaseKey=cb["storageKey"],
             )
         )
 
@@ -256,6 +308,7 @@ async def process_manga_job(req: ProcessJobRequest):
         version=1,
         mediaFormat="COMIC",
         pages=manifest_pages,
+        cleanBases=clean_bases_manifest,
     )
     segments = [
         {

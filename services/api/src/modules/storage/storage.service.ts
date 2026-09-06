@@ -546,6 +546,12 @@ export class StorageService {
     return isManga ? this.mangaBucket : this.novelBucket;
   }
 
+  async deleteInternalObject(key: string, isManga = true): Promise<void> {
+    const bucket = this.getInternalBucket(isManga);
+    await this.deleteObject(bucket, key);
+  }
+
+
   async createInternalDownloadUrl(key: string, isManga = true, expiresInSeconds = 900): Promise<string> {
     const bucket = this.getInternalBucket(isManga);
     const command = new GetObjectCommand({

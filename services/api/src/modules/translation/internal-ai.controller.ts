@@ -11,6 +11,7 @@ import { InternalServiceKeyGuard } from '../../common/guards/internal-service-ke
 import { TranslationService } from './translation.service';
 import { WorkerEventCallbackDto } from './dto/worker-event-callback.dto';
 import { RequestOutputUploadsDto } from './dto/request-output-uploads.dto';
+import { RequestCleanBaseUploadsDto } from './dto/request-clean-base-uploads.dto';
 import { CompleteMaterializationDto } from './dto/complete-materialization.dto';
 import { ParseUUIDPipe } from '@nestjs/common';
 
@@ -38,6 +39,19 @@ export class InternalAiController {
       id,
       dto.attemptNumber,
       dto.files,
+    );
+  }
+
+  @Post('jobs/:id/clean-base-uploads')
+  @HttpCode(HttpStatus.OK)
+  async createCleanBaseUploadUrls(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: RequestCleanBaseUploadsDto,
+  ) {
+    return await this.translationService.createCleanBaseUploadUrls(
+      id,
+      dto.attemptNumber,
+      dto.pages,
     );
   }
 

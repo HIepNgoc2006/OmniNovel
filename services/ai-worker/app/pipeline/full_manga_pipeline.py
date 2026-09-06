@@ -14,7 +14,11 @@ from app.core.package_extractor import ExtractedPageRef, extract_chapter_package
 from app.core.ssrf_safe_downloader import safe_download_archive
 from app.inpainting.inpainter import MangaInpainter
 from app.inpainting.mask_generator import generate_text_stroke_mask
-from app.models.manifests import MangaResultManifestV1, MangaResultPageModel
+from app.models.manifests import (
+    MangaCleanBasePageModel,
+    MangaResultManifestV1,
+    MangaResultPageModel,
+)
 from app.pipeline.attempt_coordinator import AttemptProgressCoordinator
 from app.pipeline.manga_pipeline import MangaOcrPipeline, MangaOcrResult
 from app.qa.visual_qa import VisualQAEvaluator
@@ -43,6 +47,7 @@ class FullMangaPipeline:
         typesetter: Optional[MangaTypesetter] = None,
         qa_evaluator: Optional[VisualQAEvaluator] = None,
         upload_urls_requester: Optional[Callable] = None,
+        clean_base_urls_requester: Optional[Callable] = None,
         uploader_func: Optional[Callable] = None,
     ):
         self.coordinator = coordinator
@@ -52,6 +57,7 @@ class FullMangaPipeline:
         self.typesetter = typesetter or MangaTypesetter()
         self.qa = qa_evaluator or VisualQAEvaluator()
         self.request_upload_urls = upload_urls_requester
+        self.request_clean_base_upload_urls = clean_base_urls_requester
         self.upload_file = uploader_func
 
     async def execute(
@@ -218,11 +224,40 @@ class FullMangaPipeline:
 
                 del src_bgr, rendered_bgr, inpaint_mask, typeset_mask, pil_img, decoded_pil, decoded_bgr, webp_bytes
 
+            # 6b. LOSSLESS WEBP CLEAN BASE ENCODING (#162)
+            # Sau khi QA vượt qua thành công, mã hóa intermediate inpainted backgrounds thành lossless WebP
+            clean_base_records: List[Dict[str, Any]] = []
+            clean_base_dir = work_dir / "clean_bases"
+            clean_base_dir.mkdir(parents=True, exist_ok=True)
+
+            for page_idx in range(len(translation_result.pages)):
+                inpainted_path = inpaint_dir / f"inpainted_{page_idx + 1:04d}.png"
+                inpainted_bgr = cv2.imread(str(inpainted_path))
+                if inpainted_bgr is None:
+                    raise ValueError(f"Không thể đọc ảnh inpainted cho clean base tại {inpainted_path}")
+
+                pil_clean = Image.fromarray(cv2.cvtColor(inpainted_bgr, cv2.COLOR_BGR2RGB))
+                clean_buf = io.BytesIO()
+                pil_clean.save(clean_buf, format="WEBP", lossless=True)
+                clean_webp_bytes = clean_buf.getvalue()
+
+                clean_webp_path = clean_base_dir / f"clean_base_{page_idx + 1:04d}.webp"
+                clean_webp_path.write_bytes(clean_webp_bytes)
+
+                clean_base_records.append(
+                    {
+                        "page": page_idx + 1,
+                        "filePath": clean_webp_path,
+                        "fileSize": len(clean_webp_bytes),
+                    }
+                )
+                del inpainted_bgr, pil_clean, clean_buf, clean_webp_bytes
+
             # 7. TWO-STEP PRESIGNED UPLOAD & MANIFEST ASSEMBLY
             output_filenames = [f"page_{p['page']:04d}.webp" for p in page_records]
 
+            # 7a. Upload rendered output pages
             if self.request_upload_urls is not None and self.upload_file is not None:
-                # 1. Xin Core API cấp canonical presigned URLs
                 upload_slots = await self.request_upload_urls(job_id, attempt_number, output_filenames)
                 if len(upload_slots) != len(page_records):
                     raise ValueError("Core API cấp không đủ số lượng upload URLs cho các trang")
@@ -262,6 +297,35 @@ class FullMangaPipeline:
                     for prec in page_records
                 ]
 
+            # 7b. Upload clean bases to canonical review-base namespace (#162)
+            clean_bases_manifest: List[MangaCleanBasePageModel] = []
+            if self.request_clean_base_upload_urls is not None and self.upload_file is not None:
+                clean_base_pages = [cb["page"] for cb in clean_base_records]
+                clean_base_slots = await self.request_clean_base_upload_urls(
+                    job_id, attempt_number, clean_base_pages
+                )
+                if len(clean_base_slots) != len(clean_base_records):
+                    raise ValueError("Core API cấp không đủ số lượng clean base upload URLs")
+
+                for idx, slot in enumerate(clean_base_slots):
+                    crec = clean_base_records[idx]
+                    clean_data = crec["filePath"].read_bytes()
+                    await self.upload_file(slot["uploadUrl"], clean_data, "image/webp")
+                    clean_bases_manifest.append(
+                        MangaCleanBasePageModel(
+                            page=slot["page"],
+                            cleanBaseKey=slot["storageKey"],
+                        )
+                    )
+            else:
+                clean_bases_manifest = [
+                    MangaCleanBasePageModel(
+                        page=crec["page"],
+                        cleanBaseKey=f"ai/jobs/{job_id}/review-base/page_{crec['page']}.webp",
+                    )
+                    for crec in clean_base_records
+                ]
+
             # 8. MECHANICAL QA: Thẩm định tính đầy đủ và toàn vẹn của Manifest & Segment Keys 1:1
             expected_keys: Set[str] = {
                 s.segment_key for p in ocr_result.pages for s in p.segments
@@ -280,6 +344,7 @@ class FullMangaPipeline:
                 version=1,
                 mediaFormat="COMIC",
                 pages=[MangaResultPageModel(**p) for p in manifest_pages],
+                cleanBases=clean_bases_manifest,
             )
 
             # 9. TẬP HỢP FINAL SEGMENTS VÀ PHÁT CALLBACK READY_FOR_REVIEW

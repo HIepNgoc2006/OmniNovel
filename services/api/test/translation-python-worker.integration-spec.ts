@@ -229,10 +229,20 @@ describe('Real Python FastAPI Worker Cross-Service Integration Spec (Slice 2C Ac
         isReady = true;
         expect(jobCheck[0].progress_percentage).toBe(100);
         expect(jobCheck[0].result_manifest?.pages?.length).toBe(1);
+        expect(jobCheck[0].result_manifest?.cleanBases?.length).toBe(1);
+        expect(jobCheck[0].result_manifest?.cleanBases?.[0]?.page).toBe(1);
+        expect(jobCheck[0].result_manifest?.cleanBases?.[0]?.cleanBaseKey).toBe(
+          `ai/jobs/${jobId}/review-base/page_1.webp`,
+        );
         break;
       }
     }
     expect(isReady).toBe(true);
+
+    // Verify clean base object exists before apply
+    const cleanBaseKey = `ai/jobs/${jobId}/review-base/page_1.webp`;
+    const cleanBaseBeforeApply = await storageService.headInternalObject(cleanBaseKey, true);
+    expect(cleanBaseBeforeApply).toBe(true);
 
     // 3. Apply Job với CREATE_ALTERNATE_VERSION
     const applyRes = await service.applyJob(
@@ -270,5 +280,9 @@ describe('Real Python FastAPI Worker Cross-Service Integration Spec (Slice 2C Ac
       true,
     );
     expect(existsInMinio).toBe(true);
+
+    // 6b. Kiểm tra Clean Base đã được xóa an toàn sau khi Apply hoàn tất (#162 Lifecycle Cleanup)
+    const cleanBaseAfterApply = await storageService.headInternalObject(cleanBaseKey, true);
+    expect(cleanBaseAfterApply).toBe(false);
   }, 45000);
 });

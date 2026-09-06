@@ -68,6 +68,7 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
         { provide: getRepositoryToken(UploadSession), useValue: {} },
         { provide: getRepositoryToken(StoryMember), useValue: storyMemberRepo },
         { provide: 'BullQueue_translation', useValue: {} },
+        { provide: 'BullQueue_translation-materialization', useValue: {} },
         { provide: StorageService, useValue: {} },
         { provide: DataSource, useValue: dataSource },
         { provide: TranslationGateway, useValue: {} },

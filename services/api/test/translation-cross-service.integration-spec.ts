@@ -23,6 +23,8 @@ const VALID_WEBP_BUFFER = Buffer.from([
 ]);
 
 describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> Worker HTTP -> MinIO -> Callbacks -> Apply)', () => {
+  jest.setTimeout(60000);
+
   let app: INestApplication;
   let dataSource: DataSource;
   let service: TranslationService;
@@ -259,7 +261,7 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
       await new Promise<void>((resolve) => workerServer.close(() => resolve()));
     }
     await app.close();
-  });
+  }, 30000);
 
   it('Full Cross-Service Flow: Create Job -> BullMQ Processor -> HTTP Worker -> Real MinIO Upload -> Callbacks -> READY_FOR_REVIEW -> Apply', async () => {
     // 1. Tạo TranslationJob

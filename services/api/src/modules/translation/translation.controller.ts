@@ -12,7 +12,9 @@ import {
   HttpStatus,
   BadRequestException,
   ParseUUIDPipe,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../../common/guards/roles.guard';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
@@ -133,6 +135,21 @@ export class TranslationController {
       user,
       idempotencyKey,
     );
+  }
+
+  @Post('jobs/:id/materializations')
+  async requestMaterialization(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: any,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    const result = await this.translationService.requestMaterialization(id, user);
+    res.status(
+      result.status === 'ALREADY_FRESH'
+        ? HttpStatus.OK
+        : HttpStatus.ACCEPTED,
+    );
+    return result;
   }
 
   @Post('jobs/:id/cancel')

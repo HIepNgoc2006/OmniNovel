@@ -63,9 +63,11 @@
     - [x] Typed & versioned translation manifests (#164) - Versioned schemas `MangaResultManifestV1` (version: 1, `fileSizeBytes`, `cleanBases`) & `NovelResultManifestV1` (version: 1, `segmentCount`, `charCount`, `qa`, `metrics`), pure runtime validators, discriminated union narrowing, backward-compatible `fileSize` auto-mapping, fail-closed unknown versions. Cross-service parity between TypeScript `@omninovel/shared`, Core API, and Python Worker Pydantic v2 models.
     - [x] Hardening: 5 audit findings from Run #82 resolved (Novel typed `glossarySnapshot`, callback dropped `message`, READY typed manifest union with unconditional `model_dump()`, RFC3339 timestamp parity with timezone, full regression fixtures migrated to strict V1, Core E2E 172/172 pass).
     - [ ] *Backlog (P2)*: Core prefix-jail validation độc lập cả `storageKey` lẫn `previewKey` kèm negative E2E.
-  - [ ] **Phase 4D.4 Materialization Protocol & Fenced Completion (PR C)**:
-    - [ ] Dedicated materialization queue & deterministic custom job ID (#161).
-    - [ ] Durable S3 snapshot artifact & internal completion callback (#161, #156 remainder).
+  - [/] **Phase 4D.4: Materialization Protocol & Fenced Completion (PR C - PR #171 OPEN — exact-head CI green)**:
+    - [x] Dedicated materialization queue & deterministic custom job ID (#161).
+    - [x] Content-addressed S3 snapshot artifact (`snapshots/{sha256}.json`) with Comic geometry and strict validators (#161).
+    - [x] Fenced completion callback with idempotency-first order, stale discard, prefix-jail and exact size verification (#161, #156 remainder).
+    - [x] Under-lock canonical result equality re-check, strict Novel qa.issues validation, and 22/22 dedicated E2E tests pass.
   - [ ] **Phase 4D.5 Studio Frontend UI**:
     - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).
     - [ ] Manga Translation Studio: Trình xem ảnh gốc vs ảnh đã dịch, xem vùng nhận diện thoại OCR, chỉnh sửa bản dịch từng ô thoại.

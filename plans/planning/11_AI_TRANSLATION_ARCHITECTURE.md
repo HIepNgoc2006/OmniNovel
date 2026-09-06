@@ -102,3 +102,43 @@ export interface ITranslationProvider {
 * **OpenAITranslationAdapter:** Gọi mô hình `gpt-4o-mini` qua Structured Outputs JSON.
 * **DeepLTranslationAdapter:** Gọi DeepL API với tùy chọn Formality và Glossary ID.
 * **LocalLLMTranslationAdapter:** Gọi Ollama / vLLM nội bộ (Mô hình Qwen2.5-7B).
+
+---
+
+## 6. GIAO THỨC TẠO ARTIFACT TÁI KẾT XUẤT & FENCED COMPLETION (MATERIALIZATION PROTOCOL)
+
+Khi biên tập viên chỉnh sửa bản dịch phân đoạn (`translation_segments`), `review_revision` của Job tăng lên. Để re-typeset ảnh Manga hoặc tái dựng HTML Novel một cách nhất quán và bảo vệ tính toàn vẹn dữ liệu, hệ thống triển khai giao thức Materialization Protocol độc lập (Issue #161, #156):
+
+```
+[Reviewer PATCH Segments] ➔ reviewRevision tăng
+                                     │
+                                     ▼
+[POST /ai/jobs/:id/materializations] ➔ DB Transaction (Job FOR UPDATE)
+                                     │ • Invariant: materializedRevision < reviewRevision
+                                     │ • Read deterministic segments (sort_order ASC, id ASC)
+                                     │ • COMMIT Transaction (Không có network I/O trong lock)
+                                     ▼
+[External I/O Stage] ───────────────> Content-Addressed Snapshot:
+                                     │ `ai/jobs/{id}/materializations/rev-{N}/snapshots/{sha256}.json`
+                                     ▼
+[Dedicated BullMQ Queue] ───────────> Queue: `translation-materialization`
+                                     │ Deterministic Job ID: `materialize-{jobId}-{targetRevision}`
+                                     ▼
+[Worker Re-rendering Execution] ────> Manga: Re-typeset trên cleanBases (#157)
+                                     │ Novel: Rebuild HTML với cấu trúc AST (#158)
+                                     ▼
+[POST /internal/.../complete] ──────> 1. Read-only DB Preflight (Idempotency & Stale check, 0 MinIO HEAD)
+                                     │ 2. Prefix-Jail & Size Verification: `statInternalObject` (ContentLength === fileSizeBytes)
+                                     │ 3. DB Transaction (Job FOR UPDATE trên cùng connection):
+                                     │    • ALREADY_APPLIED (200 OK): Cùng revision & cùng selective result
+                                     │    • STALE_DISCARDED (200 OK): Revision cũ hơn hoặc job đã đổi trạng thái
+                                     │    • APPLIED (200 OK): Merge selective pages/HTML, update materializedRevision
+                                     ▼
+[Apply Gate Unlocked] ──────────────> materializedRevision === reviewRevision ➔ Cho phép Apply thành công!
+```
+
+### Ranh giới Chuyển giao Trách nhiệm (Handoff Ownership Boundary):
+* **#161 (Materialization Protocol & Fencing):** Chịu trách nhiệm đặc tả snapshot phân đoạn V1 (`MaterializationSnapshotV1`), Content-Addressed storage key, dedicated BullMQ queue deduplication, và fenced completion callback nguyên tử.
+* **#162 / #163 (Immutable Source Context):** Chịu trách nhiệm bảo toàn dữ liệu nguồn bất biến (`cleanBases` cho Manga và structure snapshot cho Novel).
+* **#157 / #158 (Materialization Processors & Workers):** Chịu trách nhiệm đọc snapshot và source context, sinh presigned download URLs ngắn hạn ngay trước khi gọi worker, và re-render/rebuild artifact cuối cùng. Không tự ý mở rộng schema của snapshot V1.
+

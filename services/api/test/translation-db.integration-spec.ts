@@ -3,6 +3,8 @@ import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { AppModule } from '../src/app.module';
 import { DataSource } from 'typeorm';
 import { TranslationService } from '../src/modules/translation/translation.service';
+import { StorageService } from '../src/modules/storage/storage.service';
+import { PutObjectCommand } from '@aws-sdk/client-s3';
 import { TranslationJobStatus, ChapterVersionType } from '@omninovel/shared';
 import { ApplyTranslationMode } from '../src/modules/translation/dto/apply-translation-job.dto';
 
@@ -10,6 +12,7 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
   let app: INestApplication;
   let dataSource: DataSource;
   let service: TranslationService;
+  let storageService: StorageService;
 
   let ownerUser: any;
   let storyId: string;
@@ -34,6 +37,7 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
 
     dataSource = app.get(DataSource);
     service = app.get(TranslationService);
+    storageService = app.get(StorageService);
 
     // Chuẩn bị dữ liệu
     const uRes = await dataSource.query(
@@ -171,6 +175,21 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
       headers: { 'Content-Type': 'image/webp' },
     });
 
+    const sourceReviewKey = `ai/jobs/${testJobId}/source-review/attempt-1/page_1.webp`;
+    const s3 = (storageService as any).s3Client;
+    await s3.send(
+      new PutObjectCommand({
+        Bucket: 'manga-media',
+        Key: sourceReviewKey,
+        Body: Buffer.from([
+          0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+          0x56, 0x50, 0x38, 0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00,
+          0x00, 0x07, 0x00, 0x00, 0x00, 0x00,
+        ]),
+        ContentType: 'image/webp',
+      }),
+    );
+
     // Gửi đồng thời 4 callback cùng một lúc (Same-stage heartbeat progression -> READY_FOR_REVIEW)
     const events = [
       {
@@ -219,6 +238,15 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
               cleanBaseKey: cbPresign.cleanBases[0].storageKey,
             },
           ],
+          sourceReview: {
+            version: 1 as const,
+            pages: [
+              {
+                page: 1,
+                storageKey: sourceReviewKey,
+              },
+            ],
+          },
         },
         segments: [
           {

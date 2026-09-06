@@ -30,6 +30,7 @@ export interface MangaResultManifestV1 {
   mediaFormat: 'COMIC';
   pages: MangaResultManifestPageV1[];
   cleanBases?: MangaCleanBasePageV1[];
+  sourceReview?: MangaReviewSourceManifestV1;
 }
 
 // ----------------------------------------------------------------------
@@ -210,7 +211,7 @@ export function validateMangaResultManifestV1(
   // Allowed keys checking at root
   assertNoUnknownKeys(
     obj,
-    ['version', 'mediaFormat', 'pages', 'cleanBases'],
+    ['version', 'mediaFormat', 'pages', 'cleanBases', 'sourceReview'],
     'MangaResultManifestV1',
     errors,
   );
@@ -365,6 +366,17 @@ export function validateMangaResultManifestV1(
     }
   }
 
+  // Validate sourceReview if present (#159)
+  let validatedSourceReview: MangaReviewSourceManifestV1 | undefined;
+  if (obj.sourceReview !== undefined) {
+    const sourceReviewResult = validateMangaReviewSourceManifestV1(obj.sourceReview);
+    if (!sourceReviewResult.valid) {
+      errors.push(...sourceReviewResult.errors);
+    } else {
+      validatedSourceReview = sourceReviewResult.value;
+    }
+  }
+
   if (errors.length > 0) {
     return { valid: false, errors };
   }
@@ -377,6 +389,7 @@ export function validateMangaResultManifestV1(
       mediaFormat: 'COMIC',
       pages: validatedPages,
       ...(validatedCleanBases ? { cleanBases: validatedCleanBases } : {}),
+      ...(validatedSourceReview ? { sourceReview: validatedSourceReview } : {}),
     },
   };
 }
@@ -936,9 +949,12 @@ export function validateMangaReviewSourceManifestV1(
 
   if (!Array.isArray(obj.pages)) {
     errors.push('pages must be an array');
+  } else if (obj.pages.length === 0) {
+    errors.push('pages array must not be empty');
   }
 
   const validatedPages: MangaReviewSourcePageV1[] = [];
+  const seenPages = new Set<number>();
   if (Array.isArray(obj.pages)) {
     obj.pages.forEach((p: any, idx: number) => {
       if (!p || typeof p !== 'object' || Array.isArray(p)) {
@@ -954,6 +970,13 @@ export function validateMangaReviewSourceManifestV1(
 
       if (!isSafePositiveInteger(p.page)) {
         errors.push(`pages[${idx}].page must be an integer >= 1`);
+      } else {
+        if (seenPages.has(p.page)) {
+          errors.push(
+            `DUPLICATE_SOURCE_REVIEW_PAGE_NUMBER: Duplicate page number ${p.page} in sourceReview`,
+          );
+        }
+        seenPages.add(p.page);
       }
       if (typeof p.storageKey !== 'string' || p.storageKey.trim() === '') {
         errors.push(`pages[${idx}].storageKey must be a non-empty string`);

@@ -50,6 +50,7 @@ async def test_full_manga_pipeline_execution_all_stages(tmp_path: Path, monkeypa
 
     uploaded_payloads = {}
     uploaded_clean_bases = {}
+    uploaded_source_reviews = {}
 
     async def mock_request_upload_urls(job_id, attempt_num, filenames):
         return [
@@ -71,9 +72,21 @@ async def test_full_manga_pipeline_execution_all_stages(tmp_path: Path, monkeypa
             for p in pages
         ]
 
+    async def mock_request_source_review_upload_urls(job_id, attempt_num, pages):
+        return [
+            {
+                "pageNumber": p["pageNumber"],
+                "storageKey": f"ai/jobs/{job_id}/source-review/attempt-{attempt_num}/page_{p['pageNumber']}.png",
+                "uploadUrl": f"http://localhost:9000/source-review/{p['pageNumber']}",
+            }
+            for p in pages
+        ]
+
     async def mock_upload_file(url, data, content_type):
         if "clean-base" in url:
             uploaded_clean_bases[url] = (data, content_type)
+        elif "source-review" in url:
+            uploaded_source_reviews[url] = (data, content_type)
         else:
             uploaded_payloads[url] = (data, content_type)
 
@@ -82,6 +95,7 @@ async def test_full_manga_pipeline_execution_all_stages(tmp_path: Path, monkeypa
         translation_pipeline=MangaTranslationPipeline(provider=MockTranslationProvider()),
         upload_urls_requester=mock_request_upload_urls,
         clean_base_urls_requester=mock_request_clean_base_upload_urls,
+        source_review_urls_requester=mock_request_source_review_upload_urls,
         uploader_func=mock_upload_file,
     )
 
@@ -115,6 +129,16 @@ async def test_full_manga_pipeline_execution_all_stages(tmp_path: Path, monkeypa
             assert img.format == "WEBP"
             assert img.size == (400, 600)
 
+    # Verify source review previews uploaded with decoded format/MIME
+    assert len(uploaded_source_reviews) == 2
+    for page in (1, 2):
+        src_url = f"http://localhost:9000/source-review/{page}"
+        assert src_url in uploaded_source_reviews
+        data, c_type = uploaded_source_reviews[src_url]
+        assert c_type == "image/png"
+        with Image.open(io.BytesIO(data)) as img:
+            assert img.format == "PNG"
+
     # Verify READY_FOR_REVIEW manifest has cleanBases with full coverage
     ready_event = [e for e in sink.events if e.get("stage") == "READY_FOR_REVIEW"][0]
     result_manifest = ready_event["resultManifest"]
@@ -123,6 +147,14 @@ async def test_full_manga_pipeline_execution_all_stages(tmp_path: Path, monkeypa
     assert [cb["page"] for cb in result_manifest["cleanBases"]] == [1, 2]
     assert result_manifest["cleanBases"][0]["cleanBaseKey"] == "ai/jobs/job-uuid-123/review-base/attempt-1/page_1.webp"
     assert result_manifest["cleanBases"][1]["cleanBaseKey"] == "ai/jobs/job-uuid-123/review-base/attempt-1/page_2.webp"
+
+    # Verify READY_FOR_REVIEW manifest has sourceReview with full coverage (#159)
+    assert "sourceReview" in result_manifest
+    assert result_manifest["sourceReview"]["version"] == 1
+    assert len(result_manifest["sourceReview"]["pages"]) == 2
+    assert [sp["page"] for sp in result_manifest["sourceReview"]["pages"]] == [1, 2]
+    assert result_manifest["sourceReview"]["pages"][0]["storageKey"] == "ai/jobs/job-uuid-123/source-review/attempt-1/page_1.png"
+    assert result_manifest["sourceReview"]["pages"][1]["storageKey"] == "ai/jobs/job-uuid-123/source-review/attempt-1/page_2.png"
 
     # Kiểm tra chuỗi các stages trong events
     stages = [e["stage"] for e in sink.events if not e["heartbeat"]]

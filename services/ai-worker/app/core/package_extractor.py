@@ -22,6 +22,7 @@ class ExtractedPageRef:
     file_path: Path
     width: int
     height: int
+    mime_type: str
 
 
 def _natural_sort_key(text: str):
@@ -158,9 +159,22 @@ def extract_chapter_package(zip_path: Path, output_dir: Path) -> List[ExtractedP
                     if bytes_written > settings.MAX_UNCOMPRESSED_ARCHIVE_BYTES:
                         raise ValueError("File extraction exceeded uncompressed byte budget")
 
+            FORMAT_TO_MIME = {
+                "JPEG": "image/jpeg",
+                "JPG": "image/jpeg",
+                "PNG": "image/png",
+                "WEBP": "image/webp",
+                "AVIF": "image/avif",
+            }
+
             # Validate ảnh qua PIL
             try:
                 with Image.open(target_path) as img:
+                    actual_format = (img.format or "").upper()
+                    if actual_format not in FORMAT_TO_MIME:
+                        raise ValueError(f"Unsupported image format '{actual_format}' in archive")
+                    mime_type = FORMAT_TO_MIME[actual_format]
+
                     width, height = img.size
                     if width > settings.MAX_IMAGE_AXIS_DIMENSION or height > settings.MAX_IMAGE_AXIS_DIMENSION:
                         raise ValueError(
@@ -182,6 +196,7 @@ def extract_chapter_package(zip_path: Path, output_dir: Path) -> List[ExtractedP
                     file_path=target_path,
                     width=width,
                     height=height,
+                    mime_type=mime_type,
                 )
             )
 

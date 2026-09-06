@@ -81,6 +81,36 @@ class TestMangaResultManifestV1:
         assert len(manifest.pages) == 1
         assert manifest.pages[0].fileSizeBytes == 102400
 
+    def test_valid_manifest_with_source_review(self):
+        data = {
+            "version": 1,
+            "mediaFormat": "COMIC",
+            "pages": [
+                {
+                    "page": 1,
+                    "storageKey": "ai/jobs/job-1/attempt-1/page_0001.webp",
+                    "previewKey": "ai/jobs/job-1/attempt-1/page_0001.webp",
+                    "width": 1200,
+                    "height": 1800,
+                    "fileSizeBytes": 102400,
+                }
+            ],
+            "sourceReview": {
+                "version": 1,
+                "pages": [
+                    {
+                        "page": 1,
+                        "storageKey": "ai/jobs/job-1/source-review/attempt-1/page_1.jpg",
+                    }
+                ],
+            },
+        }
+        manifest = MangaResultManifestV1.model_validate(data)
+        assert manifest.sourceReview is not None
+        assert manifest.sourceReview.version == 1
+        assert len(manifest.sourceReview.pages) == 1
+        assert manifest.sourceReview.pages[0].storageKey == "ai/jobs/job-1/source-review/attempt-1/page_1.jpg"
+
     def test_reject_empty_pages(self):
         with pytest.raises(ValidationError):
             MangaResultManifestV1.model_validate({

@@ -14,9 +14,11 @@ import {
   HeadObjectCommand,
   CopyObjectCommand,
   DeleteObjectCommand,
+  DeleteObjectsCommand,
+  ListObjectsV2Command,
 } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
-import { v4 as uuidv4 } from 'uuid';
+import { v4 as uuidv4, validate as isUuid } from 'uuid';
 const AdmZip = require('adm-zip');
 import {
   UploadSession,
@@ -635,6 +637,76 @@ export class StorageService {
       Key: key,
     });
     return await getSignedUrl(this.s3Client, command, { expiresIn: expiresInSeconds });
+  }
+
+  /**
+   * Xóa toàn bộ các objects theo prefix nội bộ (#159, #172).
+   * Yêu cầu an toàn nghiêm ngặt (Fail-Closed):
+   * - Bắt buộc prefix bắt đầu bằng 'ai/jobs/' và kết thúc bằng '/'
+   * - Không chứa path traversal '..'
+   * - Phải có segment jobId là UUID hợp lệ (chặn blast radius bare 'ai/jobs/')
+   */
+  async deleteInternalPrefix(prefix: string, isManga = true): Promise<void> {
+    if (
+      !prefix ||
+      typeof prefix !== 'string' ||
+      !prefix.startsWith('ai/jobs/') ||
+      !prefix.endsWith('/') ||
+      prefix.includes('..')
+    ) {
+      throw new BadRequestException('INVALID_INTERNAL_DELETE_PREFIX');
+    }
+
+    const parts = prefix.split('/');
+    // 'ai/jobs/{jobId}/...' -> parts[0] = 'ai', parts[1] = 'jobs', parts[2] = jobId
+    if (parts.length < 4 || !parts[2] || !isUuid(parts[2])) {
+      throw new BadRequestException(
+        'INVALID_INTERNAL_DELETE_PREFIX: Must be job-scoped with a valid UUID',
+      );
+    }
+
+    const bucket = this.getInternalBucket(isManga);
+    let continuationToken: string | undefined;
+
+    do {
+      const listRes = await this.s3Client.send(
+        new ListObjectsV2Command({
+          Bucket: bucket,
+          Prefix: prefix,
+          ContinuationToken: continuationToken,
+        }),
+      );
+
+      const objectsToDelete = (listRes.Contents || [])
+        .map((obj) => ({ Key: obj.Key }))
+        .filter(
+          (item): item is { Key: string } =>
+            typeof item.Key === 'string' && item.Key.length > 0,
+        );
+
+      if (objectsToDelete.length > 0) {
+        const deleteRes = await this.s3Client.send(
+          new DeleteObjectsCommand({
+            Bucket: bucket,
+            Delete: {
+              Objects: objectsToDelete,
+              Quiet: true,
+            },
+          }),
+        );
+
+        if (deleteRes.Errors && deleteRes.Errors.length > 0) {
+          const sample = deleteRes.Errors[0];
+          throw new Error(
+            `S3_DELETE_OBJECTS_FAILED: Failed to delete ${sample.Key} with code ${sample.Code}: ${sample.Message}`,
+          );
+        }
+      }
+
+      continuationToken = listRes.IsTruncated
+        ? listRes.NextContinuationToken
+        : undefined;
+    } while (continuationToken);
   }
 }
 

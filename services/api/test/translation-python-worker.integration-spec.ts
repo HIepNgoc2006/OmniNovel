@@ -234,15 +234,25 @@ describe('Real Python FastAPI Worker Cross-Service Integration Spec (Slice 2C Ac
         expect(jobCheck[0].result_manifest?.cleanBases?.[0]?.cleanBaseKey).toBe(
           `ai/jobs/${jobId}/review-base/attempt-1/page_1.webp`,
         );
+        expect(jobCheck[0].result_manifest?.sourceReview?.version).toBe(1);
+        expect(jobCheck[0].result_manifest?.sourceReview?.pages?.length).toBe(1);
+        expect(jobCheck[0].result_manifest?.sourceReview?.pages?.[0]?.page).toBe(1);
+        expect(jobCheck[0].result_manifest?.sourceReview?.pages?.[0]?.storageKey).toBe(
+          `ai/jobs/${jobId}/source-review/attempt-1/page_1.png`,
+        );
         break;
       }
     }
     expect(isReady).toBe(true);
 
-    // Verify clean base object exists before apply
+    // Verify clean base & source review objects exist before apply
     const cleanBaseKey = `ai/jobs/${jobId}/review-base/attempt-1/page_1.webp`;
     const cleanBaseBeforeApply = await storageService.headInternalObject(cleanBaseKey, true);
     expect(cleanBaseBeforeApply).toBe(true);
+
+    const sourceReviewKey = `ai/jobs/${jobId}/source-review/attempt-1/page_1.png`;
+    const sourceReviewBeforeApply = await storageService.headInternalObject(sourceReviewKey, true);
+    expect(sourceReviewBeforeApply).toBe(true);
 
     // 3. Apply Job với CREATE_ALTERNATE_VERSION
     const applyRes = await service.applyJob(
@@ -284,5 +294,9 @@ describe('Real Python FastAPI Worker Cross-Service Integration Spec (Slice 2C Ac
     // 6b. Kiểm tra Clean Base đã được xóa an toàn sau khi Apply hoàn tất (#162 Lifecycle Cleanup)
     const cleanBaseAfterApply = await storageService.headInternalObject(cleanBaseKey, true);
     expect(cleanBaseAfterApply).toBe(false);
+
+    // 6c. Kiểm tra Source Review prefix đã được xóa an toàn sau khi Apply hoàn tất (#159 Lifecycle Cleanup)
+    const sourceReviewAfterApply = await storageService.headInternalObject(sourceReviewKey, true);
+    expect(sourceReviewAfterApply).toBe(false);
   }, 45000);
 });

@@ -78,6 +78,112 @@
     }
   },
   {
+    "id": "valid-manga-result-with-source-review",
+    "schema": "MANGA_RESULT_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ],
+      "sourceReview": {
+        "version": 1,
+        "pages": [
+          {
+            "page": 1,
+            "storageKey": "ai/jobs/job-1/source-review/attempt-1/page_1.jpg"
+          }
+        ]
+      }
+    },
+    "canonical": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ],
+      "sourceReview": {
+        "version": 1,
+        "pages": [
+          {
+            "page": 1,
+            "storageKey": "ai/jobs/job-1/source-review/attempt-1/page_1.jpg"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "invalid-manga-result-source-review-empty-pages",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ],
+      "sourceReview": {
+        "version": 1,
+        "pages": []
+      }
+    }
+  },
+  {
+    "id": "invalid-manga-result-source-review-duplicate-pages",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ],
+      "sourceReview": {
+        "version": 1,
+        "pages": [
+          {
+            "page": 1,
+            "storageKey": "ai/jobs/job-1/source-review/attempt-1/page_1.jpg"
+          },
+          {
+            "page": 1,
+            "storageKey": "ai/jobs/job-1/source-review/attempt-1/page_1_dup.jpg"
+          }
+        ]
+      }
+    }
+  },
+  {
     "id": "valid-manga-legacy-file-size",
     "schema": "MANGA_RESULT_V1",
     "valid": true,

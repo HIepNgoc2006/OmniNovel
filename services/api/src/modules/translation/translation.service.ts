@@ -58,6 +58,7 @@ import { StorageService } from '../storage/storage.service';
 import { TranslationGateway } from './translation.gateway';
 import { TranslationProcessor } from './translation.processor';
 import { CreateTranslationJobDto } from './dto/create-translation-job.dto';
+import { RequestSourceReviewSlotsPageDto } from './dto/request-source-review-slots.dto';
 import {
   ApplyTranslationJobDto,
   ApplyTranslationMode,
@@ -1179,6 +1180,108 @@ export class TranslationService {
   }
 
   /**
+   * Cấp Presigned PUT URLs cho Manga source review page previews trích xuất từ MANGA_ZIP (#159)
+   */
+  async createSourceReviewUploadUrls(
+    id: string,
+    attemptNumber: number,
+    pages: RequestSourceReviewSlotsPageDto[],
+  ) {
+    const job = await this.jobRepo.findOne({
+      where: { id },
+      relations: [
+        'project',
+        'project.storyEdition',
+        'project.storyEdition.story',
+        'sourceVersion',
+        'sourceVersion.chapter',
+        'sourceVersion.chapter.storyEdition',
+        'sourceVersion.chapter.storyEdition.story',
+      ],
+    });
+
+    if (!job) {
+      throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
+    }
+
+    // Least-Privilege Gate: Chỉ cho phép trong trạng thái PREPROCESSING sau khi giải nén
+    if (job.status !== TranslationJobStatus.PREPROCESSING) {
+      throw new BadRequestException(
+        `Không thể cấp source review upload slots khi job ở trạng thái: ${job.status}. Chỉ cho phép trong trạng thái PREPROCESSING (#159).`,
+      );
+    }
+
+    if (attemptNumber !== job.attemptCount) {
+      throw new BadRequestException(
+        `Attempt ${attemptNumber} không khớp với attempt hiện tại của job (${job.attemptCount}).`,
+      );
+    }
+
+    // Fail-closed: Chỉ hỗ trợ COMIC
+    const story =
+      job.project?.storyEdition?.story ||
+      job.sourceVersion?.chapter?.storyEdition?.story;
+    if (story?.mediaFormat !== MediaFormat.COMIC) {
+      throw new BadRequestException(
+        'Source review upload slots chỉ hỗ trợ cho định dạng COMIC / Manga.',
+      );
+    }
+
+    // Validate duplicate & valid page numbers (>= 1)
+    const MIME_TO_EXT: Record<string, string> = {
+      'image/jpeg': '.jpg',
+      'image/png': '.png',
+      'image/webp': '.webp',
+      'image/avif': '.avif',
+    };
+
+    const seenPages = new Set<number>();
+    for (const p of pages) {
+      if (typeof p.pageNumber !== 'number' || !Number.isInteger(p.pageNumber) || p.pageNumber < 1) {
+        throw new BadRequestException(
+          `Page number không hợp lệ: ${p.pageNumber}. Phải là số nguyên >= 1.`,
+        );
+      }
+      if (seenPages.has(p.pageNumber)) {
+        throw new BadRequestException(
+          `Duplicate page number trong danh sách source review: ${p.pageNumber}`,
+        );
+      }
+      seenPages.add(p.pageNumber);
+
+      if (!MIME_TO_EXT[p.mimeType]) {
+        throw new BadRequestException(
+          `MIME type ${p.mimeType} không được hỗ trợ cho source review previews.`,
+        );
+      }
+    }
+
+    // Core độc quyền sinh canonical keys & cấp Presigned PUT URLs
+    const presignedSourcePages = [];
+    for (const p of pages) {
+      const canonicalExt = MIME_TO_EXT[p.mimeType];
+      const storageKey = `ai/jobs/${id}/source-review/attempt-${attemptNumber}/page_${p.pageNumber}${canonicalExt}`;
+      const uploadUrl = await this.storageService.createInternalUploadUrl(
+        storageKey,
+        p.mimeType,
+        true,
+        1800,
+      );
+      presignedSourcePages.push({
+        pageNumber: p.pageNumber,
+        storageKey,
+        uploadUrl,
+      });
+    }
+
+    return {
+      jobId: id,
+      attemptNumber,
+      sourcePages: presignedSourcePages,
+    };
+  }
+
+  /**
    * Xuất bản kết quả dịch (Immutable ChapterVersion)
    */
   async applyJob(
@@ -1332,6 +1435,7 @@ export class TranslationService {
         }
 
         let cleanBaseKeysToCleanup: string[] = [];
+        let shouldCleanupSourceReview = false;
         if (!isNovelJob) {
           const mangaManifest = validatedResult.value as MangaResultManifestV1;
           if (Array.isArray(mangaManifest.pages) && mangaManifest.pages.length > 0) {
@@ -1352,6 +1456,9 @@ export class TranslationService {
             cleanBaseKeysToCleanup = mangaManifest.cleanBases.map(
               (cb) => cb.cleanBaseKey,
             );
+          }
+          if (mangaManifest.sourceReview) {
+            shouldCleanupSourceReview = true;
           }
         } else {
           const novelManifest = validatedResult.value as NovelResultManifestV1;
@@ -1406,6 +1513,7 @@ export class TranslationService {
           targetVersionId: savedVersion.id,
           isAlreadyApplied: false,
           cleanBaseKeysToCleanup,
+          shouldCleanupSourceReview,
         };
       }
 
@@ -1448,7 +1556,21 @@ export class TranslationService {
       }
     }
 
-    const { cleanBaseKeysToCleanup, ...clientResponse } = result;
+    // 8. Post-commit lifecycle cleanup for source review prefix (#159): xóa toàn bộ prefix ai/jobs/{id}/source-review/
+    if (result.shouldCleanupSourceReview) {
+      try {
+        await this.storageService.deleteInternalPrefix(
+          `ai/jobs/${id}/source-review/`,
+          true,
+        );
+      } catch (err: any) {
+        this.logger.warn(
+          `Failed to cleanup source review prefix for job ${id} after apply: ${err.message}`,
+        );
+      }
+    }
+
+    const { cleanBaseKeysToCleanup, shouldCleanupSourceReview: _s, ...clientResponse } = result;
     return clientResponse;
   }
 
@@ -1530,13 +1652,14 @@ export class TranslationService {
     // 1. Kiểm tra stage hợp lệ từ worker
     assertWorkerReportableState(eventDto.stage);
 
-    // Truy vấn metadata Story từ DB để xác định authoritative mediaFormat
+    // Truy vấn metadata Story từ DB để xác định authoritative mediaFormat & source session (#159)
     const jobInfo = await this.jobRepo.findOne({
       where: { id: jobId },
       relations: [
         'project',
         'project.storyEdition',
         'project.storyEdition.story',
+        'sourceUploadSession',
       ],
     });
 
@@ -1591,6 +1714,19 @@ export class TranslationService {
             if (cb.cleanBaseKey !== expectedKey) {
               throw new BadRequestException(
                 `CleanBase storage key trong result_manifest (${cb.cleanBaseKey}) không khớp với canonical path: ${expectedKey}`,
+              );
+            }
+          }
+        }
+        if (comicManifest.sourceReview?.pages) {
+          for (const sp of comicManifest.sourceReview.pages) {
+            const expectedPrefix = `ai/jobs/${jobId}/source-review/attempt-${eventDto.attemptNumber}/page_${sp.page}.`;
+            const hasValidExt = ['.jpg', '.png', '.webp', '.avif'].some(
+              (ext) => sp.storageKey === `${expectedPrefix.slice(0, -1)}${ext}`,
+            );
+            if (!hasValidExt) {
+              throw new BadRequestException(
+                `SourceReview storage key trong result_manifest (${sp.storageKey}) không khớp với canonical attempt jail: ${expectedPrefix}{ext}`,
               );
             }
           }
@@ -1775,6 +1911,77 @@ export class TranslationService {
             throw new BadRequestException(
               `ARTIFACT_INVALID_CONTENT_TYPE: Clean base ${cb.cleanBaseKey} có contentType (${stat.contentType}) không hợp lệ trong MinIO storage. Bắt buộc image/webp.`,
             );
+          }
+        }
+
+        // Invariant #159: Package-backed Manga source review enforcement & HEAD verification
+        const PACKAGE_MANGA_FILE_TYPES = new Set([
+          'MANGA_ZIP',
+          'MANGA_ZIP_ARCHIVE',
+          'MANGA_PACKAGE',
+        ]);
+        const isPackageBackedManga =
+          !!jobInfo.sourceUploadSession?.fileType &&
+          PACKAGE_MANGA_FILE_TYPES.has(jobInfo.sourceUploadSession.fileType);
+
+        if (isPackageBackedManga) {
+          if (
+            !comicManifest.sourceReview ||
+            !comicManifest.sourceReview.pages ||
+            comicManifest.sourceReview.pages.length === 0
+          ) {
+            throw new BadRequestException(
+              'SOURCE_REVIEW_REQUIRED: Manga package-backed job bắt buộc phải có sourceReview khi READY_FOR_REVIEW (#159).',
+            );
+          }
+
+          if (comicManifest.sourceReview.pages.length !== comicManifest.pages.length) {
+            throw new BadRequestException(
+              `SOURCE_REVIEW_PAGE_COVERAGE_MISMATCH: Số lượng sourceReview pages (${comicManifest.sourceReview.pages.length}) không khớp với số lượng result pages (${comicManifest.pages.length}).`,
+            );
+          }
+
+          const resultPageNumbers = new Set(comicManifest.pages.map((p) => p.page));
+          const sourceReviewPageNumbers = new Set(
+            comicManifest.sourceReview.pages.map((sp) => sp.page),
+          );
+          for (const p of resultPageNumbers) {
+            if (!sourceReviewPageNumbers.has(p)) {
+              throw new BadRequestException(
+                `SOURCE_REVIEW_PAGE_COVERAGE_MISMATCH: Thiếu source review cho trang ${p}. Toàn bộ các trang phải có source review tương ứng.`,
+              );
+            }
+          }
+
+          const EXT_TO_MIME: Record<string, string> = {
+            '.jpg': 'image/jpeg',
+            '.png': 'image/png',
+            '.webp': 'image/webp',
+            '.avif': 'image/avif',
+          };
+
+          for (const sp of comicManifest.sourceReview.pages) {
+            const stat = await this.storageService.statInternalObject(
+              sp.storageKey,
+              true,
+            );
+            if (
+              !stat.exists ||
+              stat.contentLength === null ||
+              stat.contentLength <= 0
+            ) {
+              throw new BadRequestException(
+                `ARTIFACT_NOT_FOUND_IN_STORAGE: Source review page ${sp.storageKey} không tồn tại hoặc rỗng trong MinIO storage.`,
+              );
+            }
+
+            const ext = sp.storageKey.substring(sp.storageKey.lastIndexOf('.'));
+            const expectedMime = EXT_TO_MIME[ext];
+            if (!expectedMime || stat.contentType !== expectedMime) {
+              throw new BadRequestException(
+                `ARTIFACT_INVALID_CONTENT_TYPE: Source review page ${sp.storageKey} có contentType (${stat.contentType}) không khớp với extension (${expectedMime}) trong MinIO storage.`,
+              );
+            }
           }
         }
       }

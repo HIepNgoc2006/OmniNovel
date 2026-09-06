@@ -118,9 +118,45 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
               headers: { 'Content-Type': 'image/webp' },
             });
 
-            // Bước C: Worker gửi chuỗi sequential callbacks lên Core API
-            const stages = [
-              { stage: 'PREPROCESSING', prog: 15, seq: 1 },
+            // Bước C: Worker gửi stage PREPROCESSING lên Core API
+            await axios.post(
+              `http://localhost:${corePort}/internal/v1/ai/jobs/${jobId}/events`,
+              {
+                eventId: `e0000000-0000-4000-a000-000000000001`,
+                attemptNumber,
+                sequence: 1,
+                stage: 'PREPROCESSING',
+                progress: 15,
+                heartbeat: true,
+              },
+              {
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-Internal-Service-Key': secret,
+                },
+              },
+            );
+
+            // Bước A3: Trong stage PREPROCESSING, worker xin source-review-slots (#159)
+            const sourceReviewResp = await axios.post(
+              `http://localhost:${corePort}/internal/v1/ai/jobs/${jobId}/source-review-slots`,
+              {
+                attemptNumber,
+                pages: [{ pageNumber: 1, mimeType: 'image/webp' }],
+              },
+              {
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-Internal-Service-Key': secret,
+                },
+              },
+            );
+            const sourceReviewFile = sourceReviewResp.data.sourcePages[0];
+            await axios.put(sourceReviewFile.uploadUrl, VALID_WEBP_BUFFER, {
+              headers: { 'Content-Type': 'image/webp' },
+            });
+
+            const remainingStages = [
               { stage: 'OCR', prog: 35, seq: 2 },
               { stage: 'TRANSLATING', prog: 55, seq: 3 },
               { stage: 'INPAINTING', prog: 75, seq: 4 },
@@ -128,7 +164,7 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
               { stage: 'QUALITY_CHECK', prog: 95, seq: 6 },
             ];
 
-            for (const s of stages) {
+            for (const s of remainingStages) {
               await axios.post(
                 `http://localhost:${corePort}/internal/v1/ai/jobs/${jobId}/events`,
                 {
@@ -177,6 +213,15 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
                       cleanBaseKey: cleanBaseFile.storageKey,
                     },
                   ],
+                  sourceReview: {
+                    version: 1,
+                    pages: [
+                      {
+                        page: 1,
+                        storageKey: sourceReviewFile.storageKey,
+                      },
+                    ],
+                  },
                 },
                 segments: [
                   {
@@ -317,15 +362,25 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
         expect(jobCheck[0].result_manifest.cleanBases[0].cleanBaseKey).toBe(
           `ai/jobs/${jobId}/review-base/attempt-1/page_1.webp`,
         );
+        expect(jobCheck[0].result_manifest.sourceReview?.version).toBe(1);
+        expect(jobCheck[0].result_manifest.sourceReview?.pages?.length).toBe(1);
+        expect(jobCheck[0].result_manifest.sourceReview?.pages[0].page).toBe(1);
+        expect(jobCheck[0].result_manifest.sourceReview?.pages[0].storageKey).toBe(
+          `ai/jobs/${jobId}/source-review/attempt-1/page_1.webp`,
+        );
         break;
       }
     }
     expect(isReady).toBe(true);
 
-    // Verify clean base object exists before apply
+    // Verify clean base & source review objects exist before apply
     const cleanBaseKey = `ai/jobs/${jobId}/review-base/attempt-1/page_1.webp`;
     const cleanBaseBeforeApply = await storageService.headInternalObject(cleanBaseKey, true);
     expect(cleanBaseBeforeApply).toBe(true);
+
+    const sourceReviewKey = `ai/jobs/${jobId}/source-review/attempt-1/page_1.webp`;
+    const sourceReviewBeforeApply = await storageService.headInternalObject(sourceReviewKey, true);
+    expect(sourceReviewBeforeApply).toBe(true);
 
     // 3. Apply Job với CREATE_ALTERNATE_VERSION (Immutable Versioning)
     const applyRes = await service.applyJob(
@@ -367,6 +422,10 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
     // 6b. Kiểm tra Clean Base đã được xóa an toàn sau khi Apply hoàn tất (#162 Lifecycle Cleanup)
     const cleanBaseAfterApply = await storageService.headInternalObject(cleanBaseKey, true);
     expect(cleanBaseAfterApply).toBe(false);
+
+    // 6c. Kiểm tra Source Review đã được xóa an toàn sau khi Apply hoàn tất (#159 Lifecycle Cleanup)
+    const sourceReviewAfterApply = await storageService.headInternalObject(sourceReviewKey, true);
+    expect(sourceReviewAfterApply).toBe(false);
 
     // 7. Kiểm tra getJob trả về canonical review detail & metadata contract (#148)
     const jobDetail = await service.getJob(jobId, ownerUser);

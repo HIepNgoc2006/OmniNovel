@@ -15,7 +15,7 @@
     - TanStack Query v5 quản lý Server State & SWR Caching.
     - WebSocket Gateway (`/ws/ai`) xác thực qua `socket.handshake.auth.token` và tự động reconnect khi token xoay vòng.
     - Gamification: Tiêu thụ endpoint chuẩn `/gamification/progression` và `UserProgressionResponse` từ `@omninovel/shared`.
-- **Trạng thái:** [/] Đang thực hiện (Phase 4A, Phase 4B & Phase 4C: 100% HOÀN TẤT & FROZEN tại commit 4cced19e9dfdbb9ec9ec21508236ad1c2f8becff - 36 Vitest + 14 Playwright Browser Tests [with canonical mocks] + 139 Core API [22 Unit + 117 E2E/Integration] + 184 AI Worker = 373 Total CI Tests Pass 100%)
+- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core 100% HOÀN TẤT & MERGED tại main@03f1486 - Chuẩn bị triển khai Phase 4D.5 Studio Frontend UI)
 
 ---
 
@@ -63,7 +63,7 @@
     - [x] Typed & versioned translation manifests (#164) - Versioned schemas `MangaResultManifestV1` (version: 1, `fileSizeBytes`, `cleanBases`) & `NovelResultManifestV1` (version: 1, `segmentCount`, `charCount`, `qa`, `metrics`), pure runtime validators, discriminated union narrowing, backward-compatible `fileSize` auto-mapping, fail-closed unknown versions. Cross-service parity between TypeScript `@omninovel/shared`, Core API, and Python Worker Pydantic v2 models.
     - [x] Hardening: 5 audit findings from Run #82 resolved (Novel typed `glossarySnapshot`, callback dropped `message`, READY typed manifest union with unconditional `model_dump()`, RFC3339 timestamp parity with timezone, full regression fixtures migrated to strict V1, Core E2E 172/172 pass).
     - [ ] *Backlog (P2)*: Core prefix-jail validation độc lập cả `storageKey` lẫn `previewKey` kèm negative E2E.
-  - [/] **Phase 4D.4: Materialization Protocol & Fenced Completion (PR C - PR #171 OPEN — exact-head CI green)**:
+  - [x] **Phase 4D.4: Materialization Protocol & Fenced Completion (COMPLETED — PR #171 MERGED `main@03f1486`, main CI Run #34023653482 SUCCESS)**:
     - [x] Dedicated materialization queue & deterministic custom job ID (#161).
     - [x] Content-addressed S3 snapshot artifact (`snapshots/{sha256}.json`) with Comic geometry and strict validators (#161).
     - [x] Fenced completion callback with idempotency-first order, stale discard, prefix-jail and exact size verification (#161, #156 remainder).

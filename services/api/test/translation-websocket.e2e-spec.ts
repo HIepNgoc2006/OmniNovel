@@ -190,7 +190,25 @@ describe('Translation WebSocket Gateway (/ws/ai) Security & RBAC Suite', () => {
     });
   });
 
-  it('Translator A (Story Owner) subscribing Story A job should succeed and receive real-time broadcast events', (done) => {
+  const FORBIDDEN_KEYS = [
+    'resultManifest',
+    'storageKey',
+    'previewKey',
+    'htmlKey',
+    'errorTrace',
+  ];
+
+  function assertNoForbiddenKeys(obj: any) {
+    if (obj === null || obj === undefined) return;
+    if (typeof obj === 'object') {
+      for (const key of Object.keys(obj)) {
+        expect(FORBIDDEN_KEYS).not.toContain(key);
+        assertNoForbiddenKeys(obj[key]);
+      }
+    }
+  }
+
+  it('Translator A (Story Owner) receives sanitized job_progress with exact allowlist and zero forbidden keys', (done) => {
     const socket = createClient(translatorAToken);
 
     socket.on('connect', () => {
@@ -201,19 +219,151 @@ describe('Translation WebSocket Gateway (/ws/ai) Security & RBAC Suite', () => {
       expect(data.status).toBe('OK');
       expect(data.jobId).toBe(jobAId);
 
-      // Kích hoạt broadcast event từ gateway sau khi socket đã vào room
       setTimeout(() => {
-        gateway.broadcastJobProgress(jobAId, {
-          stage: TranslationJobStatus.OCR,
-          progress: 35,
-        });
+        gateway.broadcastJobProgress(
+          jobAId,
+          TranslationJobStatus.OCR,
+          35,
+          new Date('2026-09-06T12:30:00.000Z'),
+        );
       }, 50);
     });
 
     socket.on('job_progress', (msg) => {
       expect(msg.jobId).toBe(jobAId);
-      expect(msg.stage).toBe(TranslationJobStatus.OCR);
+      expect(msg.status).toBe(TranslationJobStatus.OCR);
       expect(msg.progress).toBe(35);
+      expect(msg.heartbeatAt).toBe('2026-09-06T12:30:00.000Z');
+      expect(typeof msg.timestamp).toBe('string');
+
+      const expectedKeys = ['heartbeatAt', 'jobId', 'progress', 'status', 'timestamp'].sort();
+      expect(Object.keys(msg).sort()).toEqual(expectedKeys);
+      assertNoForbiddenKeys(msg);
+
+      socket.close();
+      done();
+    });
+  });
+
+  it('Translator A receives sanitized job_ready_for_review without resultManifest or internal storage keys', (done) => {
+    const socket = createClient(translatorAToken);
+
+    socket.on('connect', () => {
+      socket.emit('subscribe_job', { jobId: jobAId });
+    });
+
+    socket.on('subscribed', () => {
+      setTimeout(() => {
+        gateway.broadcastJobReady(jobAId);
+      }, 50);
+    });
+
+    socket.on('job_ready_for_review', (msg) => {
+      expect(msg.jobId).toBe(jobAId);
+      expect(msg.status).toBe(TranslationJobStatus.READY_FOR_REVIEW);
+      expect(typeof msg.timestamp).toBe('string');
+
+      const expectedKeys = ['jobId', 'status', 'timestamp'].sort();
+      expect(Object.keys(msg).sort()).toEqual(expectedKeys);
+      assertNoForbiddenKeys(msg);
+
+      const serialized = JSON.stringify(msg);
+      expect(serialized).not.toContain('resultManifest');
+      expect(serialized).not.toContain('storageKey');
+      expect(serialized).not.toContain('previewKey');
+
+      socket.close();
+      done();
+    });
+  });
+
+  it('Translator A receives sanitized job_failed without errorTrace or provider diagnostics', (done) => {
+    const socket = createClient(translatorAToken);
+
+    socket.on('connect', () => {
+      socket.emit('subscribe_job', { jobId: jobAId });
+    });
+
+    socket.on('subscribed', () => {
+      setTimeout(() => {
+        gateway.broadcastJobFailed(jobAId);
+      }, 50);
+    });
+
+    socket.on('job_failed', (msg) => {
+      expect(msg.jobId).toBe(jobAId);
+      expect(msg.status).toBe(TranslationJobStatus.FAILED);
+      expect(typeof msg.timestamp).toBe('string');
+
+      const expectedKeys = ['jobId', 'status', 'timestamp'].sort();
+      expect(Object.keys(msg).sort()).toEqual(expectedKeys);
+      assertNoForbiddenKeys(msg);
+
+      const serialized = JSON.stringify(msg);
+      expect(serialized).not.toContain('errorTrace');
+
+      socket.close();
+      done();
+    });
+  });
+
+  it('Translator A receives sanitized job_canceled with exact allowlist', (done) => {
+    const socket = createClient(translatorAToken);
+
+    socket.on('connect', () => {
+      socket.emit('subscribe_job', { jobId: jobAId });
+    });
+
+    socket.on('subscribed', () => {
+      setTimeout(() => {
+        gateway.broadcastJobCanceled(jobAId);
+      }, 50);
+    });
+
+    socket.on('job_canceled', (msg) => {
+      expect(msg.jobId).toBe(jobAId);
+      expect(msg.status).toBe(TranslationJobStatus.CANCELED);
+      expect(typeof msg.timestamp).toBe('string');
+
+      const expectedKeys = ['jobId', 'status', 'timestamp'].sort();
+      expect(Object.keys(msg).sort()).toEqual(expectedKeys);
+      assertNoForbiddenKeys(msg);
+
+      socket.close();
+      done();
+    });
+  });
+
+  it('CANARY: wire payload ignores arbitrary caller arguments and never leaks CANARY data', (done) => {
+    const socket = createClient(translatorAToken);
+    const wireCanary = 'SUPER_SECRET_AWS_S3_BUCKET_KEY_CANARY_12345';
+
+    socket.on('connect', () => {
+      socket.emit('subscribe_job', { jobId: jobAId });
+    });
+
+    socket.on('subscribed', () => {
+      setTimeout(() => {
+        // Cố tình truyền payload cũ chứa resultManifest & storageKey
+        (gateway as any).broadcastJobReady(jobAId, {
+          resultManifest: {
+            storageKey: wireCanary,
+            previewKey: 'ANOTHER_CANARY_KEY',
+          },
+        });
+      }, 50);
+    });
+
+    socket.on('job_ready_for_review', (msg) => {
+      const serialized = JSON.stringify(msg);
+      expect(serialized).not.toContain(wireCanary);
+      expect(serialized).not.toContain('ANOTHER_CANARY_KEY');
+      expect(serialized).not.toContain('resultManifest');
+
+      const expectedKeys = ['jobId', 'status', 'timestamp'].sort();
+      expect(Object.keys(msg).sort()).toEqual(expectedKeys);
+      assertNoForbiddenKeys(msg);
+
       socket.close();
       done();
     });

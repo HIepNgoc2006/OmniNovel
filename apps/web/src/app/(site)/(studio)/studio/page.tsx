@@ -106,13 +106,13 @@ export default function StudioPage() {
             <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-slate-400">Job ID: <span className="font-mono text-white">{activeJobId}</span></span>
-                {lastProgress && <Badge variant="primary">{lastProgress.stage}</Badge>}
+                {lastProgress && <Badge variant="primary">{lastProgress.status}</Badge>}
               </div>
 
               {lastProgress ? (
                 <div className="space-y-2">
                   <div className="flex justify-between text-xs text-slate-400">
-                    <span>Tiến độ ({lastProgress.stage})</span>
+                    <span>Tiến độ ({lastProgress.status})</span>
                     <span className="font-bold text-red-400">{lastProgress.progress}%</span>
                   </div>
                   <div className="w-full h-2.5 bg-slate-900 rounded-full overflow-hidden border border-slate-800">

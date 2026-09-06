@@ -3,33 +3,18 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { io, Socket } from 'socket.io-client';
 import { memoryAuthStore } from '../auth/auth-store';
-import { TranslationJobStatus } from '@omninovel/shared';
+import {
+  TranslationJobStatus,
+  JobProgressWsEvent,
+  JobReadyWsEvent,
+  JobFailedWsEvent,
+  JobCanceledWsEvent,
+} from '@omninovel/shared';
 
-export interface JobProgressEvent {
-  jobId: string;
-  stage: TranslationJobStatus | string;
-  progress: number;
-  heartbeatAt?: string | Date;
-  timestamp: string;
-}
-
-export interface JobReadyEvent {
-  jobId: string;
-  targetVersionId?: string;
-  resultManifest?: Record<string, any>;
-  timestamp: string;
-}
-
-export interface JobFailedEvent {
-  jobId: string;
-  errorTrace: string;
-  timestamp: string;
-}
-
-export interface JobCanceledEvent {
-  jobId: string;
-  timestamp: string;
-}
+export type JobProgressEvent = JobProgressWsEvent;
+export type JobReadyEvent = JobReadyWsEvent;
+export type JobFailedEvent = JobFailedWsEvent;
+export type JobCanceledEvent = JobCanceledWsEvent;
 
 export interface UseTranslationSocketOptions {
   jobId?: string;

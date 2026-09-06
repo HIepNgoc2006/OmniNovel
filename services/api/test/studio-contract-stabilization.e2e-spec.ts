@@ -255,7 +255,7 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
           cleanBases: [
             {
               page: 1,
-              cleanBaseKey: `ai/jobs/${comicJobId}/review-base/page_1.webp`,
+              cleanBaseKey: `ai/jobs/${comicJobId}/review-base/attempt-1/page_1.webp`,
             },
           ],
         },

@@ -64,7 +64,7 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
     storageService = {
       createInternalUploadUrl: jest.fn().mockImplementation((key) => `https://minio.local/put/${key}`),
       headInternalObject: jest.fn().mockResolvedValue(true),
-      statInternalObject: jest.fn().mockResolvedValue({ exists: true, contentLength: 1024 }),
+      statInternalObject: jest.fn().mockResolvedValue({ exists: true, contentLength: 1024, contentType: 'image/webp' }),
       deleteInternalObject: jest.fn().mockResolvedValue(undefined),
     };
 
@@ -197,13 +197,13 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
       expect(result.cleanBases).toHaveLength(2);
       expect(result.cleanBases[0]).toEqual({
         page: 1,
-        storageKey: 'ai/jobs/job-manga-123/review-base/page_1.webp',
-        uploadUrl: 'https://minio.local/put/ai/jobs/job-manga-123/review-base/page_1.webp',
+        storageKey: 'ai/jobs/job-manga-123/review-base/attempt-1/page_1.webp',
+        uploadUrl: 'https://minio.local/put/ai/jobs/job-manga-123/review-base/attempt-1/page_1.webp',
       });
       expect(result.cleanBases[1]).toEqual({
         page: 2,
-        storageKey: 'ai/jobs/job-manga-123/review-base/page_2.webp',
-        uploadUrl: 'https://minio.local/put/ai/jobs/job-manga-123/review-base/page_2.webp',
+        storageKey: 'ai/jobs/job-manga-123/review-base/attempt-1/page_2.webp',
+        uploadUrl: 'https://minio.local/put/ai/jobs/job-manga-123/review-base/attempt-1/page_2.webp',
       });
     });
   });
@@ -275,7 +275,7 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
             { page: 2, storageKey: 'ai/jobs/job-manga-123/attempt-1/p2.webp', previewKey: 'ai/jobs/job-manga-123/attempt-1/p2.webp', width: 100, height: 100, fileSizeBytes: 100 },
           ],
           cleanBases: [
-            { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/page_1.webp' },
+            { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/attempt-1/page_1.webp' },
           ],
         },
       };
@@ -287,7 +287,7 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
 
     it('should reject when clean base file is missing or empty in MinIO (stat check)', async () => {
       jobRepo.findOne.mockResolvedValue(validMangaJob);
-      storageService.statInternalObject.mockResolvedValue({ exists: false, contentLength: null });
+      storageService.statInternalObject.mockResolvedValue({ exists: false, contentLength: null, contentType: null });
 
       const missingFileEvent: any = {
         eventId: 'e-1',
@@ -302,7 +302,7 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
             { page: 1, storageKey: 'ai/jobs/job-manga-123/attempt-1/p1.webp', previewKey: 'ai/jobs/job-manga-123/attempt-1/p1.webp', width: 100, height: 100, fileSizeBytes: 100 },
           ],
           cleanBases: [
-            { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/page_1.webp' },
+            { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/attempt-1/page_1.webp' },
           ],
         },
       };
@@ -312,9 +312,44 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
       ).rejects.toThrow('ARTIFACT_NOT_FOUND_IN_STORAGE');
     });
 
-    it('should accept when clean bases cover 100% pages with positive file size', async () => {
+    it('should reject when clean base file has invalid contentType in MinIO (stat check)', async () => {
       jobRepo.findOne.mockResolvedValue(validMangaJob);
-      storageService.statInternalObject.mockResolvedValue({ exists: true, contentLength: 50000 });
+      storageService.statInternalObject.mockResolvedValue({
+        exists: true,
+        contentLength: 50000,
+        contentType: 'image/png',
+      });
+
+      const invalidMimeEvent: any = {
+        eventId: 'e-1',
+        attemptNumber: 1,
+        sequence: 1,
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progress: 100,
+        resultManifest: {
+          version: 1,
+          mediaFormat: 'COMIC',
+          pages: [
+            { page: 1, storageKey: 'ai/jobs/job-manga-123/attempt-1/p1.webp', previewKey: 'ai/jobs/job-manga-123/attempt-1/p1.webp', width: 100, height: 100, fileSizeBytes: 100 },
+          ],
+          cleanBases: [
+            { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/attempt-1/page_1.webp' },
+          ],
+        },
+      };
+
+      await expect(
+        service.handleWorkerEvent('job-manga-123', invalidMimeEvent),
+      ).rejects.toThrow('ARTIFACT_INVALID_CONTENT_TYPE');
+    });
+
+    it('should accept when clean bases cover 100% pages with positive file size and image/webp contentType', async () => {
+      jobRepo.findOne.mockResolvedValue(validMangaJob);
+      storageService.statInternalObject.mockResolvedValue({
+        exists: true,
+        contentLength: 50000,
+        contentType: 'image/webp',
+      });
 
       const validEvent: any = {
         eventId: 'e-1',
@@ -329,7 +364,7 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
             { page: 1, storageKey: 'ai/jobs/job-manga-123/attempt-1/p1.webp', previewKey: 'ai/jobs/job-manga-123/attempt-1/p1.webp', width: 100, height: 100, fileSizeBytes: 100 },
           ],
           cleanBases: [
-            { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/page_1.webp' },
+            { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/attempt-1/page_1.webp' },
           ],
         },
       };
@@ -355,7 +390,7 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
           },
         ],
         cleanBases: [
-          { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/page_1.webp' },
+          { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/attempt-1/page_1.webp' },
         ],
       };
 
@@ -403,7 +438,7 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
         });
       });
 
-      storageService.statInternalObject.mockResolvedValue({ exists: true, contentLength: 200 });
+      storageService.statInternalObject.mockResolvedValue({ exists: true, contentLength: 200, contentType: 'image/webp' });
 
       const dto: any = {
         targetRevision: 1,
@@ -428,7 +463,7 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
       expect(res.outcome).toBe('APPLIED');
       expect(updatedSetValues).toBeDefined();
       expect(updatedSetValues.resultManifest.cleanBases).toEqual([
-        { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/page_1.webp' },
+        { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/attempt-1/page_1.webp' },
       ]);
     });
   });
@@ -447,7 +482,7 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
             { page: 1, storageKey: 'ai/jobs/job-manga-123/attempt-1/p1.webp', previewKey: 'ai/jobs/job-manga-123/attempt-1/p1.webp', width: 100, height: 100, fileSizeBytes: 100 },
           ],
           cleanBases: [
-            { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/page_1.webp' },
+            { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/attempt-1/page_1.webp' },
           ],
         },
       };
@@ -473,7 +508,7 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
 
       expect(res.chapterId).toBe('chap-1');
       expect(storageService.deleteInternalObject).toHaveBeenCalledWith(
-        'ai/jobs/job-manga-123/review-base/page_1.webp',
+        'ai/jobs/job-manga-123/review-base/attempt-1/page_1.webp',
         true,
       );
     });
@@ -491,7 +526,7 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
             { page: 1, storageKey: 'ai/jobs/job-manga-123/attempt-1/p1.webp', previewKey: 'ai/jobs/job-manga-123/attempt-1/p1.webp', width: 100, height: 100, fileSizeBytes: 100 },
           ],
           cleanBases: [
-            { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/page_1.webp' },
+            { page: 1, cleanBaseKey: 'ai/jobs/job-manga-123/review-base/attempt-1/page_1.webp' },
           ],
         },
       };
@@ -518,6 +553,137 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
       // Vẫn thành công, không ném exception ra ngoài
       const res = await service.applyJob('job-manga-123', applyDto, user);
       expect(res.chapterId).toBe('chap-1');
+    });
+  });
+
+  describe('Retry Stale-PUT Isolation Regression (Blocker A)', () => {
+    it('should isolate clean base keys by attempt and reject stale attempt manifest callback', async () => {
+      // 1. job.attemptCount = 1
+      const jobAttempt1 = {
+        ...validMangaJob,
+        attemptCount: 1,
+        status: TranslationJobStatus.QUALITY_CHECK,
+      };
+      jobRepo.findOne.mockResolvedValue(jobAttempt1);
+
+      // 2. attempt 1 obtains slot
+      const slot1 = await service.createCleanBaseUploadUrls('job-manga-123', 1, [1]);
+      expect(slot1.cleanBases[0].storageKey).toBe(
+        'ai/jobs/job-manga-123/review-base/attempt-1/page_1.webp',
+      );
+
+      // 3. retry -> attemptCount = 2
+      const jobAttempt2 = {
+        ...validMangaJob,
+        attemptCount: 2,
+        status: TranslationJobStatus.QUALITY_CHECK,
+      };
+      jobRepo.findOne.mockResolvedValue(jobAttempt2);
+
+      // 4. attempt 2 obtains authoritative slot
+      const slot2 = await service.createCleanBaseUploadUrls('job-manga-123', 2, [1]);
+      expect(slot2.cleanBases[0].storageKey).toBe(
+        'ai/jobs/job-manga-123/review-base/attempt-2/page_1.webp',
+      );
+
+      // 5. Assert key attempt1 != key attempt2 (attempt-scoped isolation)
+      expect(slot1.cleanBases[0].storageKey).not.toBe(slot2.cleanBases[0].storageKey);
+
+      // 6. Stale Attempt 1 tries to submit READY callback using its old attempt-1 key when job is at attempt 2
+      // Transaction returns STALE_ATTEMPT for eventDto.attemptNumber !== job.attemptCount
+      dataSource.transaction = jest.fn().mockImplementation(async (cb) => {
+        return cb({
+          query: jest.fn(),
+          findOne: jest.fn().mockResolvedValue(jobAttempt2),
+        });
+      });
+
+      const staleAttempt1Event: any = {
+        eventId: 'e-stale-1',
+        attemptNumber: 1, // stale attempt
+        sequence: 10,
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progress: 100,
+        resultManifest: {
+          version: 1,
+          mediaFormat: 'COMIC',
+          pages: [
+            { page: 1, storageKey: 'ai/jobs/job-manga-123/attempt-1/p1.webp', previewKey: 'ai/jobs/job-manga-123/attempt-1/p1.webp', width: 100, height: 100, fileSizeBytes: 100 },
+          ],
+          cleanBases: [
+            { page: 1, cleanBaseKey: slot1.cleanBases[0].storageKey },
+          ],
+        },
+      };
+
+      const staleResult = await service.handleWorkerEvent('job-manga-123', staleAttempt1Event);
+      expect(staleResult).toEqual({
+        received: true,
+        ignored: true,
+        reason: 'STALE_ATTEMPT',
+      });
+
+      // 7. Authoritative Attempt 2 submits READY callback with its attempt-2 key
+      const jobAfterReady = {
+        ...jobAttempt2,
+        status: TranslationJobStatus.READY_FOR_REVIEW,
+        lastSequence: 11,
+        resultManifest: {
+          version: 1,
+          mediaFormat: 'COMIC',
+          pages: [
+            { page: 1, storageKey: 'ai/jobs/job-manga-123/attempt-2/p1.webp', previewKey: 'ai/jobs/job-manga-123/attempt-2/p1.webp', width: 100, height: 100, fileSizeBytes: 100 },
+          ],
+          cleanBases: [
+            { page: 1, cleanBaseKey: slot2.cleanBases[0].storageKey },
+          ],
+        },
+      };
+
+      let savedJob: any = null;
+      dataSource.transaction = jest.fn().mockImplementation(async (cb) => {
+        return cb({
+          query: jest.fn(),
+          findOne: jest.fn().mockResolvedValue(jobAttempt2),
+          delete: jest.fn().mockResolvedValue(undefined),
+          create: jest.fn().mockImplementation((entity, data) => data),
+          save: jest.fn().mockImplementation((entity, data) => {
+            savedJob = data;
+            return data;
+          }),
+        });
+      });
+
+      storageService.statInternalObject.mockResolvedValue({
+        exists: true,
+        contentLength: 45000,
+        contentType: 'image/webp',
+      });
+
+      const validAttempt2Event: any = {
+        eventId: 'e-auth-2',
+        attemptNumber: 2,
+        sequence: 11,
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progress: 100,
+        resultManifest: {
+          version: 1,
+          mediaFormat: 'COMIC',
+          pages: [
+            { page: 1, storageKey: 'ai/jobs/job-manga-123/attempt-2/p1.webp', previewKey: 'ai/jobs/job-manga-123/attempt-2/p1.webp', width: 100, height: 100, fileSizeBytes: 100 },
+          ],
+          cleanBases: [
+            { page: 1, cleanBaseKey: slot2.cleanBases[0].storageKey },
+          ],
+        },
+      };
+
+      const authResult = await service.handleWorkerEvent('job-manga-123', validAttempt2Event);
+      expect(authResult.status).toBe(TranslationJobStatus.READY_FOR_REVIEW);
+      expect(savedJob).toBeDefined();
+      expect(savedJob.resultManifest.cleanBases[0].cleanBaseKey).toBe(
+        'ai/jobs/job-manga-123/review-base/attempt-2/page_1.webp',
+      );
     });
   });
 });

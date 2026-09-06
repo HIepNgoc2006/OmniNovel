@@ -1157,7 +1157,7 @@ export class TranslationService {
     // Core độc quyền sinh canonical keys & cấp Presigned PUT URLs
     const presignedCleanBases = [];
     for (const page of pages) {
-      const storageKey = `ai/jobs/${id}/review-base/page_${page}.webp`;
+      const storageKey = `ai/jobs/${id}/review-base/attempt-${attemptNumber}/page_${page}.webp`;
       const uploadUrl = await this.storageService.createInternalUploadUrl(
         storageKey,
         'image/webp',
@@ -1587,7 +1587,7 @@ export class TranslationService {
         }
         if (comicManifest.cleanBases) {
           for (const cb of comicManifest.cleanBases) {
-            const expectedKey = `ai/jobs/${jobId}/review-base/page_${cb.page}.webp`;
+            const expectedKey = `ai/jobs/${jobId}/review-base/attempt-${eventDto.attemptNumber}/page_${cb.page}.webp`;
             if (cb.cleanBaseKey !== expectedKey) {
               throw new BadRequestException(
                 `CleanBase storage key trong result_manifest (${cb.cleanBaseKey}) không khớp với canonical path: ${expectedKey}`,
@@ -1769,6 +1769,11 @@ export class TranslationService {
           ) {
             throw new BadRequestException(
               `ARTIFACT_NOT_FOUND_IN_STORAGE: Clean base ${cb.cleanBaseKey} không tồn tại hoặc rỗng trong MinIO storage.`,
+            );
+          }
+          if (stat.contentType !== 'image/webp') {
+            throw new BadRequestException(
+              `ARTIFACT_INVALID_CONTENT_TYPE: Clean base ${cb.cleanBaseKey} có contentType (${stat.contentType}) không hợp lệ trong MinIO storage. Bắt buộc image/webp.`,
             );
           }
         }

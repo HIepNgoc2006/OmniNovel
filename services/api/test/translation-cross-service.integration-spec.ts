@@ -315,7 +315,7 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
         expect(jobCheck[0].result_manifest.cleanBases?.length).toBe(1);
         expect(jobCheck[0].result_manifest.cleanBases[0].page).toBe(1);
         expect(jobCheck[0].result_manifest.cleanBases[0].cleanBaseKey).toBe(
-          `ai/jobs/${jobId}/review-base/page_1.webp`,
+          `ai/jobs/${jobId}/review-base/attempt-1/page_1.webp`,
         );
         break;
       }
@@ -323,7 +323,7 @@ describe('Full Cross-Service End-to-End Orchestration Smoke (Nest -> BullMQ -> W
     expect(isReady).toBe(true);
 
     // Verify clean base object exists before apply
-    const cleanBaseKey = `ai/jobs/${jobId}/review-base/page_1.webp`;
+    const cleanBaseKey = `ai/jobs/${jobId}/review-base/attempt-1/page_1.webp`;
     const cleanBaseBeforeApply = await storageService.headInternalObject(cleanBaseKey, true);
     expect(cleanBaseBeforeApply).toBe(true);
 

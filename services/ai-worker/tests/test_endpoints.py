@@ -64,7 +64,7 @@ def test_process_manga_happy_path(mock_send_event, mock_upload, mock_request_url
     mock_request_clean_base_urls.return_value = [
         {
             "page": 1,
-            "storageKey": "ai/jobs/11111111-1111-1111-1111-111111111111/review-base/page_1.webp",
+            "storageKey": "ai/jobs/11111111-1111-1111-1111-111111111111/review-base/attempt-1/page_1.webp",
             "uploadUrl": "http://localhost:9000/manga-media/upload-clean",
         }
     ]
@@ -147,7 +147,7 @@ def test_process_manga_upload_failure_raises_502(mock_upload, mock_request_urls,
     mock_request_clean_base_urls.return_value = [
         {
             "page": 1,
-            "storageKey": "ai/jobs/11111111-1111-1111-1111-111111111111/review-base/page_1.webp",
+            "storageKey": "ai/jobs/11111111-1111-1111-1111-111111111111/review-base/attempt-1/page_1.webp",
             "uploadUrl": "http://localhost:9000/manga-media/upload-clean",
         }
     ]
@@ -180,7 +180,7 @@ def test_process_manga_callback_failure_raises_502(mock_send_event, mock_upload,
     mock_request_clean_base_urls.return_value = [
         {
             "page": 1,
-            "storageKey": "ai/jobs/11111111-1111-1111-1111-111111111111/review-base/page_1.webp",
+            "storageKey": "ai/jobs/11111111-1111-1111-1111-111111111111/review-base/attempt-1/page_1.webp",
             "uploadUrl": "http://localhost:9000/manga-media/upload-clean",
         }
     ]

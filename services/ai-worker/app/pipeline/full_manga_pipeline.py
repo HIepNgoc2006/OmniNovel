@@ -321,7 +321,7 @@ class FullMangaPipeline:
                 clean_bases_manifest = [
                     MangaCleanBasePageModel(
                         page=crec["page"],
-                        cleanBaseKey=f"ai/jobs/{job_id}/review-base/page_{crec['page']}.webp",
+                        cleanBaseKey=f"ai/jobs/{job_id}/review-base/attempt-{attempt_number}/page_{crec['page']}.webp",
                     )
                     for crec in clean_base_records
                 ]

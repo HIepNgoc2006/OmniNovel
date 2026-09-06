@@ -65,7 +65,7 @@ async def test_full_manga_pipeline_execution_all_stages(tmp_path: Path, monkeypa
         return [
             {
                 "page": p,
-                "storageKey": f"ai/jobs/{job_id}/review-base/page_{p}.webp",
+                "storageKey": f"ai/jobs/{job_id}/review-base/attempt-{attempt_num}/page_{p}.webp",
                 "uploadUrl": f"http://localhost:9000/clean-base/{p}",
             }
             for p in pages
@@ -121,8 +121,8 @@ async def test_full_manga_pipeline_execution_all_stages(tmp_path: Path, monkeypa
     assert "cleanBases" in result_manifest
     assert len(result_manifest["cleanBases"]) == 2
     assert [cb["page"] for cb in result_manifest["cleanBases"]] == [1, 2]
-    assert result_manifest["cleanBases"][0]["cleanBaseKey"] == "ai/jobs/job-uuid-123/review-base/page_1.webp"
-    assert result_manifest["cleanBases"][1]["cleanBaseKey"] == "ai/jobs/job-uuid-123/review-base/page_2.webp"
+    assert result_manifest["cleanBases"][0]["cleanBaseKey"] == "ai/jobs/job-uuid-123/review-base/attempt-1/page_1.webp"
+    assert result_manifest["cleanBases"][1]["cleanBaseKey"] == "ai/jobs/job-uuid-123/review-base/attempt-1/page_2.webp"
 
     # Kiểm tra chuỗi các stages trong events
     stages = [e["stage"] for e in sink.events if not e["heartbeat"]]

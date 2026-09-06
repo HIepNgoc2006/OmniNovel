@@ -148,8 +148,8 @@ describe('Translation Manifest Runtime Validators & Corpus Parity (#164)', () =>
           },
         ],
         cleanBases: [
-          { page: 1, cleanBaseKey: 'ai/jobs/job-1/review-base/page_1.webp' },
-          { page: 1, cleanBaseKey: 'ai/jobs/job-1/review-base/page_1_dup.webp' },
+          { page: 1, cleanBaseKey: 'ai/jobs/job-1/review-base/attempt-1/page_1.webp' },
+          { page: 1, cleanBaseKey: 'ai/jobs/job-1/review-base/attempt-1/page_1_dup.webp' },
         ],
       };
 
@@ -177,7 +177,7 @@ describe('Translation Manifest Runtime Validators & Corpus Parity (#164)', () =>
           },
         ],
         cleanBases: [
-          { page: 1, cleanBaseKey: 'ai/jobs/job-1/review-base/page_1.webp' },
+          { page: 1, cleanBaseKey: 'ai/jobs/job-1/review-base/attempt-1/page_1.webp' },
         ],
       };
 
@@ -185,7 +185,7 @@ describe('Translation Manifest Runtime Validators & Corpus Parity (#164)', () =>
       expect(result.valid).toBe(true);
       expect(result.value?.cleanBases).toHaveLength(1);
       expect(result.value?.cleanBases?.[0].cleanBaseKey).toBe(
-        'ai/jobs/job-1/review-base/page_1.webp',
+        'ai/jobs/job-1/review-base/attempt-1/page_1.webp',
       );
     });
   });

@@ -75,6 +75,12 @@
     - [x] READY_FOR_REVIEW gate enforcing 100% full-page coverage, exact attempt-scoped canonical jail, non-empty storage verification, and strict `image/webp` Content-Type verification (#162).
     - [x] Post-commit cleanup outside DB transaction on `applyJob`, preserving clean bases in materialization candidates (#162, #171).
     - [x] Retry stale-PUT isolation regression test and follow-up sweeper split to #172 (#162, #172).
+  - [x] **AI WebSocket Security & Sanitization (COMPLETED — PR #174 MERGED `main@80328b5`, Closed #166, main CI Run #34035588453 SUCCESS)**:
+    - [x] Lightweight notification contracts in `@omninovel/shared` (`packages/shared/src/events/translation-events.ts`), eliminating raw `resultManifest`, S3 storage keys (`storageKey`, `previewKey`, `htmlKey`), `errorTrace`, duplicate `stage/status`, and arbitrary messages (#166).
+    - [x] Fail-closed `TranslationGateway` with explicit allowlist parameters and zero object spread (`...`), preventing runtime canary leaks (#166).
+    - [x] Post-commit `job_failed` broadcast strictly after DB transaction resolves and commits (#166).
+    - [x] Web client hook alignment in `use-translation-socket.ts` and studio page (#166).
+    - [x] Comprehensive security regression tests: gateway exact allowlist & forbidden keys scan, canary injection tests, post-commit transaction ordering tests, and live wire Socket.IO E2E tests (#166).
   - [ ] **Phase 4D.5 Studio Frontend UI**:
     - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).
     - [ ] Manga Translation Studio: Trình xem ảnh gốc vs ảnh đã dịch, xem vùng nhận diện thoại OCR, chỉnh sửa bản dịch từng ô thoại.

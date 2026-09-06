@@ -15,7 +15,7 @@
     - TanStack Query v5 quản lý Server State & SWR Caching.
     - WebSocket Gateway (`/ws/ai`) xác thực qua `socket.handshake.auth.token` và tự động reconnect khi token xoay vòng.
     - Gamification: Tiêu thụ endpoint chuẩn `/gamification/progression` và `UserProgressionResponse` từ `@omninovel/shared`.
-- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core 100% HOÀN TẤT & MERGED tại main@03f1486 - Chuẩn bị triển khai Phase 4D.5 Studio Frontend UI)
+- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core + #162 Manga Clean Bases 100% HOÀN TẤT & MERGED tại main@134ff86 - Chuẩn bị triển khai Phase 4D.5 Studio Frontend UI)
 
 ---
 
@@ -68,6 +68,13 @@
     - [x] Content-addressed S3 snapshot artifact (`snapshots/{sha256}.json`) with Comic geometry and strict validators (#161).
     - [x] Fenced completion callback with idempotency-first order, stale discard, prefix-jail and exact size verification (#161, #156 remainder).
     - [x] Under-lock canonical result equality re-check, strict Novel qa.issues validation, and 22/22 dedicated E2E tests pass.
+  - [x] **Manga Clean Bases Persistence Protocol (COMPLETED — PR #173 MERGED `main@134ff86`, Closed #162, main CI Run #34030875541 SUCCESS)**:
+    - [x] Dedicated clean-base upload protocol on Core API (`POST /internal/v1/ai/jobs/:id/clean-base-uploads`) with fail-closed COMIC check and active processing state fence (#162).
+    - [x] Attempt-scoped canonical namespace (`ai/jobs/{jobId}/review-base/attempt-{attemptNumber}/page_{page}.webp`) eliminating race conditions between stale presigned PUT URLs and authoritative retries (#162).
+    - [x] Lossless WebP encoding of clean backgrounds after inpainting during QUALITY_CHECK, uploaded only after Visual QA passes (#162).
+    - [x] READY_FOR_REVIEW gate enforcing 100% full-page coverage, exact attempt-scoped canonical jail, non-empty storage verification, and strict `image/webp` Content-Type verification (#162).
+    - [x] Post-commit cleanup outside DB transaction on `applyJob`, preserving clean bases in materialization candidates (#162, #171).
+    - [x] Retry stale-PUT isolation regression test and follow-up sweeper split to #172 (#162, #172).
   - [ ] **Phase 4D.5 Studio Frontend UI**:
     - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).
     - [ ] Manga Translation Studio: Trình xem ảnh gốc vs ảnh đã dịch, xem vùng nhận diện thoại OCR, chỉnh sửa bản dịch từng ô thoại.

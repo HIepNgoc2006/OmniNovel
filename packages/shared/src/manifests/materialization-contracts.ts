@@ -7,6 +7,7 @@ import {
   TranslationResultManifestV1,
   MangaResultManifestV1,
   NovelResultManifestV1,
+  validateNovelQaV1,
 } from './translation-manifests';
 
 // ----------------------------------------------------------------------
@@ -24,6 +25,7 @@ export interface TranslationSegmentSnapshotV1 {
   anchorBlockId: string | null;
   sortOrder: number;
   rawText: string;
+  /** SSoT Canonical: always a string (nullish/untranslated segments normalized to empty string "") */
   translatedText: string;
   blockType: NovelBlockType | null;
 }
@@ -472,29 +474,15 @@ export function validateNovelMaterializationResultV1(
   }
 
   // Validate QA block
-  if (!obj.qa || typeof obj.qa !== 'object' || Array.isArray(obj.qa)) {
-    errors.push('qa must be an object');
+  let validatedQa: NovelResultQaV1 | undefined;
+  const qaValidation = validateNovelQaV1(obj.qa, {
+    requirePassedTrue: true,
+    prefix: 'qa',
+  });
+  if (!qaValidation.valid) {
+    errors.push(...qaValidation.errors);
   } else {
-    assertNoUnknownKeys(
-      obj.qa,
-      ['passed', 'score', 'fingerprintMatch', 'issuesCount', 'issues'],
-      'qa',
-      errors,
-    );
-    if (typeof obj.qa.passed !== 'boolean') {
-      errors.push('qa.passed must be a boolean');
-    } else if (obj.qa.passed !== true) {
-      errors.push('qa.passed must be true for completed materialization');
-    }
-    if (typeof obj.qa.score !== 'number' || obj.qa.score < 0 || obj.qa.score > 1) {
-      errors.push('qa.score must be a number between 0 and 1');
-    }
-    if (typeof obj.qa.fingerprintMatch !== 'boolean') {
-      errors.push('qa.fingerprintMatch must be a boolean');
-    }
-    if (!isSafeNonNegativeInteger(obj.qa.issuesCount)) {
-      errors.push('qa.issuesCount must be a non-negative integer');
-    }
+    validatedQa = qaValidation.value;
   }
 
   if (errors.length > 0) {
@@ -511,13 +499,7 @@ export function validateNovelMaterializationResultV1(
       htmlFileSizeBytes: Number(obj.htmlFileSizeBytes),
       segmentCount: Number(obj.segmentCount),
       charCount: Number(obj.charCount),
-      qa: {
-        passed: Boolean(obj.qa.passed),
-        score: Number(obj.qa.score),
-        fingerprintMatch: Boolean(obj.qa.fingerprintMatch),
-        issuesCount: Number(obj.qa.issuesCount),
-        ...(Array.isArray(obj.qa.issues) ? { issues: obj.qa.issues } : {}),
-      },
+      qa: validatedQa!,
     },
   };
 }

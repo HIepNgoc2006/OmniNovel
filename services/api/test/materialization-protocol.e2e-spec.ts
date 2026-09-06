@@ -981,5 +981,86 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       expect(res.status).toBe(409);
       expect(res.body.error.code).toBe('MATERIALIZATION_RESULT_CONFLICT');
     });
+
+    it('should reject with 400 when novel materialization callback has unknown keys inside qa.issues (#161, #171 Finding A)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${novelJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'NOVEL',
+          result: {
+            version: 1,
+            mediaFormat: 'NOVEL',
+            htmlKey: `ai/jobs/${novelJobId}/materializations/rev-2/content.html`,
+            htmlFileSizeBytes: 12345,
+            segmentCount: 1,
+            charCount: 150,
+            qa: {
+              passed: true,
+              score: 0.98,
+              fingerprintMatch: true,
+              issuesCount: 1,
+              issues: [
+                {
+                  severity: 'warning',
+                  ruleId: 'GLOSSARY_MISS',
+                  message: 'Missing glossary term',
+                  unexpectedInternalField: 'should_be_rejected',
+                },
+              ],
+            },
+          },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('unexpectedInternalField');
+    });
+
+    it('should reject with 400 even on idempotent ALREADY_APPLIED targetRevision path when qa.issues has unknown keys or is malformed (#161, #171 Finding A)', async () => {
+      // Seed novel job already materialized at rev 2
+      await dataSource.query(`
+        UPDATE translation_jobs
+        SET materialized_revision = 2,
+            review_revision = 2,
+            result_manifest = '{"version": 1, "mediaFormat": "NOVEL", "title": "Tiểu thuyết test", "language": "vi", "htmlKey": "ai/jobs/${novelJobId}/materializations/rev-2/content.html", "htmlFileSizeBytes": 12345, "segmentCount": 1, "charCount": 150, "qa": {"passed": true, "score": 0.98, "fingerprintMatch": true, "issuesCount": 1, "issues": [{"severity": "warning", "ruleId": "GLOSSARY_MISS", "message": "Missing glossary term"}]}}'
+        WHERE id = '${novelJobId}'
+      `);
+
+      // Callback arrives with targetRevision 2 (which would otherwise hit ALREADY_APPLIED early return), but has unknown key in qa.issues
+      const res = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${novelJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'NOVEL',
+          result: {
+            version: 1,
+            mediaFormat: 'NOVEL',
+            htmlKey: `ai/jobs/${novelJobId}/materializations/rev-2/content.html`,
+            htmlFileSizeBytes: 12345,
+            segmentCount: 1,
+            charCount: 150,
+            qa: {
+              passed: true,
+              score: 0.98,
+              fingerprintMatch: true,
+              issuesCount: 1,
+              issues: [
+                {
+                  severity: 'warning',
+                  ruleId: 'GLOSSARY_MISS',
+                  message: 'Missing glossary term',
+                  forbiddenPayloadField: 'attacker_controlled',
+                },
+              ],
+            },
+          },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('forbiddenPayloadField');
+    });
   });
 });
+

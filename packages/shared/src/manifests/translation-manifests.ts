@@ -372,6 +372,116 @@ export function validateMangaResultManifestV1(
   };
 }
 
+export interface ValidateNovelQaOptions {
+  requirePassedTrue?: boolean;
+  prefix?: string;
+}
+
+export function validateNovelQaV1(
+  qa: unknown,
+  options: ValidateNovelQaOptions = {},
+): ValidationResult<NovelResultQaV1> {
+  const errors: string[] = [];
+  const prefix = options.prefix ?? 'qa';
+
+  if (!qa || typeof qa !== 'object' || Array.isArray(qa)) {
+    return { valid: false, errors: [`${prefix} must be an object`] };
+  }
+
+  const obj = qa as Record<string, any>;
+
+  assertNoUnknownKeys(
+    obj,
+    ['passed', 'score', 'fingerprintMatch', 'issuesCount', 'issues'],
+    'NovelResultQaV1',
+    errors,
+  );
+
+  if (typeof obj.passed !== 'boolean') {
+    errors.push(`${prefix}.passed must be a boolean`);
+  } else if (options.requirePassedTrue && obj.passed !== true) {
+    errors.push(`${prefix}.passed must be true for completed materialization`);
+  }
+
+  if (
+    typeof obj.score !== 'number' ||
+    Number.isNaN(obj.score) ||
+    obj.score < 0.0 ||
+    obj.score > 1.0
+  ) {
+    errors.push(`${prefix}.score must be a number between 0.0 and 1.0`);
+  }
+
+  if (typeof obj.fingerprintMatch !== 'boolean') {
+    errors.push(`${prefix}.fingerprintMatch must be a boolean`);
+  }
+
+  if (!isSafeNonNegativeInteger(obj.issuesCount)) {
+    errors.push(`${prefix}.issuesCount must be a non-negative integer`);
+  }
+
+  let validatedIssues: NovelResultQaIssueV1[] | undefined;
+  if (obj.issues !== undefined) {
+    if (!Array.isArray(obj.issues)) {
+      errors.push(`${prefix}.issues must be an array if provided`);
+    } else {
+      validatedIssues = [];
+      obj.issues.forEach((iss: any, idx: number) => {
+        const issuePrefix = `${prefix}.issues[${idx}]`;
+        if (!iss || typeof iss !== 'object' || Array.isArray(iss)) {
+          errors.push(`${issuePrefix} must be an object`);
+          return;
+        }
+
+        assertNoUnknownKeys(
+          iss,
+          ['severity', 'ruleId', 'message'],
+          issuePrefix,
+          errors,
+        );
+
+        if (typeof iss.severity !== 'string') {
+          errors.push(`${issuePrefix}.severity must be a string`);
+        }
+        if (typeof iss.ruleId !== 'string') {
+          errors.push(`${issuePrefix}.ruleId must be a string`);
+        }
+        if (typeof iss.message !== 'string') {
+          errors.push(`${issuePrefix}.message must be a string`);
+        }
+
+        if (
+          typeof iss.severity === 'string' &&
+          typeof iss.ruleId === 'string' &&
+          typeof iss.message === 'string'
+        ) {
+          validatedIssues!.push({
+            severity: iss.severity,
+            ruleId: iss.ruleId,
+            message: iss.message,
+          });
+        }
+      });
+    }
+  }
+
+  if (errors.length > 0) {
+    return { valid: false, errors };
+  }
+
+  return {
+    valid: true,
+    errors: [],
+    value: {
+      passed: Boolean(obj.passed),
+      score: Number(obj.score),
+      fingerprintMatch: Boolean(obj.fingerprintMatch),
+      issuesCount: Number(obj.issuesCount),
+      ...(validatedIssues !== undefined ? { issues: validatedIssues } : {}),
+    },
+  };
+}
+
 export function validateNovelResultManifestV1(
   data: unknown,
 ): ValidationResult<NovelResultManifestV1> {
@@ -447,80 +557,11 @@ export function validateNovelResultManifestV1(
 
   // Check QA
   let validatedQa: NovelResultQaV1 | undefined;
-  if (!obj.qa || typeof obj.qa !== 'object' || Array.isArray(obj.qa)) {
-    errors.push('qa must be an object');
+  const qaValidation = validateNovelQaV1(obj.qa, { prefix: 'qa' });
+  if (!qaValidation.valid) {
+    errors.push(...qaValidation.errors);
   } else {
-    assertNoUnknownKeys(
-      obj.qa,
-      ['passed', 'score', 'fingerprintMatch', 'issuesCount', 'issues'],
-      'NovelResultQaV1',
-      errors,
-    );
-
-    if (typeof obj.qa.passed !== 'boolean') {
-      errors.push('qa.passed must be a boolean');
-    }
-    if (
-      typeof obj.qa.score !== 'number' ||
-      Number.isNaN(obj.qa.score) ||
-      obj.qa.score < 0.0 ||
-      obj.qa.score > 1.0
-    ) {
-      errors.push('qa.score must be a number between 0.0 and 1.0');
-    }
-    if (typeof obj.qa.fingerprintMatch !== 'boolean') {
-      errors.push('qa.fingerprintMatch must be a boolean');
-    }
-    if (!isSafeNonNegativeInteger(obj.qa.issuesCount)) {
-      errors.push('qa.issuesCount must be a non-negative integer');
-    }
-
-    let validatedIssues: NovelResultQaIssueV1[] | undefined;
-    if (obj.qa.issues !== undefined) {
-      if (!Array.isArray(obj.qa.issues)) {
-        errors.push('qa.issues must be an array if provided');
-      } else {
-        validatedIssues = [];
-        obj.qa.issues.forEach((iss: any, idx: number) => {
-          if (!iss || typeof iss !== 'object' || Array.isArray(iss)) {
-            errors.push(`qa.issues[${idx}] must be an object`);
-            return;
-          }
-          assertNoUnknownKeys(
-            iss,
-            ['severity', 'ruleId', 'message'],
-            `qa.issues[${idx}]`,
-            errors,
-          );
-          if (typeof iss.severity !== 'string') {
-            errors.push(`qa.issues[${idx}].severity must be a string`);
-          }
-          if (typeof iss.ruleId !== 'string') {
-            errors.push(`qa.issues[${idx}].ruleId must be a string`);
-          }
-          if (typeof iss.message !== 'string') {
-            errors.push(`qa.issues[${idx}].message must be a string`);
-          }
-          if (errors.length === 0) {
-            validatedIssues!.push({
-              severity: iss.severity,
-              ruleId: iss.ruleId,
-              message: iss.message,
-            });
-          }
-        });
-      }
-    }
-
-    if (errors.length === 0) {
-      validatedQa = {
-        passed: obj.qa.passed,
-        score: obj.qa.score,
-        fingerprintMatch: obj.qa.fingerprintMatch,
-        issuesCount: obj.qa.issuesCount,
-        ...(validatedIssues ? { issues: validatedIssues } : {}),
-      };
-    }
+    validatedQa = qaValidation.value;
   }
 
   // Check assets if present

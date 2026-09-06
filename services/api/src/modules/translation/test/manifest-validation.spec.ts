@@ -7,6 +7,7 @@ import {
   validateTranslationInputManifestV1,
   validateMangaReviewSourceManifestV1,
   validateMangaCleanBaseManifestV1,
+  validateNovelMaterializationResultV1,
   NovelBlockType,
 } from '@omninovel/shared';
 
@@ -250,4 +251,107 @@ describe('Translation Manifest Runtime Validators & Corpus Parity (#164)', () =>
       ]);
     });
   });
+
+  describe('validateNovelMaterializationResultV1 QA Issues Strict Validation (#161, #171 Finding A)', () => {
+    const validBase = {
+      version: 1,
+      mediaFormat: 'NOVEL',
+      htmlKey: 'ai/jobs/job-1/materializations/rev-2/content.html',
+      htmlFileSizeBytes: 12345,
+      segmentCount: 5,
+      charCount: 200,
+      qa: {
+        passed: true,
+        score: 0.95,
+        fingerprintMatch: true,
+        issuesCount: 1,
+        issues: [
+          {
+            severity: 'warning',
+            ruleId: 'GLOSSARY_MISS',
+            message: 'Potential glossary miss',
+          },
+        ],
+      },
+    };
+
+    it('should accept valid novel materialization result with canonical qa.issues', () => {
+      const res = validateNovelMaterializationResultV1(validBase);
+      expect(res.valid).toBe(true);
+      expect(res.errors).toHaveLength(0);
+      expect(res.value?.qa.issues).toEqual([
+        {
+          severity: 'warning',
+          ruleId: 'GLOSSARY_MISS',
+          message: 'Potential glossary miss',
+        },
+      ]);
+    });
+
+    it('should reject novel materialization result when qa.issues is not an array (e.g. object)', () => {
+      const invalid = {
+        ...validBase,
+        qa: {
+          ...validBase.qa,
+          issues: { not: 'an array' },
+        },
+      };
+
+      const res = validateNovelMaterializationResultV1(invalid);
+      expect(res.valid).toBe(false);
+      expect(res.errors.some((e) => e.includes('qa.issues must be an array'))).toBe(true);
+    });
+
+    it('should reject novel materialization result when qa.issues item has unexpected internal field', () => {
+      const invalid = {
+        ...validBase,
+        qa: {
+          ...validBase.qa,
+          issues: [
+            {
+              severity: 'warning',
+              ruleId: 'GLOSSARY_MISS',
+              message: 'Potential glossary miss',
+              unexpectedInternalField: 'leaked_data',
+            },
+          ],
+        },
+      };
+
+      const res = validateNovelMaterializationResultV1(invalid);
+      expect(res.valid).toBe(false);
+      expect(res.errors.some((e) => e.includes('unexpectedInternalField'))).toBe(true);
+    });
+
+    it('should reject novel materialization result when qa.issues item is malformed (e.g. not an object, null, or missing fields)', () => {
+      const invalidNotObject = {
+        ...validBase,
+        qa: {
+          ...validBase.qa,
+          issues: ['string-not-an-issue'],
+        },
+      };
+      const res1 = validateNovelMaterializationResultV1(invalidNotObject);
+      expect(res1.valid).toBe(false);
+      expect(res1.errors.some((e) => e.includes('must be an object'))).toBe(true);
+
+      const invalidMissingField = {
+        ...validBase,
+        qa: {
+          ...validBase.qa,
+          issues: [
+            {
+              severity: 'warning',
+              // missing ruleId and message
+            },
+          ],
+        },
+      };
+      const res2 = validateNovelMaterializationResultV1(invalidMissingField);
+      expect(res2.valid).toBe(false);
+      expect(res2.errors.some((e) => e.includes('ruleId must be a string'))).toBe(true);
+      expect(res2.errors.some((e) => e.includes('message must be a string'))).toBe(true);
+    });
+  });
 });
+

@@ -67,7 +67,7 @@
     - [x] Dedicated materialization queue & deterministic custom job ID (#161).
     - [x] Content-addressed S3 snapshot artifact (`snapshots/{sha256}.json`) with Comic geometry and strict validators (#161).
     - [x] Fenced completion callback with idempotency-first order, stale discard, prefix-jail and exact size verification (#161, #156 remainder).
-    - [x] Under-lock canonical result equality re-check and 20/20 dedicated E2E tests pass.
+    - [x] Under-lock canonical result equality re-check, strict Novel qa.issues validation, and 22/22 dedicated E2E tests pass.
   - [ ] **Phase 4D.5 Studio Frontend UI**:
     - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).
     - [ ] Manga Translation Studio: Trình xem ảnh gốc vs ảnh đã dịch, xem vùng nhận diện thoại OCR, chỉnh sửa bản dịch từng ô thoại.

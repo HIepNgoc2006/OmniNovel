@@ -124,6 +124,70 @@ describe('Translation Manifest Runtime Validators & Corpus Parity (#164)', () =>
       expect(result.valid).toBe(false);
       expect(result.errors.some((e) => e.includes('DUPLICATE_PAGE_NUMBER'))).toBe(true);
     });
+
+    it('should reject manifest with duplicate page numbers in cleanBases', () => {
+      const duplicateCleanBases = {
+        version: 1,
+        mediaFormat: 'COMIC',
+        pages: [
+          {
+            page: 1,
+            storageKey: 'ai/jobs/job-1/attempt-1/page-1.webp',
+            previewKey: 'ai/jobs/job-1/attempt-1/page-1.webp',
+            width: 100,
+            height: 100,
+            fileSizeBytes: 100,
+          },
+          {
+            page: 2,
+            storageKey: 'ai/jobs/job-1/attempt-1/page-2.webp',
+            previewKey: 'ai/jobs/job-1/attempt-1/page-2.webp',
+            width: 100,
+            height: 100,
+            fileSizeBytes: 100,
+          },
+        ],
+        cleanBases: [
+          { page: 1, cleanBaseKey: 'ai/jobs/job-1/review-base/attempt-1/page_1.webp' },
+          { page: 1, cleanBaseKey: 'ai/jobs/job-1/review-base/attempt-1/page_1_dup.webp' },
+        ],
+      };
+
+      const result = validateMangaResultManifestV1(duplicateCleanBases);
+      expect(result.valid).toBe(false);
+      expect(
+        result.errors.some((e) =>
+          e.includes('DUPLICATE_CLEAN_BASE_PAGE_NUMBER'),
+        ),
+      ).toBe(true);
+    });
+
+    it('should accept valid Manga manifest with cleanBases', () => {
+      const validWithCleanBases = {
+        version: 1,
+        mediaFormat: 'COMIC',
+        pages: [
+          {
+            page: 1,
+            storageKey: 'ai/jobs/job-1/attempt-1/page-1.webp',
+            previewKey: 'ai/jobs/job-1/attempt-1/page-1.webp',
+            width: 1200,
+            height: 1800,
+            fileSizeBytes: 1024,
+          },
+        ],
+        cleanBases: [
+          { page: 1, cleanBaseKey: 'ai/jobs/job-1/review-base/attempt-1/page_1.webp' },
+        ],
+      };
+
+      const result = validateMangaResultManifestV1(validWithCleanBases);
+      expect(result.valid).toBe(true);
+      expect(result.value?.cleanBases).toHaveLength(1);
+      expect(result.value?.cleanBases?.[0].cleanBaseKey).toBe(
+        'ai/jobs/job-1/review-base/attempt-1/page_1.webp',
+      );
+    });
   });
 
   describe('validateNovelResultManifestV1', () => {

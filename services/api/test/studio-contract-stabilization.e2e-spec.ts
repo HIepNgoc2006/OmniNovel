@@ -65,6 +65,11 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
     jwtService = app.get(JwtService);
     storageService = app.get(StorageService);
     jest.spyOn(storageService, 'headInternalObject').mockResolvedValue(true);
+    jest.spyOn(storageService, 'statInternalObject').mockResolvedValue({
+      exists: true,
+      contentLength: 1024,
+      contentType: 'image/webp',
+    } as any);
 
     // Setup Test User
     const userRes = await dataSource.query(`
@@ -245,6 +250,12 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
               width: 1200,
               height: 1800,
               fileSize: 102400, // Legacy fileSize to be auto-normalized to fileSizeBytes
+            },
+          ],
+          cleanBases: [
+            {
+              page: 1,
+              cleanBaseKey: `ai/jobs/${comicJobId}/review-base/attempt-1/page_1.webp`,
             },
           ],
         },

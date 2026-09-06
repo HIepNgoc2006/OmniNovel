@@ -160,6 +160,17 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
     });
     const mockStorageKey = presign.files[0].storageKey;
 
+    const cbPresign = await service.createCleanBaseUploadUrls(testJobId, 1, [1]);
+    await fetch(cbPresign.cleanBases[0].uploadUrl, {
+      method: 'PUT',
+      body: Buffer.from([
+        0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
+        0x56, 0x50, 0x38, 0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00,
+        0x00, 0x07, 0x00, 0x00, 0x00, 0x00,
+      ]),
+      headers: { 'Content-Type': 'image/webp' },
+    });
+
     // Gửi đồng thời 4 callback cùng một lúc (Same-stage heartbeat progression -> READY_FOR_REVIEW)
     const events = [
       {
@@ -200,6 +211,12 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
               width: 1200,
               height: 1800,
               fileSizeBytes: 102400,
+            },
+          ],
+          cleanBases: [
+            {
+              page: 1,
+              cleanBaseKey: cbPresign.cleanBases[0].storageKey,
             },
           ],
         },

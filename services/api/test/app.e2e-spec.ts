@@ -1982,7 +1982,21 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       const outputUploadUrl = presignRes.body.files[0].uploadUrl;
       const outputStorageKey = presignRes.body.files[0].storageKey;
 
-      // 2. Upload WebP buffer thật lên MinIO qua Presigned URL
+      // 1b. Xin Presigned PUT URL cho clean bases (#162)
+      const cleanPresignRes = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId}/clean-base-uploads`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          attemptNumber: 1,
+          pages: [1],
+        })
+        .expect(200);
+
+      expect(cleanPresignRes.body.cleanBases.length).toBe(1);
+      const cleanUploadUrl = cleanPresignRes.body.cleanBases[0].uploadUrl;
+      const cleanStorageKey = cleanPresignRes.body.cleanBases[0].storageKey;
+
+      // 2. Upload WebP buffer thật lên MinIO qua Presigned URLs
       const validWebpBytes = Buffer.from([
         0x52, 0x49, 0x46, 0x46, 0x1a, 0x00, 0x00, 0x00, 0x57, 0x45, 0x42, 0x50,
         0x56, 0x50, 0x38, 0x4c, 0x0d, 0x00, 0x00, 0x00, 0x2f, 0x00, 0x00, 0x00,
@@ -1996,6 +2010,13 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       });
       expect(putRes.status).toBe(200);
 
+      const putCleanRes = await fetch(cleanUploadUrl, {
+        method: 'PUT',
+        body: validWebpBytes,
+        headers: { 'Content-Type': 'image/webp' },
+      });
+      expect(putCleanRes.status).toBe(200);
+
       // 3. Gửi event sequence 6: READY_FOR_REVIEW với result_manifest và segments
       const validResultManifest = {
         version: 1,
@@ -2008,6 +2029,12 @@ describe('OmniNovel Backend Core API (e2e)', () => {
             width: 1200,
             height: 1800,
             fileSizeBytes: validWebpBytes.length,
+          },
+        ],
+        cleanBases: [
+          {
+            page: 1,
+            cleanBaseKey: cleanStorageKey,
           },
         ],
       };

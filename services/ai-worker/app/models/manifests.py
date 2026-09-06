@@ -80,6 +80,20 @@ class MangaResultManifestV1(StrictManifestModel):
             seen.add(p.page)
         return pages
 
+    @field_validator("cleanBases")
+    @classmethod
+    def check_unique_clean_bases(
+        cls, clean_bases: Optional[List[MangaCleanBasePageModel]]
+    ) -> Optional[List[MangaCleanBasePageModel]]:
+        if clean_bases is not None:
+            seen: Set[int] = set()
+            for cb in clean_bases:
+                if cb.page in seen:
+                    raise ValueError(f"Duplicate clean base page number: {cb.page}")
+                seen.add(cb.page)
+        return clean_bases
+
+
 
 # ----------------------------------------------------------------------
 # Novel Result Models

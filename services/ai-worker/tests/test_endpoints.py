@@ -49,15 +49,23 @@ def test_process_manga_invalid_key():
     assert response.status_code == 401
     assert "Invalid internal service secret" in response.json()["detail"]
 
+@patch("app.api.v1.endpoints.jobs.request_clean_base_upload_urls")
 @patch("app.api.v1.endpoints.jobs.request_output_upload_urls")
 @patch("app.api.v1.endpoints.jobs.upload_file_to_presigned_url")
 @patch("app.api.v1.endpoints.jobs.send_callback_event")
-def test_process_manga_happy_path(mock_send_event, mock_upload, mock_request_urls):
+def test_process_manga_happy_path(mock_send_event, mock_upload, mock_request_urls, mock_request_clean_base_urls):
     mock_request_urls.return_value = [
         {
             "filename": "page-001.webp",
             "storageKey": "ai/jobs/11111111-1111-1111-1111-111111111111/attempt-1/page-001.webp",
             "uploadUrl": "http://localhost:9000/manga-media/upload",
+        }
+    ]
+    mock_request_clean_base_urls.return_value = [
+        {
+            "page": 1,
+            "storageKey": "ai/jobs/11111111-1111-1111-1111-111111111111/review-base/attempt-1/page_1.webp",
+            "uploadUrl": "http://localhost:9000/manga-media/upload-clean",
         }
     ]
     mock_upload.return_value = None
@@ -81,6 +89,9 @@ def test_process_manga_happy_path(mock_send_event, mock_upload, mock_request_url
     assert data["status"] == "READY_FOR_REVIEW"
     assert data["pagesProcessed"] == 1
     assert mock_send_event.call_count == 7
+    mock_request_clean_base_urls.assert_called_once_with(
+        "11111111-1111-1111-1111-111111111111", 1, [1]
+    )
 
 @patch("app.api.v1.endpoints.jobs.request_output_upload_urls")
 def test_process_manga_presign_failure_raises_502(mock_request_urls):
@@ -99,13 +110,45 @@ def test_process_manga_presign_failure_raises_502(mock_request_urls):
     assert "Presign error" in response.json()["detail"]
 
 @patch("app.api.v1.endpoints.jobs.request_output_upload_urls")
-@patch("app.api.v1.endpoints.jobs.upload_file_to_presigned_url")
-def test_process_manga_upload_failure_raises_502(mock_upload, mock_request_urls):
+@patch("app.api.v1.endpoints.jobs.request_clean_base_upload_urls")
+def test_process_manga_clean_base_presign_failure_raises_502(mock_request_clean_base_urls, mock_request_urls):
     mock_request_urls.return_value = [
         {
             "filename": "page-001.webp",
             "storageKey": "ai/jobs/11111111-1111-1111-1111-111111111111/attempt-1/page-001.webp",
             "uploadUrl": "http://localhost:9000/manga-media/upload",
+        }
+    ]
+    mock_request_clean_base_urls.side_effect = HTTPException(status_code=502, detail="Clean base presign error")
+
+    response = client.post(
+        "/internal/v1/jobs/process-manga",
+        headers=AUTH_HEADERS,
+        json={
+            "jobId": "11111111-1111-1111-1111-111111111111",
+            "attemptNumber": 1,
+            "outputPrefix": "ai/jobs/11111111-1111-1111-1111-111111111111/attempt-1/",
+        },
+    )
+    assert response.status_code == 502
+    assert "Clean base presign error" in response.json()["detail"]
+
+@patch("app.api.v1.endpoints.jobs.request_clean_base_upload_urls")
+@patch("app.api.v1.endpoints.jobs.request_output_upload_urls")
+@patch("app.api.v1.endpoints.jobs.upload_file_to_presigned_url")
+def test_process_manga_upload_failure_raises_502(mock_upload, mock_request_urls, mock_request_clean_base_urls):
+    mock_request_urls.return_value = [
+        {
+            "filename": "page-001.webp",
+            "storageKey": "ai/jobs/11111111-1111-1111-1111-111111111111/attempt-1/page-001.webp",
+            "uploadUrl": "http://localhost:9000/manga-media/upload",
+        }
+    ]
+    mock_request_clean_base_urls.return_value = [
+        {
+            "page": 1,
+            "storageKey": "ai/jobs/11111111-1111-1111-1111-111111111111/review-base/attempt-1/page_1.webp",
+            "uploadUrl": "http://localhost:9000/manga-media/upload-clean",
         }
     ]
     mock_upload.side_effect = HTTPException(status_code=502, detail="MinIO PUT upload failed")
@@ -122,15 +165,23 @@ def test_process_manga_upload_failure_raises_502(mock_upload, mock_request_urls)
     assert response.status_code == 502
     assert "MinIO PUT upload failed" in response.json()["detail"]
 
+@patch("app.api.v1.endpoints.jobs.request_clean_base_upload_urls")
 @patch("app.api.v1.endpoints.jobs.request_output_upload_urls")
 @patch("app.api.v1.endpoints.jobs.upload_file_to_presigned_url")
 @patch("app.api.v1.endpoints.jobs.send_callback_event")
-def test_process_manga_callback_failure_raises_502(mock_send_event, mock_upload, mock_request_urls):
+def test_process_manga_callback_failure_raises_502(mock_send_event, mock_upload, mock_request_urls, mock_request_clean_base_urls):
     mock_request_urls.return_value = [
         {
             "filename": "page-001.webp",
             "storageKey": "ai/jobs/11111111-1111-1111-1111-111111111111/attempt-1/page-001.webp",
             "uploadUrl": "http://localhost:9000/manga-media/upload",
+        }
+    ]
+    mock_request_clean_base_urls.return_value = [
+        {
+            "page": 1,
+            "storageKey": "ai/jobs/11111111-1111-1111-1111-111111111111/review-base/attempt-1/page_1.webp",
+            "uploadUrl": "http://localhost:9000/manga-media/upload-clean",
         }
     ]
     mock_upload.return_value = None

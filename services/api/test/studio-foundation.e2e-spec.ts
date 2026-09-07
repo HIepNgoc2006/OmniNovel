@@ -524,11 +524,12 @@ describe('Studio Foundation E2E (#144, #148, #155)', () => {
       expect(res.body.context.edition.id).toBe(editionAId);
       expect(res.body.context.chapter.id).toBe(chapterAId);
 
-      // ReviewSummary aggregation proof: 3 segments, 2 verified, 2 pages (Comic)
+      // ReviewSummary aggregation proof: 3 segments, 2 verified, 2 pages (Comic), 3 result pages
       expect(res.body.reviewSummary).toEqual({
         segmentCount: 3,
         verifiedCount: 2,
         pageCount: 2,
+        resultPageCount: 3,
         blockCount: null,
       });
 

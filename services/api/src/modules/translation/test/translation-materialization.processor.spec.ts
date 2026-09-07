@@ -216,4 +216,153 @@ describe('TranslationMaterializationProcessor (#157)', () => {
       expect(storageService.createInternalDownloadUrl).not.toHaveBeenCalled();
     });
   });
+
+  describe('RED 3: Pages == CleanBases == 1..N Verification & Presigned URLs', () => {
+    it('should throw UnrecoverableError if resultManifest.pages is missing or empty', async () => {
+      const job = createMockBullJob('materialize', validJobData);
+
+      jobRepo.findOne = jest.fn().mockResolvedValue({
+        id: mockJobId,
+        status: TranslationJobStatus.READY_FOR_REVIEW,
+        reviewRevision: 2,
+        materializedRevision: 1,
+        resultManifest: {
+          pages: [],
+        },
+      } as unknown as TranslationJob);
+
+      await expect(processor.process(job)).rejects.toThrow(UnrecoverableError);
+      await expect(processor.process(job)).rejects.toThrow(
+        /MISSING_RESULT_MANIFEST_PAGES/,
+      );
+    });
+
+    it('should throw UnrecoverableError if cleanBases is missing or empty', async () => {
+      const job = createMockBullJob('materialize', validJobData);
+
+      jobRepo.findOne = jest.fn().mockResolvedValue({
+        id: mockJobId,
+        status: TranslationJobStatus.READY_FOR_REVIEW,
+        reviewRevision: 2,
+        materializedRevision: 1,
+        resultManifest: {
+          pages: [{ page: 1 }, { page: 2 }],
+          // cleanBases missing
+        },
+      } as unknown as TranslationJob);
+
+      await expect(processor.process(job)).rejects.toThrow(UnrecoverableError);
+      await expect(processor.process(job)).rejects.toThrow(
+        /MISSING_CLEAN_BASES/,
+      );
+    });
+
+    it('should throw UnrecoverableError if cleanBases count != pages count', async () => {
+      const job = createMockBullJob('materialize', validJobData);
+
+      jobRepo.findOne = jest.fn().mockResolvedValue({
+        id: mockJobId,
+        status: TranslationJobStatus.READY_FOR_REVIEW,
+        reviewRevision: 2,
+        materializedRevision: 1,
+        resultManifest: {
+          pages: [{ page: 1 }, { page: 2 }],
+          cleanBases: [{ page: 1, cleanBaseKey: 'clean/p1.png' }], // only 1 cleanBase for 2 pages
+        },
+      } as unknown as TranslationJob);
+
+      await expect(processor.process(job)).rejects.toThrow(UnrecoverableError);
+      await expect(processor.process(job)).rejects.toThrow(
+        /CLEAN_BASES_PAGE_MISMATCH/,
+      );
+    });
+
+    it('should throw UnrecoverableError if cleanBases does not strictly cover 1..N or cleanBaseKey is missing', async () => {
+      const job = createMockBullJob('materialize', validJobData);
+
+      // Sparse / disjoint pages: page 1 and page 3 instead of 1 and 2
+      jobRepo.findOne = jest.fn().mockResolvedValue({
+        id: mockJobId,
+        status: TranslationJobStatus.READY_FOR_REVIEW,
+        reviewRevision: 2,
+        materializedRevision: 1,
+        resultManifest: {
+          pages: [{ page: 1 }, { page: 2 }],
+          cleanBases: [
+            { page: 1, cleanBaseKey: 'clean/p1.png' },
+            { page: 3, cleanBaseKey: 'clean/p3.png' }, // Invalid page 3
+          ],
+        },
+      } as unknown as TranslationJob);
+
+      await expect(processor.process(job)).rejects.toThrow(UnrecoverableError);
+      await expect(processor.process(job)).rejects.toThrow(
+        /CLEAN_BASES_INCOMPLETE/,
+      );
+    });
+
+    it('should generate presigned download/upload URLs for 1..N pages and NOT mutate TranslationJob to FAILED', async () => {
+      const job = createMockBullJob('materialize', validJobData);
+
+      jobRepo.findOne = jest.fn().mockResolvedValue({
+        id: mockJobId,
+        status: TranslationJobStatus.READY_FOR_REVIEW,
+        reviewRevision: 2,
+        materializedRevision: 1,
+        resultManifest: {
+          pages: [{ page: 1 }, { page: 2 }],
+          cleanBases: [
+            { page: 2, cleanBaseKey: 'clean/p2.png' },
+            { page: 1, cleanBaseKey: 'clean/p1.png' },
+          ],
+        },
+      } as unknown as TranslationJob);
+
+      // Mock global fetch for AI worker dispatch (RED 4 will detail HTTP dispatch)
+      const mockFetch = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ status: 'COMPLETED' }),
+      });
+      (global as any).fetch = mockFetch;
+
+      await processor.process(job);
+
+      // Verify snapshot download URL
+      expect(storageService.createInternalDownloadUrl).toHaveBeenCalledWith(
+        mockSnapshotKey,
+        true,
+        3600,
+      );
+
+      // Verify cleanBases download URLs for page 1 & 2
+      expect(storageService.createInternalDownloadUrl).toHaveBeenCalledWith(
+        'clean/p1.png',
+        true,
+        3600,
+      );
+      expect(storageService.createInternalDownloadUrl).toHaveBeenCalledWith(
+        'clean/p2.png',
+        true,
+        3600,
+      );
+
+      // Verify upload URLs for page 1 & 2 WebP exact jail
+      expect(storageService.createInternalUploadUrl).toHaveBeenCalledWith(
+        `${mockOutputPrefix}page_1.webp`,
+        'image/webp',
+        true,
+        3600,
+      );
+      expect(storageService.createInternalUploadUrl).toHaveBeenCalledWith(
+        `${mockOutputPrefix}page_2.webp`,
+        'image/webp',
+        true,
+        3600,
+      );
+
+      // Invariant: TranslationJob status MUST NOT be touched
+      expect(jobRepo.save).toBeUndefined();
+    });
+  });
 });

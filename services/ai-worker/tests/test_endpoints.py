@@ -364,3 +364,84 @@ def test_missing_source_download_url_in_production_raises_400(monkeypatch):
     assert response.status_code == 400
     assert "sourceDownloadUrl is required in production" in response.json()["detail"]
 
+
+# ----------------------------------------------------------------------
+# RED 0: Manga Materialization Endpoint & Auth Contract (#157)
+# ----------------------------------------------------------------------
+
+def test_materialize_manga_missing_key():
+    response = client.post(
+        "/internal/v1/jobs/materialize-manga",
+        json={
+            "jobId": "11111111-1111-1111-1111-111111111111",
+            "targetRevision": 2,
+            "snapshotUrl": "http://127.0.0.1:9000/internal-manga/snapshot.json",
+            "snapshotSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "pages": [],
+        },
+    )
+    assert response.status_code == 401
+    assert "Missing internal service secret" in response.json()["detail"]
+
+
+def test_materialize_manga_invalid_key():
+    response = client.post(
+        "/internal/v1/jobs/materialize-manga",
+        headers={"X-Internal-Service-Key": "wrong_key_secret"},
+        json={
+            "jobId": "11111111-1111-1111-1111-111111111111",
+            "targetRevision": 2,
+            "snapshotUrl": "http://127.0.0.1:9000/internal-manga/snapshot.json",
+            "snapshotSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "pages": [],
+        },
+    )
+    assert response.status_code == 401
+    assert "Invalid internal service secret" in response.json()["detail"]
+
+
+def test_materialize_manga_invalid_payload():
+    # Missing required fields like snapshotSha256, pages
+    response = client.post(
+        "/internal/v1/jobs/materialize-manga",
+        headers=AUTH_HEADERS,
+        json={
+            "jobId": "11111111-1111-1111-1111-111111111111",
+            "targetRevision": 2,
+        },
+    )
+    assert response.status_code == 422
+
+
+@patch("app.pipeline.manga_re_renderer.MangaReRenderer.re_render_manga", new_callable=AsyncMock)
+def test_materialize_manga_happy_path(mock_re_render):
+    valid_payload = {
+        "jobId": "11111111-1111-4111-8111-111111111111",
+        "targetRevision": 2,
+        "snapshotUrl": "http://127.0.0.1:9000/internal-manga/snapshot.json",
+        "snapshotSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "pages": [
+            {
+                "pageNumber": 1,
+                "cleanBaseUrl": "http://127.0.0.1:9000/internal-manga/clean/page_1.webp",
+                "outputUploadUrl": "http://127.0.0.1:9000/internal-manga/out/page_1.webp",
+                "storageKey": "ai/jobs/11111111-1111-4111-8111-111111111111/materializations/rev-2/page_1.webp",
+            }
+        ],
+    }
+
+    response = client.post(
+        "/internal/v1/jobs/materialize-manga",
+        headers=AUTH_HEADERS,
+        json=valid_payload,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "COMPLETED"
+    assert data["jobId"] == "11111111-1111-4111-8111-111111111111"
+    assert data["targetRevision"] == 2
+    mock_re_render.assert_awaited_once()
+
+
+
+

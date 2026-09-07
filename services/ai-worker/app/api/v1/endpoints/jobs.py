@@ -1,7 +1,7 @@
 import os
 import uuid
 from typing import Optional, Dict, Any, List, Union
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 import httpx
 from app.core.security import verify_internal_key
@@ -17,6 +17,8 @@ from app.models.manifests import (
     NovelBlockType,
     TranslationInputManifestV1,
 )
+from app.models.materialize import MaterializeMangaRequest
+from app.pipeline.manga_re_renderer import MangaReRenderer
 
 router = APIRouter()
 
@@ -537,4 +539,26 @@ async def process_novel_job(req: ProcessJobRequest):
         "status": "READY_FOR_REVIEW",
         "segmentsCount": len(segments),
     }
+
+
+def get_manga_re_renderer() -> MangaReRenderer:
+    return MangaReRenderer()
+
+
+@router.post(
+    "/materialize-manga",
+    dependencies=[Depends(verify_internal_key)],
+    status_code=status.HTTP_200_OK,
+)
+async def materialize_manga(
+    request: MaterializeMangaRequest,
+    renderer: MangaReRenderer = Depends(get_manga_re_renderer),
+):
+    await renderer.re_render_manga(request)
+    return {
+        "status": "COMPLETED",
+        "jobId": request.job_id,
+        "targetRevision": request.target_revision,
+    }
+
 

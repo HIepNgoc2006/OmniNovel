@@ -338,11 +338,11 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
           version: 1,
           mediaFormat: 'COMIC',
           pages: [
-            { page: 1, storageKey: 'k1', previewKey: 'p1' },
-            { page: 2, storageKey: 'k2', previewKey: 'p2' },
-            { page: 3, storageKey: 'k3', previewKey: 'p3' },
-            { page: 4, storageKey: 'k4', previewKey: 'p4' },
-            { page: 5, storageKey: 'k5', previewKey: 'p5' },
+            { page: 1, storageKey: 'k1', previewKey: 'p1', width: 800, height: 1200, fileSizeBytes: 1024 },
+            { page: 2, storageKey: 'k2', previewKey: 'p2', width: 800, height: 1200, fileSizeBytes: 1024 },
+            { page: 3, storageKey: 'k3', previewKey: 'p3', width: 800, height: 1200, fileSizeBytes: 1024 },
+            { page: 4, storageKey: 'k4', previewKey: 'p4', width: 800, height: 1200, fileSizeBytes: 1024 },
+            { page: 5, storageKey: 'k5', previewKey: 'p5', width: 800, height: 1200, fileSizeBytes: 1024 },
           ],
         },
         project: {
@@ -402,6 +402,106 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
       });
       expect(result.reviewSummary.pageCount).toBe(3);
       expect(result.reviewSummary.resultPageCount).toBe(5);
+    });
+
+    it('#178 regression: should yield resultPageCount === null if COMIC resultManifest has duplicate, non-contiguous or corrupt pages', async () => {
+      const baseJob = {
+        id: 'job-corrupt-manifest',
+        status: TranslationJobStatus.READY_FOR_REVIEW,
+        progressPercentage: 100,
+        provider: 'OPENAI',
+        modelName: 'gpt-4o-mini',
+        promptVersion: 'manga-ja-vi-v1',
+        attemptCount: 1,
+        maxAttempts: 3,
+        createdAt: new Date('2026-09-01T10:00:00Z'),
+        startedAt: new Date('2026-09-01T10:01:00Z'),
+        heartbeatAt: new Date('2026-09-01T10:05:00Z'),
+        completedAt: new Date('2026-09-01T10:05:00Z'),
+        expiresAt: null,
+        errorTrace: null,
+        inputManifest: null,
+        project: {
+          id: 'proj-1',
+          sourceLanguage: 'ja',
+          targetLanguage: 'vi',
+          storyEdition: {
+            id: 'ed-1',
+            editionName: 'Bản Tiếng Việt Chuẩn',
+            language: 'vi',
+            isDefault: true,
+            story: {
+              id: 'story-1',
+              title: 'One Piece',
+              slug: 'one-piece',
+              mediaFormat: MediaFormat.COMIC,
+            },
+          },
+        },
+        sourceVersion: {
+          id: 'ver-src-1',
+          versionNumber: 1,
+          chapter: {
+            id: 'chap-1',
+            chapterNumber: '1.00',
+            title: 'Romance Dawn',
+          },
+        },
+        targetVersion: null,
+      };
+
+      storyMemberRepo.findOne.mockResolvedValue({
+        storyId: 'story-1',
+        userId: translatorUser.id,
+        role: StoryMemberRole.TRANSLATOR,
+      });
+
+      dataSource.query.mockResolvedValue([
+        {
+          segment_count: 2,
+          verified_count: 0,
+          page_count: 2,
+          block_count: 0,
+        },
+      ]);
+
+      // Case A: Duplicate page numbers (page 1, page 1)
+      jobRepo.findOne.mockResolvedValue({
+        ...baseJob,
+        resultManifest: {
+          version: 1,
+          mediaFormat: 'COMIC',
+          pages: [
+            { page: 1, storageKey: 'k1', previewKey: 'p1' },
+            { page: 1, storageKey: 'k2', previewKey: 'p2' },
+          ],
+        },
+      });
+      let result = await service.getJob('job-corrupt-manifest', translatorUser);
+      expect(result.reviewSummary.resultPageCount).toBeNull();
+
+      // Case B: Non-contiguous page numbers (page 1, page 3)
+      jobRepo.findOne.mockResolvedValue({
+        ...baseJob,
+        resultManifest: {
+          version: 1,
+          mediaFormat: 'COMIC',
+          pages: [
+            { page: 1, storageKey: 'k1', previewKey: 'p1' },
+            { page: 3, storageKey: 'k3', previewKey: 'p3' },
+          ],
+        },
+      });
+      result = await service.getJob('job-corrupt-manifest', translatorUser);
+      expect(result.reviewSummary.resultPageCount).toBeNull();
+
+      // Case C: Corrupt / malformed string JSON
+      jobRepo.findOne.mockResolvedValue({
+        ...baseJob,
+        resultManifest: 'not-valid-json{',
+      });
+      result = await service.getJob('job-corrupt-manifest', translatorUser);
+      expect(result.reviewSummary.resultPageCount).toBeNull();
     });
 
     it('should throw NotFoundException if job does not exist', async () => {

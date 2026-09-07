@@ -103,8 +103,12 @@
     - [x] Source precedence: Rule A `sourceReview` (package-backed Manga from #159) over Rule B `SOURCE_MEDIA` fallback (`media_assets.sortOrder === pageNumber`) (#155, PR #177).
     - [x] RESULT asset resolution from `resultManifest.pages` with hardened prefix jail (initial `page_{paddedPage}.webp` & materialization `rev-{n}/page_{p}.webp`) (#155, PR #177).
     - [x] Security & privacy: 900s presigned URLs, zero leakage of storage keys / diffAssets, sanitized 500 error path (`PREVIEW_MANIFEST_INVARIANT_VIOLATION` with server-only raw key logging), and bounded presigning without HEAD fan-out (#155, PR #177).
+  - [x] **Manga Authoritative Result Page Count for Review Studio (COMPLETED — PR #179 MERGED `main@f48a6aa`, Closed #178)**:
+    - [x] Expose `resultPageCount: number | null` in `ReviewSummaryDto` on `GET /api/v1/ai/jobs/:id` for Manga jobs in `READY_FOR_REVIEW`/`APPLIED` (#178).
+    - [x] Preserve existing `#148` semantic of `pageCount` (`COUNT(DISTINCT page_number) FROM translation_segments`) (#178).
+    - [x] Full test coverage: unit test in `translation-foundation.spec.ts` (pages 1..5 vs segments on 1,3,5 -> `pageCount === 3, resultPageCount === 5`), E2E test in `studio-foundation.e2e-spec.ts` (`resultPageCount === 3`) (#178).
   - [ ] **Phase 4D.5 Studio Frontend UI (#149)**:
     - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).
-    - [ ] Manga Translation Studio (#149): Trình xem ảnh gốc vs ảnh đã dịch, xem vùng nhận diện thoại OCR, chỉnh sửa bản dịch từng ô thoại.
+    - [ ] Manga Translation Studio (#149) [UNBLOCKED — Prerequisites #147, #148, #155, #157, #159, #162, #178 Complete]: Trình xem ảnh gốc vs ảnh đã dịch, xem vùng nhận diện thoại OCR (DOM percentage scaling, fail-closed), chỉnh sửa bản dịch từng ô thoại với OCC `VERSION_CONFLICT` handling, Page Navigator (`1..resultPageCount`), và tích hợp Materialization freshness CTA (#157).
     - [ ] Novel Translation Studio: Trình đối chiếu AST đoạn văn bản song ngữ, đánh dấu thuật ngữ Glossary, kiểm tra protected inline tags (`⟦...⟧`).
     - [ ] Modal xuất bản chương: Lựa chọn 2 chiến lược `OVERWRITE_ACTIVE_VERSION` vs `CREATE_ALTERNATE_VERSION` kèm preview trực quan.

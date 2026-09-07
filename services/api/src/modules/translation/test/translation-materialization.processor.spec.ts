@@ -365,4 +365,73 @@ describe('TranslationMaterializationProcessor (#157)', () => {
       expect(jobRepo.save).toBeUndefined();
     });
   });
+
+  describe('RED 4: Retry Classification & HTTP Dispatch', () => {
+    const setupJob = () => {
+      const job = createMockBullJob('materialize', validJobData);
+      jobRepo.findOne = jest.fn().mockResolvedValue({
+        id: mockJobId,
+        status: TranslationJobStatus.READY_FOR_REVIEW,
+        reviewRevision: 2,
+        materializedRevision: 1,
+        resultManifest: {
+          pages: [{ page: 1 }],
+          cleanBases: [{ page: 1, cleanBaseKey: 'clean/p1.png' }],
+        },
+      } as unknown as TranslationJob);
+      return job;
+    };
+
+    it.each([400, 401, 403, 404, 409, 422])(
+      'should throw UnrecoverableError for deterministic HTTP %d',
+      async (status) => {
+        const job = setupJob();
+        (global as any).fetch = jest.fn().mockResolvedValue({
+          ok: false,
+          status,
+          text: async () => `Error details for ${status}`,
+        });
+
+        await expect(processor.process(job)).rejects.toThrow(UnrecoverableError);
+        await expect(processor.process(job)).rejects.toThrow(
+          new RegExp(`AI_WORKER_DETERMINISTIC_ERROR: ${status}`),
+        );
+      },
+    );
+
+    it.each([408, 429, 500, 502, 503, 504])(
+      'should throw standard Error (NOT UnrecoverableError) for transient HTTP %d',
+      async (status) => {
+        const job = setupJob();
+        (global as any).fetch = jest.fn().mockResolvedValue({
+          ok: false,
+          status,
+          text: async () => `Transient error ${status}`,
+        });
+
+        try {
+          await processor.process(job);
+          fail('Should have thrown an error');
+        } catch (err: any) {
+          expect(err).toBeInstanceOf(Error);
+          expect(err instanceof UnrecoverableError).toBe(false);
+          expect(err.message).toContain(`AI_WORKER_TRANSIENT_ERROR: ${status}`);
+        }
+      },
+    );
+
+    it('should throw standard Error (NOT UnrecoverableError) on network fetch failure', async () => {
+      const job = setupJob();
+      (global as any).fetch = jest.fn().mockRejectedValue(new Error('Connection refused'));
+
+      try {
+        await processor.process(job);
+        fail('Should have thrown an error');
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(Error);
+        expect(err instanceof UnrecoverableError).toBe(false);
+        expect(err.message).toContain('AI_WORKER_NETWORK_ERROR: Connection refused');
+      }
+    });
+  });
 });

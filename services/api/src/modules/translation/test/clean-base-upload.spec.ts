@@ -449,8 +449,8 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
           pages: [
             {
               page: 1,
-              storageKey: 'ai/jobs/job-manga-123/materializations/rev-1/p1.webp',
-              previewKey: 'ai/jobs/job-manga-123/materializations/rev-1/p1.webp',
+              storageKey: 'ai/jobs/job-manga-123/materializations/rev-1/page_1.webp',
+              previewKey: 'ai/jobs/job-manga-123/materializations/rev-1/page_1.webp',
               width: 100,
               height: 100,
               fileSizeBytes: 200,

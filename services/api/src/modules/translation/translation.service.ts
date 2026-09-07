@@ -2637,21 +2637,22 @@ export class TranslationService {
     const expectedPrefix = `ai/jobs/${jobId}/materializations/rev-${dto.targetRevision}/`;
 
     if (!isNovel) {
-      // Prefix-jail
+      // Exact Canonical Jail & Preview Identity Check (#157)
       for (const p of validatedComicResult!.pages) {
-        if (!p.storageKey.startsWith(expectedPrefix)) {
+        const expectedKey = `${expectedPrefix}page_${p.page}.webp`;
+        if (p.storageKey !== expectedKey) {
           throw new BadRequestException(
-            `PREFIX_JAIL_VIOLATION: storageKey '${p.storageKey}' không nằm trong prefix '${expectedPrefix}'.`,
+            `PREFIX_JAIL_VIOLATION: storageKey '${p.storageKey}' không khớp exact canonical key '${expectedKey}'.`,
           );
         }
-        if (!p.previewKey.startsWith(expectedPrefix)) {
+        if (p.previewKey !== p.storageKey) {
           throw new BadRequestException(
-            `PREFIX_JAIL_VIOLATION: previewKey '${p.previewKey}' không nằm trong prefix '${expectedPrefix}'.`,
+            `PREFIX_JAIL_VIOLATION: previewKey '${p.previewKey}' phải giống hệt storageKey.`,
           );
         }
       }
 
-      // Pre-transaction HEAD & Exact Size Verification
+      // Pre-transaction HEAD & Exact Size & MIME Verification (#157)
       for (const p of validatedComicResult!.pages) {
         const stat = await this.storageService.statInternalObject(p.storageKey, true);
         if (!stat.exists) {
@@ -2659,20 +2660,17 @@ export class TranslationService {
             `ARTIFACT_NOT_FOUND_IN_STORAGE: Manga page ${p.storageKey} không tồn tại trong MinIO storage.`,
           );
         }
+        if (stat.contentType !== 'image/webp') {
+          throw new BadRequestException({
+            code: 'ARTIFACT_INVALID_CONTENT_TYPE',
+            message: `Manga page ${p.storageKey} có contentType (${stat.contentType}) không hợp lệ. Bắt buộc image/webp.`,
+          });
+        }
         if (stat.contentLength !== p.fileSizeBytes) {
           throw new BadRequestException({
             code: 'ARTIFACT_SIZE_MISMATCH',
             message: `ARTIFACT_SIZE_MISMATCH: Page ${p.page} storageKey contentLength (${stat.contentLength}) không khớp với khai báo fileSizeBytes (${p.fileSizeBytes}).`,
           });
-        }
-
-        if (p.previewKey !== p.storageKey) {
-          const statPrev = await this.storageService.statInternalObject(p.previewKey, true);
-          if (!statPrev.exists) {
-            throw new BadRequestException(
-              `ARTIFACT_NOT_FOUND_IN_STORAGE: Manga preview page ${p.previewKey} không tồn tại trong MinIO storage.`,
-            );
-          }
         }
       }
     } else {
@@ -2756,6 +2754,7 @@ export class TranslationService {
           mediaFormat: 'COMIC',
           pages: validatedComicResult!.pages,
           ...(currentManifest?.cleanBases ? { cleanBases: currentManifest.cleanBases } : {}),
+          ...(currentManifest?.sourceReview ? { sourceReview: currentManifest.sourceReview } : {}),
         };
       } else {
         const currentManifest = job.resultManifest as NovelResultManifestV1 | null;

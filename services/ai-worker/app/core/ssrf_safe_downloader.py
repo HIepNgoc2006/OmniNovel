@@ -167,3 +167,54 @@ async def safe_download_archive(
             await _do_download(http_client)
 
     return target_path
+
+
+async def safe_download_bytes(
+    url: str,
+    max_bytes: int = 50 * 1024 * 1024,  # 50MB bound
+    client: Optional[httpx.AsyncClient] = None,
+) -> bytes:
+    """
+    Tải raw bytes an toàn qua streaming chống SSRF:
+    - Thẩm định URL trước khi gửi request (validate_download_url).
+    - Chặn redirect tự động (follow_redirects=False).
+    - Kiểm tra Content-Length header nếu có.
+    - Cắt luồng tải ngay lập tức nếu vượt quá max_bytes.
+    """
+    validate_download_url(url)
+
+    downloaded_chunks = []
+    bytes_downloaded = 0
+
+    async def _do_download(http_client: httpx.AsyncClient):
+        nonlocal bytes_downloaded
+        async with http_client.stream(
+            "GET", url, headers={"User-Agent": "OmniNovel-AI-Worker/1.0"}
+        ) as response:
+            if response.status_code not in (200, 206):
+                raise ValueError(
+                    f"Tải byte thất bại với HTTP {response.status_code}: {response.reason_phrase}"
+                )
+
+            content_len = response.headers.get("content-length")
+            if content_len and content_len.isdigit() and int(content_len) > max_bytes:
+                raise ValueError(
+                    f"Dung lượng Content-Length ({content_len} bytes) vượt quá giới hạn ({max_bytes} bytes)"
+                )
+
+            async for chunk in response.aiter_bytes(chunk_size=65536):
+                bytes_downloaded += len(chunk)
+                if bytes_downloaded > max_bytes:
+                    raise ValueError(
+                        f"Dung lượng tải ({bytes_downloaded} bytes) vượt quá giới hạn ({max_bytes} bytes)"
+                    )
+                downloaded_chunks.append(chunk)
+
+    if client is not None:
+        await _do_download(client)
+    else:
+        transport_limits = httpx.Timeout(connect=5.0, read=20.0, write=5.0, pool=5.0)
+        async with httpx.AsyncClient(timeout=transport_limits, follow_redirects=False) as http_client:
+            await _do_download(http_client)
+
+    return b"".join(downloaded_chunks)

@@ -37,6 +37,7 @@ export const envSchema = z
     // AI Worker Service (Internal RPC)
     AI_WORKER_BASE_URL: z.string().default('http://localhost:8001'),
     AI_WORKER_SECRET: z.string().default('internal_ai_worker_secret_secure_2026'),
+    AI_WORKER_MATERIALIZATION_TIMEOUT_MS: z.coerce.number().default(120000),
   })
   .refine(
     (data) => {

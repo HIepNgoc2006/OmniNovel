@@ -15,6 +15,7 @@ import { UploadSession } from '../storage/entities/upload-session.entity';
 import { StoryMember } from '../stories/entities/story-member.entity';
 import { TranslationService } from './translation.service';
 import { TranslationProcessor } from './translation.processor';
+import { TranslationMaterializationProcessor } from './translation-materialization.processor';
 import { TranslationWatchdogService } from './translation-watchdog.service';
 import { TranslationGateway } from './translation.gateway';
 import { TranslationController } from './translation.controller';
@@ -59,6 +60,7 @@ import { InternalServiceKeyGuard } from '../../common/guards/internal-service-ke
   providers: [
     TranslationService,
     TranslationProcessor,
+    TranslationMaterializationProcessor,
     TranslationWatchdogService,
     TranslationGateway,
     InternalServiceKeyGuard,
@@ -66,6 +68,7 @@ import { InternalServiceKeyGuard } from '../../common/guards/internal-service-ke
   exports: [
     TranslationService,
     TranslationProcessor,
+    TranslationMaterializationProcessor,
     TranslationWatchdogService,
     TranslationGateway,
   ],

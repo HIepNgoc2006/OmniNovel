@@ -15,7 +15,7 @@
     - TanStack Query v5 quản lý Server State & SWR Caching.
     - WebSocket Gateway (`/ws/ai`) xác thực qua `socket.handshake.auth.token` và tự động reconnect khi token xoay vòng.
     - Gamification: Tiêu thụ endpoint chuẩn `/gamification/progression` và `UserProgressionResponse` từ `@omninovel/shared`.
-- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core + #162 Manga Clean Bases + #166 WebSocket Security + #159 Manga Previews + #157 Manga Re-render 100% HOÀN TẤT & MERGED tại main@fdcc169 - Chuẩn bị hoàn tất Track A #155 Preview API & triển khai Phase 4D.5 Studio Frontend UI)
+- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core + #162 Manga Clean Bases + #166 WebSocket Security + #159 Manga Previews + #157 Manga Re-render + #155 Preview API 100% HOÀN TẤT & MERGED tại main@7072b31 - Sẵn sàng triển khai Phase 4D.5 Studio Frontend UI #149)
 
 ---
 
@@ -96,8 +96,15 @@
     - [x] `TranslationMaterializationProcessor` with revision fencing, retry classification (deterministic 400..422 -> `UnrecoverableError`, transient 408/429/5xx -> `Error`), and `AbortSignal.timeout(workerTimeoutMs)` bounded worker dispatch (#157).
     - [x] Exact `page_${page}.webp` prefix jail with `previewKey === storageKey` and MinIO HEAD `image/webp` verification (#157).
     - [x] Unbreakable Job status protection: Failed materialization attempts MUST NEVER mutate primary `TranslationJob` to `FAILED` (remains `READY_FOR_REVIEW`) (#157).
-  - [ ] **Phase 4D.5 Studio Frontend UI**:
+  - [x] **Scalable Review Segments & Lazy Bounded Manga Previews (COMPLETED — PR #167 + PR #177 MERGED `main@7072b31`, Closed #155, main CI Run #34095769166 SUCCESS)**:
+    - [x] Scalable paginated review segments API (`GET /api/v1/ai/jobs/:id/segments`) with fail-closed pagination and ISO timestamps (#155, PR #167).
+    - [x] Lazy bounded Manga previews API (`GET /api/v1/ai/jobs/:id/previews`) supporting `?pageNumber=N` and `?fromPage=A&toPage=B` ($A \le B, B-A+1 \le 5$), strictly forbidding unbounded whole-chapter requests (#155, PR #177).
+    - [x] Fail-closed window validation: deterministic error codes (`PREVIEW_WINDOW_REQUIRED`, `PREVIEW_WINDOW_AMBIGUOUS`, `PREVIEW_RANGE_INCOMPLETE`, `INVALID_PREVIEW_RANGE`, `WINDOW_TOO_LARGE`) (#155, PR #177).
+    - [x] Source precedence: Rule A `sourceReview` (package-backed Manga from #159) over Rule B `SOURCE_MEDIA` fallback (`media_assets.sortOrder === pageNumber`) (#155, PR #177).
+    - [x] RESULT asset resolution from `resultManifest.pages` with hardened prefix jail (initial `page_{paddedPage}.webp` & materialization `rev-{n}/page_{p}.webp`) (#155, PR #177).
+    - [x] Security & privacy: 900s presigned URLs, zero leakage of storage keys / diffAssets, sanitized 500 error path (`PREVIEW_MANIFEST_INVARIANT_VIOLATION` with server-only raw key logging), and bounded presigning without HEAD fan-out (#155, PR #177).
+  - [ ] **Phase 4D.5 Studio Frontend UI (#149)**:
     - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).
-    - [ ] Manga Translation Studio: Trình xem ảnh gốc vs ảnh đã dịch, xem vùng nhận diện thoại OCR, chỉnh sửa bản dịch từng ô thoại.
+    - [ ] Manga Translation Studio (#149): Trình xem ảnh gốc vs ảnh đã dịch, xem vùng nhận diện thoại OCR, chỉnh sửa bản dịch từng ô thoại.
     - [ ] Novel Translation Studio: Trình đối chiếu AST đoạn văn bản song ngữ, đánh dấu thuật ngữ Glossary, kiểm tra protected inline tags (`⟦...⟧`).
     - [ ] Modal xuất bản chương: Lựa chọn 2 chiến lược `OVERWRITE_ACTIVE_VERSION` vs `CREATE_ALTERNATE_VERSION` kèm preview trực quan.

@@ -188,6 +188,166 @@ describe('Translation Manifest Runtime Validators & Corpus Parity (#164)', () =>
         'ai/jobs/job-1/review-base/attempt-1/page_1.webp',
       );
     });
+
+    it('should accept valid Manga manifest with sourceReview (#159)', () => {
+      const validWithSourceReview = {
+        version: 1,
+        mediaFormat: 'COMIC',
+        pages: [
+          {
+            page: 1,
+            storageKey: 'ai/jobs/job-1/attempt-1/page-1.webp',
+            previewKey: 'ai/jobs/job-1/attempt-1/page-1.webp',
+            width: 1200,
+            height: 1800,
+            fileSizeBytes: 1024,
+          },
+        ],
+        sourceReview: {
+          version: 1,
+          pages: [
+            {
+              page: 1,
+              storageKey: 'ai/jobs/job-1/source-review/attempt-1/page_1.jpg',
+            },
+          ],
+        },
+      };
+
+      const result = validateMangaResultManifestV1(validWithSourceReview);
+      expect(result.valid).toBe(true);
+      expect(result.value?.sourceReview?.version).toBe(1);
+      expect(result.value?.sourceReview?.pages).toHaveLength(1);
+      expect(result.value?.sourceReview?.pages[0].storageKey).toBe(
+        'ai/jobs/job-1/source-review/attempt-1/page_1.jpg',
+      );
+    });
+
+    it('should reject Manga manifest with invalid sourceReview (empty pages) (#159)', () => {
+      const invalid = {
+        version: 1,
+        mediaFormat: 'COMIC',
+        pages: [
+          {
+            page: 1,
+            storageKey: 'ai/jobs/job-1/attempt-1/page-1.webp',
+            previewKey: 'ai/jobs/job-1/attempt-1/page-1.webp',
+            width: 1200,
+            height: 1800,
+            fileSizeBytes: 1024,
+          },
+        ],
+        sourceReview: {
+          version: 1,
+          pages: [],
+        },
+      };
+
+      const result = validateMangaResultManifestV1(invalid);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => e.includes('pages array must not be empty'))).toBe(true);
+    });
+
+    it('should reject Manga manifest with invalid sourceReview (duplicate pages) (#159)', () => {
+      const invalid = {
+        version: 1,
+        mediaFormat: 'COMIC',
+        pages: [
+          {
+            page: 1,
+            storageKey: 'ai/jobs/job-1/attempt-1/page-1.webp',
+            previewKey: 'ai/jobs/job-1/attempt-1/page-1.webp',
+            width: 1200,
+            height: 1800,
+            fileSizeBytes: 1024,
+          },
+        ],
+        sourceReview: {
+          version: 1,
+          pages: [
+            { page: 1, storageKey: 'ai/jobs/job-1/source-review/attempt-1/page_1.jpg' },
+            { page: 1, storageKey: 'ai/jobs/job-1/source-review/attempt-1/page_1_dup.jpg' },
+          ],
+        },
+      };
+
+      const result = validateMangaResultManifestV1(invalid);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => e.includes('DUPLICATE_SOURCE_REVIEW_PAGE_NUMBER'))).toBe(true);
+    });
+  });
+
+  describe('validateMangaReviewSourceManifestV1 Hardening (#159)', () => {
+    it('should reject empty pages array', () => {
+      const raw = {
+        version: 1,
+        pages: [],
+      };
+      const result = validateMangaReviewSourceManifestV1(raw);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => e.includes('pages array must not be empty'))).toBe(true);
+    });
+
+    it('should reject duplicate page numbers in pages array', () => {
+      const raw = {
+        version: 1,
+        pages: [
+          { page: 1, storageKey: 'ai/jobs/job-1/source-review/attempt-1/page_1.jpg' },
+          { page: 1, storageKey: 'ai/jobs/job-1/source-review/attempt-1/page_1_dup.jpg' },
+        ],
+      };
+      const result = validateMangaReviewSourceManifestV1(raw);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => e.includes('DUPLICATE_SOURCE_REVIEW_PAGE_NUMBER'))).toBe(true);
+    });
+
+    it('should reject unknown root fields', () => {
+      const raw = {
+        version: 1,
+        pages: [
+          { page: 1, storageKey: 'ai/jobs/job-1/source-review/attempt-1/page_1.jpg' },
+        ],
+        rogueRootField: 'malicious',
+      };
+      const result = validateMangaReviewSourceManifestV1(raw);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => e.includes('rogueRootField'))).toBe(true);
+    });
+
+    it('should reject unknown fields in page items', () => {
+      const raw = {
+        version: 1,
+        pages: [
+          {
+            page: 1,
+            storageKey: 'ai/jobs/job-1/source-review/attempt-1/page_1.jpg',
+            rogueItemField: true,
+          },
+        ],
+      };
+      const result = validateMangaReviewSourceManifestV1(raw);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => e.includes('rogueItemField'))).toBe(true);
+    });
+
+    it('should accept valid MangaReviewSourceManifestV1 with optional width and height', () => {
+      const raw = {
+        version: 1,
+        pages: [
+          {
+            page: 1,
+            storageKey: 'ai/jobs/job-1/source-review/attempt-1/page_1.jpg',
+            width: 1200,
+            height: 1800,
+          },
+        ],
+      };
+      const result = validateMangaReviewSourceManifestV1(raw);
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+      expect(result.value?.pages[0].width).toBe(1200);
+      expect(result.value?.pages[0].height).toBe(1800);
+    });
   });
 
   describe('validateNovelResultManifestV1', () => {

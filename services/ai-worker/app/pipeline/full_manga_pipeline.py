@@ -18,6 +18,8 @@ from app.models.manifests import (
     MangaCleanBasePageModel,
     MangaResultManifestV1,
     MangaResultPageModel,
+    MangaReviewSourceManifestV1,
+    MangaReviewSourcePageModel,
 )
 from app.pipeline.attempt_coordinator import AttemptProgressCoordinator
 from app.pipeline.manga_pipeline import MangaOcrPipeline, MangaOcrResult
@@ -48,6 +50,7 @@ class FullMangaPipeline:
         qa_evaluator: Optional[VisualQAEvaluator] = None,
         upload_urls_requester: Optional[Callable] = None,
         clean_base_urls_requester: Optional[Callable] = None,
+        source_review_urls_requester: Optional[Callable] = None,
         uploader_func: Optional[Callable] = None,
     ):
         self.coordinator = coordinator
@@ -58,6 +61,7 @@ class FullMangaPipeline:
         self.qa = qa_evaluator or VisualQAEvaluator()
         self.request_upload_urls = upload_urls_requester
         self.request_clean_base_upload_urls = clean_base_urls_requester
+        self.request_source_review_upload_urls = source_review_urls_requester
         self.upload_file = uploader_func
 
     async def execute(
@@ -97,6 +101,60 @@ class FullMangaPipeline:
             extracted_pages: List[ExtractedPageRef] = await asyncio.to_thread(
                 extract_chapter_package, zip_target, extracted_dir
             )
+
+            # 1b. SOURCE REVIEW PREVIEWS (#159): Upload raw source pages during PREPROCESSING
+            source_review_manifest: Optional[MangaReviewSourceManifestV1] = None
+            if self.request_source_review_upload_urls is not None and self.upload_file is not None:
+                source_pages_req = [
+                    {"pageNumber": p.page_number, "mimeType": p.mime_type}
+                    for p in extracted_pages
+                ]
+                source_slots = await self.request_source_review_upload_urls(
+                    job_id, attempt_number, source_pages_req
+                )
+                if len(source_slots) != len(extracted_pages):
+                    raise ValueError("Core API cấp không đủ số lượng source review upload URLs")
+
+                slots_by_page = {s["pageNumber"]: s for s in source_slots}
+                review_pages: List[MangaReviewSourcePageModel] = []
+                for p in extracted_pages:
+                    slot = slots_by_page.get(p.page_number)
+                    if not slot:
+                        raise ValueError(f"Thiếu upload slot cho trang {p.page_number}")
+                    source_bytes = p.file_path.read_bytes()
+                    await self.upload_file(slot["uploadUrl"], source_bytes, p.mime_type)
+                    review_pages.append(
+                        MangaReviewSourcePageModel(
+                            page=p.page_number,
+                            storageKey=slot["storageKey"],
+                            width=p.width if p.width > 0 else None,
+                            height=p.height if p.height > 0 else None,
+                        )
+                    )
+                source_review_manifest = MangaReviewSourceManifestV1(
+                    version=1,
+                    pages=review_pages,
+                )
+            else:
+                MIME_TO_EXT = {
+                    "image/jpeg": "jpg",
+                    "image/png": "png",
+                    "image/webp": "webp",
+                    "image/avif": "avif",
+                }
+                review_pages = [
+                    MangaReviewSourcePageModel(
+                        page=p.page_number,
+                        storageKey=f"ai/jobs/{job_id}/source-review/attempt-{attempt_number}/page_{p.page_number}.{MIME_TO_EXT.get(p.mime_type, 'jpg')}",
+                        width=p.width if p.width > 0 else None,
+                        height=p.height if p.height > 0 else None,
+                    )
+                    for p in extracted_pages
+                ]
+                source_review_manifest = MangaReviewSourceManifestV1(
+                    version=1,
+                    pages=review_pages,
+                )
 
             # 2. OCR: Phát hiện bubble và nhận diện chữ tiếng Nhật
             await self.coordinator.transition_stage(
@@ -345,6 +403,7 @@ class FullMangaPipeline:
                 mediaFormat="COMIC",
                 pages=[MangaResultPageModel(**p) for p in manifest_pages],
                 cleanBases=clean_bases_manifest,
+                sourceReview=source_review_manifest,
             )
 
             # 9. TẬP HỢP FINAL SEGMENTS VÀ PHÁT CALLBACK READY_FOR_REVIEW

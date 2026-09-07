@@ -59,6 +59,30 @@ class MangaResultPageModel(StrictManifestModel):
         return data
 
 
+class MangaReviewSourcePageModel(StrictManifestModel):
+    page: int = Field(..., ge=1, le=JS_MAX_SAFE_INTEGER)
+    storageKey: str = Field(..., min_length=1)
+    width: Optional[int] = Field(None, gt=0, le=JS_MAX_SAFE_INTEGER)
+    height: Optional[int] = Field(None, gt=0, le=JS_MAX_SAFE_INTEGER)
+
+
+class MangaReviewSourceManifestV1(StrictManifestModel):
+    version: Literal[1] = Field(...)
+    pages: List[MangaReviewSourcePageModel] = Field(..., min_length=1)
+
+    @field_validator("pages")
+    @classmethod
+    def check_unique_pages(
+        cls, pages: List[MangaReviewSourcePageModel]
+    ) -> List[MangaReviewSourcePageModel]:
+        seen: Set[int] = set()
+        for p in pages:
+            if p.page in seen:
+                raise ValueError(f"Duplicate source review page number: {p.page}")
+            seen.add(p.page)
+        return pages
+
+
 class MangaCleanBasePageModel(StrictManifestModel):
     page: int = Field(..., ge=1, le=JS_MAX_SAFE_INTEGER)
     cleanBaseKey: str = Field(..., min_length=1)
@@ -69,6 +93,7 @@ class MangaResultManifestV1(StrictManifestModel):
     mediaFormat: Literal["COMIC"] = Field(...)
     pages: List[MangaResultPageModel] = Field(..., min_length=1)
     cleanBases: Optional[List[MangaCleanBasePageModel]] = None
+    sourceReview: Optional[MangaReviewSourceManifestV1] = None
 
     @field_validator("pages")
     @classmethod
@@ -165,18 +190,6 @@ TranslationResultManifestV1 = Annotated[
 # ----------------------------------------------------------------------
 # Auxiliary & Input Manifest Models
 # ----------------------------------------------------------------------
-
-class MangaReviewSourcePageModel(StrictManifestModel):
-    page: int = Field(..., ge=1, le=JS_MAX_SAFE_INTEGER)
-    storageKey: str = Field(..., min_length=1)
-    width: Optional[int] = Field(None, gt=0, le=JS_MAX_SAFE_INTEGER)
-    height: Optional[int] = Field(None, gt=0, le=JS_MAX_SAFE_INTEGER)
-
-
-class MangaReviewSourceManifestV1(StrictManifestModel):
-    version: Literal[1] = Field(...)
-    pages: List[MangaReviewSourcePageModel]
-
 
 class MangaCleanBaseManifestV1(StrictManifestModel):
     version: Literal[1] = Field(...)

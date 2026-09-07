@@ -1900,6 +1900,20 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         [aiJobId],
       );
 
+      // Xin Presigned PUT URL cho source review trong PREPROCESSING (#159)
+      const sourcePresignRes = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${aiJobId}/source-review-slots`)
+        .set('X-Internal-Service-Key', internalKey)
+        .send({
+          attemptNumber: 1,
+          pages: [{ pageNumber: 1, mimeType: 'image/webp' }],
+        })
+        .expect(200);
+
+      expect(sourcePresignRes.body.sourcePages.length).toBe(1);
+      const sourceUploadUrl = sourcePresignRes.body.sourcePages[0].uploadUrl;
+      const sourceStorageKey = sourcePresignRes.body.sourcePages[0].storageKey;
+
       // Gửi event sequence 1: OCR (30%)
       const res1 = await request(app.getHttpServer())
         .post(`/internal/v1/ai/jobs/${aiJobId}/events`)
@@ -2017,6 +2031,13 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       });
       expect(putCleanRes.status).toBe(200);
 
+      const putSourceRes = await fetch(sourceUploadUrl, {
+        method: 'PUT',
+        body: validWebpBytes,
+        headers: { 'Content-Type': 'image/webp' },
+      });
+      expect(putSourceRes.status).toBe(200);
+
       // 3. Gửi event sequence 6: READY_FOR_REVIEW với result_manifest và segments
       const validResultManifest = {
         version: 1,
@@ -2037,6 +2058,15 @@ describe('OmniNovel Backend Core API (e2e)', () => {
             cleanBaseKey: cleanStorageKey,
           },
         ],
+        sourceReview: {
+          version: 1,
+          pages: [
+            {
+              page: 1,
+              storageKey: sourceStorageKey,
+            },
+          ],
+        },
       };
 
       const mockSegments = [

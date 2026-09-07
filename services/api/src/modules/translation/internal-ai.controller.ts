@@ -12,6 +12,7 @@ import { TranslationService } from './translation.service';
 import { WorkerEventCallbackDto } from './dto/worker-event-callback.dto';
 import { RequestOutputUploadsDto } from './dto/request-output-uploads.dto';
 import { RequestCleanBaseUploadsDto } from './dto/request-clean-base-uploads.dto';
+import { RequestSourceReviewSlotsDto } from './dto/request-source-review-slots.dto';
 import { CompleteMaterializationDto } from './dto/complete-materialization.dto';
 import { ParseUUIDPipe } from '@nestjs/common';
 
@@ -49,6 +50,19 @@ export class InternalAiController {
     @Body() dto: RequestCleanBaseUploadsDto,
   ) {
     return await this.translationService.createCleanBaseUploadUrls(
+      id,
+      dto.attemptNumber,
+      dto.pages,
+    );
+  }
+
+  @Post('jobs/:id/source-review-slots')
+  @HttpCode(HttpStatus.OK)
+  async createSourceReviewUploadUrls(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: RequestSourceReviewSlotsDto,
+  ) {
+    return await this.translationService.createSourceReviewUploadUrls(
       id,
       dto.attemptNumber,
       dto.pages,

@@ -10,6 +10,8 @@ from app.models.manifests import (
     MangaCleanBasePageModel,
     MangaResultManifestV1,
     MangaResultPageModel,
+    MangaReviewSourceManifestV1,
+    MangaReviewSourcePageModel,
     NovelResultManifestV1,
     NovelResultQaModel,
     NovelBlockType,
@@ -131,6 +133,45 @@ async def request_clean_base_upload_urls(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to connect to Core API for clean base upload URLs: {e}")
 
+async def request_source_review_upload_urls(
+    job_id: str,
+    attempt_number: int,
+    pages: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Xin Core API cấp Presigned PUT URLs cho Manga source review previews (#159).
+    Path: /internal/v1/ai/jobs/{job_id}/source-review-slots
+    Payload: {"attemptNumber": attempt_number, "pages": pages}
+    Fail-fast: Ném HTTPException(502) nếu Core API trả lỗi hoặc không cấp được URLs.
+    """
+    url = f"{settings.CORE_API_INTERNAL_URL}/internal/v1/ai/jobs/{job_id}/source-review-slots"
+    payload = {
+        "attemptNumber": attempt_number,
+        "pages": pages,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "X-Internal-Service-Key": settings.AI_WORKER_SECRET,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                source_pages = data.get("sourcePages", [])
+                if not source_pages:
+                    raise HTTPException(status_code=502, detail="Core API returned empty sourcePages list")
+                return source_pages
+            else:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Core API request source review upload slots failed with status {resp.status_code}: {resp.text}"
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Failed to connect to Core API for source review upload URLs: {e}")
+
 async def upload_file_to_presigned_url(upload_url: str, data: bytes, content_type: str = "image/webp") -> None:
     """
     Upload buffer ảnh thật lên MinIO qua Presigned PUT URL.
@@ -244,6 +285,7 @@ async def process_manga_job(req: ProcessJobRequest):
             translation_pipeline=trans_pipe,
             upload_urls_requester=request_output_upload_urls,
             clean_base_urls_requester=request_clean_base_upload_urls,
+            source_review_urls_requester=request_source_review_upload_urls,
             uploader_func=upload_file_to_presigned_url,
         )
 
@@ -265,8 +307,12 @@ async def process_manga_job(req: ProcessJobRequest):
     # Fallback cho mock isolation trong ENV=test (legacy endpoint tests)
     uploaded_files = await request_output_upload_urls(job_id, attempt_num, ["page-001.webp"])
     clean_base_slots = await request_clean_base_upload_urls(job_id, attempt_num, [1])
+    source_review_slots = await request_source_review_upload_urls(
+        job_id, attempt_num, [{"pageNumber": 1, "mimeType": "image/webp"}]
+    )
     manifest_pages = []
     clean_bases_manifest = []
+    source_reviews_manifest = []
 
     for idx, f in enumerate(uploaded_files, start=1):
         await upload_file_to_presigned_url(f["uploadUrl"], VALID_MOCK_WEBP_BYTES, "image/webp")
@@ -290,6 +336,17 @@ async def process_manga_job(req: ProcessJobRequest):
             )
         )
 
+    for s in source_review_slots:
+        await upload_file_to_presigned_url(s["uploadUrl"], VALID_MOCK_WEBP_BYTES, "image/webp")
+        source_reviews_manifest.append(
+            MangaReviewSourcePageModel(
+                page=s["pageNumber"],
+                storageKey=s["storageKey"],
+                width=1200,
+                height=1800,
+            )
+        )
+
     stages = [
         ("PREPROCESSING", 10),
         ("OCR", 30),
@@ -309,6 +366,10 @@ async def process_manga_job(req: ProcessJobRequest):
         mediaFormat="COMIC",
         pages=manifest_pages,
         cleanBases=clean_bases_manifest,
+        sourceReview=MangaReviewSourceManifestV1(
+            version=1,
+            pages=source_reviews_manifest,
+        ),
     )
     segments = [
         {

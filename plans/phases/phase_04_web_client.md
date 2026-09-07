@@ -81,6 +81,13 @@
     - [x] Post-commit `job_failed` broadcast strictly after DB transaction resolves and commits (#166).
     - [x] Web client hook alignment in `use-translation-socket.ts` and studio page (#166).
     - [x] Comprehensive security regression tests: gateway exact allowlist & forbidden keys scan, canary injection tests, post-commit transaction ordering tests, and live wire Socket.IO E2E tests (#166).
+  - [x] **Manga Source Page Previews for Package-Based Review (COMPLETED — PR #175 MERGED `main@c607976`, Closed #159)**:
+    - [x] Mandate RED #0: Fail-closed prefix deletion `deleteInternalPrefix()` with RFC 4122 valid UUID job-scoped check, traversal prevention, pagination, and error propagation (#159).
+    - [x] Slot protocol: `POST /internal/v1/ai/jobs/:id/source-review-slots` with least-privilege `PREPROCESSING`-only and package-backed Manga check (`MANGA_ZIP`, `MANGA_ZIP_ARCHIVE`, `MANGA_PACKAGE`), rejecting `MANGA_IMAGE` (#159).
+    - [x] Attempt-scoped canonical namespace (`ai/jobs/{jobId}/source-review/attempt-{attemptNumber}/page_{pageNumber}.{canonicalExt}`) and strict MIME allowlist (JPEG, PNG, WebP, AVIF) with PIL decoded MIME detection (#159).
+    - [x] Shared manifest parity: Optional `sourceReview?: MangaReviewSourceManifestV1` in `MangaResultManifestV1` with TS/Python Pydantic v2 parity, empty/duplicate page number/unknown field rejection (#159).
+    - [x] Fail-closed READY gate: Enforce 100% full-page coverage, canonical attempt jail, and non-empty storage HEAD verification outside DB transaction for package-backed Manga; reject unexpected `sourceReview` for non-package Manga (#159).
+    - [x] APPLIED lifecycle cleanup: Full-prefix cleanup of `ai/jobs/{jobId}/source-review/` via `deleteInternalPrefix()` after DB transaction commits (#159).
   - [ ] **Phase 4D.5 Studio Frontend UI**:
     - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).
     - [ ] Manga Translation Studio: Trình xem ảnh gốc vs ảnh đã dịch, xem vùng nhận diện thoại OCR, chỉnh sửa bản dịch từng ô thoại.

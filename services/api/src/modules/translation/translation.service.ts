@@ -4,12 +4,13 @@ import {
   ForbiddenException,
   ConflictException,
   BadRequestException,
+  InternalServerErrorException,
   Logger,
   Inject,
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, Between } from 'typeorm';
 import * as crypto from 'crypto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -41,6 +42,8 @@ import {
   validateComicMaterializationResultV1,
   validateNovelMaterializationResultV1,
   isMaterializationResultEqual,
+  ReviewAssetDto,
+  TranslationJobPreviewsResponse,
 } from '@omninovel/shared';
 import { TranslationJob } from './entities/translation-job.entity';
 import { TranslationProject } from './entities/translation-project.entity';
@@ -69,6 +72,7 @@ import { CompleteMaterializationDto } from './dto/complete-materialization.dto';
 import { FindTranslationProjectsQueryDto } from './dto/find-translation-projects-query.dto';
 import { FindTranslationJobsQueryDto } from './dto/find-translation-jobs-query.dto';
 import { FindJobSegmentsQueryDto } from './dto/find-job-segments-query.dto';
+import { FindJobPreviewsQueryDto, normalizePreviewWindow } from './dto/find-job-previews-query.dto';
 import { UpdateTranslationSegmentDto } from './dto/update-translation-segment.dto';
 import {
   assertWorkerReportableState,
@@ -789,6 +793,219 @@ export class TranslationService {
         totalPages: Math.ceil(total / limit),
       },
     };
+  }
+
+  /**
+   * Lấy danh sách presigned preview assets cho active review Manga trong bounded window (#155)
+   */
+  async getJobPreviews(
+    id: string,
+    user: any,
+    query: FindJobPreviewsQueryDto,
+  ): Promise<TranslationJobPreviewsResponse> {
+    const window = normalizePreviewWindow(query);
+
+    const job = await this.jobRepo.findOne({
+      where: { id },
+      relations: [
+        'project',
+        'project.storyEdition',
+        'project.storyEdition.story',
+      ],
+    });
+
+    if (!job) {
+      throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
+    }
+
+    const story = job.project?.storyEdition?.story;
+    if (!story) {
+      throw new NotFoundException(
+        'Không tìm thấy Story context hợp lệ cho TranslationJob.',
+      );
+    }
+
+    await this.checkStoryPermission(story.id, user, [
+      'OWNER',
+      'EDITOR',
+      'TRANSLATOR',
+    ]);
+
+    if (story.mediaFormat !== MediaFormat.COMIC) {
+      throw new BadRequestException({
+        code: 'PREVIEWS_ONLY_SUPPORTED_FOR_COMIC',
+        message: 'Previews are only supported for COMIC media format.',
+      });
+    }
+
+    if (job.status !== TranslationJobStatus.READY_FOR_REVIEW) {
+      throw new ConflictException({
+        code: 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS',
+        message: `Previews are only available for status READY_FOR_REVIEW, current status: ${job.status}`,
+      });
+    }
+
+    const rawManifest =
+      typeof job.resultManifest === 'string'
+        ? JSON.parse(job.resultManifest)
+        : job.resultManifest;
+
+    const manifestValidation = validateTranslationResultManifest(
+      rawManifest,
+      'COMIC',
+    );
+    if (!manifestValidation.valid || !manifestValidation.value) {
+      this.throwPreviewManifestInvariant(
+        `Manifest validation failed for job ${id}: ${manifestValidation.errors?.join('; ') || 'invalid manifest'}`,
+      );
+    }
+
+    const mangaManifest = manifestValidation.value as MangaResultManifestV1;
+    const sourceAssets: ReviewAssetDto[] = [];
+    const resultAssets: ReviewAssetDto[] = [];
+
+    // 1. Source Asset Resolution: Rule A (sourceReview precedence) vs Rule B (MediaAsset fallback)
+    const sourceReview = mangaManifest.sourceReview;
+    if (sourceReview && Array.isArray(sourceReview.pages)) {
+      const targetPages = sourceReview.pages.filter(
+        (p) => p.page >= window.fromPage && p.page <= window.toPage,
+      );
+
+      for (const p of targetPages) {
+        this.assertSourceReviewPreviewKey(job.id, p.page, p.storageKey);
+        const presignedUrl =
+          await this.storageService.createInternalDownloadUrl(
+            p.storageKey,
+            true,
+            900,
+          );
+        sourceAssets.push({
+          kind: 'SOURCE_REVIEW',
+          pageNumber: p.page,
+          width: p.width ?? null,
+          height: p.height ?? null,
+          url: presignedUrl,
+        });
+      }
+    } else if (job.sourceVersionId) {
+      const mediaAssets = await this.mediaAssetRepo.find({
+        where: {
+          versionId: job.sourceVersionId,
+          assetType: MediaAssetType.MANGA_PAGE,
+          sortOrder: Between(window.fromPage, window.toPage),
+        },
+        order: {
+          sortOrder: 'ASC',
+          id: 'ASC',
+        },
+      });
+
+      for (const asset of mediaAssets) {
+        const presignedUrl =
+          await this.storageService.createInternalDownloadUrl(
+            asset.storageKey,
+            true,
+            900,
+          );
+        sourceAssets.push({
+          kind: 'SOURCE_MEDIA',
+          id: asset.id,
+          pageNumber: asset.sortOrder,
+          width: asset.width ?? null,
+          height: asset.height ?? null,
+          url: presignedUrl,
+        });
+      }
+    }
+
+    // 2. Result Asset Resolution
+    const targetResultPages = mangaManifest.pages.filter(
+      (p) => p.page >= window.fromPage && p.page <= window.toPage,
+    );
+
+    for (const p of targetResultPages) {
+      this.assertResultPreviewKey(job.id, p.page, p.previewKey);
+      const presignedUrl =
+        await this.storageService.createInternalDownloadUrl(
+          p.previewKey,
+          true,
+          900,
+        );
+      resultAssets.push({
+        kind: 'RESULT',
+        pageNumber: p.page,
+        width: p.width ?? null,
+        height: p.height ?? null,
+        ...(p.fileSizeBytes !== undefined && {
+          fileSizeBytes: Number(p.fileSizeBytes),
+        }),
+        url: presignedUrl,
+      });
+    }
+
+    sourceAssets.sort((a, b) => a.pageNumber - b.pageNumber);
+    resultAssets.sort((a, b) => a.pageNumber - b.pageNumber);
+
+    return {
+      sourceAssets,
+      resultAssets,
+    };
+  }
+
+  private throwPreviewManifestInvariant(reason: string): never {
+    this.logger.error(`[PreviewInvariant] ${reason}`);
+    throw new InternalServerErrorException({
+      code: 'PREVIEW_MANIFEST_INVARIANT_VIOLATION',
+      message:
+        'Preview assets are unavailable because the persisted manifest is invalid.',
+    });
+  }
+
+  private assertSourceReviewPreviewKey(
+    jobId: string,
+    pageNumber: number,
+    storageKey: string,
+  ): void {
+    const sourceReviewRegex = new RegExp(
+      `^ai/jobs/${jobId}/source-review/attempt-[1-9]\\d*/page_${pageNumber}\\.(jpg|png|webp|avif)$`,
+    );
+    if (
+      !storageKey ||
+      typeof storageKey !== 'string' ||
+      storageKey.includes('..') ||
+      storageKey.includes('\\') ||
+      !sourceReviewRegex.test(storageKey)
+    ) {
+      this.throwPreviewManifestInvariant(
+        `Invalid SOURCE_REVIEW key for job=${jobId}, page=${pageNumber}, key=${storageKey}`,
+      );
+    }
+  }
+
+  private assertResultPreviewKey(
+    jobId: string,
+    pageNumber: number,
+    previewKey: string,
+  ): void {
+    const paddedPage = String(pageNumber).padStart(4, '0');
+    const initialOutputRegex = new RegExp(
+      `^ai/jobs/${jobId}/attempt-[1-9]\\d*/(page_${paddedPage}|page_${pageNumber}|p${pageNumber})\\.webp$`,
+    );
+    const materializationRegex = new RegExp(
+      `^ai/jobs/${jobId}/materializations/rev-[1-9]\\d*/page_${pageNumber}\\.webp$`,
+    );
+    if (
+      !previewKey ||
+      typeof previewKey !== 'string' ||
+      previewKey.includes('..') ||
+      previewKey.includes('\\') ||
+      (!initialOutputRegex.test(previewKey) &&
+        !materializationRegex.test(previewKey))
+    ) {
+      this.throwPreviewManifestInvariant(
+        `Invalid RESULT previewKey for job=${jobId}, page=${pageNumber}, key=${previewKey}`,
+      );
+    }
   }
 
   /**

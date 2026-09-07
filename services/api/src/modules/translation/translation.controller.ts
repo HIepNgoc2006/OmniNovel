@@ -25,6 +25,7 @@ import { CreateGlossaryDto } from './dto/create-glossary.dto';
 import { FindTranslationProjectsQueryDto } from './dto/find-translation-projects-query.dto';
 import { FindTranslationJobsQueryDto } from './dto/find-translation-jobs-query.dto';
 import { FindJobSegmentsQueryDto } from './dto/find-job-segments-query.dto';
+import { FindJobPreviewsQueryDto } from './dto/find-job-previews-query.dto';
 import { UpdateTranslationSegmentDto } from './dto/update-translation-segment.dto';
 
 const UUID_V4_REGEX =
@@ -94,6 +95,15 @@ export class TranslationController {
     @Query() query: FindJobSegmentsQueryDto,
   ) {
     return await this.translationService.getJobSegments(id, user, query);
+  }
+
+  @Get('jobs/:id/previews')
+  async getJobPreviews(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @CurrentUser() user: any,
+    @Query() query: FindJobPreviewsQueryDto,
+  ) {
+    return await this.translationService.getJobPreviews(id, user, query);
   }
 
   @Patch('jobs/:jobId/segments/:segmentId')

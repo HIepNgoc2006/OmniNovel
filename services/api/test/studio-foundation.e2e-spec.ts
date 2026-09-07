@@ -33,6 +33,7 @@ describe('Studio Foundation E2E (#144, #148, #155)', () => {
   let storyAId: string;
   let editionAId: string;
   let chapterAId: string;
+  let versionAId: string;
   let projectAId: string;
   let jobA1Id: string;
   let jobAFailedId: string;
@@ -140,7 +141,7 @@ describe('Studio Foundation E2E (#144, #148, #155)', () => {
        RETURNING id`,
       [chapterAId, ownerA.user.id],
     );
-    const versionAId = verARes[0].id;
+    versionAId = verARes[0].id;
 
     const prjARes = await dataSource.query(
       `INSERT INTO translation_projects (story_edition_id, source_language, target_language)
@@ -165,6 +166,56 @@ describe('Studio Foundation E2E (#144, #148, #155)', () => {
       [projectAId, versionAId, ownerA.user.id],
     );
     jobA1Id = jobA1Res[0].id;
+
+    // Seed MediaAssets for versionAId (SOURCE_MEDIA fallback)
+    await dataSource.query(
+      `INSERT INTO media_assets (version_id, sort_order, asset_type, storage_key, width, height, file_size_bytes)
+       VALUES
+       ($1, 1, 'MANGA_PAGE', 'media/editions/page_1.jpg', 1200, 1800, 150000),
+       ($1, 2, 'MANGA_PAGE', 'media/editions/page_2.jpg', 1200, 1800, 140000),
+       ($1, 3, 'MANGA_PAGE', 'media/editions/page_3.jpg', 1200, 1800, 160000)`,
+      [versionAId],
+    );
+
+    // Update jobA1's result_manifest with valid namespaces matching jobA1Id
+    await dataSource.query(
+      `UPDATE translation_jobs
+       SET result_manifest = $1::jsonb
+       WHERE id = $2`,
+      [
+        JSON.stringify({
+          version: 1,
+          mediaFormat: 'COMIC',
+          pages: [
+            {
+              page: 1,
+              storageKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+              previewKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+              width: 1200,
+              height: 1800,
+              fileSizeBytes: 102400,
+            },
+            {
+              page: 2,
+              storageKey: `ai/jobs/${jobA1Id}/attempt-1/p2.webp`,
+              previewKey: `ai/jobs/${jobA1Id}/materializations/rev-1/page_2.webp`,
+              width: 1200,
+              height: 1800,
+              fileSizeBytes: 105000,
+            },
+            {
+              page: 3,
+              storageKey: `ai/jobs/${jobA1Id}/attempt-1/p3.webp`,
+              previewKey: `ai/jobs/${jobA1Id}/attempt-1/p3.webp`,
+              width: 1200,
+              height: 1800,
+              fileSizeBytes: 101000,
+            },
+          ],
+        }),
+        jobA1Id,
+      ],
+    );
 
     // Insert 3 segments for Job A1
     await dataSource.query(
@@ -597,4 +648,206 @@ describe('Studio Foundation E2E (#144, #148, #155)', () => {
       expect(res.body.data[0].pageNumber).toBeNull();
     });
   });
+
+  // =========================================================================
+  // 6. LAZY BOUNDED MANGA PREVIEWS: /api/v1/ai/jobs/:id/previews (#155)
+  // =========================================================================
+  describe('GET /api/v1/ai/jobs/:id/previews', () => {
+    it('Single page request returns bounded source and result preview assets', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${jobA1Id}/previews?pageNumber=1`)
+        .set('Authorization', `Bearer ${translatorAToken}`)
+        .expect(200);
+
+      expect(res.body.sourceAssets).toHaveLength(1);
+      expect(res.body.sourceAssets[0].kind).toBe('SOURCE_MEDIA');
+      expect(res.body.sourceAssets[0].pageNumber).toBe(1);
+      expect(typeof res.body.sourceAssets[0].url).toBe('string');
+
+      expect(res.body.resultAssets).toHaveLength(1);
+      expect(res.body.resultAssets[0].kind).toBe('RESULT');
+      expect(res.body.resultAssets[0].pageNumber).toBe(1);
+      expect(res.body.resultAssets[0].fileSizeBytes).toBe(102400);
+      expect(typeof res.body.resultAssets[0].url).toBe('string');
+
+      // Security verify: no internal storage keys leaked
+      const bodyStr = JSON.stringify(res.body);
+      expect(bodyStr).not.toContain('storageKey');
+      expect(bodyStr).not.toContain('previewKey');
+      expect(bodyStr).not.toContain('cleanBaseKey');
+      expect(bodyStr).not.toContain('diffAssets');
+    });
+
+    it('Range request returns multi-page bounded window up to 5 pages', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${jobA1Id}/previews?fromPage=1&toPage=3`)
+        .set('Authorization', `Bearer ${editorAToken}`)
+        .expect(200);
+
+      expect(res.body.sourceAssets).toHaveLength(3);
+      expect(res.body.sourceAssets.map((s: any) => s.pageNumber)).toEqual([1, 2, 3]);
+
+      expect(res.body.resultAssets).toHaveLength(3);
+      expect(res.body.resultAssets.map((r: any) => r.pageNumber)).toEqual([1, 2, 3]);
+    });
+
+    it('Package-backed Manga with sourceReview uses SOURCE_REVIEW with highest precedence', async () => {
+      // Temporarily attach sourceReview to jobA1
+      const sourceReviewManifest = {
+        version: 1,
+        mediaFormat: 'COMIC',
+        pages: [
+          {
+            page: 1,
+            storageKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+            previewKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+            width: 1200,
+            height: 1800,
+            fileSizeBytes: 102400,
+          },
+        ],
+        sourceReview: {
+          version: 1,
+          pages: [
+            {
+              page: 1,
+              storageKey: `ai/jobs/${jobA1Id}/source-review/attempt-1/page_1.png`,
+              width: 1200,
+              height: 1800,
+            },
+          ],
+        },
+      };
+
+      await dataSource.query(
+        `UPDATE translation_jobs SET result_manifest = $1::jsonb WHERE id = $2`,
+        [JSON.stringify(sourceReviewManifest), jobA1Id],
+      );
+
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${jobA1Id}/previews?pageNumber=1`)
+        .set('Authorization', `Bearer ${ownerAToken}`)
+        .expect(200);
+
+      expect(res.body.sourceAssets).toHaveLength(1);
+      expect(res.body.sourceAssets[0].kind).toBe('SOURCE_REVIEW');
+      expect(res.body.sourceAssets[0].pageNumber).toBe(1);
+      expect(res.body.sourceAssets[0].width).toBe(1200);
+      expect(res.body.sourceAssets[0].height).toBe(1800);
+
+      // Revert manifest back
+      await dataSource.query(
+        `UPDATE translation_jobs SET result_manifest = $1::jsonb WHERE id = $2`,
+        [
+          JSON.stringify({
+            version: 1,
+            mediaFormat: 'COMIC',
+            pages: [
+              {
+                page: 1,
+                storageKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+                previewKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+                width: 1200,
+                height: 1800,
+                fileSizeBytes: 102400,
+              },
+              {
+                page: 2,
+                storageKey: `ai/jobs/${jobA1Id}/attempt-1/p2.webp`,
+                previewKey: `ai/jobs/${jobA1Id}/materializations/rev-1/page_2.webp`,
+                width: 1200,
+                height: 1800,
+                fileSizeBytes: 105000,
+              },
+              {
+                page: 3,
+                storageKey: `ai/jobs/${jobA1Id}/attempt-1/p3.webp`,
+                previewKey: `ai/jobs/${jobA1Id}/attempt-1/p3.webp`,
+                width: 1200,
+                height: 1800,
+                fileSizeBytes: 101000,
+              },
+            ],
+          }),
+          jobA1Id,
+        ],
+      );
+    });
+
+    it('Materialized page revision is served as RESULT asset preview', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${jobA1Id}/previews?pageNumber=2`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(200);
+
+      expect(res.body.resultAssets).toHaveLength(1);
+      expect(res.body.resultAssets[0].kind).toBe('RESULT');
+      expect(res.body.resultAssets[0].pageNumber).toBe(2);
+      expect(res.body.resultAssets[0].fileSizeBytes).toBe(105000);
+      expect(res.body.resultAssets[0].url).toContain(`ai/jobs/${jobA1Id}/materializations/rev-1/page_2.webp`);
+    });
+
+    it('Rejects request for NOVEL jobs with 400 PREVIEWS_ONLY_SUPPORTED_FOR_COMIC', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${jobB1Id}/previews?pageNumber=1`)
+        .set('Authorization', `Bearer ${userBToken}`)
+        .expect(400);
+
+      expect(res.body.error.code).toBe('PREVIEWS_ONLY_SUPPORTED_FOR_COMIC');
+    });
+
+    it('Rejects non-READY_FOR_REVIEW job with 409 PREVIEWS_NOT_AVAILABLE_FOR_STATUS', async () => {
+      const res = await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${jobAFailedId}/previews?pageNumber=1`)
+        .set('Authorization', `Bearer ${ownerAToken}`)
+        .expect(409);
+
+      expect(res.body.error.code).toBe('PREVIEWS_NOT_AVAILABLE_FOR_STATUS');
+    });
+
+    it('Enforces window query validation contracts', async () => {
+      // Missing window
+      const resMissing = await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${jobA1Id}/previews`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400);
+      expect(resMissing.body.error.code).toBe('PREVIEW_WINDOW_REQUIRED');
+
+      // Ambiguous window
+      const resAmbiguous = await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${jobA1Id}/previews?pageNumber=1&fromPage=1`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400);
+      expect(resAmbiguous.body.error.code).toBe('PREVIEW_WINDOW_AMBIGUOUS');
+
+      // Incomplete range
+      const resIncomplete = await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${jobA1Id}/previews?fromPage=1`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400);
+      expect(resIncomplete.body.error.code).toBe('PREVIEW_RANGE_INCOMPLETE');
+
+      // Reversed range
+      const resReversed = await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${jobA1Id}/previews?fromPage=5&toPage=1`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400);
+      expect(resReversed.body.error.code).toBe('INVALID_PREVIEW_RANGE');
+
+      // Window > 5
+      const resTooLarge = await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${jobA1Id}/previews?fromPage=1&toPage=7`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .expect(400);
+      expect(resTooLarge.body.error.code).toBe('WINDOW_TOO_LARGE');
+    });
+
+    it('Unauthorized / non-member user receives 403 Forbidden (negative IDOR)', async () => {
+      await request(app.getHttpServer())
+        .get(`/api/v1/ai/jobs/${jobA1Id}/previews?pageNumber=1`)
+        .set('Authorization', `Bearer ${userBToken}`)
+        .expect(403);
+    });
+  });
 });
+

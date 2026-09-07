@@ -450,3 +450,9 @@ export type ReviewAssetDto =
       fileSizeBytes?: number;
       url: string;
     };
+
+export interface TranslationJobPreviewsResponse {
+  sourceAssets: ReviewAssetDto[];
+  resultAssets: ReviewAssetDto[];
+}
+

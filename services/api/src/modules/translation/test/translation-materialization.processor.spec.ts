@@ -6,7 +6,6 @@ import { Repository } from 'typeorm';
 import { MaterializationJobData, TranslationJobStatus } from '@omninovel/shared';
 import { TranslationJob } from '../entities/translation-job.entity';
 import { StorageService } from '../../storage/storage.service';
-import { TranslationService } from '../translation.service';
 import { TranslationMaterializationProcessor } from '../translation-materialization.processor';
 
 describe('TranslationMaterializationProcessor (#157)', () => {
@@ -49,13 +48,17 @@ describe('TranslationMaterializationProcessor (#157)', () => {
     };
 
     configService = {
-      get: jest.fn().mockReturnValue('http://localhost:8001'),
+      get: jest.fn().mockImplementation((key: string, defaultValue?: any) => {
+        if (key === 'AI_WORKER_BASE_URL') return 'http://localhost:8001';
+        if (key === 'AI_WORKER_SECRET') return 'internal_ai_worker_secret_secure_2026';
+        if (key === 'AI_WORKER_MATERIALIZATION_TIMEOUT_MS') return 120000;
+        return defaultValue;
+      }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         TranslationMaterializationProcessor,
-        { provide: TranslationService, useValue: {} },
         { provide: StorageService, useValue: storageService },
         { provide: ConfigService, useValue: configService },
         { provide: getRepositoryToken(TranslationJob), useValue: jobRepo },
@@ -432,6 +435,44 @@ describe('TranslationMaterializationProcessor (#157)', () => {
         expect(err instanceof UnrecoverableError).toBe(false);
         expect(err.message).toContain('AI_WORKER_NETWORK_ERROR: Connection refused');
       }
+    });
+
+    it('should throw standard Error (NOT UnrecoverableError) on TimeoutError and keep TranslationJob READY_FOR_REVIEW', async () => {
+      const job = setupJob();
+      const timeoutErr = new Error('The operation was aborted due to timeout');
+      timeoutErr.name = 'TimeoutError';
+      (global as any).fetch = jest.fn().mockRejectedValue(timeoutErr);
+
+      try {
+        await processor.process(job);
+        fail('Should have thrown an error');
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(Error);
+        expect(err instanceof UnrecoverableError).toBe(false);
+        expect(err.message).toContain('AI_WORKER_TIMEOUT: exceeded 120000ms');
+      }
+
+      // Invariant: TranslationJob status MUST NOT be mutated to FAILED
+      expect(jobRepo.save).toBeUndefined();
+    });
+
+    it('should throw standard Error (NOT UnrecoverableError) on AbortError and keep TranslationJob READY_FOR_REVIEW', async () => {
+      const job = setupJob();
+      const abortErr = new Error('The operation was aborted');
+      abortErr.name = 'AbortError';
+      (global as any).fetch = jest.fn().mockRejectedValue(abortErr);
+
+      try {
+        await processor.process(job);
+        fail('Should have thrown an error');
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(Error);
+        expect(err instanceof UnrecoverableError).toBe(false);
+        expect(err.message).toContain('AI_WORKER_TIMEOUT: exceeded 120000ms');
+      }
+
+      // Invariant: TranslationJob status MUST NOT be mutated to FAILED
+      expect(jobRepo.save).toBeUndefined();
     });
   });
 });

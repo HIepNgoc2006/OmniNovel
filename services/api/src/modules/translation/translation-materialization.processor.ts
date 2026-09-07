@@ -7,7 +7,6 @@ import { Repository } from 'typeorm';
 import { TranslationJob } from './entities/translation-job.entity';
 import { MaterializationJobData, TranslationJobStatus } from '@omninovel/shared';
 import { StorageService } from '../storage/storage.service';
-import { TranslationService } from './translation.service';
 
 const SHA256_HEX_REGEX = /^[0-9a-f]{64}$/;
 
@@ -17,7 +16,6 @@ export class TranslationMaterializationProcessor extends WorkerHost {
   private readonly logger = new Logger(TranslationMaterializationProcessor.name);
 
   constructor(
-    private readonly translationService: TranslationService,
     private readonly storageService: StorageService,
     private readonly configService: ConfigService,
     @InjectRepository(TranslationJob)
@@ -159,12 +157,16 @@ export class TranslationMaterializationProcessor extends WorkerHost {
       })),
     );
 
-    // 5. Dispatch tới AI Worker
+    // 5. Dispatch tới AI Worker với bounded timeout
     const aiWorkerBaseUrl = this.configService.get<string>(
       'AI_WORKER_BASE_URL',
       'http://localhost:8001',
     );
     const aiWorkerSecret = this.configService.get<string>('AI_WORKER_SECRET');
+    const workerTimeoutMs = this.configService.get<number>(
+      'AI_WORKER_MATERIALIZATION_TIMEOUT_MS',
+      120_000,
+    );
     const endpoint = `${aiWorkerBaseUrl}/internal/v1/jobs/materialize-manga`;
 
     const payload = {
@@ -184,12 +186,22 @@ export class TranslationMaterializationProcessor extends WorkerHost {
           'X-Internal-Service-Key': aiWorkerSecret || '',
         },
         body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(workerTimeoutMs),
       });
     } catch (err: any) {
+      const isTimeout =
+        err?.name === 'TimeoutError' ||
+        err?.name === 'AbortError';
+
       this.logger.error(
-        `[MaterializationProcessor] Lỗi mạng khi gọi AI Worker ${endpoint}: ${err.message}`,
+        `[MaterializationProcessor] Lỗi ${isTimeout ? 'timeout' : 'mạng'} khi gọi AI Worker ${endpoint}: ${err.message}`,
       );
-      throw new Error(`AI_WORKER_NETWORK_ERROR: ${err.message}`);
+      // Timeout là lỗi tạm thời (transient Error) để BullMQ retry, không ném UnrecoverableError
+      throw new Error(
+        isTimeout
+          ? `AI_WORKER_TIMEOUT: exceeded ${workerTimeoutMs}ms`
+          : `AI_WORKER_NETWORK_ERROR: ${err.message}`,
+      );
     }
 
     if (!response.ok) {

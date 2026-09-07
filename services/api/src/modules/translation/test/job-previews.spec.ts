@@ -576,7 +576,7 @@ describe('Lazy Bounded Manga Preview API - Unit Tests (#155)', () => {
         });
       });
 
-      it('rejects foreign or malformed previewKey namespaces (500)', async () => {
+      it('rejects foreign or malformed previewKey namespaces with sanitized 500 without leaking raw keys', async () => {
         const corruptedManifest: MangaResultManifestV1 = {
           version: 1,
           mediaFormat: 'COMIC',
@@ -597,9 +597,66 @@ describe('Lazy Bounded Manga Preview API - Unit Tests (#155)', () => {
           resultManifest: corruptedManifest,
         });
 
-        await expect(
-          service.getJobPreviews(validJobId, adminUser, { pageNumber: 1 }),
-        ).rejects.toThrow(InternalServerErrorException);
+        try {
+          await service.getJobPreviews(validJobId, adminUser, { pageNumber: 1 });
+          fail('Should have thrown InternalServerErrorException');
+        } catch (err: any) {
+          expect(err).toBeInstanceOf(InternalServerErrorException);
+          expect(err.getResponse()).toEqual({
+            code: 'PREVIEW_MANIFEST_INVARIANT_VIOLATION',
+            message:
+              'Preview assets are unavailable because the persisted manifest is invalid.',
+          });
+          const respStr = JSON.stringify(err.getResponse());
+          expect(respStr).not.toContain('foreign-object');
+          expect(respStr).not.toContain('arbitrary/bucket');
+        }
+      });
+
+      it('rejects foreign or malformed sourceReview storageKey with sanitized 500 without leaking raw keys', async () => {
+        const corruptedSourceReviewManifest: MangaResultManifestV1 = {
+          version: 1,
+          mediaFormat: 'COMIC',
+          pages: [
+            {
+              page: 1,
+              storageKey: `ai/jobs/${validJobId}/attempt-1/p1.webp`,
+              previewKey: `ai/jobs/${validJobId}/attempt-1/p1.webp`,
+              width: 800,
+              height: 1200,
+              fileSizeBytes: 100,
+            },
+          ],
+          sourceReview: {
+            version: 1,
+            pages: [
+              {
+                page: 1,
+                storageKey: 'arbitrary/source/private.png',
+              },
+            ],
+          },
+        };
+
+        jobRepo.findOne.mockResolvedValueOnce({
+          ...baseMangaJob,
+          resultManifest: corruptedSourceReviewManifest,
+        });
+
+        try {
+          await service.getJobPreviews(validJobId, adminUser, { pageNumber: 1 });
+          fail('Should have thrown InternalServerErrorException');
+        } catch (err: any) {
+          expect(err).toBeInstanceOf(InternalServerErrorException);
+          expect(err.getResponse()).toEqual({
+            code: 'PREVIEW_MANIFEST_INVARIANT_VIOLATION',
+            message:
+              'Preview assets are unavailable because the persisted manifest is invalid.',
+          });
+          const respStr = JSON.stringify(err.getResponse());
+          expect(respStr).not.toContain('private.png');
+          expect(respStr).not.toContain('arbitrary/source');
+        }
       });
     });
 

@@ -848,6 +848,85 @@ describe('Studio Foundation E2E (#144, #148, #155)', () => {
         .set('Authorization', `Bearer ${userBToken}`)
         .expect(403);
     });
+
+    it('Persisted manifest invariant corruption returns 500 without leaking raw storage keys or internal paths', async () => {
+      // Temporarily inject corrupted previewKey
+      const corruptManifest = {
+        version: 1,
+        mediaFormat: 'COMIC',
+        pages: [
+          {
+            page: 1,
+            storageKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+            previewKey: 'arbitrary/private/path/secret.webp',
+            width: 1200,
+            height: 1800,
+            fileSizeBytes: 102400,
+          },
+        ],
+      };
+
+      await dataSource.query(
+        `UPDATE translation_jobs SET result_manifest = $1::jsonb WHERE id = $2`,
+        [JSON.stringify(corruptManifest), jobA1Id],
+      );
+
+      try {
+        const res = await request(app.getHttpServer())
+          .get(`/api/v1/ai/jobs/${jobA1Id}/previews?pageNumber=1`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(500);
+
+        expect(res.body.error.code).toBe('PREVIEW_MANIFEST_INVARIANT_VIOLATION');
+        expect(res.body.error.message).toBe(
+          'Preview assets are unavailable because the persisted manifest is invalid.',
+        );
+
+        const body = JSON.stringify(res.body);
+        expect(body).not.toContain('storageKey');
+        expect(body).not.toContain('previewKey');
+        expect(body).not.toContain('ai/jobs/');
+        expect(body).not.toContain('arbitrary/private');
+      } finally {
+        // Restore original manifest
+        await dataSource.query(
+          `UPDATE translation_jobs SET result_manifest = $1::jsonb WHERE id = $2`,
+          [
+            JSON.stringify({
+              version: 1,
+              mediaFormat: 'COMIC',
+              pages: [
+                {
+                  page: 1,
+                  storageKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+                  previewKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+                  width: 1200,
+                  height: 1800,
+                  fileSizeBytes: 102400,
+                },
+                {
+                  page: 2,
+                  storageKey: `ai/jobs/${jobA1Id}/attempt-1/p2.webp`,
+                  previewKey: `ai/jobs/${jobA1Id}/materializations/rev-1/page_2.webp`,
+                  width: 1200,
+                  height: 1800,
+                  fileSizeBytes: 105000,
+                },
+                {
+                  page: 3,
+                  storageKey: `ai/jobs/${jobA1Id}/attempt-1/p3.webp`,
+                  previewKey: `ai/jobs/${jobA1Id}/attempt-1/p3.webp`,
+                  width: 1200,
+                  height: 1800,
+                  fileSizeBytes: 101000,
+                },
+              ],
+            }),
+            jobA1Id,
+          ],
+        );
+      }
+    });
   });
 });
 

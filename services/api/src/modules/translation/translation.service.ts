@@ -855,10 +855,9 @@ export class TranslationService {
       'COMIC',
     );
     if (!manifestValidation.valid || !manifestValidation.value) {
-      throw new InternalServerErrorException({
-        code: 'PREVIEW_MANIFEST_INVARIANT_VIOLATION',
-        message: `Result manifest validation failed: ${manifestValidation.errors?.join('; ') || 'invalid manifest'}`,
-      });
+      this.throwPreviewManifestInvariant(
+        `Manifest validation failed for job ${id}: ${manifestValidation.errors?.join('; ') || 'invalid manifest'}`,
+      );
     }
 
     const mangaManifest = manifestValidation.value as MangaResultManifestV1;
@@ -953,13 +952,22 @@ export class TranslationService {
     };
   }
 
+  private throwPreviewManifestInvariant(reason: string): never {
+    this.logger.error(`[PreviewInvariant] ${reason}`);
+    throw new InternalServerErrorException({
+      code: 'PREVIEW_MANIFEST_INVARIANT_VIOLATION',
+      message:
+        'Preview assets are unavailable because the persisted manifest is invalid.',
+    });
+  }
+
   private assertSourceReviewPreviewKey(
     jobId: string,
     pageNumber: number,
     storageKey: string,
   ): void {
     const sourceReviewRegex = new RegExp(
-      `^ai/jobs/${jobId}/source-review/attempt-\\d+/page_${pageNumber}\\.(jpg|png|webp|avif)$`,
+      `^ai/jobs/${jobId}/source-review/attempt-[1-9]\\d*/page_${pageNumber}\\.(jpg|png|webp|avif)$`,
     );
     if (
       !storageKey ||
@@ -968,10 +976,9 @@ export class TranslationService {
       storageKey.includes('\\') ||
       !sourceReviewRegex.test(storageKey)
     ) {
-      throw new InternalServerErrorException({
-        code: 'PREVIEW_MANIFEST_INVARIANT_VIOLATION',
-        message: `Invalid source-review storageKey namespace or page mismatch: ${storageKey}`,
-      });
+      this.throwPreviewManifestInvariant(
+        `Invalid SOURCE_REVIEW key for job=${jobId}, page=${pageNumber}, key=${storageKey}`,
+      );
     }
   }
 
@@ -980,11 +987,12 @@ export class TranslationService {
     pageNumber: number,
     previewKey: string,
   ): void {
+    const paddedPage = String(pageNumber).padStart(4, '0');
     const initialOutputRegex = new RegExp(
-      `^ai/jobs/${jobId}/attempt-\\d+/[^/]+$`,
+      `^ai/jobs/${jobId}/attempt-[1-9]\\d*/(page_${paddedPage}|page_${pageNumber}|p${pageNumber})\\.webp$`,
     );
     const materializationRegex = new RegExp(
-      `^ai/jobs/${jobId}/materializations/rev-\\d+/page_${pageNumber}\\.webp$`,
+      `^ai/jobs/${jobId}/materializations/rev-[1-9]\\d*/page_${pageNumber}\\.webp$`,
     );
     if (
       !previewKey ||
@@ -994,10 +1002,9 @@ export class TranslationService {
       (!initialOutputRegex.test(previewKey) &&
         !materializationRegex.test(previewKey))
     ) {
-      throw new InternalServerErrorException({
-        code: 'PREVIEW_MANIFEST_INVARIANT_VIOLATION',
-        message: `Invalid result previewKey namespace: ${previewKey}`,
-      });
+      this.throwPreviewManifestInvariant(
+        `Invalid RESULT previewKey for job=${jobId}, page=${pageNumber}, key=${previewKey}`,
+      );
     }
   }
 

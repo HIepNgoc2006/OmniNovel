@@ -337,6 +337,7 @@ export interface ReviewSummaryDto {
   segmentCount: number;
   verifiedCount: number;
   pageCount: number | null;
+  resultPageCount: number | null;
   blockCount: number | null;
 }
 

@@ -43,6 +43,7 @@ import {
   validateNovelMaterializationResultV1,
   isMaterializationResultEqual,
   ReviewAssetDto,
+  ReviewSummaryDto,
   TranslationJobPreviewsResponse,
 } from '@omninovel/shared';
 import { TranslationJob } from './entities/translation-job.entity';
@@ -632,10 +633,31 @@ export class TranslationService {
     const isComic = story.mediaFormat === MediaFormat.COMIC;
     const isNovel = story.mediaFormat === MediaFormat.NOVEL;
 
-    const reviewSummary = {
+    let resultPageCount: number | null = null;
+    if (
+      isComic &&
+      (job.status === TranslationJobStatus.READY_FOR_REVIEW ||
+        job.status === TranslationJobStatus.APPLIED) &&
+      job.resultManifest
+    ) {
+      try {
+        const rawManifest =
+          typeof job.resultManifest === 'string'
+            ? JSON.parse(job.resultManifest)
+            : job.resultManifest;
+        if (rawManifest && Array.isArray(rawManifest.pages)) {
+          resultPageCount = rawManifest.pages.length;
+        }
+      } catch {
+        resultPageCount = null;
+      }
+    }
+
+    const reviewSummary: ReviewSummaryDto = {
       segmentCount: Number(agg.segment_count || 0),
       verifiedCount: Number(agg.verified_count || 0),
       pageCount: isComic ? Number(agg.page_count || 0) : null,
+      resultPageCount,
       blockCount: isNovel ? Number(agg.block_count || 0) : null,
     };
 

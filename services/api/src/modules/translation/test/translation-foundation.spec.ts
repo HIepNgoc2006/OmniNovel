@@ -303,6 +303,7 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
         segmentCount: 50,
         verifiedCount: 35,
         pageCount: 12,
+        resultPageCount: null,
         blockCount: null, // Comic format -> blockCount must be null
       });
       expect(result.glossarySnapshot).toHaveLength(1);
@@ -314,6 +315,93 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
       // Invariant: segments and diffPreviewUrls must NOT exist on response
       expect((result as any).segments).toBeUndefined();
       expect((result as any).diffPreviewUrls).toBeUndefined();
+    });
+
+    it('#178: should compute authoritative resultPageCount from resultManifest for COMIC in READY_FOR_REVIEW', async () => {
+      const mockJobReady = {
+        id: 'job-ready-comic',
+        status: TranslationJobStatus.READY_FOR_REVIEW,
+        progressPercentage: 100,
+        provider: 'OPENAI',
+        modelName: 'gpt-4o-mini',
+        promptVersion: 'manga-ja-vi-v1',
+        attemptCount: 1,
+        maxAttempts: 3,
+        createdAt: new Date('2026-09-01T10:00:00Z'),
+        startedAt: new Date('2026-09-01T10:01:00Z'),
+        heartbeatAt: new Date('2026-09-01T10:05:00Z'),
+        completedAt: new Date('2026-09-01T10:05:00Z'),
+        expiresAt: null,
+        errorTrace: null,
+        inputManifest: null,
+        resultManifest: {
+          version: 1,
+          mediaFormat: 'COMIC',
+          pages: [
+            { page: 1, storageKey: 'k1', previewKey: 'p1' },
+            { page: 2, storageKey: 'k2', previewKey: 'p2' },
+            { page: 3, storageKey: 'k3', previewKey: 'p3' },
+            { page: 4, storageKey: 'k4', previewKey: 'p4' },
+            { page: 5, storageKey: 'k5', previewKey: 'p5' },
+          ],
+        },
+        project: {
+          id: 'proj-1',
+          sourceLanguage: 'ja',
+          targetLanguage: 'vi',
+          storyEdition: {
+            id: 'ed-1',
+            editionName: 'Bản Tiếng Việt Chuẩn',
+            language: 'vi',
+            isDefault: true,
+            story: {
+              id: 'story-1',
+              title: 'One Piece',
+              slug: 'one-piece',
+              mediaFormat: MediaFormat.COMIC,
+            },
+          },
+        },
+        sourceVersion: {
+          id: 'ver-src-1',
+          versionNumber: 1,
+          chapter: {
+            id: 'chap-1',
+            chapterNumber: '1.00',
+            title: 'Romance Dawn',
+          },
+        },
+        targetVersion: null,
+      };
+
+      jobRepo.findOne.mockResolvedValue(mockJobReady);
+      storyMemberRepo.findOne.mockResolvedValue({
+        storyId: 'story-1',
+        userId: translatorUser.id,
+        role: StoryMemberRole.TRANSLATOR,
+      });
+
+      // SQL aggregation: segments exist only on pages 1, 3, 5 (3 distinct pages)
+      dataSource.query.mockResolvedValue([
+        {
+          segment_count: 6,
+          verified_count: 4,
+          page_count: 3,
+          block_count: 0,
+        },
+      ]);
+
+      const result = await service.getJob('job-ready-comic', translatorUser);
+
+      expect(result.reviewSummary).toEqual({
+        segmentCount: 6,
+        verifiedCount: 4,
+        pageCount: 3,
+        resultPageCount: 5,
+        blockCount: null,
+      });
+      expect(result.reviewSummary.pageCount).toBe(3);
+      expect(result.reviewSummary.resultPageCount).toBe(5);
     });
 
     it('should throw NotFoundException if job does not exist', async () => {

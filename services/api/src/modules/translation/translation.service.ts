@@ -78,6 +78,12 @@ import {
   WORKER_REPORTABLE_ACTIVE_STATES,
 } from './translation-state-machine';
 
+export const PACKAGE_MANGA_FILE_TYPES = new Set([
+  'MANGA_ZIP',
+  'MANGA_ZIP_ARCHIVE',
+  'MANGA_PACKAGE',
+]);
+
 @Injectable()
 export class TranslationService {
   private readonly logger = new Logger(TranslationService.name);
@@ -1197,6 +1203,7 @@ export class TranslationService {
         'sourceVersion.chapter',
         'sourceVersion.chapter.storyEdition',
         'sourceVersion.chapter.storyEdition.story',
+        'sourceUploadSession',
       ],
     });
 
@@ -1217,13 +1224,17 @@ export class TranslationService {
       );
     }
 
-    // Fail-closed: Chỉ hỗ trợ COMIC
+    // Fail-closed: Chỉ hỗ trợ COMIC và Manga bắt nguồn từ package (#159)
     const story =
       job.project?.storyEdition?.story ||
       job.sourceVersion?.chapter?.storyEdition?.story;
-    if (story?.mediaFormat !== MediaFormat.COMIC) {
+    if (
+      story?.mediaFormat !== MediaFormat.COMIC ||
+      !job.sourceUploadSession?.fileType ||
+      !PACKAGE_MANGA_FILE_TYPES.has(job.sourceUploadSession.fileType)
+    ) {
       throw new BadRequestException(
-        'Source review upload slots chỉ hỗ trợ cho định dạng COMIC / Manga.',
+        'SOURCE_REVIEW_ONLY_SUPPORTED_FOR_PACKAGE: Source review upload slots chỉ hỗ trợ cho Manga package-backed jobs (MANGA_ZIP) (#159).',
       );
     }
 
@@ -1915,11 +1926,6 @@ export class TranslationService {
         }
 
         // Invariant #159: Package-backed Manga source review enforcement & HEAD verification
-        const PACKAGE_MANGA_FILE_TYPES = new Set([
-          'MANGA_ZIP',
-          'MANGA_ZIP_ARCHIVE',
-          'MANGA_PACKAGE',
-        ]);
         const isPackageBackedManga =
           !!jobInfo.sourceUploadSession?.fileType &&
           PACKAGE_MANGA_FILE_TYPES.has(jobInfo.sourceUploadSession.fileType);
@@ -1983,6 +1989,10 @@ export class TranslationService {
               );
             }
           }
+        } else if (comicManifest.sourceReview) {
+          throw new BadRequestException(
+            'UNEXPECTED_SOURCE_REVIEW_FOR_NON_PACKAGE: Source review chỉ được hỗ trợ cho Manga package-backed jobs (#159).',
+          );
         }
       }
     }

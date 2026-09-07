@@ -271,6 +271,34 @@ describe('Source Review Slots & Package-Backed Manga Verification (#159)', () =>
         ]),
       ).rejects.toThrow(BadRequestException);
     });
+
+    it('should reject non-package Manga jobs (e.g. MANGA_IMAGE) with SOURCE_REVIEW_ONLY_SUPPORTED_FOR_PACKAGE', async () => {
+      jobRepo.findOne.mockResolvedValueOnce({
+        ...baseMangaJob,
+        status: TranslationJobStatus.PREPROCESSING,
+        sourceUploadSession: { fileType: 'MANGA_IMAGE' },
+      });
+
+      await expect(
+        service.createSourceReviewUploadUrls(validJobId, 1, [
+          { pageNumber: 1, mimeType: 'image/jpeg' },
+        ]),
+      ).rejects.toThrow(/SOURCE_REVIEW_ONLY_SUPPORTED_FOR_PACKAGE/);
+    });
+
+    it('should reject when job has missing sourceUploadSession or missing fileType', async () => {
+      jobRepo.findOne.mockResolvedValueOnce({
+        ...baseMangaJob,
+        status: TranslationJobStatus.PREPROCESSING,
+        sourceUploadSession: null,
+      });
+
+      await expect(
+        service.createSourceReviewUploadUrls(validJobId, 1, [
+          { pageNumber: 1, mimeType: 'image/jpeg' },
+        ]),
+      ).rejects.toThrow(/SOURCE_REVIEW_ONLY_SUPPORTED_FOR_PACKAGE/);
+    });
   });
 
   describe('READY_FOR_REVIEW Gate & Package Enforcement (#159)', () => {
@@ -424,19 +452,37 @@ describe('Source Review Slots & Package-Backed Manga Verification (#159)', () =>
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('should reject when storage HEAD returns Content-Type mismatching extension', async () => {
+    it('should reject when storage HEAD returns Content-Type mismatching extension for sourceReview', async () => {
       jobRepo.findOne.mockResolvedValueOnce({
         ...baseMangaJob,
         status: TranslationJobStatus.QUALITY_CHECK,
         sourceUploadSession: { fileType: 'MANGA_ZIP' },
       });
 
-      // Key ends with .jpg, but S3 stat returns image/png
-      storageService.statInternalObject.mockImplementationOnce(() => ({
-        exists: true,
-        contentLength: 1024,
-        contentType: 'image/png', // Mismatch!
-      }));
+      // Key-aware mock: cleanBases trả image/webp hợp lệ, chỉ source-review trả image/png mismatch với .jpg
+      storageService.statInternalObject.mockImplementation((key: string) => {
+        if (key.includes('/review-base/')) {
+          return {
+            exists: true,
+            contentLength: 1024,
+            contentType: 'image/webp',
+          };
+        }
+
+        if (key.endsWith('/source-review/attempt-1/page_1.jpg')) {
+          return {
+            exists: true,
+            contentLength: 1024,
+            contentType: 'image/png', // intentional mismatch: .jpg expected image/jpeg
+          };
+        }
+
+        return {
+          exists: true,
+          contentLength: 1024,
+          contentType: 'image/jpeg',
+        };
+      });
 
       const manifest: MangaResultManifestV1 = {
         version: 1,
@@ -455,7 +501,34 @@ describe('Source Review Slots & Package-Backed Manga Verification (#159)', () =>
           progress: 100,
           resultManifest: manifest,
         }),
-      ).rejects.toThrow(/ARTIFACT_INVALID_CONTENT_TYPE/);
+      ).rejects.toThrow(/ARTIFACT_INVALID_CONTENT_TYPE: Source review page/);
+    });
+
+    it('should reject MANGA_IMAGE job containing sourceReview at READY_FOR_REVIEW (UNEXPECTED_SOURCE_REVIEW_FOR_NON_PACKAGE)', async () => {
+      jobRepo.findOne.mockResolvedValueOnce({
+        ...baseMangaJob,
+        status: TranslationJobStatus.QUALITY_CHECK,
+        sourceUploadSession: { fileType: 'MANGA_IMAGE' },
+      });
+
+      const manifestWithSourceReview: MangaResultManifestV1 = {
+        version: 1,
+        mediaFormat: 'COMIC',
+        pages: validManifestPages,
+        cleanBases: validCleanBases,
+        sourceReview: validSourceReview,
+      };
+
+      await expect(
+        service.handleWorkerEvent(validJobId, {
+          eventId: 'evt-unexpected-sr',
+          stage: TranslationJobStatus.READY_FOR_REVIEW,
+          sequence: 1,
+          attemptNumber: 1,
+          progress: 100,
+          resultManifest: manifestWithSourceReview,
+        }),
+      ).rejects.toThrow(/UNEXPECTED_SOURCE_REVIEW_FOR_NON_PACKAGE/);
     });
 
     it('should NOT require sourceReview for MANGA_IMAGE session', async () => {

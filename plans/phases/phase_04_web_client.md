@@ -15,7 +15,7 @@
     - TanStack Query v5 quản lý Server State & SWR Caching.
     - WebSocket Gateway (`/ws/ai`) xác thực qua `socket.handshake.auth.token` và tự động reconnect khi token xoay vòng.
     - Gamification: Tiêu thụ endpoint chuẩn `/gamification/progression` và `UserProgressionResponse` từ `@omninovel/shared`.
-- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core + #162 Manga Clean Bases 100% HOÀN TẤT & MERGED tại main@134ff86 - Chuẩn bị triển khai Phase 4D.5 Studio Frontend UI)
+- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core + #162 Manga Clean Bases + #166 WebSocket Security + #159 Manga Previews + #157 Manga Re-render 100% HOÀN TẤT & MERGED tại main@fdcc169 - Chuẩn bị hoàn tất Track A #155 Preview API & triển khai Phase 4D.5 Studio Frontend UI)
 
 ---
 
@@ -88,6 +88,14 @@
     - [x] Shared manifest parity: Optional `sourceReview?: MangaReviewSourceManifestV1` in `MangaResultManifestV1` with TS/Python Pydantic v2 parity, empty/duplicate page number/unknown field rejection (#159).
     - [x] Fail-closed READY gate: Enforce 100% full-page coverage, canonical attempt jail, and non-empty storage HEAD verification outside DB transaction for package-backed Manga; reject unexpected `sourceReview` for non-package Manga (#159).
     - [x] APPLIED lifecycle cleanup: Full-prefix cleanup of `ai/jobs/{jobId}/source-review/` via `deleteInternalPrefix()` after DB transaction commits (#159).
+  - [x] **Manga Re-rendering & Materialization Protocol (COMPLETED — PR #176 MERGED `main@fdcc169`, Closed #157, main CI Run #34080949027 SUCCESS)**:
+    - [x] Invariant 1..N full chapter sequencing and validation, guaranteeing zero missing pages and contiguous ordering (#157).
+    - [x] Selective manifest merge preserving both authoritative `cleanBases` and `sourceReview` artifacts byte-for-byte in final manifest (#157).
+    - [x] Content-addressed SHA-256 snapshot verification on raw bytes before JSON parsing (`SNAPSHOT_HASH_MISMATCH` 400) (#157).
+    - [x] Zero OCR / Zero LLM re-rendering: MangaTypesetter strictly typesets reviewed text revisions onto clean bases using Pillow lossless WebP (`lossless=True`), with empty-segment pages preserved cleanly as lossless WebP (#157).
+    - [x] `TranslationMaterializationProcessor` with revision fencing, retry classification (deterministic 400..422 -> `UnrecoverableError`, transient 408/429/5xx -> `Error`), and `AbortSignal.timeout(workerTimeoutMs)` bounded worker dispatch (#157).
+    - [x] Exact `page_${page}.webp` prefix jail with `previewKey === storageKey` and MinIO HEAD `image/webp` verification (#157).
+    - [x] Unbreakable Job status protection: Failed materialization attempts MUST NEVER mutate primary `TranslationJob` to `FAILED` (remains `READY_FOR_REVIEW`) (#157).
   - [ ] **Phase 4D.5 Studio Frontend UI**:
     - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).
     - [ ] Manga Translation Studio: Trình xem ảnh gốc vs ảnh đã dịch, xem vùng nhận diện thoại OCR, chỉnh sửa bản dịch từng ô thoại.

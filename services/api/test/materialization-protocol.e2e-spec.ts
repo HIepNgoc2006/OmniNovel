@@ -85,9 +85,12 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
           return { exists: false, contentLength: null };
         }
         if (key.includes('size-mismatch')) {
-          return { exists: true, contentLength: 999999 };
+          return { exists: true, contentLength: 999999, contentType: 'image/webp' };
         }
-        return { exists: true, contentLength: 12345 };
+        if (key.includes('invalid-mime')) {
+          return { exists: true, contentLength: 12345, contentType: 'image/png' };
+        }
+        return { exists: true, contentLength: 12345, contentType: 'image/webp' };
       });
     jest.spyOn(storageService, 'headInternalObject').mockResolvedValue(true);
 
@@ -229,7 +232,7 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       VALUES (
         '${comicProjectId}', '${comicVersionId}',
         '${TranslationJobStatus.READY_FOR_REVIEW}', 2, 1,
-        '{"version": 1, "mediaFormat": "COMIC", "pages": [{"page": 1, "storageKey": "ai/jobs/c1/materializations/rev-1/pages/p1.webp", "previewKey": "ai/jobs/c1/materializations/rev-1/pages/p1.webp", "width": 1000, "height": 1500, "fileSizeBytes": 12345}], "cleanBases": [{"page": 1, "cleanBaseKey": "ai/jobs/c1/clean/p1.webp"}]}',
+        '{"version": 1, "mediaFormat": "COMIC", "pages": [{"page": 1, "storageKey": "ai/jobs/c1/materializations/rev-1/page_1.webp", "previewKey": "ai/jobs/c1/materializations/rev-1/page_1.webp", "width": 1000, "height": 1500, "fileSizeBytes": 12345}], "cleanBases": [{"page": 1, "cleanBaseKey": "ai/jobs/c1/clean/p1.webp"}], "sourceReview": {"version": 1, "pages": [{"page": 1, "storageKey": "ai/jobs/c1/source_reviews/page_0001.webp", "width": 1000, "height": 1500}]}}',
         '${ownerId}'
       )
       RETURNING id;
@@ -480,7 +483,7 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
         UPDATE translation_jobs 
         SET materialized_revision = 2,
             review_revision = 2,
-            result_manifest = '{"version": 1, "mediaFormat": "COMIC", "pages": [{"page": 1, "storageKey": "ai/jobs/${comicJobId}/materializations/rev-2/p1.webp", "previewKey": "ai/jobs/${comicJobId}/materializations/rev-2/p1.webp", "width": 1000, "height": 1500, "fileSizeBytes": 12345}]}'
+            result_manifest = '{"version": 1, "mediaFormat": "COMIC", "pages": [{"page": 1, "storageKey": "ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp", "previewKey": "ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp", "width": 1000, "height": 1500, "fileSizeBytes": 12345}]}'
         WHERE id = '${comicJobId}'
       `);
 
@@ -496,8 +499,8 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
             pages: [
               {
                 page: 1,
-                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/p1.webp`,
-                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/p1.webp`,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
                 width: 1000,
                 height: 1500,
                 fileSizeBytes: 12345,
@@ -516,7 +519,7 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
         UPDATE translation_jobs 
         SET materialized_revision = 2,
             review_revision = 2,
-            result_manifest = '{"version": 1, "mediaFormat": "COMIC", "pages": [{"page": 1, "storageKey": "ai/jobs/${comicJobId}/materializations/rev-2/p1.webp", "previewKey": "ai/jobs/${comicJobId}/materializations/rev-2/p1.webp", "width": 1000, "height": 1500, "fileSizeBytes": 12345}]}'
+            result_manifest = '{"version": 1, "mediaFormat": "COMIC", "pages": [{"page": 1, "storageKey": "ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp", "previewKey": "ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp", "width": 1000, "height": 1500, "fileSizeBytes": 12345}]}'
         WHERE id = '${comicJobId}'
       `);
 
@@ -532,9 +535,9 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
             pages: [
               {
                 page: 1,
-                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/different-p1.webp`, // Different!
-                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/different-p1.webp`,
-                width: 1000,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                width: 2000, // Different width causes conflict!
                 height: 1500,
                 fileSizeBytes: 12345,
               },
@@ -559,8 +562,8 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
             pages: [
               {
                 page: 1,
-                storageKey: `ai/jobs/other-job/materializations/rev-2/p1.webp`, // Escaping job prefix!
-                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/p1.webp`,
+                storageKey: `ai/jobs/other-job/materializations/rev-2/page_1.webp`, // Escaping job prefix!
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
                 width: 1000,
                 height: 1500,
                 fileSizeBytes: 12345,
@@ -573,7 +576,7 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       expect(res.body.error.message).toContain('PREFIX_JAIL_VIOLATION');
     });
 
-    it('should reject with 400 ARTIFACT_NOT_FOUND_IN_STORAGE when file does not exist in MinIO', async () => {
+    it('should reject with 400 PREFIX_JAIL_VIOLATION if storageKey points to snapshot JSON', async () => {
       const res = await request(app.getHttpServer())
         .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
         .set('X-Internal-Service-Key', INTERNAL_KEY)
@@ -586,8 +589,154 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
             pages: [
               {
                 page: 1,
-                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/missing-p1.webp`,
-                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/missing-p1.webp`,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/snapshots/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.json`,
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/snapshots/e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855.json`,
+                width: 1000,
+                height: 1500,
+                fileSizeBytes: 12345,
+              },
+            ],
+          },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('PREFIX_JAIL_VIOLATION');
+    });
+
+    it('should reject with 400 PREFIX_JAIL_VIOLATION if storageKey has non-canonical filename or extension', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'COMIC',
+          result: {
+            version: 1,
+            mediaFormat: 'COMIC',
+            pages: [
+              {
+                page: 1,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.png`, // Wrong extension!
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.png`,
+                width: 1000,
+                height: 1500,
+                fileSizeBytes: 12345,
+              },
+            ],
+          },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('PREFIX_JAIL_VIOLATION');
+    });
+
+    it('should reject with 400 PREFIX_JAIL_VIOLATION if storageKey has nested subpath traversal', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'COMIC',
+          result: {
+            version: 1,
+            mediaFormat: 'COMIC',
+            pages: [
+              {
+                page: 1,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/sub/page_1.webp`, // Nested subpath!
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/sub/page_1.webp`,
+                width: 1000,
+                height: 1500,
+                fileSizeBytes: 12345,
+              },
+            ],
+          },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('PREFIX_JAIL_VIOLATION');
+    });
+
+    it('should reject with 400 PREFIX_JAIL_VIOLATION if previewKey does not match storageKey', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'COMIC',
+          result: {
+            version: 1,
+            mediaFormat: 'COMIC',
+            pages: [
+              {
+                page: 1,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_2.webp`, // Mismatch!
+                width: 1000,
+                height: 1500,
+                fileSizeBytes: 12345,
+              },
+            ],
+          },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('PREFIX_JAIL_VIOLATION');
+    });
+
+    it('should reject with 400 ARTIFACT_INVALID_CONTENT_TYPE when MinIO Content-Type is not image/webp', async () => {
+      jest.spyOn(storageService, 'statInternalObject').mockResolvedValueOnce({
+        exists: true,
+        contentLength: 12345,
+        contentType: 'image/png',
+      });
+
+      const res = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'COMIC',
+          result: {
+            version: 1,
+            mediaFormat: 'COMIC',
+            pages: [
+              {
+                page: 1,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                width: 1000,
+                height: 1500,
+                fileSizeBytes: 12345,
+              },
+            ],
+          },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.code).toBe('ARTIFACT_INVALID_CONTENT_TYPE');
+    });
+
+    it('should reject with 400 ARTIFACT_NOT_FOUND_IN_STORAGE when file does not exist in MinIO', async () => {
+      jest.spyOn(storageService, 'statInternalObject').mockResolvedValueOnce({
+        exists: false,
+        contentLength: null,
+      });
+
+      const res = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'COMIC',
+          result: {
+            version: 1,
+            mediaFormat: 'COMIC',
+            pages: [
+              {
+                page: 1,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
                 width: 1000,
                 height: 1500,
                 fileSizeBytes: 12345,
@@ -601,6 +750,12 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
     });
 
     it('should reject with 400 ARTIFACT_SIZE_MISMATCH when storage ContentLength !== fileSizeBytes', async () => {
+      jest.spyOn(storageService, 'statInternalObject').mockResolvedValueOnce({
+        exists: true,
+        contentLength: 999999,
+        contentType: 'image/webp',
+      });
+
       const res = await request(app.getHttpServer())
         .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
         .set('X-Internal-Service-Key', INTERNAL_KEY)
@@ -613,8 +768,8 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
             pages: [
               {
                 page: 1,
-                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/size-mismatch-p1.webp`,
-                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/size-mismatch-p1.webp`,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
                 width: 1000,
                 height: 1500,
                 fileSizeBytes: 12345,
@@ -627,7 +782,7 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       expect(res.body.error.code).toBe('ARTIFACT_SIZE_MISMATCH');
     });
 
-    it('should successfully complete COMIC materialization: APPLIED, merge selective pages and advance materializedRevision', async () => {
+    it('should successfully complete COMIC materialization: APPLIED, merge selective pages, advance revision, and preserve BOTH cleanBases and sourceReview', async () => {
       const res = await request(app.getHttpServer())
         .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
         .set('X-Internal-Service-Key', INTERNAL_KEY)
@@ -640,8 +795,8 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
             pages: [
               {
                 page: 1,
-                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1.webp`,
-                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1.webp`,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
                 width: 1000,
                 height: 1500,
                 fileSizeBytes: 12345,
@@ -666,11 +821,14 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       expect(manifest.version).toBe(1);
       expect(manifest.pages).toHaveLength(1);
       expect(manifest.pages[0].storageKey).toBe(
-        `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1.webp`,
+        `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
       );
-      // CleanBases preserved!
+      // CleanBases preserved byte-for-byte!
       expect(manifest.cleanBases).toBeDefined();
       expect(manifest.cleanBases[0].cleanBaseKey).toBe('ai/jobs/c1/clean/p1.webp');
+      // sourceReview preserved byte-for-byte!
+      expect(manifest.sourceReview).toBeDefined();
+      expect(manifest.sourceReview.pages[0].storageKey).toBe('ai/jobs/c1/source_reviews/page_0001.webp');
     });
 
     it('should successfully complete NOVEL materialization: APPLIED, merge HTML and preserve title/assets/metrics', async () => {
@@ -740,8 +898,8 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
             pages: [
               {
                 page: 1,
-                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1.webp`,
-                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1.webp`,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
                 width: 1000,
                 height: 1500,
                 fileSizeBytes: 12345,
@@ -773,21 +931,21 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       const statSpy = jest
         .spyOn(storageService, 'statInternalObject')
         .mockImplementation(async (key: string) => {
-          if (key.includes('p1_A') || key.includes('p1_B')) {
+          if (key.includes('page_1.webp')) {
             statCalls++;
             if (statCalls === 2) {
               releaseBarrier();
             }
             await barrierPromise;
-            return { exists: true, contentLength: 12345 };
+            return { exists: true, contentLength: 12345, contentType: 'image/webp' };
           }
           if (key.includes('missing')) {
             return { exists: false, contentLength: null };
           }
           if (key.includes('size-mismatch')) {
-            return { exists: true, contentLength: 999999 };
+            return { exists: true, contentLength: 999999, contentType: 'image/webp' };
           }
-          return { exists: true, contentLength: 12345 };
+          return { exists: true, contentLength: 12345, contentType: 'image/webp' };
         });
 
       try {
@@ -803,8 +961,8 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
               pages: [
                 {
                   page: 1,
-                  storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1_A.webp`,
-                  previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1_A.webp`,
+                  storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                  previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
                   width: 1000,
                   height: 1500,
                   fileSizeBytes: 12345,
@@ -825,9 +983,9 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
               pages: [
                 {
                   page: 1,
-                  storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1_B.webp`,
-                  previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1_B.webp`,
-                  width: 1000,
+                  storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                  previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                  width: 2000,
                   height: 1500,
                   fileSizeBytes: 12345,
                 },
@@ -850,20 +1008,20 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
         const dbJob = await dataSource.query(`
           SELECT result_manifest FROM translation_jobs WHERE id = '${comicJobId}'
         `);
-        const winningPageKey =
-          resA.status === 200
-            ? `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1_A.webp`
-            : `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1_B.webp`;
-        expect(dbJob[0].result_manifest.pages[0].storageKey).toBe(winningPageKey);
+        const winningWidth = resA.status === 200 ? 1000 : 2000;
+        expect(dbJob[0].result_manifest.pages[0].width).toBe(winningWidth);
+        expect(dbJob[0].result_manifest.pages[0].storageKey).toBe(
+          `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+        );
       } finally {
         statSpy.mockImplementation(async (key: string) => {
           if (key.includes('missing')) {
             return { exists: false, contentLength: null };
           }
           if (key.includes('size-mismatch')) {
-            return { exists: true, contentLength: 999999 };
+            return { exists: true, contentLength: 999999, contentType: 'image/webp' };
           }
-          return { exists: true, contentLength: 12345 };
+          return { exists: true, contentLength: 12345, contentType: 'image/webp' };
         });
       }
     });
@@ -882,8 +1040,8 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
             pages: [
               {
                 page: 1,
-                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1.webp`,
-                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1.webp`,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
                 width: 1000,
                 height: 1500,
                 fileSizeBytes: 12345,
@@ -922,8 +1080,8 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
             pages: [
               {
                 page: 1,
-                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1.webp`,
-                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/pages/p1.webp`,
+                storageKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
+                previewKey: `ai/jobs/${comicJobId}/materializations/rev-2/page_1.webp`,
                 width: 1000,
                 height: 1500,
                 fileSizeBytes: 12345,

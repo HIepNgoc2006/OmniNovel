@@ -5,6 +5,7 @@ import pytest
 from app.core.ssrf_safe_downloader import (
     SSRFBlockedError,
     safe_download_archive,
+    safe_download_bytes,
     validate_download_url,
 )
 
@@ -114,3 +115,46 @@ async def test_safe_download_archive_exceeds_size_limit(tmp_path: Path, monkeypa
             max_bytes=500,
             client=client,
         )
+
+
+@pytest.mark.asyncio
+async def test_safe_download_bytes_success(monkeypatch):
+    monkeypatch.setattr("app.core.ssrf_safe_downloader.settings.ENV", "test")
+    dummy_bytes = b'{"version": 1, "test": "data"}'
+
+    def mock_transport(req: httpx.Request):
+        return httpx.Response(200, content=dummy_bytes)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(mock_transport))
+    res = await safe_download_bytes(
+        url="http://localhost:9000/snapshots/test.json",
+        max_bytes=1024,
+        client=client,
+    )
+    assert res == dummy_bytes
+
+
+@pytest.mark.asyncio
+async def test_safe_download_bytes_exceeds_limit(monkeypatch):
+    monkeypatch.setattr("app.core.ssrf_safe_downloader.settings.ENV", "test")
+    large_bytes = b"x" * 2000
+
+    def mock_transport(req: httpx.Request):
+        return httpx.Response(200, content=large_bytes)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(mock_transport))
+    with pytest.raises(ValueError, match="vượt quá giới hạn"):
+        await safe_download_bytes(
+            url="http://localhost:9000/snapshots/large.json",
+            max_bytes=500,
+            client=client,
+        )
+
+
+@pytest.mark.asyncio
+async def test_safe_download_bytes_blocks_ssrf():
+    with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED"):
+        await safe_download_bytes(
+            url="http://169.254.169.254/latest/meta-data",
+        )
+

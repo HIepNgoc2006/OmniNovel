@@ -19,6 +19,7 @@ import {
   NovelBlockType,
 } from '@omninovel/shared';
 import { StorageService } from '../src/modules/storage/storage.service';
+import { TranslationMaterializationProcessor } from '../src/modules/translation/translation-materialization.processor';
 
 describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => {
   jest.setTimeout(60000);
@@ -69,15 +70,23 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
     });
     await app.init();
 
-    dataSource = app.get(DataSource);
-    jwtService = app.get(JwtService);
-    storageService = app.get(StorageService);
+    dataSource = app.get<DataSource>(DataSource);
+    jwtService = app.get<JwtService>(JwtService);
+    storageService = app.get<StorageService>(StorageService);
     materializationQueue = app.get<Queue>(
       getQueueToken('translation-materialization'),
     );
 
     // Mock storageService helpers
     jest.spyOn(storageService, 'uploadInternalBuffer').mockResolvedValue();
+    jest.spyOn(storageService, 'deleteInternalObject').mockResolvedValue();
+    jest.spyOn(storageService, 'deleteInternalPrefix').mockResolvedValue();
+    jest
+      .spyOn(storageService, 'createInternalDownloadUrl')
+      .mockResolvedValue('https://minio.local/get/file');
+    jest
+      .spyOn(storageService, 'createInternalUploadUrl')
+      .mockResolvedValue('https://minio.local/put/file');
     jest
       .spyOn(storageService, 'statInternalObject')
       .mockImplementation(async (key: string) => {
@@ -93,6 +102,14 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
         return { exists: true, contentLength: 12345, contentType: 'image/webp' };
       });
     jest.spyOn(storageService, 'headInternalObject').mockResolvedValue(true);
+
+    // Default global.fetch mock to handle background BullMQ worker jobs gracefully
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ status: 'COMPLETED' }),
+      text: async () => '',
+    });
 
     // Setup Test Users
     const runId = `${Date.now()}_${Math.floor(Math.random() * 10000)}`;
@@ -1220,5 +1237,120 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       expect(res.body.error.message).toContain('forbiddenPayloadField');
     });
   });
+
+  describe('3. RED 9: Cross-Service Full E2E Flow (#157)', () => {
+    it('should complete full cycle: segment edited -> apply blocked (stale) -> materialization queued -> processor executed -> callback completed -> apply succeeded', async () => {
+      // 0. Setup AI Worker dispatch mock ahead of enqueuing
+      const mockWorkerFetch = jest.fn().mockImplementation(async (url: string, opts: any) => {
+        if (url.includes('/internal/v1/jobs/materialize-manga')) {
+          const body = JSON.parse(opts.body);
+          // Worker renders and invokes the Core API complete callback
+          const cbRes = await request(app.getHttpServer())
+            .post(`/internal/v1/ai/jobs/${comicJobId}/materializations/complete`)
+            .set('X-Internal-Service-Key', INTERNAL_KEY)
+            .send({
+              targetRevision: body.targetRevision,
+              mediaFormat: 'COMIC',
+              result: {
+                version: 1,
+                mediaFormat: 'COMIC',
+                pages: body.pages.map((p: any) => ({
+                  page: p.pageNumber,
+                  storageKey: p.storageKey,
+                  previewKey: p.storageKey,
+                  width: 1000,
+                  height: 1500,
+                  fileSizeBytes: 12345,
+                })),
+              },
+            });
+          expect(cbRes.status).toBe(200);
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ status: 'COMPLETED' }),
+          };
+        }
+        return { ok: false, status: 404 };
+      });
+      (global as any).fetch = mockWorkerFetch;
+
+      // 1. Current comicJobId: review_revision = 2, materialized_revision = 1
+      // Freshness Gate: Apply must be blocked (409 ARTIFACT_STALE)
+      const staleApplyRes = await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${comicJobId}/apply`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .set('Idempotency-Key', 'b0000000-0000-4000-8000-000000000001')
+        .send({ mode: 'OVERWRITE_ACTIVE_VERSION' });
+
+      expect(staleApplyRes.status).toBe(409);
+      expect(staleApplyRes.body.error.code).toBe('ARTIFACT_STALE');
+
+      // 2. Request materialization
+      const matReqRes = await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${comicJobId}/materializations`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+
+      expect(matReqRes.status).toBe(202);
+      expect(matReqRes.body.status).toBe('ENQUEUED');
+      expect(matReqRes.body.targetRevision).toBe(2);
+
+      // 3. Get the queued BullMQ job
+      const bullJob = await materializationQueue.getJob(
+        `materialize-${comicJobId}-2`,
+      );
+      expect(bullJob).toBeDefined();
+
+      // 4. Ensure processor execution has completed (either via active worker or explicit invoke)
+      let attempts = 0;
+      while (attempts < 20) {
+        const rows = await dataSource.query(
+          `SELECT materialized_revision FROM translation_jobs WHERE id = '${comicJobId}'`,
+        );
+        if (rows[0]?.materialized_revision === 2) {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 100));
+        attempts++;
+      }
+
+      const checkRows = await dataSource.query(
+        `SELECT materialized_revision FROM translation_jobs WHERE id = '${comicJobId}'`,
+      );
+      if (checkRows[0]?.materialized_revision !== 2) {
+        const processor = app.get<TranslationMaterializationProcessor>(
+          TranslationMaterializationProcessor,
+        );
+        await processor.process(bullJob!);
+      }
+
+      // 5. Verify DB state: materializedRevision === 2 === reviewRevision, cleanBases & sourceReview preserved
+      const updatedJobs = await dataSource.query(
+        `SELECT materialized_revision, review_revision, result_manifest FROM translation_jobs WHERE id = '${comicJobId}'`,
+      );
+      expect(updatedJobs[0].materialized_revision).toBe(2);
+      expect(updatedJobs[0].review_revision).toBe(2);
+      expect(updatedJobs[0].result_manifest.cleanBases).toBeDefined();
+      expect(updatedJobs[0].result_manifest.cleanBases).toHaveLength(1);
+      expect(updatedJobs[0].result_manifest.sourceReview).toBeDefined();
+
+      // 6. Freshness Gate Unlocked: Apply now succeeds!
+      const freshApplyRes = await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${comicJobId}/apply`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .set('Idempotency-Key', 'b0000000-0000-4000-8000-000000000002')
+        .send({ mode: 'OVERWRITE_ACTIVE_VERSION' });
+
+      expect(freshApplyRes.status).toBe(200);
+      expect(freshApplyRes.body.isAlreadyApplied).toBe(false);
+
+      // Verify job is now APPLIED
+      const finalJobs = await dataSource.query(
+        `SELECT status FROM translation_jobs WHERE id = '${comicJobId}'`,
+      );
+      expect(finalJobs[0].status).toBe(TranslationJobStatus.APPLIED);
+    });
+  });
 });
+
 

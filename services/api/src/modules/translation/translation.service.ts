@@ -645,8 +645,16 @@ export class TranslationService {
           typeof job.resultManifest === 'string'
             ? JSON.parse(job.resultManifest)
             : job.resultManifest;
-        if (rawManifest && Array.isArray(rawManifest.pages)) {
-          resultPageCount = rawManifest.pages.length;
+        const validation = validateTranslationResultManifest(
+          rawManifest,
+          'COMIC',
+        );
+        if (
+          validation.valid &&
+          validation.value &&
+          validation.value.mediaFormat === 'COMIC'
+        ) {
+          resultPageCount = validation.value.pages.length;
         }
       } catch {
         resultPageCount = null;

@@ -539,7 +539,300 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(result.current.previews).toBeNull();
     });
 
-    it('should not allow in-flight older preview or segments to revive data after 409 NOT_REVIEWABLE', async () => {
+    it('should not allow an in-flight older preview 403 to purge workspace after a newer same-job refetch succeeds', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Refetch 1: Preview request hangs
+      let rejectOldPreview: (err: any) => void;
+      const oldPreviewPromise = new Promise((_, reject) => {
+        rejectOldPreview = reject;
+      });
+
+      let previewCalledSignal: () => void;
+      const previewCalledPromise = new Promise<void>((resolve) => {
+        previewCalledSignal = resolve;
+      });
+
+      let previewCallCount = 0;
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async () => {
+        previewCallCount++;
+        if (previewCallCount === 1) {
+          previewCalledSignal();
+          return oldPreviewPromise as any;
+        }
+        return {
+          sourceAssets: [{ url: 'https://cdn.example.com/page1-new.jpg' }],
+          resultAssets: [],
+        };
+      });
+
+      let refetch1Promise: Promise<boolean>;
+      act(() => {
+        refetch1Promise = result.current.refetchDetail();
+      });
+
+      // Wait until Refetch 1 has actually launched its preview request
+      await act(async () => {
+        await previewCalledPromise;
+      });
+
+      // Refetch 2: Newer request succeeds
+      await act(async () => {
+        await result.current.refetchDetail();
+      });
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+        expect(result.current.previews?.sourceAssets[0]?.url).toBe('https://cdn.example.com/page1-new.jpg');
+      });
+
+      // Now Refetch 1 preview fails with 403
+      await act(async () => {
+        rejectOldPreview!({
+          isAxiosError: true,
+          response: {
+            status: 403,
+            data: { error: { code: 'FORBIDDEN', message: 'Stale access denied' } },
+          },
+        });
+        await refetch1Promise.catch(() => {});
+      });
+
+      // Invariant: Workspace MUST NOT be purged by the stale error!
+      expect(result.current.status).toBe('ready');
+      expect(result.current.jobDetail).not.toBeNull();
+      expect(result.current.previews?.sourceAssets[0]?.url).toBe('https://cdn.example.com/page1-new.jpg');
+    });
+
+    it('should not allow an in-flight older segments 403 to purge workspace after a newer same-job refetch succeeds', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      let rejectOldSegments: (err: any) => void;
+      const oldSegmentsPromise = new Promise((_, reject) => {
+        rejectOldSegments = reject;
+      });
+
+      let segmentsCalledSignal: () => void;
+      const segmentsCalledPromise = new Promise<void>((resolve) => {
+        segmentsCalledSignal = resolve;
+      });
+
+      let segmentsCallCount = 0;
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async () => {
+        segmentsCallCount++;
+        if (segmentsCallCount === 1) {
+          segmentsCalledSignal();
+          return oldSegmentsPromise as any;
+        }
+        return {
+          data: [{ ...mockSegments[0], translatedText: 'Newer Segments' }],
+          pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        } as any;
+      });
+
+      let refetch1Promise: Promise<boolean>;
+      act(() => {
+        refetch1Promise = result.current.refetchDetail();
+      });
+
+      // Wait until Refetch 1 has actually launched its segments request
+      await act(async () => {
+        await segmentsCalledPromise;
+      });
+
+      // Newer refetch succeeds
+      await act(async () => {
+        await result.current.refetchDetail();
+      });
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+        expect(result.current.segments[0]?.translatedText).toBe('Newer Segments');
+      });
+
+      // Stale segments from refetch 1 rejects with 403
+      await act(async () => {
+        rejectOldSegments!({
+          isAxiosError: true,
+          response: {
+            status: 403,
+            data: { error: { code: 'FORBIDDEN', message: 'Stale access denied' } },
+          },
+        });
+        await refetch1Promise.catch(() => {});
+      });
+
+      // Invariant: Workspace MUST NOT be purged by stale child error!
+      expect(result.current.status).toBe('ready');
+      expect(result.current.jobDetail).not.toBeNull();
+      expect(result.current.segments[0]?.translatedText).toBe('Newer Segments');
+    });
+
+    it('should reconcile authoritative state to APPLIED when preview API returns 409 PREVIEWS_NOT_AVAILABLE_FOR_STATUS', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Next preview fetch returns 409 PREVIEWS_NOT_AVAILABLE_FOR_STATUS
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS',
+              message: 'Job không còn ở trạng thái READY_FOR_REVIEW.',
+            },
+          },
+        },
+      });
+
+      const appliedJobDetail: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, status: TranslationJobStatus.APPLIED },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(appliedJobDetail);
+
+      // Trigger refetchDetail while server has moved to APPLIED
+      await act(async () => {
+        await result.current.refetchDetail();
+      });
+
+      expect(result.current.workspaceMode?.mode).toBe('APPLIED');
+      expect(result.current.jobDetail?.job.status).toBe(TranslationJobStatus.APPLIED);
+      expect(result.current.previews).toBeNull();
+      expect(result.current.segments).toEqual([]);
+    });
+
+    it('should NOT remain FRESH and should return false when PATCH segment succeeds but authoritative detail refetch fails with 500', async () => {
+      // Start in a FRESH state (1, 1)
+      const freshJobDetail: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: {
+          ...mockComicJobDetail.job,
+          reviewRevision: 1,
+          materializedRevision: 1,
+        },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce(freshJobDetail);
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+        expect(result.current.freshness.status).toBe('FRESH');
+      });
+
+      // PATCH succeeds
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValueOnce({
+        ...mockSegments[0],
+        translatedText: 'Nội dung mới',
+        version: 2,
+      });
+
+      // But authoritative detail refetch fails with 500
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 500,
+          data: { error: { code: 'INTERNAL_SERVER_ERROR', message: 'DB connection timeout' } },
+        },
+      });
+
+      let saveSuccess: boolean | undefined;
+      await act(async () => {
+        saveSuccess = await result.current.saveSegment('seg-1', 'Nội dung mới');
+      });
+
+      // Invariant: Save must NOT report clean success if authoritative sync failed!
+      expect(saveSuccess).toBe(false);
+      // Invariant: Freshness MUST NOT remain FRESH!
+      expect(result.current.freshness.status).not.toBe('FRESH');
+      expect(result.current.freshness.status).toBe('UNKNOWN');
+      expect(result.current.freshness.isFresh).toBe(false);
+    });
+
+    it('should purge workspace and return false when PATCH segment succeeds but detail refetch fails with 403', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // PATCH succeeds
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValueOnce({
+        ...mockSegments[0],
+        translatedText: 'Nội dung mới',
+        version: 2,
+      });
+
+      // But authoritative detail refetch encounters 403
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 403,
+          data: { error: { code: 'FORBIDDEN', message: 'Permission revoked during save' } },
+        },
+      });
+
+      let saveSuccess: boolean | undefined;
+      await act(async () => {
+        saveSuccess = await result.current.saveSegment('seg-1', 'Nội dung mới');
+      });
+
+      // Invariant: Save MUST NOT return true when workspace was purged!
+      expect(saveSuccess).toBe(false);
+      expect(result.current.status).toBe('error');
+      expect(result.current.error?.code).toBe('FORBIDDEN');
+    });
+
+    it('should NOT purge whole workspace when PATCH segment returns 404 for a missing segment if job detail remains 200', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // PATCH segment returns 404 NOT_FOUND (segment missing/deleted)
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 404,
+          data: {
+            error: {
+              code: 'NOT_FOUND',
+              message: 'Không tìm thấy TranslationSegment với id seg-1.',
+            },
+          },
+        },
+      });
+
+      // Job Detail is still valid (200)
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockComicJobDetail);
+
+      let saveSuccess: boolean | undefined;
+      await act(async () => {
+        saveSuccess = await result.current.saveSegment('seg-1', 'Nội dung');
+      });
+
+      expect(saveSuccess).toBe(false);
+      // Invariant: Workspace MUST NOT be purged!
+      expect(result.current.status).not.toBe('error');
+      expect(result.current.jobDetail).not.toBeNull();
+      expect(result.current.workspaceMode?.mode).toBe('REVIEWABLE');
+    });
+
+    it('should not allow in-flight older preview to revive previews after 409 NOT_REVIEWABLE', async () => {
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
 
       await waitFor(() => {
@@ -602,6 +895,104 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       // Invariant: Data must NOT be revived!
       expect(result.current.previews).toBeNull();
       expect(result.current.segments).toEqual([]);
+    });
+
+    it('should not allow in-flight older segments to revive segments after 409 NOT_REVIEWABLE', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      let resolveOldSegments: (val: any) => void;
+      const oldSegmentsPromise = new Promise((resolve) => {
+        resolveOldSegments = resolve;
+      });
+
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockReturnValue(
+        oldSegmentsPromise as any,
+      );
+
+      act(() => {
+        result.current.refetchDetail();
+      });
+
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValue({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: { error: { code: 'NOT_REVIEWABLE', message: 'Job is not reviewable' } },
+        },
+      });
+
+      const appliedJobDetail: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, status: TranslationJobStatus.APPLIED },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(appliedJobDetail);
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Bản dịch');
+      });
+
+      expect(result.current.workspaceMode?.mode).toBe('APPLIED');
+      expect(result.current.segments).toEqual([]);
+
+      // In-flight older segments resolves now
+      await act(async () => {
+        resolveOldSegments!({
+          data: [{ ...mockSegments[0], translatedText: 'Revived text' }],
+          meta: { total: 1, page: 1, limit: 100, totalPages: 1 },
+        });
+      });
+
+      // Invariant: Segments MUST remain empty in APPLIED mode!
+      expect(result.current.segments).toEqual([]);
+    });
+
+    it('should clear materializationStatus and reset currentPage during authoritative reconciliation', async () => {
+      vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValueOnce({
+        status: 'ENQUEUED',
+        targetRevision: 2,
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      await act(async () => {
+        await result.current.triggerMaterialization();
+        result.current.setCurrentPage(3);
+      });
+
+      expect(result.current.materializationStatus).toBe('ENQUEUED');
+      expect(result.current.currentPage).toBe(3);
+
+      // Save encounters 409 NOT_REVIEWABLE, server is APPLIED
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: { error: { code: 'NOT_REVIEWABLE', message: 'Job is now applied' } },
+        },
+      });
+
+      const appliedJobDetail: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, status: TranslationJobStatus.APPLIED },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(appliedJobDetail);
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Bản dịch');
+      });
+
+      // Invariant: materializationStatus and currentPage MUST be reset!
+      expect(result.current.materializationStatus).toBeNull();
+      expect(result.current.currentPage).toBe(1);
+      expect(result.current.workspaceMode?.mode).toBe('APPLIED');
     });
 
     it('should reconcile authoritative state to APPLIED when materialization receives 409 NOT_REVIEWABLE without generic error', async () => {
@@ -692,7 +1083,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(result.current.freshness.needsMaterialize).toBe(false);
     });
 
-    it('should correctly handle materialization lifecycle: ENQUEUED, ALREADY_ENQUEUED, and ALREADY_FRESH', async () => {
+    it('should correctly handle materialization lifecycle: ENQUEUED, ALREADY_ENQUEUED, and ALREADY_FRESH with causal assertion', async () => {
       // 6a: ENQUEUED
       vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValueOnce({
         status: 'ENQUEUED',
@@ -728,10 +1119,24 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(result.current.materializationStatus).toBe('ALREADY_ENQUEUED');
 
       // 6c: ALREADY_FRESH
-      const refetchSpy = vi.spyOn(translationApi, 'fetchTranslationJobDetail');
+      const freshJobDetail: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: {
+          ...mockComicJobDetail.job,
+          reviewRevision: 2,
+          materializedRevision: 2,
+        },
+      };
+
+      const refetchSpy = vi
+        .spyOn(translationApi, 'fetchTranslationJobDetail')
+        .mockResolvedValue(freshJobDetail);
+
+      const callsBefore = refetchSpy.mock.calls.length;
+
       vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValueOnce({
         status: 'ALREADY_FRESH',
-        targetRevision: 1,
+        targetRevision: 2,
       });
 
       let res3: any;
@@ -741,7 +1146,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
 
       expect(res3?.status).toBe('ALREADY_FRESH');
       expect(result.current.materializationStatus).toBe('ALREADY_FRESH');
-      expect(refetchSpy).toHaveBeenCalled();
+      // Invariant: Assert causal call count increment
+      expect(refetchSpy.mock.calls.length).toBe(callsBefore + 1);
+      // Invariant: Assert authoritative outcome
+      expect(result.current.jobDetail?.job.materializedRevision).toBe(2);
+      expect(result.current.freshness.status).toBe('FRESH');
+      expect(result.current.freshness.isFresh).toBe(true);
     });
   });
 

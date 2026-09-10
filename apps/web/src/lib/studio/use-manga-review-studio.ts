@@ -60,7 +60,9 @@ export interface UseMangaReviewStudioReturn {
   triggerMaterialization: () => Promise<MaterializationRequestResponse | null>;
   materializationStatus: MaterializationRequestStatus | null;
   error: ParsedApiError | null;
-  refetchDetail: () => Promise<void>;
+  refetchDetail: (options?: {
+    requirement?: 'BEST_EFFORT' | 'AUTHORITATIVE_REQUIRED';
+  }) => Promise<boolean>;
   reconcileAuthoritativeWorkspace: () => Promise<void>;
   retry: () => Promise<void>;
 }
@@ -84,6 +86,8 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   const [error, setError] = useState<ParsedApiError | null>(null);
   const [overrideWorkspaceMode, setOverrideWorkspaceMode] =
     useState<WorkspaceModeResult | null>(null);
+  const [authoritativeSyncError, setAuthoritativeSyncError] =
+    useState<boolean>(false);
 
   // Invariant Protection: Identity, Session & Sequence Tracking
   const activeJobIdRef = useRef(jobId);
@@ -92,6 +96,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   const dataLoadSeqRef = useRef(0);
   const latestConfirmedRevisionRef = useRef(0);
   const userSessionIdRef = useRef<string | null>(user?.id ?? null);
+  const reconcileRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
   const isRequestCurrent = useCallback(
     (targetGen: number, targetJob: string): boolean => {
@@ -99,6 +104,18 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         generationRef.current === targetGen &&
         activeJobIdRef.current === targetJob &&
         userSessionIdRef.current === (user?.id ?? null)
+      );
+    },
+    [user?.id],
+  );
+
+  const isChildRequestCurrent = useCallback(
+    (targetGen: number, targetJob: string, targetSeq: number): boolean => {
+      return (
+        generationRef.current === targetGen &&
+        activeJobIdRef.current === targetJob &&
+        userSessionIdRef.current === (user?.id ?? null) &&
+        dataLoadSeqRef.current === targetSeq
       );
     },
     [user?.id],
@@ -114,6 +131,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     setError(null);
     setOverrideWorkspaceMode(null);
     setCurrentPage(1);
+    setAuthoritativeSyncError(false);
     latestConfirmedRevisionRef.current = 0;
   }, []);
 
@@ -138,16 +156,28 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     [resetState],
   );
 
-  const isAccessError = (err: ParsedApiError): boolean => {
+  // 401 / 403: Authentication or authorization failure across any endpoint -> purge
+  const isAuthOrPermissionError = useCallback((err: ParsedApiError): boolean => {
     return (
       err.status === 401 ||
       err.status === 403 ||
-      err.status === 404 ||
       err.code === 'FORBIDDEN' ||
-      err.code === 'NOT_FOUND' ||
       err.code === 'UNAUTHORIZED'
     );
-  };
+  }, []);
+
+  // 404 on Job entity: Job itself does not exist -> purge
+  const isJobNotFoundError = useCallback((err: ParsedApiError): boolean => {
+    return err.status === 404 || err.code === 'NOT_FOUND';
+  }, []);
+
+  // Job level access error: either 401/403 or 404 on Job
+  const isJobAccessError = useCallback(
+    (err: ParsedApiError): boolean => {
+      return isAuthOrPermissionError(err) || isJobNotFoundError(err);
+    },
+    [isAuthOrPermissionError, isJobNotFoundError],
+  );
 
   const loadJobData = useCallback(
     async (explicitGen?: number, explicitJob?: string) => {
@@ -191,19 +221,16 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         if (modeResult.mode === 'REVIEWABLE') {
           try {
             const segRes = await fetchTranslationJobSegments(currentJob, 1, 100);
-            if (
-              !isRequestCurrent(currentGen, currentJob) ||
-              dataLoadSeq !== dataLoadSeqRef.current
-            ) {
+            if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) {
               return;
             }
             setSegments(segRes.data || []);
           } catch (segErr) {
-            if (!isRequestCurrent(currentGen, currentJob)) {
+            if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) {
               return;
             }
             const parsed = parseApiError(segErr);
-            if (isAccessError(parsed)) {
+            if (isAuthOrPermissionError(parsed)) {
               purgeOnAccessError(parsed, currentGen, currentJob);
               return;
             }
@@ -217,20 +244,24 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
             const prevRes = await fetchTranslationJobPreviews(currentJob, {
               pageNumber: 1,
             });
-            if (
-              !isRequestCurrent(currentGen, currentJob) ||
-              dataLoadSeq !== dataLoadSeqRef.current
-            ) {
+            if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) {
               return;
             }
             setPreviews(prevRes);
           } catch (prevErr) {
-            if (!isRequestCurrent(currentGen, currentJob)) {
+            if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) {
               return;
             }
             const parsed = parseApiError(prevErr);
-            if (isAccessError(parsed)) {
+            if (isAuthOrPermissionError(parsed)) {
               purgeOnAccessError(parsed, currentGen, currentJob);
+              return;
+            }
+            if (
+              parsed.code === 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS' ||
+              parsed.code === 'NOT_REVIEWABLE'
+            ) {
+              await reconcileRef.current();
               return;
             }
             console.warn('Initial previews fetch warning:', prevErr);
@@ -246,7 +277,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           return;
         }
         const parsedErr = parseApiError(err);
-        if (isAccessError(parsedErr)) {
+        if (isJobAccessError(parsedErr)) {
           purgeOnAccessError(parsedErr, currentGen, currentJob);
         } else {
           resetState();
@@ -259,6 +290,9 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       authLoading,
       isAuthenticated,
       isRequestCurrent,
+      isChildRequestCurrent,
+      isAuthOrPermissionError,
+      isJobAccessError,
       purgeOnAccessError,
       resetState,
     ],
@@ -293,10 +327,20 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
   const pageCountInfo = computeAuthoritativePageCount(jobDetail?.reviewSummary);
 
-  const freshness = computeMaterializationFreshness(
+  const baseFreshness = computeMaterializationFreshness(
     jobDetail?.job.reviewRevision,
     jobDetail?.job.materializedRevision,
   );
+
+  const freshness: MaterializationFreshnessResult = authoritativeSyncError
+    ? {
+        isFresh: false,
+        needsMaterialize: false,
+        status: 'UNKNOWN',
+        message:
+          'Chưa thể đồng bộ phiên bản mới nhất từ máy chủ sau khi lưu. Vui lòng làm mới trang.',
+      }
+    : baseFreshness;
 
   const clearConflict = useCallback(() => {
     setConflictState(null);
@@ -307,16 +351,24 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     dataLoadSeqRef.current++;
     const currentJob = activeJobIdRef.current;
 
+    setJobDetail(null);
     setSegments([]);
     setPreviews(null);
     setSelectedSegmentId(null);
     setConflictState(null);
     setOverrideWorkspaceMode(null);
     setError(null);
+    setMaterializationStatus(null);
+    setCurrentPage(1);
+    setAuthoritativeSyncError(false);
     latestConfirmedRevisionRef.current = 0;
 
     await loadJobData(newGen, currentJob);
   }, [loadJobData]);
+
+  useEffect(() => {
+    reconcileRef.current = reconcileAuthoritativeWorkspace;
+  }, [reconcileAuthoritativeWorkspace]);
 
   const retry = useCallback(async () => {
     const newGen = ++generationRef.current;
@@ -326,109 +378,138 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     await loadJobData(newGen, currentJob);
   }, [resetState, loadJobData]);
 
-  const refetchDetail = useCallback(async () => {
-    if (status === 'error') {
-      await retry();
-      return;
-    }
-
-    const currentGen = generationRef.current;
-    const currentJob = activeJobIdRef.current;
-    const detailSeq = ++latestDetailSeqRef.current;
-
-    try {
-      const detail = await fetchTranslationJobDetail(currentJob);
-
-      if (!isRequestCurrent(currentGen, currentJob)) {
-        return;
-      }
-      if (detailSeq < latestDetailSeqRef.current) {
-        return;
+  const refetchDetail = useCallback(
+    async (options?: {
+      requirement?: 'BEST_EFFORT' | 'AUTHORITATIVE_REQUIRED';
+    }): Promise<boolean> => {
+      if (status === 'error') {
+        await retry();
+        return false;
       }
 
-      // Invariant: Do not allow an out-of-order older response to downgrade reviewRevision
-      if (detail.job.reviewRevision < latestConfirmedRevisionRef.current) {
-        return;
+      const currentGen = generationRef.current;
+      const currentJob = activeJobIdRef.current;
+      const detailSeq = ++latestDetailSeqRef.current;
+
+      try {
+        const detail = await fetchTranslationJobDetail(currentJob);
+
+        if (!isRequestCurrent(currentGen, currentJob)) {
+          return false;
+        }
+        if (detailSeq < latestDetailSeqRef.current) {
+          return false;
+        }
+
+        // Invariant: Do not allow an out-of-order older response to downgrade reviewRevision
+        if (detail.job.reviewRevision < latestConfirmedRevisionRef.current) {
+          return false;
+        }
+
+        latestConfirmedRevisionRef.current = Math.max(
+          latestConfirmedRevisionRef.current,
+          detail.job.reviewRevision,
+        );
+
+        // State Coherence: If reviewRevision or status changed, clear previews so old preview assets are not rendered with new revision
+        if (
+          jobDetail &&
+          (jobDetail.job.reviewRevision !== detail.job.reviewRevision ||
+            jobDetail.job.status !== detail.job.status)
+        ) {
+          setPreviews(null);
+        }
+
+        setJobDetail(detail);
+        setOverrideWorkspaceMode(null);
+        setError(null);
+        setAuthoritativeSyncError(false);
+
+        // Reconcile workspace mode and dynamically coordinate data loading
+        const newMode = getMangaStudioWorkspaceMode({
+          jobStatus: detail.job.status,
+          mediaFormat: detail.context.story.mediaFormat,
+          resultPageCount: detail.reviewSummary?.resultPageCount,
+        });
+
+        if (newMode.mode === 'REVIEWABLE') {
+          const dataLoadSeq = ++dataLoadSeqRef.current;
+
+          // Fetch segments
+          fetchTranslationJobSegments(currentJob, 1, 100)
+            .then((segRes) => {
+              if (isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) {
+                setSegments(segRes.data || []);
+              }
+            })
+            .catch((err) => {
+              if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) return;
+              const parsed = parseApiError(err);
+              if (isAuthOrPermissionError(parsed)) {
+                purgeOnAccessError(parsed, currentGen, currentJob);
+              }
+            });
+
+          // Fetch previews
+          fetchTranslationJobPreviews(currentJob, { pageNumber: 1 })
+            .then((prevRes) => {
+              if (isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) {
+                setPreviews(prevRes);
+              }
+            })
+            .catch(async (err) => {
+              if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) return;
+              const parsed = parseApiError(err);
+              if (isAuthOrPermissionError(parsed)) {
+                purgeOnAccessError(parsed, currentGen, currentJob);
+                return;
+              }
+              if (
+                parsed.code === 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS' ||
+                parsed.code === 'NOT_REVIEWABLE'
+              ) {
+                await reconcileRef.current();
+                return;
+              }
+            });
+        } else {
+          // Clean up both preview assets AND segments when leaving reviewable state,
+          // and bump dataLoadSeq to drop any in-flight requests from the previous state
+          dataLoadSeqRef.current++;
+          setPreviews(null);
+          setSegments([]);
+        }
+
+        return true;
+      } catch (err) {
+        if (!isRequestCurrent(currentGen, currentJob)) {
+          return false;
+        }
+        const parsed = parseApiError(err);
+        if (isJobAccessError(parsed)) {
+          purgeOnAccessError(parsed, currentGen, currentJob);
+          return false;
+        }
+
+        if (options?.requirement === 'AUTHORITATIVE_REQUIRED') {
+          setAuthoritativeSyncError(true);
+        } else {
+          console.warn('Failed to refetch job detail:', err);
+        }
+        return false;
       }
-
-      latestConfirmedRevisionRef.current = Math.max(
-        latestConfirmedRevisionRef.current,
-        detail.job.reviewRevision,
-      );
-
-      setJobDetail(detail);
-      setOverrideWorkspaceMode(null);
-      setError(null);
-
-      // Reconcile workspace mode and dynamically coordinate data loading
-      const newMode = getMangaStudioWorkspaceMode({
-        jobStatus: detail.job.status,
-        mediaFormat: detail.context.story.mediaFormat,
-        resultPageCount: detail.reviewSummary?.resultPageCount,
-      });
-
-      if (newMode.mode === 'REVIEWABLE') {
-        const dataLoadSeq = ++dataLoadSeqRef.current;
-
-        // Fetch segments
-        fetchTranslationJobSegments(currentJob, 1, 100)
-          .then((segRes) => {
-            if (
-              isRequestCurrent(currentGen, currentJob) &&
-              dataLoadSeq === dataLoadSeqRef.current
-            ) {
-              setSegments(segRes.data || []);
-            }
-          })
-          .catch((err) => {
-            if (!isRequestCurrent(currentGen, currentJob)) return;
-            const parsed = parseApiError(err);
-            if (isAccessError(parsed)) {
-              purgeOnAccessError(parsed, currentGen, currentJob);
-            }
-          });
-
-        // Fetch previews
-        fetchTranslationJobPreviews(currentJob, { pageNumber: 1 })
-          .then((prevRes) => {
-            if (
-              isRequestCurrent(currentGen, currentJob) &&
-              dataLoadSeq === dataLoadSeqRef.current
-            ) {
-              setPreviews(prevRes);
-            }
-          })
-          .catch((err) => {
-            if (!isRequestCurrent(currentGen, currentJob)) return;
-            const parsed = parseApiError(err);
-            if (isAccessError(parsed)) {
-              purgeOnAccessError(parsed, currentGen, currentJob);
-            }
-          });
-      } else {
-        // Clean up both preview assets AND segments when leaving reviewable state,
-        // and bump dataLoadSeq to drop any in-flight requests from the previous state
-        dataLoadSeqRef.current++;
-        setPreviews(null);
-        setSegments([]);
-      }
-    } catch (err) {
-      if (!isRequestCurrent(currentGen, currentJob)) {
-        return;
-      }
-      const parsed = parseApiError(err);
-      if (isAccessError(parsed)) {
-        purgeOnAccessError(parsed, currentGen, currentJob);
-      } else {
-        console.warn('Failed to refetch job detail:', err);
-      }
-    }
-  }, [
-    status,
-    retry,
-    isRequestCurrent,
-    purgeOnAccessError,
-  ]);
+    },
+    [
+      status,
+      retry,
+      isRequestCurrent,
+      isChildRequestCurrent,
+      isAuthOrPermissionError,
+      isJobAccessError,
+      purgeOnAccessError,
+      jobDetail,
+    ],
+  );
 
   const saveSegment = useCallback(
     async (
@@ -473,8 +554,11 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         );
         setConflictState(null);
 
-        // Reconcile job detail from server to sync reviewRevision
-        await refetchDetail();
+        // Authoritative reconciliation after mutation
+        const syncSuccess = await refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+        if (!syncSuccess) {
+          return false;
+        }
 
         return true;
       } catch (err) {
@@ -483,8 +567,16 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         }
 
         const parsed = parseApiError(err);
-        if (isAccessError(parsed)) {
+        if (isAuthOrPermissionError(parsed)) {
           purgeOnAccessError(parsed, currentGen, targetJob);
+          return false;
+        }
+
+        // Resource-scoped 404: If segmentId is 404 NOT_FOUND, this segment is missing/deleted,
+        // but the job and permission are still valid. Do NOT purge entire workspace!
+        if (parsed.status === 404 || parsed.code === 'NOT_FOUND') {
+          setError(parsed);
+          await reconcileAuthoritativeWorkspace();
           return false;
         }
 
@@ -499,7 +591,8 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           });
         } else if (
           conflict.type === 'NOT_REVIEWABLE' ||
-          conflict.type === 'REVISION_INVARIANT_VIOLATION'
+          conflict.type === 'REVISION_INVARIANT_VIOLATION' ||
+          conflict.type === 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS'
         ) {
           await reconcileAuthoritativeWorkspace();
         } else {
@@ -513,6 +606,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       segments,
       workspaceMode,
       isRequestCurrent,
+      isAuthOrPermissionError,
       refetchDetail,
       purgeOnAccessError,
       reconcileAuthoritativeWorkspace,
@@ -539,7 +633,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
         if (res.status === 'ALREADY_FRESH') {
           // Authoritative sync with backend
-          await refetchDetail();
+          await refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
         }
 
         return res;
@@ -549,7 +643,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         }
 
         const parsed = parseApiError(err);
-        if (isAccessError(parsed)) {
+        if (isAuthOrPermissionError(parsed) || isJobNotFoundError(parsed)) {
           purgeOnAccessError(parsed, currentGen, targetJob);
           return null;
         }
@@ -557,7 +651,8 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         const conflict = classifyConflictError(err);
         if (
           conflict.type === 'NOT_REVIEWABLE' ||
-          conflict.type === 'REVISION_INVARIANT_VIOLATION'
+          conflict.type === 'REVISION_INVARIANT_VIOLATION' ||
+          conflict.type === 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS'
         ) {
           await reconcileAuthoritativeWorkspace();
           return null;
@@ -569,6 +664,8 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     }, [
       workspaceMode,
       isRequestCurrent,
+      isAuthOrPermissionError,
+      isJobNotFoundError,
       refetchDetail,
       purgeOnAccessError,
       reconcileAuthoritativeWorkspace,

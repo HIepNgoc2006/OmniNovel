@@ -243,13 +243,17 @@ export type ConflictClassification =
       meta?: StandardErrorMeta;
     }
   | {
+      type: 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS';
+      message: string;
+    }
+  | {
       type: 'OTHER';
       code: string;
       message: string;
     };
 
 /**
- * Differentiate between 409 VERSION_CONFLICT, 409 NOT_REVIEWABLE, and 409 REVISION_INVARIANT_VIOLATION
+ * Differentiate between 409 VERSION_CONFLICT, 409 NOT_REVIEWABLE, 409 REVISION_INVARIANT_VIOLATION, and 409 PREVIEWS_NOT_AVAILABLE_FOR_STATUS
  * Uses allowlisted backend error.meta fields.
  */
 export function classifyConflictError(error: unknown): ConflictClassification {
@@ -268,6 +272,13 @@ export function classifyConflictError(error: unknown): ConflictClassification {
   if (parsed.code === 'NOT_REVIEWABLE') {
     return {
       type: 'NOT_REVIEWABLE',
+      message: parsed.message,
+    };
+  }
+
+  if (parsed.code === 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS') {
+    return {
+      type: 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS',
       message: parsed.message,
     };
   }

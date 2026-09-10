@@ -103,7 +103,13 @@ class MangaResultManifestV1(StrictManifestModel):
             if p.page in seen:
                 raise ValueError(f"Duplicate page number: {p.page}")
             seen.add(p.page)
-        return pages
+        n = len(pages)
+        for page_number in range(1, n + 1):
+            if page_number not in seen:
+                raise ValueError(
+                    f"NON_CONTIGUOUS_PAGES: Missing page {page_number} in 1..{n} sequence"
+                )
+        return sorted(pages, key=lambda p: p.page)
 
     @field_validator("cleanBases")
     @classmethod

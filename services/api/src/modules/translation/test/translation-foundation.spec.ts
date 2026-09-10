@@ -404,7 +404,7 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
       expect(result.reviewSummary.resultPageCount).toBe(5);
     });
 
-    it('#178 regression: should yield resultPageCount === null if COMIC resultManifest has duplicate, non-contiguous or corrupt pages', async () => {
+    describe('#178 / F14 regression: resultPageCount validation with full-schema fixtures', () => {
       const baseJob = {
         id: 'job-corrupt-manifest',
         status: TranslationJobStatus.READY_FOR_REVIEW,
@@ -450,58 +450,89 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
         targetVersion: null,
       };
 
-      storyMemberRepo.findOne.mockResolvedValue({
-        storyId: 'story-1',
-        userId: translatorUser.id,
-        role: StoryMemberRole.TRANSLATOR,
+      const createValidPage = (page: number, overrides = {}) => ({
+        page,
+        storageKey: `ai/jobs/job-corrupt-manifest/attempt-1/page_${page}.webp`,
+        previewKey: `ai/jobs/job-corrupt-manifest/attempt-1/page_${page}.webp`,
+        width: 1200,
+        height: 1800,
+        fileSizeBytes: 102400,
+        ...overrides,
       });
 
-      dataSource.query.mockResolvedValue([
-        {
-          segment_count: 2,
-          verified_count: 0,
-          page_count: 2,
-          block_count: 0,
-        },
-      ]);
+      beforeEach(() => {
+        storyMemberRepo.findOne.mockResolvedValue({
+          storyId: 'story-1',
+          userId: translatorUser.id,
+          role: StoryMemberRole.TRANSLATOR,
+        });
 
-      // Case A: Duplicate page numbers (page 1, page 1)
-      jobRepo.findOne.mockResolvedValue({
-        ...baseJob,
-        resultManifest: {
-          version: 1,
-          mediaFormat: 'COMIC',
-          pages: [
-            { page: 1, storageKey: 'k1', previewKey: 'p1' },
-            { page: 1, storageKey: 'k2', previewKey: 'p2' },
-          ],
-        },
+        dataSource.query.mockResolvedValue([
+          {
+            segment_count: 2,
+            verified_count: 0,
+            page_count: 2,
+            block_count: 0,
+          },
+        ]);
       });
-      let result = await service.getJob('job-corrupt-manifest', translatorUser);
-      expect(result.reviewSummary.resultPageCount).toBeNull();
 
-      // Case B: Non-contiguous page numbers (page 1, page 3)
-      jobRepo.findOne.mockResolvedValue({
-        ...baseJob,
-        resultManifest: {
-          version: 1,
-          mediaFormat: 'COMIC',
-          pages: [
-            { page: 1, storageKey: 'k1', previewKey: 'p1' },
-            { page: 3, storageKey: 'k3', previewKey: 'p3' },
-          ],
-        },
+      it('should yield resultPageCount === null if COMIC resultManifest has duplicate page numbers [1, 1] with full schema', async () => {
+        jobRepo.findOne.mockResolvedValue({
+          ...baseJob,
+          resultManifest: {
+            version: 1,
+            mediaFormat: 'COMIC',
+            pages: [
+              createValidPage(1, { storageKey: 'k1', previewKey: 'p1' }),
+              createValidPage(1, { storageKey: 'k2', previewKey: 'p2' }),
+            ],
+          },
+        });
+        const result = await service.getJob('job-corrupt-manifest', translatorUser);
+        expect(result.reviewSummary.resultPageCount).toBeNull();
       });
-      result = await service.getJob('job-corrupt-manifest', translatorUser);
-      expect(result.reviewSummary.resultPageCount).toBeNull();
 
-      // Case C: Corrupt / malformed string JSON
-      jobRepo.findOne.mockResolvedValue({
-        ...baseJob,
-        resultManifest: 'not-valid-json{',
+      it('should yield resultPageCount === null if COMIC resultManifest has non-contiguous pages [1, 3] with full schema', async () => {
+        jobRepo.findOne.mockResolvedValue({
+          ...baseJob,
+          resultManifest: {
+            version: 1,
+            mediaFormat: 'COMIC',
+            pages: [
+              createValidPage(1),
+              createValidPage(3),
+            ],
+          },
+        });
+        const result = await service.getJob('job-corrupt-manifest', translatorUser);
+        expect(result.reviewSummary.resultPageCount).toBeNull();
       });
-      result = await service.getJob('job-corrupt-manifest', translatorUser);
-      expect(result.reviewSummary.resultPageCount).toBeNull();
+
+      it('should yield resultPageCount === null if COMIC resultManifest starts at page 2 [2, 3] with full schema', async () => {
+        jobRepo.findOne.mockResolvedValue({
+          ...baseJob,
+          resultManifest: {
+            version: 1,
+            mediaFormat: 'COMIC',
+            pages: [
+              createValidPage(2),
+              createValidPage(3),
+            ],
+          },
+        });
+        const result = await service.getJob('job-corrupt-manifest', translatorUser);
+        expect(result.reviewSummary.resultPageCount).toBeNull();
+      });
+
+      it('should yield resultPageCount === null if COMIC resultManifest is corrupt / malformed string JSON', async () => {
+        jobRepo.findOne.mockResolvedValue({
+          ...baseJob,
+          resultManifest: 'not-valid-json{',
+        });
+        const result = await service.getJob('job-corrupt-manifest', translatorUser);
+        expect(result.reviewSummary.resultPageCount).toBeNull();
+      });
     });
 
     it('should throw NotFoundException if job does not exist', async () => {

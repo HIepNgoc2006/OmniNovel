@@ -875,10 +875,19 @@ export class TranslationService {
       });
     }
 
-    const rawManifest =
-      typeof job.resultManifest === 'string'
-        ? JSON.parse(job.resultManifest)
-        : job.resultManifest;
+    let rawManifest: unknown = job.resultManifest;
+    if (typeof rawManifest === 'string') {
+      try {
+        rawManifest = JSON.parse(rawManifest);
+      } catch (error: unknown) {
+        if (!(error instanceof SyntaxError)) {
+          throw error;
+        }
+        this.throwPreviewManifestInvariant(
+          `Manifest JSON is malformed for job ${id}`,
+        );
+      }
+    }
 
     const manifestValidation = validateTranslationResultManifest(
       rawManifest,

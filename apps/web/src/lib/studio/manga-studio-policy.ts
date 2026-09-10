@@ -174,7 +174,7 @@ export interface MaterializationFreshnessResult {
  * Materialization freshness evaluator (#157)
  * Strictly enforces authoritative invariant rules:
  * - reviewRevision > materializedRevision: STALE (needs re-render)
- * - reviewRevision === materializedRevision (and >= 1): FRESH
+ * - reviewRevision === materializedRevision (and >= 0): FRESH
  * - materializedRevision > reviewRevision: INVARIANT_VIOLATION (not fresh, invalid state)
  * - nullish / missing values: UNKNOWN
  */
@@ -221,7 +221,7 @@ export function computeMaterializationFreshness(
     isFresh: true,
     needsMaterialize: false,
     status: 'FRESH',
-    message: 'Bản kết xuất đã đồng bộ mới nhất với bản duyệt.',
+    message: 'Bản kết xuất đã đồng bộ với bản chỉnh sửa mới nhất.',
   };
 }
 
@@ -238,13 +238,18 @@ export type ConflictClassification =
       message: string;
     }
   | {
+      type: 'REVISION_INVARIANT_VIOLATION';
+      message: string;
+      meta?: StandardErrorMeta;
+    }
+  | {
       type: 'OTHER';
       code: string;
       message: string;
     };
 
 /**
- * Differentiate between 409 VERSION_CONFLICT and 409 NOT_REVIEWABLE
+ * Differentiate between 409 VERSION_CONFLICT, 409 NOT_REVIEWABLE, and 409 REVISION_INVARIANT_VIOLATION
  * Uses allowlisted backend error.meta fields.
  */
 export function classifyConflictError(error: unknown): ConflictClassification {
@@ -264,6 +269,14 @@ export function classifyConflictError(error: unknown): ConflictClassification {
     return {
       type: 'NOT_REVIEWABLE',
       message: parsed.message,
+    };
+  }
+
+  if (parsed.code === 'REVISION_INVARIANT_VIOLATION') {
+    return {
+      type: 'REVISION_INVARIANT_VIOLATION',
+      message: parsed.message,
+      meta: parsed.meta,
     };
   }
 

@@ -86,6 +86,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     materializationStatus: null,
     error: null,
     refetchDetail: vi.fn(),
+    reconcileAuthoritativeWorkspace: vi.fn(),
     retry: vi.fn(),
   };
 
@@ -275,5 +276,56 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     expect(screen.getByText('Phiên Bản Không Hợp Lệ')).toBeDefined();
     expect(screen.queryByText('Kết Xuất Mới Nhất')).toBeNull();
     expect(screen.queryByText('Đã Cập Nhật')).toBeNull();
+  });
+
+  it('renders Lỗi Tải Dữ Liệu Workspace for non-access 500 error and not Không Thể Truy Cập Job Dịch', async () => {
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      status: 'error',
+      jobDetail: null,
+      segments: [],
+      error: {
+        code: 'INTERNAL_SERVER_ERROR',
+        message: 'Lỗi máy chủ kết nối cơ sở dữ liệu.',
+        status: 500,
+      },
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    expect(await screen.findByText('Lỗi Tải Dữ Liệu Workspace')).toBeDefined();
+    expect(screen.queryByText('Không Thể Truy Cập Job Dịch')).toBeNull();
+    expect(screen.getByText('Lỗi máy chủ kết nối cơ sở dữ liệu.')).toBeDefined();
+    expect(screen.queryByText('Canvas So Sánh & Vùng Thoại OCR')).toBeNull();
+  });
+
+  it('triggers early identity fail-closed guard when jobDetail.job.id does not match route jobId', async () => {
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      jobDetail: {
+        ...defaultMockReturn.jobDetail!,
+        job: {
+          ...defaultMockReturn.jobDetail!.job,
+          id: 'job-different-id',
+        },
+      },
+      // Even if workspaceMode was somehow populated
+      workspaceMode: {
+        mode: 'REVIEWABLE',
+        canPreview: true,
+        canEdit: true,
+        canMaterialize: true,
+      },
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    expect(await screen.findByText('Đang chuẩn bị không gian làm việc...')).toBeDefined();
+    expect(screen.queryByText('Canvas So Sánh & Vùng Thoại OCR')).toBeNull();
+    expect(screen.queryByText('One Piece — Chương 1.00: Khởi đầu')).toBeNull();
   });
 });

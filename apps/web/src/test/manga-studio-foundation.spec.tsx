@@ -447,7 +447,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       });
     });
 
-    it('should catch 409 NOT_REVIEWABLE and transition workspace mode to non-reviewable', async () => {
+    it('should reconcile authoritative state to APPLIED when saveSegment receives 409 NOT_REVIEWABLE', async () => {
       vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValue({
         isAxiosError: true,
         response: {
@@ -463,6 +463,64 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         },
       });
 
+      const appliedJobDetail: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, status: TranslationJobStatus.APPLIED },
+      };
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail')
+        .mockResolvedValueOnce(mockComicJobDetail)
+        .mockResolvedValueOnce(appliedJobDetail);
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+        expect(result.current.workspaceMode?.mode).toBe('REVIEWABLE');
+        expect(result.current.segments.length).toBeGreaterThan(0);
+      });
+
+      let saveResult: boolean | undefined;
+      await act(async () => {
+        saveResult = await result.current.saveSegment('seg-1', 'Bản dịch mới');
+      });
+
+      expect(saveResult).toBe(false);
+      expect(result.current.jobDetail?.job.status).toBe(TranslationJobStatus.APPLIED);
+      expect(result.current.workspaceMode?.mode).toBe('APPLIED');
+      expect(result.current.workspaceMode?.mode).not.toBe('PIPELINE_MONITOR');
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+      expect(result.current.workspaceMode?.canPreview).toBe(false);
+      expect(result.current.segments).toEqual([]);
+      expect(result.current.previews).toBeNull();
+      expect(result.current.error).toBeNull();
+    });
+
+    it('should reconcile authoritative state to TERMINAL_STATE when saveSegment receives 409 NOT_REVIEWABLE and server is FAILED', async () => {
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValue({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: 'NOT_REVIEWABLE',
+              message: 'Job đã kết thúc thất bại.',
+              requestId: 'req-nr-failed',
+              timestamp: '2026-09-10T12:00:00Z',
+            },
+          },
+        },
+      });
+
+      const failedJobDetail: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, status: TranslationJobStatus.FAILED },
+      };
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail')
+        .mockResolvedValueOnce(mockComicJobDetail)
+        .mockResolvedValueOnce(failedJobDetail);
+
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
 
       await waitFor(() => {
@@ -473,7 +531,217 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         await result.current.saveSegment('seg-1', 'Bản dịch');
       });
 
+      expect(result.current.jobDetail?.job.status).toBe(TranslationJobStatus.FAILED);
+      expect(result.current.workspaceMode?.mode).toBe('TERMINAL_STATE');
+      expect(result.current.workspaceMode?.mode).not.toBe('PIPELINE_MONITOR');
       expect(result.current.workspaceMode?.canEdit).toBe(false);
+      expect(result.current.segments).toEqual([]);
+      expect(result.current.previews).toBeNull();
+    });
+
+    it('should not allow in-flight older preview or segments to revive data after 409 NOT_REVIEWABLE', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+        expect(result.current.workspaceMode?.mode).toBe('REVIEWABLE');
+      });
+
+      // Prepare in-flight preview that hangs during a refetch
+      let resolveOldPreviews: (val: any) => void;
+      const oldPreviewsPromise = new Promise((resolve) => {
+        resolveOldPreviews = resolve;
+      });
+
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockReturnValue(
+        oldPreviewsPromise as any,
+      );
+
+      // Trigger refetch while in reviewable state -> launches fetchTranslationJobPreviews which hangs
+      act(() => {
+        result.current.refetchDetail();
+      });
+
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValue({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: 'NOT_REVIEWABLE',
+              message: 'Job không còn reviewable',
+            },
+          },
+        },
+      });
+
+      const appliedJobDetail: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, status: TranslationJobStatus.APPLIED },
+      };
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(appliedJobDetail);
+
+      // Trigger saveSegment which receives 409 NOT_REVIEWABLE and reconciles to APPLIED
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Bản dịch');
+      });
+
+      expect(result.current.workspaceMode?.mode).toBe('APPLIED');
+      expect(result.current.previews).toBeNull();
+      expect(result.current.segments).toEqual([]);
+
+      // In-flight preview from earlier generation resolves now
+      await act(async () => {
+        resolveOldPreviews!({
+          sourceAssets: [{ url: 'https://cdn.example.com/stale-page.jpg' }],
+          resultAssets: [],
+        });
+      });
+
+      // Invariant: Data must NOT be revived!
+      expect(result.current.previews).toBeNull();
+      expect(result.current.segments).toEqual([]);
+    });
+
+    it('should reconcile authoritative state to APPLIED when materialization receives 409 NOT_REVIEWABLE without generic error', async () => {
+      vi.spyOn(translationApi, 'requestJobMaterialization').mockRejectedValue({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: 'NOT_REVIEWABLE',
+              message: 'Chỉ có thể yêu cầu tạo artifact cho job đang ở trạng thái READY_FOR_REVIEW.',
+            },
+          },
+        },
+      });
+
+      const appliedJobDetail: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, status: TranslationJobStatus.APPLIED },
+      };
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail')
+        .mockResolvedValueOnce(mockComicJobDetail)
+        .mockResolvedValueOnce(appliedJobDetail);
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      let matResult: any;
+      await act(async () => {
+        matResult = await result.current.triggerMaterialization();
+      });
+
+      expect(matResult).toBeNull();
+      expect(result.current.error).toBeNull();
+      expect(result.current.jobDetail?.job.status).toBe(TranslationJobStatus.APPLIED);
+      expect(result.current.workspaceMode?.mode).toBe('APPLIED');
+      expect(result.current.segments).toEqual([]);
+      expect(result.current.previews).toBeNull();
+    });
+
+    it('should reconcile authoritative state and reflect INVARIANT_VIOLATION freshness when materialization returns REVISION_INVARIANT_VIOLATION', async () => {
+      vi.spyOn(translationApi, 'requestJobMaterialization').mockRejectedValue({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: 'REVISION_INVARIANT_VIOLATION',
+              message: 'Lỗi bất biến phiên bản: materializedRevision không thể lớn hơn reviewRevision.',
+              meta: { reviewRevision: 1, materializedRevision: 2 },
+            },
+          },
+        },
+      });
+
+      const invariantJobDetail: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: {
+          ...mockComicJobDetail.job,
+          reviewRevision: 1,
+          materializedRevision: 2,
+        },
+      };
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail')
+        .mockResolvedValueOnce(mockComicJobDetail)
+        .mockResolvedValueOnce(invariantJobDetail);
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      let matResult: any;
+      await act(async () => {
+        matResult = await result.current.triggerMaterialization();
+      });
+
+      expect(matResult).toBeNull();
+      expect(result.current.error).toBeNull();
+      expect(result.current.freshness.status).toBe('INVARIANT_VIOLATION');
+      expect(result.current.freshness.isFresh).toBe(false);
+      expect(result.current.freshness.needsMaterialize).toBe(false);
+    });
+
+    it('should correctly handle materialization lifecycle: ENQUEUED, ALREADY_ENQUEUED, and ALREADY_FRESH', async () => {
+      // 6a: ENQUEUED
+      vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValueOnce({
+        status: 'ENQUEUED',
+        targetRevision: 2,
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      let res1: any;
+      await act(async () => {
+        res1 = await result.current.triggerMaterialization();
+      });
+
+      expect(res1?.status).toBe('ENQUEUED');
+      expect(result.current.materializationStatus).toBe('ENQUEUED');
+
+      // 6b: ALREADY_ENQUEUED
+      vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValueOnce({
+        status: 'ALREADY_ENQUEUED',
+        targetRevision: 2,
+      });
+
+      let res2: any;
+      await act(async () => {
+        res2 = await result.current.triggerMaterialization();
+      });
+
+      expect(res2?.status).toBe('ALREADY_ENQUEUED');
+      expect(result.current.materializationStatus).toBe('ALREADY_ENQUEUED');
+
+      // 6c: ALREADY_FRESH
+      const refetchSpy = vi.spyOn(translationApi, 'fetchTranslationJobDetail');
+      vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValueOnce({
+        status: 'ALREADY_FRESH',
+        targetRevision: 1,
+      });
+
+      let res3: any;
+      await act(async () => {
+        res3 = await result.current.triggerMaterialization();
+      });
+
+      expect(res3?.status).toBe('ALREADY_FRESH');
+      expect(result.current.materializationStatus).toBe('ALREADY_FRESH');
+      expect(refetchSpy).toHaveBeenCalled();
     });
   });
 

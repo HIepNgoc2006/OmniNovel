@@ -56,8 +56,16 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     );
   }
 
-  // 3. Error state (e.g. 401 / 403 / 404)
+  // 3. Error state (e.g. 401 / 403 / 404 vs 500 / network)
   if (studio.status === 'error' || studio.error) {
+    const isAccess =
+      studio.error?.status === 401 ||
+      studio.error?.status === 403 ||
+      studio.error?.status === 404 ||
+      studio.error?.code === 'FORBIDDEN' ||
+      studio.error?.code === 'NOT_FOUND' ||
+      studio.error?.code === 'UNAUTHORIZED';
+
     return (
       <div className="max-w-lg mx-auto my-20 p-8 bg-slate-900 border border-red-500/30 rounded-3xl text-center space-y-5">
         <AlertTriangle className="w-12 h-12 text-rose-500 mx-auto" />
@@ -66,11 +74,13 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             {studio.error?.code || 'ERROR'}
           </Badge>
           <h2 className="text-lg font-bold text-white">
-            Không Thể Truy Cập Job Dịch
+            {isAccess ? 'Không Thể Truy Cập Job Dịch' : 'Lỗi Tải Dữ Liệu Workspace'}
           </h2>
           <p className="text-xs text-slate-400 leading-relaxed">
             {studio.error?.message ||
-              'Đã có lỗi xảy ra hoặc bạn không có quyền truy cập.'}
+              (isAccess
+                ? 'Bạn không có quyền truy cập hoặc job dịch không tồn tại.'
+                : 'Đã có lỗi xảy ra khi tải dữ liệu không gian duyệt.')}
           </p>
         </div>
         <div className="pt-2 flex justify-center gap-3">
@@ -89,6 +99,18 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             </Button>
           </Link>
         </div>
+      </div>
+    );
+  }
+
+  // 3.5. Early Identity Guard: If jobDetail is present but does not match route jobId, fail-closed
+  if (studio.jobDetail && studio.jobDetail.job.id !== jobId) {
+    return (
+      <div className="max-w-xl mx-auto my-20 p-8 bg-slate-900 border border-slate-800 rounded-3xl text-center space-y-4">
+        <Clock className="w-8 h-8 text-slate-500 mx-auto animate-spin" />
+        <p className="text-xs text-slate-400">
+          Đang chuẩn bị không gian làm việc...
+        </p>
       </div>
     );
   }

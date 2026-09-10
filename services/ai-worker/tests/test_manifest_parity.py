@@ -136,6 +136,88 @@ class TestMangaResultManifestV1:
                 ],
             })
 
+    def test_reject_duplicate_pages(self):
+        with pytest.raises(ValidationError) as exc_info:
+            MangaResultManifestV1.model_validate({
+                "version": 1,
+                "mediaFormat": "COMIC",
+                "pages": [
+                    {
+                        "page": 1,
+                        "storageKey": "k1",
+                        "previewKey": "p1",
+                        "width": 100,
+                        "height": 100,
+                        "fileSizeBytes": 100,
+                    },
+                    {
+                        "page": 1,
+                        "storageKey": "k2",
+                        "previewKey": "p2",
+                        "width": 100,
+                        "height": 100,
+                        "fileSizeBytes": 100,
+                    },
+                ],
+            })
+        assert "Duplicate page number: 1" in str(exc_info.value)
+
+    def test_reject_sparse_pages_non_contiguous(self):
+        with pytest.raises(ValidationError) as exc_info:
+            MangaResultManifestV1.model_validate({
+                "version": 1,
+                "mediaFormat": "COMIC",
+                "pages": [
+                    {
+                        "page": 1,
+                        "storageKey": "k1",
+                        "previewKey": "p1",
+                        "width": 100,
+                        "height": 100,
+                        "fileSizeBytes": 100,
+                    },
+                    {
+                        "page": 3,
+                        "storageKey": "k3",
+                        "previewKey": "p3",
+                        "width": 100,
+                        "height": 100,
+                        "fileSizeBytes": 100,
+                    },
+                ],
+            })
+        err_msg = str(exc_info.value)
+        assert "NON_CONTIGUOUS_PAGES" in err_msg
+        assert "Missing page 2 in 1..2 sequence" in err_msg
+
+    def test_reject_starts_at_two_non_contiguous(self):
+        with pytest.raises(ValidationError) as exc_info:
+            MangaResultManifestV1.model_validate({
+                "version": 1,
+                "mediaFormat": "COMIC",
+                "pages": [
+                    {
+                        "page": 2,
+                        "storageKey": "k2",
+                        "previewKey": "p2",
+                        "width": 100,
+                        "height": 100,
+                        "fileSizeBytes": 100,
+                    },
+                    {
+                        "page": 3,
+                        "storageKey": "k3",
+                        "previewKey": "p3",
+                        "width": 100,
+                        "height": 100,
+                        "fileSizeBytes": 100,
+                    },
+                ],
+            })
+        err_msg = str(exc_info.value)
+        assert "NON_CONTIGUOUS_PAGES" in err_msg
+        assert "Missing page 1 in 1..2 sequence" in err_msg
+
 
 class TestNovelResultManifestV1:
     """Test Novel Result Manifest V1 structure and validation (#164)."""

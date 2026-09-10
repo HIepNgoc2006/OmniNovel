@@ -1,0 +1,380 @@
+'use client';
+
+import React, { use } from 'react';
+import Link from 'next/link';
+import { useMangaReviewStudio } from '@/lib/studio/use-manga-review-studio';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import {
+  ChevronLeft,
+  RefreshCw,
+  AlertTriangle,
+  CheckCircle2,
+  Clock,
+  Layers,
+  Sparkles,
+  BookOpen,
+  ArrowRight,
+  ShieldAlert,
+} from 'lucide-react';
+import { TranslationJobStatus } from '@omninovel/shared';
+
+interface PageProps {
+  params: Promise<{ jobId: string }>;
+}
+
+export default function MangaStudioJobPage({ params }: PageProps) {
+  const { jobId } = use(params);
+  const studio = useMangaReviewStudio(jobId);
+
+  // 1. Loading & Initializing state
+  if (studio.status === 'initializing' || studio.status === 'loading') {
+    return (
+      <div className="max-w-7xl mx-auto px-4 py-16 text-center space-y-4">
+        <RefreshCw className="w-8 h-8 text-red-500 animate-spin mx-auto" />
+        <p className="text-sm text-slate-400">
+          Đang tải dữ liệu không gian duyệt Manga Studio...
+        </p>
+      </div>
+    );
+  }
+
+  // 2. Auth Required fallback
+  if (studio.status === 'auth_required') {
+    return (
+      <div className="max-w-md mx-auto my-20 p-6 bg-slate-900 border border-slate-800 rounded-3xl text-center space-y-4">
+        <ShieldAlert className="w-12 h-12 text-amber-400 mx-auto" />
+        <h2 className="text-lg font-bold text-white">Yêu Cầu Xác Thực</h2>
+        <p className="text-xs text-slate-400 leading-relaxed">
+          Khu vực AI Translation Studio chỉ dành cho Biên dịch viên và Quản trị
+          viên đã đăng nhập.
+        </p>
+        <Link href="/studio">
+          <Button variant="secondary" size="sm">
+            Quay lại Studio
+          </Button>
+        </Link>
+      </div>
+    );
+  }
+
+  // 3. Error state (e.g. 403 / 404)
+  if (studio.status === 'error' || studio.error) {
+    return (
+      <div className="max-w-lg mx-auto my-20 p-8 bg-slate-900 border border-red-500/30 rounded-3xl text-center space-y-5">
+        <AlertTriangle className="w-12 h-12 text-rose-500 mx-auto" />
+        <div className="space-y-1">
+          <Badge variant="primary" className="mb-2">
+            {studio.error?.code || 'ERROR'}
+          </Badge>
+          <h2 className="text-lg font-bold text-white">
+            Không Thể Truy Cập Job Dịch
+          </h2>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            {studio.error?.message ||
+              'Đã có lỗi xảy ra hoặc bạn không có quyền truy cập.'}
+          </p>
+        </div>
+        <Link href="/studio">
+          <Button variant="outline" size="sm">
+            <ChevronLeft className="w-4 h-4 mr-1" />
+            Về Danh Sách Job
+          </Button>
+        </Link>
+      </div>
+    );
+  }
+
+  // 4. Unsupported format handoff (NOVEL)
+  if (studio.workspaceMode?.mode === 'UNSUPPORTED_FORMAT') {
+    return (
+      <div className="max-w-xl mx-auto my-20 p-8 bg-slate-900 border border-amber-500/30 rounded-3xl text-center space-y-5">
+        <BookOpen className="w-12 h-12 text-amber-400 mx-auto" />
+        <div className="space-y-2">
+          <Badge variant="warning">Định Dạng Không Khớp</Badge>
+          <h2 className="text-xl font-black text-white">
+            Tác Phẩm Tiểu Thuyết (Light Novel)
+          </h2>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            {studio.workspaceMode.message}
+          </p>
+        </div>
+        <div className="pt-2 flex justify-center gap-3">
+          <Link href="/studio">
+            <Button variant="outline" size="sm">
+              <ChevronLeft className="w-4 h-4 mr-1" />
+              Studio Dashboard
+            </Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // 5. Non-ready pipeline monitor state
+  if (studio.workspaceMode?.mode === 'PIPELINE_MONITOR') {
+    const job = studio.jobDetail?.job;
+    const progress = job?.progressPercentage ?? 0;
+    return (
+      <div className="max-w-2xl mx-auto my-16 p-8 bg-slate-900 border border-slate-800 rounded-3xl space-y-6">
+        <div className="flex items-center justify-between border-b border-slate-800 pb-4">
+          <div className="flex items-center gap-2">
+            <Clock className="w-5 h-5 text-amber-400 animate-spin" />
+            <h2 className="text-lg font-bold text-white">
+              Tiến Trình Dịch Tự Động Đang Xử Lý
+            </h2>
+          </div>
+          <Badge variant="warning">{job?.status}</Badge>
+        </div>
+
+        <div className="space-y-2">
+          <div className="flex justify-between text-xs text-slate-400 font-medium">
+            <span>Tiến độ tổng thể</span>
+            <span className="text-white font-bold">{progress}%</span>
+          </div>
+          <div className="w-full h-2.5 bg-slate-800 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-gradient-to-r from-red-600 to-amber-500 rounded-full transition-all duration-500"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+        </div>
+
+        <p className="text-xs text-slate-400 leading-relaxed">
+          {studio.workspaceMode.message}
+        </p>
+
+        <div className="flex justify-between items-center pt-2">
+          <Link href="/studio">
+            <Button variant="outline" size="sm">
+              <ChevronLeft className="w-4 h-4 mr-1" />
+              Bảng Điều Khiển
+            </Button>
+          </Link>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => studio.refetchDetail()}
+          >
+            <RefreshCw className="w-3.5 h-3.5 mr-1" />
+            Làm Mới Trạng Thái
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // 6. APPLIED read-only state
+  if (studio.workspaceMode?.mode === 'APPLIED') {
+    const story = studio.jobDetail?.context.story;
+    const chapter = studio.jobDetail?.context.chapter;
+    return (
+      <div className="max-w-3xl mx-auto my-12 p-8 bg-slate-900 border border-emerald-500/30 rounded-3xl space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-4">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <Badge variant="success">APPLIED</Badge>
+              <span className="text-xs text-slate-400">Chỉ Đọc (Read-only)</span>
+            </div>
+            <h1 className="text-xl font-black text-white">
+              {story?.title} — Chương {chapter?.chapterNumber}
+            </h1>
+          </div>
+          <div className="text-right">
+            <span className="text-xs text-slate-400">Số trang tác phẩm: </span>
+            <span className="text-xs font-bold text-emerald-400">
+              {studio.pageCountInfo.isAvailable
+                ? `${studio.pageCountInfo.pageCount} trang`
+                : 'Không xác định'}
+            </span>
+          </div>
+        </div>
+
+        <div className="p-4 bg-emerald-950/30 border border-emerald-800/40 rounded-2xl flex items-start gap-3">
+          <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+          <p className="text-xs text-slate-300 leading-relaxed">
+            {studio.workspaceMode.message}
+          </p>
+        </div>
+
+        <div className="flex justify-between items-center pt-2">
+          <Link href="/studio">
+            <Button variant="outline" size="sm">
+              <ChevronLeft className="w-4 h-4 mr-1" />
+              Về Studio Dashboard
+            </Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // 7. Full READY_FOR_REVIEW Reviewable Workspace (RED 0 Foundation Shell)
+  const job = studio.jobDetail?.job;
+  const story = studio.jobDetail?.context.story;
+  const chapter = studio.jobDetail?.context.chapter;
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+      {/* Studio Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-slate-800 pb-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Link
+              href="/studio"
+              className="text-slate-400 hover:text-white transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </Link>
+            <Badge variant="primary">Manga Review Studio</Badge>
+            <Badge variant="success">READY_FOR_REVIEW</Badge>
+            {studio.freshness.needsMaterialize ? (
+              <Badge variant="warning">Cần Kết Xuất Lại</Badge>
+            ) : (
+              <Badge variant="outline">Kết Xuất Mới Nhất</Badge>
+            )}
+          </div>
+          <h1 className="text-xl sm:text-2xl font-black text-white">
+            {story?.title} — Chương {chapter?.chapterNumber}
+            {chapter?.title ? `: ${chapter.title}` : ''}
+          </h1>
+        </div>
+
+        {/* Action controls & Authoritative PageCount */}
+        <div className="flex items-center gap-3">
+          <div className="px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-semibold">
+            <span className="text-slate-400">Trang: </span>
+            <span className="text-white">
+              {studio.pageCountInfo.isAvailable
+                ? `1..${studio.pageCountInfo.pageCount}`
+                : 'Không xác định'}
+            </span>
+          </div>
+
+          <Button
+            variant={studio.freshness.needsMaterialize ? 'primary' : 'outline'}
+            size="sm"
+            disabled={!studio.freshness.needsMaterialize}
+            onClick={() => studio.triggerMaterialization()}
+          >
+            <Sparkles className="w-3.5 h-3.5 mr-1" />
+            {studio.freshness.needsMaterialize
+              ? 'Tạo Kết Xuất (Re-render)'
+              : 'Đã Cập Nhật'}
+          </Button>
+        </div>
+      </div>
+
+      {/* OCC Conflict Alert Banner */}
+      {studio.conflictState && (
+        <div className="p-4 bg-amber-950/40 border border-amber-500/50 rounded-2xl flex items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
+            <div className="text-xs text-amber-200">
+              <span className="font-bold">Xung Đột Phiên Bản (409 VERSION_CONFLICT): </span>
+              Bản ghi segment đã được sửa bởi người khác (Server v{studio.conflictState.currentVersion} vs Bạn v{studio.conflictState.expectedVersion}). Bản nháp của bạn đã được giữ nguyên.
+            </div>
+          </div>
+          <Button variant="secondary" size="sm" onClick={studio.clearConflict}>
+            Đóng
+          </Button>
+        </div>
+      )}
+
+      {/* Workspace Main Grid (Foundation layout placeholder for RED 1-6 expansion) */}
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-[600px]">
+        {/* Left / Center: Canvas / Image Preview (Col 8) */}
+        <div className="lg:col-span-8 bg-slate-900 border border-slate-800 rounded-3xl p-6 flex flex-col justify-between">
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+              <Layers className="w-4 h-4 text-red-500" />
+              <span>Canvas So Sánh & Vùng Thoại OCR</span>
+            </h3>
+            <span className="text-xs text-slate-400">
+              Trang hiện tại: {studio.currentPage} /{' '}
+              {studio.pageCountInfo.pageCount ?? '—'}
+            </span>
+          </div>
+
+          {/* Placeholder for canvas / image preview component */}
+          <div className="flex-1 my-6 flex items-center justify-center border border-dashed border-slate-800 rounded-2xl bg-slate-950/40 p-8 text-center">
+            <div className="space-y-2">
+              <p className="text-xs text-slate-400">
+                Không gian hiển thị ảnh gốc vs ảnh đã dịch và OCR bounding boxes (RED 1 - RED 2).
+              </p>
+              <p className="text-[11px] text-slate-600">
+                Segment Count: {studio.segments.length} | Authoritative Page Count:{' '}
+                {studio.pageCountInfo.pageCount ?? 'N/A'}
+              </p>
+            </div>
+          </div>
+
+          {/* Page Navigator Navigation Bar */}
+          <div className="flex items-center justify-center gap-2 pt-3 border-t border-slate-800">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={studio.currentPage <= 1}
+              onClick={() => studio.setCurrentPage(Math.max(1, studio.currentPage - 1))}
+            >
+              Trang Trước
+            </Button>
+            <span className="text-xs font-semibold text-slate-300 px-3">
+              Trang {studio.currentPage}
+            </span>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={
+                studio.pageCountInfo.pageCount
+                  ? studio.currentPage >= studio.pageCountInfo.pageCount
+                  : true
+              }
+              onClick={() => studio.setCurrentPage(studio.currentPage + 1)}
+            >
+              Trang Tiếp
+            </Button>
+          </div>
+        </div>
+
+        {/* Right Panel: Segments List & Translation Editor (Col 4) */}
+        <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 flex flex-col">
+          <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3">
+            Danh Sách Ô Thoại (Segments)
+          </h3>
+
+          <div className="flex-1 overflow-y-auto space-y-3 max-h-[500px] pr-1">
+            {studio.segments.map((seg) => (
+              <div
+                key={seg.id}
+                onClick={() => studio.setSelectedSegmentId(seg.id)}
+                className={`p-3 rounded-2xl border transition-all cursor-pointer ${
+                  studio.selectedSegmentId === seg.id
+                    ? 'bg-red-500/10 border-red-500/40'
+                    : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                }`}
+              >
+                <div className="flex justify-between items-center text-[11px] text-slate-400 mb-1">
+                  <span>Trang {seg.pageNumber ?? 1} • Thứ tự #{seg.sortOrder}</span>
+                  {seg.isHumanVerified ? (
+                    <Badge variant="success">Đã Duyệt</Badge>
+                  ) : (
+                    <Badge variant="outline">Chưa Duyệt</Badge>
+                  )}
+                </div>
+                <p className="text-xs font-mono text-slate-400 line-clamp-1 mb-1">
+                  {seg.rawText}
+                </p>
+                <p className="text-xs text-white line-clamp-2">
+                  {seg.translatedText || (
+                    <span className="text-slate-600 italic">Chưa có bản dịch</span>
+                  )}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

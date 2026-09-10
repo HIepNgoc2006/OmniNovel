@@ -45,6 +45,7 @@ import {
   ReviewAssetDto,
   ReviewSummaryDto,
   TranslationJobPreviewsResponse,
+  MaterializationRequestResponse,
 } from '@omninovel/shared';
 import { TranslationJob } from './entities/translation-job.entity';
 import { TranslationProject } from './entities/translation-project.entity';
@@ -2611,7 +2612,10 @@ export class TranslationService {
   /**
    * Yêu cầu tạo artifact (Materialization) có Snapshot bất biến và Coalescing BullMQ
    */
-  async requestMaterialization(jobId: string, user: any) {
+  async requestMaterialization(
+    jobId: string,
+    user: any,
+  ): Promise<MaterializationRequestResponse> {
     // 1. Transaction: Lock job FOR UPDATE & evaluate revision invariants
     const txResult = await this.dataSource.transaction(async (manager) => {
       const job = await manager

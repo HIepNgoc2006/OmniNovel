@@ -247,12 +247,21 @@ export interface ReadChapterRewardResponse {
   dailyCap?: number;
 }
 
+export interface StandardErrorMeta {
+  currentVersion?: number;
+  expectedVersion?: number;
+  reviewRevision?: number;
+  materializedRevision?: number;
+  [key: string]: unknown;
+}
+
 export interface StandardErrorResponse {
   error: {
     code: string;
     message: string;
     requestId: string;
     timestamp: string;
+    meta?: StandardErrorMeta;
     details?: Array<{ field: string; issue: string }>;
   };
 }

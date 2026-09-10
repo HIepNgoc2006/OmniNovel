@@ -1,0 +1,117 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import {
+  fetchTranslationJobDetail,
+  fetchTranslationJobSegments,
+  fetchTranslationJobPreviews,
+  updateTranslationSegment,
+  requestJobMaterialization,
+  parseApiError,
+} from '../lib/api/translation';
+import { apiClient } from '../lib/api/client';
+
+describe('Translation API Client & Error Parsing (#149 RED 0)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  describe('Endpoint paths and parameters', () => {
+    it('fetchTranslationJobDetail calls GET /ai/jobs/:id (without duplicating /api/v1)', async () => {
+      const spy = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { job: { id: 'job-1' } } } as any);
+      await fetchTranslationJobDetail('job-1');
+      expect(spy).toHaveBeenCalledWith('/ai/jobs/job-1');
+    });
+
+    it('fetchTranslationJobSegments calls GET /ai/jobs/:id/segments with query params', async () => {
+      const spy = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { data: [] } } as any);
+      await fetchTranslationJobSegments('job-1', 2, 25);
+      expect(spy).toHaveBeenCalledWith('/ai/jobs/job-1/segments', {
+        params: { page: 2, limit: 25 },
+      });
+    });
+
+    it('fetchTranslationJobPreviews calls GET /ai/jobs/:id/previews with bounded query', async () => {
+      const spy = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { sourceAssets: [], resultAssets: [] } } as any);
+      await fetchTranslationJobPreviews('job-1', { pageNumber: 3 });
+      expect(spy).toHaveBeenCalledWith('/ai/jobs/job-1/previews', {
+        params: { pageNumber: 3 },
+      });
+    });
+
+    it('updateTranslationSegment calls PATCH /ai/jobs/:id/segments/:segmentId with payload', async () => {
+      const spy = vi.spyOn(apiClient, 'patch').mockResolvedValue({ data: { id: 'seg-1' } } as any);
+      await updateTranslationSegment('job-1', 'seg-1', {
+        translatedText: 'Đã dịch',
+        expectedVersion: 1,
+      });
+      expect(spy).toHaveBeenCalledWith('/ai/jobs/job-1/segments/seg-1', {
+        translatedText: 'Đã dịch',
+        expectedVersion: 1,
+      });
+    });
+
+    it('requestJobMaterialization calls POST /ai/jobs/:id/materializations', async () => {
+      const spy = vi.spyOn(apiClient, 'post').mockResolvedValue({
+        data: { status: 'ENQUEUED', targetRevision: 2 },
+      } as any);
+      await requestJobMaterialization('job-1');
+      expect(spy).toHaveBeenCalledWith('/ai/jobs/job-1/materializations', {});
+    });
+  });
+
+  describe('parseApiError with StandardErrorResponse and error.meta', () => {
+    it('parses structured backend error with meta (currentVersion, expectedVersion)', () => {
+      const mockAxiosError = {
+        isAxiosError: true,
+        message: 'Request failed with status code 409',
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: 'VERSION_CONFLICT',
+              message: 'Segment version conflict detected',
+              requestId: 'req-abc',
+              timestamp: '2026-09-10T12:00:00Z',
+              meta: {
+                currentVersion: 4,
+                expectedVersion: 2,
+              },
+            },
+          },
+        },
+      };
+
+      const parsed = parseApiError(mockAxiosError);
+      expect(parsed.code).toBe('VERSION_CONFLICT');
+      expect(parsed.message).toBe('Segment version conflict detected');
+      expect(parsed.status).toBe(409);
+      expect(parsed.requestId).toBe('req-abc');
+      expect(parsed.meta).toEqual({
+        currentVersion: 4,
+        expectedVersion: 2,
+      });
+    });
+
+    it('parses fallback HTTP error when error body is not standard JSON', () => {
+      const mockAxiosError = {
+        isAxiosError: true,
+        message: 'Network Error',
+        response: {
+          status: 502,
+          data: 'Bad Gateway',
+        },
+      };
+
+      const parsed = parseApiError(mockAxiosError);
+      expect(parsed.code).toBe('HTTP_ERROR');
+      expect(parsed.message).toBe('Network Error');
+      expect(parsed.status).toBe(502);
+    });
+
+    it('parses non-axios native Error instance', () => {
+      const err = new Error('Generic JS Failure');
+      const parsed = parseApiError(err);
+      expect(parsed.code).toBe('UNHANDLED_ERROR');
+      expect(parsed.message).toBe('Generic JS Failure');
+    });
+  });
+});

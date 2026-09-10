@@ -4,12 +4,14 @@ import {
   ReviewSummaryDto,
   StandardErrorMeta,
 } from '@omninovel/shared';
-import { parseApiError, ParsedApiError } from '../api/translation';
+import { parseApiError } from '../api/translation';
 
 export type WorkspaceMode =
   | 'UNSUPPORTED_FORMAT'
   | 'REVIEWABLE'
+  | 'COUNT_UNAVAILABLE'
   | 'APPLIED'
+  | 'TERMINAL_STATE'
   | 'PIPELINE_MONITOR';
 
 export interface WorkspaceModeResult {
@@ -21,15 +23,42 @@ export interface WorkspaceModeResult {
   status?: TranslationJobStatus;
 }
 
+export interface GetMangaStudioWorkspaceModeOptions {
+  jobStatus: TranslationJobStatus;
+  mediaFormat: MediaFormat;
+  resultPageCount?: number | null;
+}
+
 /**
- * Determine the workspace operational mode based on job status and media format.
- * Fail-closed: Only COMIC in READY_FOR_REVIEW allows preview, edit, and materialization.
- * APPLIED preserves result count view but STRICTLY blocks mutation, preview, and materialization.
+ * Determine the workspace operational mode based on job status, media format, and authoritative page count.
+ * Fail-closed policy:
+ * - Non-COMIC: UNSUPPORTED_FORMAT (handoff to Novel Studio)
+ * - READY_FOR_REVIEW:
+ *     - If resultPageCount is valid safe positive integer (> 0): REVIEWABLE (preview, edit, materialize allowed)
+ *     - If resultPageCount is null or invalid: COUNT_UNAVAILABLE (STRICTLY block previews, edits, materialization)
+ * - APPLIED: APPLIED (read-only metadata, strictly block mutations, previews, and materialization)
+ * - FAILED, CANCELED, EXPIRED: TERMINAL_STATE (no active pipeline, no false waiting prompt)
+ * - QUEUED, PREPROCESSING, OCR, TRANSLATING, INPAINTING, TYPESETTING, QUALITY_CHECK: PIPELINE_MONITOR
  */
 export function getMangaStudioWorkspaceMode(
-  jobStatus: TranslationJobStatus,
-  mediaFormat: MediaFormat,
+  jobStatusOrOptions: TranslationJobStatus | GetMangaStudioWorkspaceModeOptions,
+  mediaFormatArg?: MediaFormat,
+  resultPageCountArg?: number | null,
 ): WorkspaceModeResult {
+  let jobStatus: TranslationJobStatus;
+  let mediaFormat: MediaFormat;
+  let resultPageCount: number | null | undefined;
+
+  if (typeof jobStatusOrOptions === 'object' && jobStatusOrOptions !== null) {
+    jobStatus = jobStatusOrOptions.jobStatus;
+    mediaFormat = jobStatusOrOptions.mediaFormat;
+    resultPageCount = jobStatusOrOptions.resultPageCount;
+  } else {
+    jobStatus = jobStatusOrOptions;
+    mediaFormat = mediaFormatArg!;
+    resultPageCount = resultPageCountArg;
+  }
+
   if (mediaFormat !== MediaFormat.COMIC) {
     return {
       mode: 'UNSUPPORTED_FORMAT',
@@ -42,6 +71,24 @@ export function getMangaStudioWorkspaceMode(
   }
 
   if (jobStatus === TranslationJobStatus.READY_FOR_REVIEW) {
+    // Strict requirement: Authoritative result page count must be a positive integer
+    const isValidCount =
+      typeof resultPageCount === 'number' &&
+      Number.isSafeInteger(resultPageCount) &&
+      resultPageCount > 0;
+
+    if (!isValidCount) {
+      return {
+        mode: 'COUNT_UNAVAILABLE',
+        canPreview: false,
+        canEdit: false,
+        canMaterialize: false,
+        message:
+          'Chưa có thông tin số trang kết xuất hợp lệ từ máy chủ. Không gian duyệt tạm thời chưa sẵn sàng, vui lòng thử lại sau.',
+        status: jobStatus,
+      };
+    }
+
     return {
       mode: 'REVIEWABLE',
       canPreview: true,
@@ -63,6 +110,23 @@ export function getMangaStudioWorkspaceMode(
     };
   }
 
+  // Terminal states (finished with failure or cancellation)
+  if (
+    jobStatus === TranslationJobStatus.FAILED ||
+    jobStatus === TranslationJobStatus.CANCELED ||
+    jobStatus === TranslationJobStatus.EXPIRED
+  ) {
+    return {
+      mode: 'TERMINAL_STATE',
+      canPreview: false,
+      canEdit: false,
+      canMaterialize: false,
+      message: `Job dịch đã kết thúc ở trạng thái ${jobStatus}. Vui lòng tạo job mới nếu muốn tiếp tục quy trình dịch thuật.`,
+      status: jobStatus,
+    };
+  }
+
+  // Active in-progress pipeline monitor
   return {
     mode: 'PIPELINE_MONITOR',
     canPreview: false,
@@ -93,18 +157,72 @@ export function computeAuthoritativePageCount(
   return { pageCount: null, isAvailable: false };
 }
 
+export type FreshnessStatus =
+  | 'FRESH'
+  | 'STALE'
+  | 'INVARIANT_VIOLATION'
+  | 'UNKNOWN';
+
+export interface MaterializationFreshnessResult {
+  isFresh: boolean;
+  needsMaterialize: boolean;
+  status: FreshnessStatus;
+  message?: string;
+}
+
 /**
  * Materialization freshness evaluator (#157)
- * Invariant: reviewRevision > materializedRevision indicates stale artifact needing re-render.
+ * Strictly enforces authoritative invariant rules:
+ * - reviewRevision > materializedRevision: STALE (needs re-render)
+ * - reviewRevision === materializedRevision (and >= 1): FRESH
+ * - materializedRevision > reviewRevision: INVARIANT_VIOLATION (not fresh, invalid state)
+ * - nullish / missing values: UNKNOWN
  */
 export function computeMaterializationFreshness(
-  reviewRevision: number,
-  materializedRevision: number,
-): { isFresh: boolean; needsMaterialize: boolean } {
-  if (reviewRevision > materializedRevision) {
-    return { isFresh: false, needsMaterialize: true };
+  reviewRevision?: number | null,
+  materializedRevision?: number | null,
+): MaterializationFreshnessResult {
+  if (
+    typeof reviewRevision !== 'number' ||
+    typeof materializedRevision !== 'number' ||
+    !Number.isSafeInteger(reviewRevision) ||
+    !Number.isSafeInteger(materializedRevision) ||
+    reviewRevision < 1 ||
+    materializedRevision < 0
+  ) {
+    return {
+      isFresh: false,
+      needsMaterialize: false,
+      status: 'UNKNOWN',
+      message: 'Thông tin phiên bản chưa xác định.',
+    };
   }
-  return { isFresh: true, needsMaterialize: false };
+
+  if (materializedRevision > reviewRevision) {
+    return {
+      isFresh: false,
+      needsMaterialize: false,
+      status: 'INVARIANT_VIOLATION',
+      message:
+        'Lỗi bất biến phiên bản: materializedRevision không thể lớn hơn reviewRevision.',
+    };
+  }
+
+  if (reviewRevision > materializedRevision) {
+    return {
+      isFresh: false,
+      needsMaterialize: true,
+      status: 'STALE',
+      message: 'Bản kết xuất cũ hơn bản chỉnh sửa, cần kết xuất lại.',
+    };
+  }
+
+  return {
+    isFresh: true,
+    needsMaterialize: false,
+    status: 'FRESH',
+    message: 'Bản kết xuất đã đồng bộ mới nhất với bản duyệt.',
+  };
 }
 
 export type ConflictClassification =

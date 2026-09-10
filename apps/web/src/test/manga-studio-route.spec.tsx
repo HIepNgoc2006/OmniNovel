@@ -1,0 +1,188 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, act } from '@testing-library/react';
+import React from 'react';
+import MangaStudioJobPage from '../app/(site)/(studio)/studio/ai/jobs/[jobId]/page';
+import * as studioHook from '../lib/studio/use-manga-review-studio';
+import { TranslationJobStatus, MediaFormat } from '@omninovel/shared';
+
+vi.mock('../lib/studio/use-manga-review-studio');
+
+describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
+  const mockJobId = 'job-route-test-123';
+  const mockParams = Promise.resolve({ jobId: mockJobId });
+
+  const defaultMockReturn: studioHook.UseMangaReviewStudioReturn = {
+    status: 'ready',
+    jobDetail: {
+      job: {
+        id: mockJobId,
+        status: TranslationJobStatus.READY_FOR_REVIEW,
+        progressPercentage: 100,
+        provider: 'OPENAI',
+        modelName: 'gpt-4o-mini',
+        promptVersion: 'v1',
+        attemptCount: 1,
+        maxAttempts: 3,
+        createdAt: '2026-09-01T10:00:00Z',
+        startedAt: '2026-09-01T10:01:00Z',
+        heartbeatAt: '2026-09-01T10:05:00Z',
+        completedAt: '2026-09-01T10:05:00Z',
+        expiresAt: null,
+        reviewRevision: 1,
+        materializedRevision: 1,
+      },
+      context: {
+        story: { id: 's1', title: 'One Piece', slug: 'one-piece', mediaFormat: MediaFormat.COMIC },
+        edition: { id: 'e1', editionName: 'Việt', language: 'vi', isDefault: true },
+        chapter: { id: 'c1', chapterNumber: '1.00', title: 'Khởi đầu' },
+        project: { id: 'p1', sourceLanguage: 'ja', targetLanguage: 'vi' },
+        sourceVersion: { id: 'v1', versionNumber: 1 },
+        targetVersion: null,
+      },
+      reviewSummary: {
+        segmentCount: 1,
+        verifiedCount: 0,
+        pageCount: 1,
+        resultPageCount: 3,
+        blockCount: null,
+      },
+    },
+    segments: [
+      {
+        id: 'seg-1',
+        jobId: mockJobId,
+        pageNumber: 1,
+        anchorBlockId: null,
+        sortOrder: 1,
+        bboxX: 10,
+        bboxY: 10,
+        bboxW: 50,
+        bboxH: 20,
+        rawText: 'ヤッホー',
+        translatedText: 'Yoohoo',
+        confidence: 0.99,
+        isHumanVerified: false,
+        version: 1,
+      },
+    ],
+    previews: null,
+    workspaceMode: {
+      mode: 'REVIEWABLE',
+      canPreview: true,
+      canEdit: true,
+      canMaterialize: true,
+      status: TranslationJobStatus.READY_FOR_REVIEW,
+    },
+    pageCountInfo: { pageCount: 3, isAvailable: true },
+    freshness: { isFresh: true, needsMaterialize: false, status: 'FRESH' },
+    currentPage: 1,
+    setCurrentPage: vi.fn(),
+    selectedSegmentId: null,
+    setSelectedSegmentId: vi.fn(),
+    conflictState: null,
+    clearConflict: vi.fn(),
+    saveSegment: vi.fn(),
+    triggerMaterialization: vi.fn(),
+    materializationStatus: null,
+    error: null,
+    refetchDetail: vi.fn(),
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('renders COUNT_UNAVAILABLE view with retry button and does NOT render READY shell', async () => {
+    const refetchSpy = vi.fn();
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      workspaceMode: {
+        mode: 'COUNT_UNAVAILABLE',
+        canPreview: false,
+        canEdit: false,
+        canMaterialize: false,
+        message: 'Chưa có thông tin số trang kết xuất hợp lệ từ máy chủ.',
+      },
+      pageCountInfo: { pageCount: null, isAvailable: false },
+      refetchDetail: refetchSpy,
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    expect(await screen.findByText('Số Trang Chưa Sẵn Sàng')).toBeDefined();
+    expect(screen.getByText('Dữ Liệu Kết Xuất Chưa Hoàn Tất')).toBeDefined();
+    expect(screen.queryByText('Canvas So Sánh & Vùng Thoại OCR')).toBeNull();
+
+    // Click retry button
+    const retryBtn = screen.getByText('Tải Lại Dữ Liệu');
+    fireEvent.click(retryBtn);
+    expect(refetchSpy).toHaveBeenCalled();
+  });
+
+  it('renders TERMINAL_STATE view for FAILED job and does NOT show in-progress waiting bar', async () => {
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      jobDetail: {
+        ...defaultMockReturn.jobDetail!,
+        job: { ...defaultMockReturn.jobDetail!.job, status: TranslationJobStatus.FAILED },
+      },
+      workspaceMode: {
+        mode: 'TERMINAL_STATE',
+        canPreview: false,
+        canEdit: false,
+        canMaterialize: false,
+        message: 'Job dịch đã kết thúc ở trạng thái FAILED.',
+        status: TranslationJobStatus.FAILED,
+      },
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    expect(await screen.findByText('Job Dịch Đã Kết Thúc')).toBeDefined();
+    expect(screen.getByText('FAILED')).toBeDefined();
+    expect(screen.queryByText('Tiến Trình Dịch Tự Động Đang Xử Lý')).toBeNull();
+    expect(screen.queryByText('Canvas So Sánh & Vùng Thoại OCR')).toBeNull();
+  });
+
+  it('renders Error view on 403 FORBIDDEN and does NOT leak workspace shell', async () => {
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      status: 'error',
+      jobDetail: null,
+      segments: [],
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Bạn không có quyền truy cập job dịch này.',
+        status: 403,
+      },
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    expect(await screen.findByText('Không Thể Truy Cập Job Dịch')).toBeDefined();
+    expect(screen.getByText('FORBIDDEN')).toBeDefined();
+    expect(screen.getByText('Bạn không có quyền truy cập job dịch này.')).toBeDefined();
+    expect(screen.queryByText('Canvas So Sánh & Vùng Thoại OCR')).toBeNull();
+  });
+
+  it('renders full READY_FOR_REVIEW shell when jobDetail and count are valid', async () => {
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue(defaultMockReturn);
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    expect(await screen.findByText('One Piece — Chương 1.00: Khởi đầu')).toBeDefined();
+    expect(screen.getByText('READY_FOR_REVIEW')).toBeDefined();
+    expect(screen.getByText('1..3')).toBeDefined();
+    expect(screen.getByText('Canvas So Sánh & Vùng Thoại OCR')).toBeDefined();
+    expect(screen.getByText('Danh Sách Ô Thoại (Segments)')).toBeDefined();
+    expect(screen.getByText('ヤッホー')).toBeDefined();
+  });
+});

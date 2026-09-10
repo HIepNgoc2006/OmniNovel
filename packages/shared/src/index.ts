@@ -252,7 +252,6 @@ export interface StandardErrorMeta {
   expectedVersion?: number;
   reviewRevision?: number;
   materializedRevision?: number;
-  [key: string]: unknown;
 }
 
 export interface StandardErrorResponse {

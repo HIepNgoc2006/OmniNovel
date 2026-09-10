@@ -14,10 +14,8 @@ import {
   Layers,
   Sparkles,
   BookOpen,
-  ArrowRight,
   ShieldAlert,
 } from 'lucide-react';
-import { TranslationJobStatus } from '@omninovel/shared';
 
 interface PageProps {
   params: Promise<{ jobId: string }>;
@@ -58,7 +56,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     );
   }
 
-  // 3. Error state (e.g. 403 / 404)
+  // 3. Error state (e.g. 401 / 403 / 404)
   if (studio.status === 'error' || studio.error) {
     return (
       <div className="max-w-lg mx-auto my-20 p-8 bg-slate-900 border border-red-500/30 rounded-3xl text-center space-y-5">
@@ -111,7 +109,68 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     );
   }
 
-  // 5. Non-ready pipeline monitor state
+  // 5. Count Unavailable state (READY_FOR_REVIEW without valid page sequence)
+  if (studio.workspaceMode?.mode === 'COUNT_UNAVAILABLE') {
+    return (
+      <div className="max-w-xl mx-auto my-20 p-8 bg-slate-900 border border-amber-500/30 rounded-3xl text-center space-y-5">
+        <AlertTriangle className="w-12 h-12 text-amber-400 mx-auto" />
+        <div className="space-y-2">
+          <Badge variant="warning">Số Trang Chưa Sẵn Sàng</Badge>
+          <h2 className="text-xl font-black text-white">
+            Dữ Liệu Kết Xuất Chưa Hoàn Tất
+          </h2>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            {studio.workspaceMode.message}
+          </p>
+        </div>
+        <div className="pt-2 flex justify-center gap-3">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => studio.refetchDetail()}
+          >
+            <RefreshCw className="w-3.5 h-3.5 mr-1" />
+            Tải Lại Dữ Liệu
+          </Button>
+          <Link href="/studio">
+            <Button variant="outline" size="sm">
+              <ChevronLeft className="w-4 h-4 mr-1" />
+              Studio Dashboard
+            </Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // 6. Terminal ended state (FAILED / CANCELED / EXPIRED)
+  if (studio.workspaceMode?.mode === 'TERMINAL_STATE') {
+    const job = studio.jobDetail?.job;
+    return (
+      <div className="max-w-xl mx-auto my-20 p-8 bg-slate-900 border border-rose-500/30 rounded-3xl text-center space-y-5">
+        <ShieldAlert className="w-12 h-12 text-rose-500 mx-auto" />
+        <div className="space-y-2">
+          <Badge variant="primary">{job?.status}</Badge>
+          <h2 className="text-xl font-black text-white">
+            Job Dịch Đã Kết Thúc
+          </h2>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            {studio.workspaceMode.message}
+          </p>
+        </div>
+        <div className="pt-2 flex justify-center gap-3">
+          <Link href="/studio">
+            <Button variant="outline" size="sm">
+              <ChevronLeft className="w-4 h-4 mr-1" />
+              Về Studio Dashboard
+            </Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
+  // 7. Non-ready pipeline monitor state (QUEUED, PREPROCESSING, etc.)
   if (studio.workspaceMode?.mode === 'PIPELINE_MONITOR') {
     const job = studio.jobDetail?.job;
     const progress = job?.progressPercentage ?? 0;
@@ -164,7 +223,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     );
   }
 
-  // 6. APPLIED read-only state
+  // 8. APPLIED read-only state
   if (studio.workspaceMode?.mode === 'APPLIED') {
     const story = studio.jobDetail?.context.story;
     const chapter = studio.jobDetail?.context.chapter;
@@ -209,10 +268,26 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     );
   }
 
-  // 7. Full READY_FOR_REVIEW Reviewable Workspace (RED 0 Foundation Shell)
-  const job = studio.jobDetail?.job;
-  const story = studio.jobDetail?.context.story;
-  const chapter = studio.jobDetail?.context.chapter;
+  // 9. Fail-Closed Guard: Do NOT render reviewable workspace shell unless mode is REVIEWABLE and detail matches jobId
+  if (
+    !studio.jobDetail ||
+    studio.jobDetail.job.id !== jobId ||
+    studio.workspaceMode?.mode !== 'REVIEWABLE'
+  ) {
+    return (
+      <div className="max-w-xl mx-auto my-20 p-8 bg-slate-900 border border-slate-800 rounded-3xl text-center space-y-4">
+        <Clock className="w-8 h-8 text-slate-500 mx-auto animate-spin" />
+        <p className="text-xs text-slate-400">
+          Đang chuẩn bị không gian làm việc...
+        </p>
+      </div>
+    );
+  }
+
+  // 10. Full READY_FOR_REVIEW Reviewable Workspace (RED 0 Foundation Shell)
+  const job = studio.jobDetail.job;
+  const story = studio.jobDetail.context.story;
+  const chapter = studio.jobDetail.context.chapter;
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">

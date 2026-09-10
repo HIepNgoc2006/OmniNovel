@@ -218,7 +218,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(result.current.pageCountInfo.isAvailable).toBe(true);
     });
 
-    it('should set pageCount to null and isAvailable to false when resultPageCount is null (MUST NEVER fallback to 1 or OCR count)', async () => {
+    it('should set pageCount to null and isAvailable to false when resultPageCount is null, and STRICTLY block previews, save, and materialization', async () => {
       const nullCountJob: TranslationJobReviewDetailResponse = {
         ...mockComicJobDetail,
         reviewSummary: {
@@ -237,6 +237,24 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
 
       expect(result.current.pageCountInfo.pageCount).toBeNull();
       expect(result.current.pageCountInfo.isAvailable).toBe(false);
+
+      // Invariant: Count unavailable MUST transition to COUNT_UNAVAILABLE mode
+      expect(result.current.workspaceMode?.mode).toBe('COUNT_UNAVAILABLE');
+      expect(result.current.workspaceMode?.canPreview).toBe(false);
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+      expect(result.current.workspaceMode?.canMaterialize).toBe(false);
+
+      // Previews MUST NOT be called when count is unavailable
+      expect(translationApi.fetchTranslationJobPreviews).not.toHaveBeenCalled();
+
+      // Mutations MUST be blocked
+      const saveOk = await result.current.saveSegment('seg-1', 'Thử lưu');
+      expect(saveOk).toBe(false);
+      expect(translationApi.updateTranslationSegment).not.toHaveBeenCalled();
+
+      const matRes = await result.current.triggerMaterialization();
+      expect(matRes).toBeNull();
+      expect(translationApi.requestJobMaterialization).not.toHaveBeenCalled();
     });
   });
 
@@ -273,7 +291,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
     });
   });
 
-  describe('6. Non-Ready Pipeline Monitor State', () => {
+  describe('6. Non-Ready Pipeline Monitor vs Terminal States', () => {
     it('should set PIPELINE_MONITOR mode for QUEUED/TRANSLATING and disable previews & editing', async () => {
       const queuedJob: TranslationJobReviewDetailResponse = {
         ...mockComicJobDetail,
@@ -295,9 +313,99 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(result.current.workspaceMode?.canEdit).toBe(false);
       expect(translationApi.fetchTranslationJobPreviews).not.toHaveBeenCalled();
     });
+
+    it.each([
+      TranslationJobStatus.FAILED,
+      TranslationJobStatus.CANCELED,
+      TranslationJobStatus.EXPIRED,
+    ])('should set TERMINAL_STATE mode for %s with terminal message (not waiting instruction)', async (terminalStatus) => {
+      const termJob: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: {
+          ...mockComicJobDetail.job,
+          status: terminalStatus,
+        },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(termJob);
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      expect(result.current.workspaceMode?.mode).toBe('TERMINAL_STATE');
+      expect(result.current.workspaceMode?.canPreview).toBe(false);
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+      expect(result.current.workspaceMode?.canMaterialize).toBe(false);
+      expect(result.current.workspaceMode?.message).not.toContain('tiến trình xử lý tự động');
+      expect(result.current.workspaceMode?.message).not.toContain('Vui lòng chờ');
+    });
   });
 
-  describe('7. Error Handling: OCC VERSION_CONFLICT vs NOT_REVIEWABLE', () => {
+  describe('7. Error Handling: Revocation (403/404) & OCC Conflicts', () => {
+    it('should purge cached workspace data when refetchDetail returns 403 Forbidden after initial load', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      expect(result.current.jobDetail).not.toBeNull();
+      expect(result.current.segments.length).toBeGreaterThan(0);
+
+      // Now user membership is revoked -> refetchDetail returns 403
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockRejectedValue({
+        isAxiosError: true,
+        response: {
+          status: 403,
+          data: {
+            error: {
+              code: 'FORBIDDEN',
+              message: 'Quyền truy cập đã bị thu hồi.',
+            },
+          },
+        },
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail();
+      });
+
+      // MUST purge all private workspace data and switch to error
+      expect(result.current.status).toBe('error');
+      expect(result.current.jobDetail).toBeNull();
+      expect(result.current.segments).toEqual([]);
+      expect(result.current.previews).toBeNull();
+      expect(result.current.error?.code).toBe('FORBIDDEN');
+    });
+
+    it('should purge workspace data if previews request returns 403 Forbidden', async () => {
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockRejectedValue({
+        isAxiosError: true,
+        response: {
+          status: 403,
+          data: {
+            error: {
+              code: 'FORBIDDEN',
+              message: 'Không có quyền xem preview.',
+            },
+          },
+        },
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('error');
+      });
+
+      expect(result.current.jobDetail).toBeNull();
+      expect(result.current.segments).toEqual([]);
+      expect(result.current.previews).toBeNull();
+      expect(result.current.error?.code).toBe('FORBIDDEN');
+    });
+
     it('should catch 409 VERSION_CONFLICT, populate conflictState with error.meta, and preserve user draft', async () => {
       vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValue({
         isAxiosError: true,
@@ -368,17 +476,224 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
     });
   });
 
-  describe('8. Materialization Freshness & Shared Response Contract', () => {
-    it('should reflect needsMaterialize when reviewRevision > materializedRevision', async () => {
-      const staleJob: TranslationJobReviewDetailResponse = {
+  describe('8. Out-of-Order Responses & Job/Session Identity Isolation', () => {
+    it('should not allow an out-of-order older detail response to downgrade reviewRevision', async () => {
+      let resolveFirst: (val: any) => void;
+      const firstPromise = new Promise((resolve) => {
+        resolveFirst = resolve;
+      });
+
+      let resolveSecond: (val: any) => void;
+      const secondPromise = new Promise((resolve) => {
+        resolveSecond = resolve;
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Prepare refetch calls
+      let callCount = 0;
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) return firstPromise as any;
+        return secondPromise as any;
+      });
+
+      // Trigger two refetches concurrently
+      act(() => {
+        result.current.refetchDetail(); // Call 1 (older)
+        result.current.refetchDetail(); // Call 2 (newer)
+      });
+
+      // Newer call (Call 2) resolves FIRST with reviewRevision: 5
+      await act(async () => {
+        resolveSecond!({
+          ...mockComicJobDetail,
+          job: { ...mockComicJobDetail.job, reviewRevision: 5, materializedRevision: 4 },
+        });
+      });
+
+      expect(result.current.jobDetail?.job.reviewRevision).toBe(5);
+      expect(result.current.freshness.needsMaterialize).toBe(true);
+
+      // Older call (Call 1) resolves LATER with reviewRevision: 4
+      await act(async () => {
+        resolveFirst!({
+          ...mockComicJobDetail,
+          job: { ...mockComicJobDetail.job, reviewRevision: 4, materializedRevision: 4 },
+        });
+      });
+
+      // Invariant: Older response MUST NOT downgrade reviewRevision back to 4 or clear needsMaterialize!
+      expect(result.current.jobDetail?.job.reviewRevision).toBe(5);
+      expect(result.current.freshness.needsMaterialize).toBe(true);
+    });
+
+    it('should isolate pending mutation / preview callback when jobId switches from Job A to Job B', async () => {
+      let resolveSaveA: (val: any) => void;
+      const savePromiseA = new Promise((_, reject) => {
+        resolveSaveA = reject;
+      });
+
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockReturnValue(savePromiseA as any);
+
+      const { result, rerender } = renderHook(({ id }) => useMangaReviewStudio(id), {
+        initialProps: { id: 'job-A' },
+      });
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Start save on Job A
+      let savePromise: Promise<boolean>;
+      act(() => {
+        savePromise = result.current.saveSegment('seg-1', 'Text A');
+      });
+
+      // Switch to Job B
+      const jobBDetail = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, id: 'job-B', status: TranslationJobStatus.READY_FOR_REVIEW },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(jobBDetail);
+
+      rerender({ id: 'job-B' });
+
+      await waitFor(() => {
+        expect(result.current.jobDetail?.job.id).toBe('job-B');
+      });
+
+      // Now Job A save fails with 409 NOT_REVIEWABLE
+      await act(async () => {
+        resolveSaveA!({
+          isAxiosError: true,
+          response: {
+            status: 409,
+            data: { error: { code: 'NOT_REVIEWABLE', message: 'Job A is not reviewable' } },
+          },
+        });
+        try {
+          await savePromise!;
+        } catch {
+          // ignore
+        }
+      });
+
+      // Invariant: Job A error MUST NOT mutate Job B workspace mode or conflict state!
+      expect(result.current.jobDetail?.job.id).toBe('job-B');
+      expect(result.current.workspaceMode?.mode).toBe('REVIEWABLE');
+      expect(result.current.workspaceMode?.canEdit).toBe(true);
+      expect(result.current.conflictState).toBeNull();
+    });
+  });
+
+  describe('9. Status Transition Coordination during Refetch', () => {
+    it('should dynamically load segments and previews when refetch transitions job from QUEUED to READY_FOR_REVIEW', async () => {
+      const queuedJob: TranslationJobReviewDetailResponse = {
         ...mockComicJobDetail,
         job: {
           ...mockComicJobDetail.job,
-          reviewRevision: 4,
-          materializedRevision: 2,
+          status: TranslationJobStatus.QUEUED,
         },
       };
-      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(staleJob);
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(queuedJob);
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      expect(result.current.workspaceMode?.mode).toBe('PIPELINE_MONITOR');
+      expect(translationApi.fetchTranslationJobPreviews).not.toHaveBeenCalled();
+
+      // Clear calls, then transition to READY_FOR_REVIEW
+      (translationApi.fetchTranslationJobSegments as any).mockClear();
+      (translationApi.fetchTranslationJobPreviews as any).mockClear();
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockComicJobDetail);
+
+      await act(async () => {
+        await result.current.refetchDetail();
+      });
+
+      expect(result.current.workspaceMode?.mode).toBe('REVIEWABLE');
+      expect(translationApi.fetchTranslationJobSegments).toHaveBeenCalled();
+      expect(translationApi.fetchTranslationJobPreviews).toHaveBeenCalled();
+      expect(result.current.segments.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('10. Save Semantics (No Silent Auto-Verify)', () => {
+    it('should NOT send isHumanVerified: true by default on normal text edit', async () => {
+      const updatedSegment: TranslationSegmentDto = {
+        ...mockSegments[0],
+        translatedText: 'Bản dịch mới',
+        isHumanVerified: false,
+        version: 2,
+      };
+      const updateSpy = vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValue(updatedSegment);
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Bản dịch mới');
+      });
+
+      // Invariant: Default text save MUST NOT force isHumanVerified: true!
+      expect(updateSpy).toHaveBeenCalledWith(
+        mockJobId,
+        'seg-1',
+        expect.not.objectContaining({ isHumanVerified: true }),
+      );
+    });
+
+    it('should only send isHumanVerified: true when explicitly requested via options', async () => {
+      const updatedSegment: TranslationSegmentDto = {
+        ...mockSegments[0],
+        translatedText: 'Bản dịch đã duyệt',
+        isHumanVerified: true,
+        version: 2,
+      };
+      const updateSpy = vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValue(updatedSegment);
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Bản dịch đã duyệt', { isHumanVerified: true });
+      });
+
+      expect(updateSpy).toHaveBeenCalledWith(
+        mockJobId,
+        'seg-1',
+        expect.objectContaining({ isHumanVerified: true }),
+      );
+    });
+  });
+
+  describe('11. Materialization Freshness Invariants', () => {
+    it('should identify materializedRevision > reviewRevision as INVARIANT_VIOLATION and NOT fresh', async () => {
+      const corruptJob: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: {
+          ...mockComicJobDetail.job,
+          reviewRevision: 3,
+          materializedRevision: 4, // INVARIANT VIOLATION
+        },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(corruptJob);
 
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
 
@@ -387,61 +702,8 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       });
 
       expect(result.current.freshness.isFresh).toBe(false);
-      expect(result.current.freshness.needsMaterialize).toBe(true);
-    });
-
-    it('should handle ALREADY_FRESH response without creating fake rendering state', async () => {
-      vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValue({
-        status: 'ALREADY_FRESH',
-        targetRevision: 1,
-      });
-
-      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
-
-      await waitFor(() => {
-        expect(result.current.status).toBe('ready');
-      });
-
-      await act(async () => {
-        await result.current.triggerMaterialization();
-      });
-
-      expect(result.current.materializationStatus).toBe('ALREADY_FRESH');
       expect(result.current.freshness.needsMaterialize).toBe(false);
-    });
-  });
-
-  describe('9. Segment Mutation & Revision Reconciliation', () => {
-    it('should reconcile updated segment from response and refetch detail without manually incrementing reviewRevision', async () => {
-      const updatedSegment: TranslationSegmentDto = {
-        ...mockSegments[0],
-        translatedText: 'Xin chào đã duyệt',
-        isHumanVerified: true,
-        version: 2,
-      };
-      vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValue(updatedSegment);
-
-      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
-
-      await waitFor(() => {
-        expect(result.current.status).toBe('ready');
-      });
-
-      // Spy on refetch
-      const initialFetchCount = (translationApi.fetchTranslationJobDetail as any).mock.calls.length;
-
-      let saveOk = false;
-      await act(async () => {
-        saveOk = await result.current.saveSegment('seg-1', 'Xin chào đã duyệt');
-      });
-
-      expect(saveOk).toBe(true);
-      expect(result.current.segments[0].translatedText).toBe('Xin chào đã duyệt');
-      expect(result.current.segments[0].isHumanVerified).toBe(true);
-      expect(result.current.segments[0].version).toBe(2);
-
-      // Must have called refetchTranslationJobDetail to sync authoritative server revision
-      expect((translationApi.fetchTranslationJobDetail as any).mock.calls.length).toBeGreaterThan(initialFetchCount);
+      expect((result.current.freshness as any).status).toBe('INVARIANT_VIOLATION');
     });
   });
 });

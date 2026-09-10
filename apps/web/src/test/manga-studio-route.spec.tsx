@@ -65,6 +65,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
         version: 1,
       },
     ],
+    segmentsSyncStatus: 'SYNCED',
     previews: null,
     workspaceMode: {
       mode: 'REVIEWABLE',
@@ -410,6 +411,26 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     const closeBtn = await screen.findByText('Đóng');
     fireEvent.click(closeBtn);
     expect(clearConflictSpy).toHaveBeenCalledWith('seg-42');
+  });
+
+  it('renders "Chưa xác minh" badge when segmentsSyncStatus is not SYNCED, even if segment has isHumanVerified: true', async () => {
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      segments: [
+        {
+          ...defaultMockReturn.segments[0],
+          isHumanVerified: true,
+        },
+      ],
+      segmentsSyncStatus: 'FAILED',
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    expect(await screen.findByText('Chưa xác minh')).toBeDefined();
+    expect(screen.queryByText('Đã Duyệt')).toBeNull();
   });
 });
 

@@ -440,7 +440,8 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
             <div className="text-xs text-amber-200">
               <span className="font-bold">Xung Đột Phiên Bản (409 VERSION_CONFLICT): </span>
-              {studio.conflictState.currentVersion !== undefined
+              {studio.conflictState.currentVersion !== undefined &&
+              studio.conflictState.expectedVersion !== undefined
                 ? `Bản ghi segment đã được sửa bởi người khác (Server v${studio.conflictState.currentVersion} vs Bạn v${studio.conflictState.expectedVersion}). Bản nháp của bạn đã được giữ nguyên.`
                 : 'Phiên bản trên máy chủ đã thay đổi. Bản nháp của bạn đã được giữ nguyên.'}
             </div>
@@ -535,7 +536,11 @@ export default function MangaStudioJobPage({ params }: PageProps) {
                       : 'Chưa gán trang'}{' '}
                     • Thứ tự #{seg.sortOrder}
                   </span>
-                  {seg.isHumanVerified ? (
+                  {studio.segmentsSyncStatus !== 'SYNCED' ? (
+                    <Badge variant="outline" className="text-amber-400 border-amber-500/40">
+                      Chưa xác minh
+                    </Badge>
+                  ) : seg.isHumanVerified ? (
                     <Badge variant="success">Đã Duyệt</Badge>
                   ) : (
                     <Badge variant="outline">Chưa Duyệt</Badge>

@@ -56,28 +56,29 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     );
   }
 
-  // 3. Error state (e.g. 401 / 403 / 404 vs 500 / network)
-  if (studio.status === 'error' || studio.error) {
+  // 3. Fatal Error state (e.g. 401 / 403 / 404 vs 500 / network)
+  const fatalErr = studio.fatalError || studio.error;
+  if (studio.status === 'error' || fatalErr) {
     const isAccess =
-      studio.error?.status === 401 ||
-      studio.error?.status === 403 ||
-      studio.error?.status === 404 ||
-      studio.error?.code === 'FORBIDDEN' ||
-      studio.error?.code === 'NOT_FOUND' ||
-      studio.error?.code === 'UNAUTHORIZED';
+      fatalErr?.status === 401 ||
+      fatalErr?.status === 403 ||
+      fatalErr?.status === 404 ||
+      fatalErr?.code === 'FORBIDDEN' ||
+      fatalErr?.code === 'NOT_FOUND' ||
+      fatalErr?.code === 'UNAUTHORIZED';
 
     return (
       <div className="max-w-lg mx-auto my-20 p-8 bg-slate-900 border border-red-500/30 rounded-3xl text-center space-y-5">
         <AlertTriangle className="w-12 h-12 text-rose-500 mx-auto" />
         <div className="space-y-1">
           <Badge variant="primary" className="mb-2">
-            {studio.error?.code || 'ERROR'}
+            {fatalErr?.code || 'ERROR'}
           </Badge>
           <h2 className="text-lg font-bold text-white">
             {isAccess ? 'Không Thể Truy Cập Job Dịch' : 'Lỗi Tải Dữ Liệu Workspace'}
           </h2>
           <p className="text-xs text-slate-400 leading-relaxed">
-            {studio.error?.message ||
+            {fatalErr?.message ||
               (isAccess
                 ? 'Bạn không có quyền truy cập hoặc job dịch không tồn tại.'
                 : 'Đã có lỗi xảy ra khi tải dữ liệu không gian duyệt.')}
@@ -359,6 +360,21 @@ export default function MangaStudioJobPage({ params }: PageProps) {
           </h1>
         </div>
 
+        {/* Operation Error Banner if any */}
+        {studio.operationError && (
+          <div className="w-full p-3 bg-amber-500/10 border border-amber-500/30 rounded-2xl flex items-center justify-between text-xs text-amber-300">
+            <span>{studio.operationError.message || 'Lỗi thao tác cục bộ.'}</span>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={studio.clearOperationError}
+              className="h-6 px-2 text-xs text-amber-300 hover:text-white hover:bg-amber-500/20"
+            >
+              Đóng
+            </Button>
+          </div>
+        )}
+
         {/* Action controls & Authoritative PageCount */}
         <div className="flex items-center gap-3">
           <div className="px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-semibold">
@@ -427,7 +443,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
               Bản ghi segment đã được sửa bởi người khác (Server v{studio.conflictState.currentVersion} vs Bạn v{studio.conflictState.expectedVersion}). Bản nháp của bạn đã được giữ nguyên.
             </div>
           </div>
-          <Button variant="secondary" size="sm" onClick={studio.clearConflict}>
+          <Button variant="secondary" size="sm" onClick={() => studio.clearConflict()}>
             Đóng
           </Button>
         </div>
@@ -452,7 +468,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
           <div className="flex-1 my-6 flex items-center justify-center border border-dashed border-slate-800 rounded-2xl bg-slate-950/40 p-8 text-center">
             <div className="space-y-2">
               <p className="text-xs text-slate-400">
-                Không gian hiển thị ảnh gốc vs ảnh đã dịch và OCR bounding boxes (RED 1 - RED 2).
+                Không gian hiển thị ảnh gốc vs ảnh đã dịch và OCR bounding boxes (RED 2).
               </p>
               <p className="text-[11px] text-slate-600">
                 Segment Count: {studio.segments.length} | Authoritative Page Count:{' '}
@@ -507,7 +523,12 @@ export default function MangaStudioJobPage({ params }: PageProps) {
                 }`}
               >
                 <div className="flex justify-between items-center text-[11px] text-slate-400 mb-1">
-                  <span>Trang {seg.pageNumber ?? 1} • Thứ tự #{seg.sortOrder}</span>
+                  <span>
+                    {typeof seg.pageNumber === 'number'
+                      ? `Trang ${seg.pageNumber}`
+                      : 'Chưa gán trang'}{' '}
+                    • Thứ tự #{seg.sortOrder}
+                  </span>
                   {seg.isHumanVerified ? (
                     <Badge variant="success">Đã Duyệt</Badge>
                   ) : (

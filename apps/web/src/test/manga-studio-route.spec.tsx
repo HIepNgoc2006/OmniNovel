@@ -84,7 +84,11 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     saveSegment: vi.fn(),
     triggerMaterialization: vi.fn(),
     materializationStatus: null,
+    isMaterializing: false,
     error: null,
+    fatalError: null,
+    operationError: null,
+    clearOperationError: vi.fn(),
     refetchDetail: vi.fn(),
     reconcileAuthoritativeWorkspace: vi.fn(),
     retry: vi.fn(),
@@ -328,4 +332,25 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     expect(screen.queryByText('Canvas So Sánh & Vùng Thoại OCR')).toBeNull();
     expect(screen.queryByText('One Piece — Chương 1.00: Khởi đầu')).toBeNull();
   });
+
+  it('does NOT fallback null pageNumber to page 1 in segments list', async () => {
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      segments: [
+        {
+          ...defaultMockReturn.segments[0],
+          pageNumber: null,
+          sortOrder: 42,
+        },
+      ],
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    expect(await screen.findByText(/Chưa gán trang • Thứ tự #42/)).toBeDefined();
+    expect(screen.queryByText(/Trang 1 • Thứ tự #42/)).toBeNull();
+  });
 });
+

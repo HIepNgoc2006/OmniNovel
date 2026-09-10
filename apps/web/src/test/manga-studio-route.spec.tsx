@@ -86,6 +86,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     materializationStatus: null,
     error: null,
     refetchDetail: vi.fn(),
+    retry: vi.fn(),
   };
 
   beforeEach(() => {
@@ -184,5 +185,95 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     expect(screen.getByText('Canvas So Sánh & Vùng Thoại OCR')).toBeDefined();
     expect(screen.getByText('Danh Sách Ô Thoại (Segments)')).toBeDefined();
     expect(screen.getByText('ヤッホー')).toBeDefined();
+  });
+
+  it('renders Loading state and does NOT render READY shell', async () => {
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      status: 'loading',
+      jobDetail: null,
+      segments: [],
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    expect(
+      await screen.findByText('Đang tải dữ liệu không gian duyệt Manga Studio...'),
+    ).toBeDefined();
+    expect(screen.queryByText('Canvas So Sánh & Vùng Thoại OCR')).toBeNull();
+  });
+
+  it('renders Error view with retry button that calls studio.retry()', async () => {
+    const retrySpy = vi.fn();
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      status: 'error',
+      jobDetail: null,
+      segments: [],
+      error: {
+        code: 'FORBIDDEN',
+        message: 'Bạn không có quyền truy cập job dịch này.',
+        status: 403,
+      },
+      retry: retrySpy,
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    expect(await screen.findByText('Không Thể Truy Cập Job Dịch')).toBeDefined();
+    const retryBtn = screen.getByText('Thử Lại');
+    fireEvent.click(retryBtn);
+    expect(retrySpy).toHaveBeenCalled();
+  });
+
+  it('renders UNKNOWN freshness correctly without showing Kết Xuất Mới Nhất or Đã Cập Nhật', async () => {
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      freshness: {
+        status: 'UNKNOWN',
+        isFresh: false,
+        needsMaterialize: false,
+        message: 'Thông tin phiên bản chưa xác định.',
+      },
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    expect(
+      (await screen.findAllByText('Chưa Xác Định Phiên Bản')).length,
+    ).toBeGreaterThanOrEqual(1);
+    expect(screen.queryByText('Kết Xuất Mới Nhất')).toBeNull();
+    expect(screen.queryByText('Đã Cập Nhật')).toBeNull();
+  });
+
+  it('renders INVARIANT_VIOLATION freshness with alert banner without showing Kết Xuất Mới Nhất or Đã Cập Nhật', async () => {
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      freshness: {
+        status: 'INVARIANT_VIOLATION',
+        isFresh: false,
+        needsMaterialize: false,
+        message:
+          'Lỗi bất biến phiên bản: materializedRevision không thể lớn hơn reviewRevision.',
+      },
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    expect(
+      await screen.findByText('Dữ Liệu Phiên Bản Không Nhất Quán'),
+    ).toBeDefined();
+    expect(screen.getByText('Cảnh Báo Bất Biến Phiên Bản:')).toBeDefined();
+    expect(screen.getByText('Phiên Bản Không Hợp Lệ')).toBeDefined();
+    expect(screen.queryByText('Kết Xuất Mới Nhất')).toBeNull();
+    expect(screen.queryByText('Đã Cập Nhật')).toBeNull();
   });
 });

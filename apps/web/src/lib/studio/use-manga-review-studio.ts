@@ -61,6 +61,7 @@ export interface UseMangaReviewStudioReturn {
   materializationStatus: MaterializationRequestStatus | null;
   error: ParsedApiError | null;
   refetchDetail: () => Promise<void>;
+  retry: () => Promise<void>;
 }
 
 export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn {
@@ -87,8 +88,20 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   const activeJobIdRef = useRef(jobId);
   const generationRef = useRef(0);
   const latestDetailSeqRef = useRef(0);
+  const dataLoadSeqRef = useRef(0);
   const latestConfirmedRevisionRef = useRef(0);
   const userSessionIdRef = useRef<string | null>(user?.id ?? null);
+
+  const isRequestCurrent = useCallback(
+    (targetGen: number, targetJob: string): boolean => {
+      return (
+        generationRef.current === targetGen &&
+        activeJobIdRef.current === targetJob &&
+        userSessionIdRef.current === (user?.id ?? null)
+      );
+    },
+    [user?.id],
+  );
 
   const resetState = useCallback(() => {
     setJobDetail(null);
@@ -103,11 +116,26 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     latestConfirmedRevisionRef.current = 0;
   }, []);
 
-  const purgeOnAccessError = useCallback((parsedErr: ParsedApiError) => {
-    resetState();
-    setError(parsedErr);
-    setStatus('error');
-  }, [resetState]);
+  const purgeOnAccessError = useCallback(
+    (parsedErr: ParsedApiError, targetGen?: number, targetJob?: string) => {
+      // Scope validation: Do NOT purge if error is from an older generation or a different job
+      if (targetGen !== undefined && targetGen !== generationRef.current) {
+        return;
+      }
+      if (targetJob !== undefined && targetJob !== activeJobIdRef.current) {
+        return;
+      }
+
+      // Invalidate all pending requests for this generation & sequence
+      generationRef.current++;
+      dataLoadSeqRef.current++;
+
+      resetState();
+      setError(parsedErr);
+      setStatus('error');
+    },
+    [resetState],
+  );
 
   const isAccessError = (err: ParsedApiError): boolean => {
     return (
@@ -129,6 +157,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     const currentGen = generationRef.current;
     const currentJob = jobId;
     const detailSeq = ++latestDetailSeqRef.current;
+    const dataLoadSeq = ++dataLoadSeqRef.current;
 
     setStatus('loading');
     setError(null);
@@ -136,7 +165,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     try {
       // 1. Fetch Authoritative Job Detail
       const detail = await fetchTranslationJobDetail(currentJob);
-      if (generationRef.current !== currentGen || activeJobIdRef.current !== currentJob) {
+      if (!isRequestCurrent(currentGen, currentJob)) {
         return;
       }
       if (detailSeq < latestDetailSeqRef.current) {
@@ -160,14 +189,20 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       if (modeResult.mode !== 'UNSUPPORTED_FORMAT' && modeResult.mode !== 'COUNT_UNAVAILABLE') {
         try {
           const segRes = await fetchTranslationJobSegments(currentJob, 1, 100);
-          if (generationRef.current !== currentGen || activeJobIdRef.current !== currentJob) {
+          if (
+            !isRequestCurrent(currentGen, currentJob) ||
+            dataLoadSeq !== dataLoadSeqRef.current
+          ) {
             return;
           }
           setSegments(segRes.data || []);
         } catch (segErr) {
+          if (!isRequestCurrent(currentGen, currentJob)) {
+            return;
+          }
           const parsed = parseApiError(segErr);
           if (isAccessError(parsed)) {
-            purgeOnAccessError(parsed);
+            purgeOnAccessError(parsed, currentGen, currentJob);
             return;
           }
           throw segErr;
@@ -180,37 +215,51 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           const prevRes = await fetchTranslationJobPreviews(currentJob, {
             pageNumber: 1,
           });
-          if (generationRef.current !== currentGen || activeJobIdRef.current !== currentJob) {
+          if (
+            !isRequestCurrent(currentGen, currentJob) ||
+            dataLoadSeq !== dataLoadSeqRef.current
+          ) {
             return;
           }
           setPreviews(prevRes);
         } catch (prevErr) {
+          if (!isRequestCurrent(currentGen, currentJob)) {
+            return;
+          }
           const parsed = parseApiError(prevErr);
           if (isAccessError(parsed)) {
-            purgeOnAccessError(parsed);
+            purgeOnAccessError(parsed, currentGen, currentJob);
             return;
           }
           console.warn('Initial previews fetch warning:', prevErr);
         }
       }
 
-      if (generationRef.current === currentGen && activeJobIdRef.current === currentJob) {
+      if (isRequestCurrent(currentGen, currentJob)) {
+        setError(null);
         setStatus('ready');
       }
     } catch (err) {
-      if (generationRef.current !== currentGen || activeJobIdRef.current !== currentJob) {
+      if (!isRequestCurrent(currentGen, currentJob)) {
         return;
       }
       const parsedErr = parseApiError(err);
-      purgeOnAccessError(parsedErr);
+      purgeOnAccessError(parsedErr, currentGen, currentJob);
     }
-  }, [jobId, authLoading, isAuthenticated, purgeOnAccessError]);
+  }, [
+    jobId,
+    authLoading,
+    isAuthenticated,
+    isRequestCurrent,
+    purgeOnAccessError,
+  ]);
 
   // Handle job switch, session change, or auth changes
   useEffect(() => {
     activeJobIdRef.current = jobId;
     userSessionIdRef.current = user?.id ?? null;
     generationRef.current++;
+    dataLoadSeqRef.current++;
     resetState();
 
     if (authLoading || !isAuthenticated) {
@@ -243,7 +292,19 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     setConflictState(null);
   }, []);
 
+  const retry = useCallback(async () => {
+    generationRef.current++;
+    dataLoadSeqRef.current++;
+    resetState();
+    await loadJobData();
+  }, [resetState, loadJobData]);
+
   const refetchDetail = useCallback(async () => {
+    if (status === 'error') {
+      await retry();
+      return;
+    }
+
     const currentGen = generationRef.current;
     const currentJob = activeJobIdRef.current;
     const detailSeq = ++latestDetailSeqRef.current;
@@ -251,7 +312,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     try {
       const detail = await fetchTranslationJobDetail(currentJob);
 
-      if (generationRef.current !== currentGen || activeJobIdRef.current !== currentJob) {
+      if (!isRequestCurrent(currentGen, currentJob)) {
         return;
       }
       if (detailSeq < latestDetailSeqRef.current) {
@@ -270,6 +331,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
       setJobDetail(detail);
       setOverrideWorkspaceMode(null);
+      setError(null);
 
       // Reconcile workspace mode and dynamically coordinate data loading
       const newMode = getMangaStudioWorkspaceMode({
@@ -279,45 +341,67 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       });
 
       if (newMode.mode === 'REVIEWABLE') {
-        // If segments were empty (e.g. was QUEUED), fetch them now
+        const dataLoadSeq = ++dataLoadSeqRef.current;
+
+        // Fetch segments
         fetchTranslationJobSegments(currentJob, 1, 100)
           .then((segRes) => {
-            if (generationRef.current === currentGen && activeJobIdRef.current === currentJob) {
+            if (
+              isRequestCurrent(currentGen, currentJob) &&
+              dataLoadSeq === dataLoadSeqRef.current
+            ) {
               setSegments(segRes.data || []);
             }
           })
           .catch((err) => {
+            if (!isRequestCurrent(currentGen, currentJob)) return;
             const parsed = parseApiError(err);
-            if (isAccessError(parsed)) purgeOnAccessError(parsed);
+            if (isAccessError(parsed)) {
+              purgeOnAccessError(parsed, currentGen, currentJob);
+            }
           });
 
-        // If previews were not loaded, fetch them now
+        // Fetch previews
         fetchTranslationJobPreviews(currentJob, { pageNumber: 1 })
           .then((prevRes) => {
-            if (generationRef.current === currentGen && activeJobIdRef.current === currentJob) {
+            if (
+              isRequestCurrent(currentGen, currentJob) &&
+              dataLoadSeq === dataLoadSeqRef.current
+            ) {
               setPreviews(prevRes);
             }
           })
           .catch((err) => {
+            if (!isRequestCurrent(currentGen, currentJob)) return;
             const parsed = parseApiError(err);
-            if (isAccessError(parsed)) purgeOnAccessError(parsed);
+            if (isAccessError(parsed)) {
+              purgeOnAccessError(parsed, currentGen, currentJob);
+            }
           });
       } else {
-        // Clean up preview assets when leaving reviewable state
+        // Clean up both preview assets AND segments when leaving reviewable state,
+        // and bump dataLoadSeq to drop any in-flight requests from the previous state
+        dataLoadSeqRef.current++;
         setPreviews(null);
+        setSegments([]);
       }
     } catch (err) {
-      if (generationRef.current !== currentGen || activeJobIdRef.current !== currentJob) {
+      if (!isRequestCurrent(currentGen, currentJob)) {
         return;
       }
       const parsed = parseApiError(err);
       if (isAccessError(parsed)) {
-        purgeOnAccessError(parsed);
+        purgeOnAccessError(parsed, currentGen, currentJob);
       } else {
         console.warn('Failed to refetch job detail:', err);
       }
     }
-  }, [purgeOnAccessError]);
+  }, [
+    status,
+    retry,
+    isRequestCurrent,
+    purgeOnAccessError,
+  ]);
 
   const saveSegment = useCallback(
     async (
@@ -352,7 +436,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       try {
         const updated = await updateTranslationSegment(targetJob, segmentId, payload);
 
-        if (generationRef.current !== currentGen || activeJobIdRef.current !== targetJob) {
+        if (!isRequestCurrent(currentGen, targetJob)) {
           return false;
         }
 
@@ -367,13 +451,13 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
         return true;
       } catch (err) {
-        if (generationRef.current !== currentGen || activeJobIdRef.current !== targetJob) {
+        if (!isRequestCurrent(currentGen, targetJob)) {
           return false;
         }
 
         const parsed = parseApiError(err);
         if (isAccessError(parsed)) {
-          purgeOnAccessError(parsed);
+          purgeOnAccessError(parsed, currentGen, targetJob);
           return false;
         }
 
@@ -401,7 +485,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         return false;
       }
     },
-    [segments, workspaceMode, refetchDetail, purgeOnAccessError],
+    [segments, workspaceMode, isRequestCurrent, refetchDetail, purgeOnAccessError],
   );
 
   const triggerMaterialization =
@@ -416,7 +500,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       try {
         const res = await requestJobMaterialization(targetJob);
 
-        if (generationRef.current !== currentGen || activeJobIdRef.current !== targetJob) {
+        if (!isRequestCurrent(currentGen, targetJob)) {
           return null;
         }
 
@@ -429,20 +513,20 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
         return res;
       } catch (err) {
-        if (generationRef.current !== currentGen || activeJobIdRef.current !== targetJob) {
+        if (!isRequestCurrent(currentGen, targetJob)) {
           return null;
         }
 
         const parsed = parseApiError(err);
         if (isAccessError(parsed)) {
-          purgeOnAccessError(parsed);
+          purgeOnAccessError(parsed, currentGen, targetJob);
           return null;
         }
 
         setError(parsed);
         return null;
       }
-    }, [workspaceMode, refetchDetail, purgeOnAccessError]);
+    }, [workspaceMode, isRequestCurrent, refetchDetail, purgeOnAccessError]);
 
   return {
     status,
@@ -463,5 +547,6 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     materializationStatus,
     error,
     refetchDetail,
+    retry,
   };
 }

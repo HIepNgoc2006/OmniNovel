@@ -187,7 +187,7 @@ export function computeMaterializationFreshness(
     typeof materializedRevision !== 'number' ||
     !Number.isSafeInteger(reviewRevision) ||
     !Number.isSafeInteger(materializedRevision) ||
-    reviewRevision < 1 ||
+    reviewRevision < 0 ||
     materializedRevision < 0
   ) {
     return {

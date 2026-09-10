@@ -8,6 +8,7 @@ import {
   TranslationSegmentDto,
 } from '@omninovel/shared';
 import { useMangaReviewStudio } from '../lib/studio/use-manga-review-studio';
+import { computeMaterializationFreshness } from '../lib/studio/manga-studio-policy';
 import * as translationApi from '../lib/api/translation';
 import * as authContext from '../lib/auth/auth-context';
 
@@ -704,6 +705,306 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(result.current.freshness.isFresh).toBe(false);
       expect(result.current.freshness.needsMaterialize).toBe(false);
       expect((result.current.freshness as any).status).toBe('INVARIANT_VIOLATION');
+    });
+  });
+
+  describe('12. Out-of-Order & Cross-Job Scope Isolation (Hardening)', () => {
+    it('should NOT purge Job B when Job A pending preview returns 403 after job switch', async () => {
+      let rejectPreviewA: (err: any) => void;
+      const previewAPromise = new Promise((_, reject) => {
+        rejectPreviewA = reject;
+      });
+
+      let previewCallCount = 0;
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(() => {
+        previewCallCount++;
+        if (previewCallCount === 1) return previewAPromise as any;
+        return Promise.resolve({
+          sourceAssets: [{ url: 'https://cdn.example.com/b.jpg' }],
+          resultAssets: [],
+        }) as any;
+      });
+
+      const { result, rerender } = renderHook(({ id }) => useMangaReviewStudio(id), {
+        initialProps: { id: 'job-A' },
+      });
+
+      // Wait until preview A is requested
+      await waitFor(() => {
+        expect(previewCallCount).toBe(1);
+      });
+
+      // Switch to Job B before preview A returns
+      const jobBDetail = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, id: 'job-B' },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(jobBDetail);
+
+      rerender({ id: 'job-B' });
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+        expect(result.current.jobDetail?.job.id).toBe('job-B');
+      });
+
+      // Now Preview A rejects with 403 FORBIDDEN
+      await act(async () => {
+        rejectPreviewA!({
+          isAxiosError: true,
+          response: {
+            status: 403,
+            data: { error: { code: 'FORBIDDEN', message: 'Job A access revoked' } },
+          },
+        });
+      });
+
+      // Invariant: Job A 403 MUST NOT purge Job B workspace!
+      expect(result.current.status).toBe('ready');
+      expect(result.current.jobDetail?.job.id).toBe('job-B');
+      expect(result.current.error).toBeNull();
+      expect(result.current.segments.length).toBeGreaterThan(0);
+    });
+
+    it('should keep workspace locked and data empty if an older in-flight request succeeds after 403 purge', async () => {
+      let resolvePendingRefetch: (val: any) => void;
+      const pendingRefetchPromise = new Promise((resolve) => {
+        resolvePendingRefetch = resolve;
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Start refetch that hangs
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockReturnValue(pendingRefetchPromise as any);
+      act(() => {
+        result.current.refetchDetail();
+      });
+
+      // A concurrent save fails with 403 FORBIDDEN, triggering purge
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValue({
+        isAxiosError: true,
+        response: {
+          status: 403,
+          data: { error: { code: 'FORBIDDEN', message: 'Access revoked' } },
+        },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'New text');
+      });
+
+      expect(result.current.status).toBe('error');
+      expect(result.current.jobDetail).toBeNull();
+      expect(result.current.segments).toEqual([]);
+
+      // Now the older pending refetch resolves with 200 OK
+      await act(async () => {
+        resolvePendingRefetch!(mockComicJobDetail);
+      });
+
+      // Invariant: Older in-flight response MUST NOT revive workspace or restore private data!
+      expect(result.current.status).toBe('error');
+      expect(result.current.jobDetail).toBeNull();
+      expect(result.current.segments).toEqual([]);
+      expect(result.current.previews).toBeNull();
+      expect(result.current.workspaceMode?.canEdit).toBeFalsy();
+    });
+
+    it('should preserve latest segments when older segments response arrives out of order', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      let resolveFirstSegments: (val: any) => void;
+      const firstSegmentsPromise = new Promise((resolve) => {
+        resolveFirstSegments = resolve;
+      });
+
+      let resolveSecondSegments: (val: any) => void;
+      const secondSegmentsPromise = new Promise((resolve) => {
+        resolveSecondSegments = resolve;
+      });
+
+      let segCall = 0;
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(() => {
+        segCall++;
+        if (segCall === 1) return firstSegmentsPromise as any;
+        return secondSegmentsPromise as any;
+      });
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockComicJobDetail);
+
+      // Trigger first refetch (starts Call 1)
+      act(() => {
+        result.current.refetchDetail();
+      });
+
+      // Wait until segments Call 1 is in-flight
+      await waitFor(() => {
+        expect(segCall).toBe(1);
+      });
+
+      // Trigger second refetch (starts Call 2)
+      act(() => {
+        result.current.refetchDetail();
+      });
+
+      // Wait until segments Call 2 is in-flight
+      await waitFor(() => {
+        expect(segCall).toBe(2);
+      });
+
+      // Call 2 segments resolve FIRST with version 2
+      await act(async () => {
+        resolveSecondSegments!({
+          data: [{ ...mockSegments[0], translatedText: 'Newer Text v2', version: 2 }],
+        });
+      });
+
+      expect(result.current.segments[0].translatedText).toBe('Newer Text v2');
+
+      // Call 1 segments resolve LATER with version 1
+      await act(async () => {
+        resolveFirstSegments!({
+          data: [{ ...mockSegments[0], translatedText: 'Older Text v1', version: 1 }],
+        });
+      });
+
+      // Invariant: Older segments response MUST NOT overwrite newer segments!
+      expect(result.current.segments[0].translatedText).toBe('Newer Text v2');
+    });
+
+    it('should not restore previews if preview response arrives after leaving REVIEWABLE mode', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Prepare pending preview promise for refetch
+      let resolvePendingPreview: (val: any) => void;
+      const pendingPreviewPromise = new Promise((resolve) => {
+        resolvePendingPreview = resolve;
+      });
+
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockReturnValue(pendingPreviewPromise as any);
+
+      // Trigger refetch while READY_FOR_REVIEW
+      act(() => {
+        result.current.refetchDetail();
+      });
+
+      // Transition to APPLIED via refetchDetail
+      const appliedDetail = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, status: TranslationJobStatus.APPLIED },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(appliedDetail);
+
+      await act(async () => {
+        await result.current.refetchDetail();
+      });
+
+      expect(result.current.workspaceMode?.mode).toBe('APPLIED');
+      expect(result.current.previews).toBeNull();
+      expect(result.current.segments).toEqual([]);
+
+      // Now pending preview from earlier reviewable state resolves
+      await act(async () => {
+        resolvePendingPreview!({
+          sourceAssets: [{ url: 'https://cdn.example.com/stale.jpg' }],
+          resultAssets: [],
+        });
+      });
+
+      // Invariant: Previews MUST remain null when leaving REVIEWABLE!
+      expect(result.current.previews).toBeNull();
+    });
+
+    it('should recover workspace when retry succeeds, and remain locked when retry fails', async () => {
+      // Start in error state
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 403,
+          data: { error: { code: 'FORBIDDEN', message: 'Access denied' } },
+        },
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('error');
+      });
+
+      // Subtest 1: Retry still fails with 403
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 403,
+          data: { error: { code: 'FORBIDDEN', message: 'Still denied' } },
+        },
+      });
+
+      await act(async () => {
+        await result.current.retry();
+      });
+
+      expect(result.current.status).toBe('error');
+      expect(result.current.jobDetail).toBeNull();
+
+      // Subtest 2: Permissions granted, retry succeeds
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockComicJobDetail);
+
+      await act(async () => {
+        await result.current.retry();
+      });
+
+      expect(result.current.status).toBe('ready');
+      expect(result.current.error).toBeNull();
+      expect(result.current.jobDetail?.job.id).toBe(mockJobId);
+      expect(result.current.workspaceMode?.canEdit).toBe(true);
+    });
+
+    it('should correctly evaluate the entire revision freshness matrix including 0 and invalid invariants', () => {
+      // (0, 0) -> FRESH
+      const res00 = computeMaterializationFreshness(0, 0);
+      expect(res00.status).toBe('FRESH');
+      expect(res00.isFresh).toBe(true);
+      expect(res00.needsMaterialize).toBe(false);
+
+      // (0, 1) -> INVARIANT_VIOLATION
+      const res01 = computeMaterializationFreshness(0, 1);
+      expect(res01.status).toBe('INVARIANT_VIOLATION');
+      expect(res01.isFresh).toBe(false);
+      expect(res01.needsMaterialize).toBe(false);
+
+      // (1, 0) -> STALE
+      const res10 = computeMaterializationFreshness(1, 0);
+      expect(res10.status).toBe('STALE');
+      expect(res10.isFresh).toBe(false);
+      expect(res10.needsMaterialize).toBe(true);
+
+      // (3, 3) -> FRESH
+      const res33 = computeMaterializationFreshness(3, 3);
+      expect(res33.status).toBe('FRESH');
+      expect(res33.isFresh).toBe(true);
+
+      // (3, 4) -> INVARIANT_VIOLATION
+      const res34 = computeMaterializationFreshness(3, 4);
+      expect(res34.status).toBe('INVARIANT_VIOLATION');
+      expect(res34.isFresh).toBe(false);
+
+      // missing / null / negative -> UNKNOWN
+      expect(computeMaterializationFreshness(null, 0).status).toBe('UNKNOWN');
+      expect(computeMaterializationFreshness(-1, 0).status).toBe('UNKNOWN');
+      expect(computeMaterializationFreshness(1, -1).status).toBe('UNKNOWN');
     });
   });
 });

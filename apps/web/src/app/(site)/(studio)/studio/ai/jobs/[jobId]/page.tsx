@@ -73,12 +73,22 @@ export default function MangaStudioJobPage({ params }: PageProps) {
               'Đã có lỗi xảy ra hoặc bạn không có quyền truy cập.'}
           </p>
         </div>
-        <Link href="/studio">
-          <Button variant="outline" size="sm">
-            <ChevronLeft className="w-4 h-4 mr-1" />
-            Về Danh Sách Job
+        <div className="pt-2 flex justify-center gap-3">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => studio.retry()}
+          >
+            <RefreshCw className="w-3.5 h-3.5 mr-1" />
+            Thử Lại
           </Button>
-        </Link>
+          <Link href="/studio">
+            <Button variant="outline" size="sm">
+              <ChevronLeft className="w-4 h-4 mr-1" />
+              Về Danh Sách Job
+            </Button>
+          </Link>
+        </div>
       </div>
     );
   }
@@ -303,10 +313,22 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             </Link>
             <Badge variant="primary">Manga Review Studio</Badge>
             <Badge variant="success">READY_FOR_REVIEW</Badge>
-            {studio.freshness.needsMaterialize ? (
+            {studio.freshness.status === 'FRESH' && (
+              <Badge variant="success">Đã Đồng Bộ Kết Xuất</Badge>
+            )}
+            {studio.freshness.status === 'STALE' && (
               <Badge variant="warning">Cần Kết Xuất Lại</Badge>
-            ) : (
-              <Badge variant="outline">Kết Xuất Mới Nhất</Badge>
+            )}
+            {studio.freshness.status === 'UNKNOWN' && (
+              <Badge variant="outline">Chưa Xác Định Phiên Bản</Badge>
+            )}
+            {studio.freshness.status === 'INVARIANT_VIOLATION' && (
+              <Badge
+                variant="outline"
+                className="text-rose-400 border-rose-500/40 bg-rose-950/30"
+              >
+                Dữ Liệu Phiên Bản Không Nhất Quán
+              </Badge>
             )}
           </div>
           <h1 className="text-xl sm:text-2xl font-black text-white">
@@ -326,19 +348,52 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             </span>
           </div>
 
-          <Button
-            variant={studio.freshness.needsMaterialize ? 'primary' : 'outline'}
-            size="sm"
-            disabled={!studio.freshness.needsMaterialize}
-            onClick={() => studio.triggerMaterialization()}
-          >
-            <Sparkles className="w-3.5 h-3.5 mr-1" />
-            {studio.freshness.needsMaterialize
-              ? 'Tạo Kết Xuất (Re-render)'
-              : 'Đã Cập Nhật'}
-          </Button>
+          {studio.freshness.status === 'STALE' && (
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={!studio.workspaceMode?.canMaterialize}
+              onClick={() => studio.triggerMaterialization()}
+            >
+              <Sparkles className="w-3.5 h-3.5 mr-1" />
+              Tạo Kết Xuất (Re-render)
+            </Button>
+          )}
+          {studio.freshness.status === 'FRESH' && (
+            <Button variant="outline" size="sm" disabled>
+              <CheckCircle2 className="w-3.5 h-3.5 mr-1 text-emerald-400" />
+              Đã Đồng Bộ Kết Xuất
+            </Button>
+          )}
+          {studio.freshness.status === 'UNKNOWN' && (
+            <Button variant="outline" size="sm" disabled>
+              Chưa Xác Định Phiên Bản
+            </Button>
+          )}
+          {studio.freshness.status === 'INVARIANT_VIOLATION' && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled
+              className="text-rose-400 border-rose-800"
+            >
+              <AlertTriangle className="w-3.5 h-3.5 mr-1 text-rose-400" />
+              Phiên Bản Không Hợp Lệ
+            </Button>
+          )}
         </div>
       </div>
+
+      {/* Invariant Violation Alert Banner */}
+      {studio.freshness.status === 'INVARIANT_VIOLATION' && (
+        <div className="p-4 bg-rose-950/40 border border-rose-500/50 rounded-2xl flex items-center gap-3">
+          <AlertTriangle className="w-5 h-5 text-rose-400 shrink-0" />
+          <div className="text-xs text-rose-200">
+            <span className="font-bold">Cảnh Báo Bất Biến Phiên Bản: </span>
+            {studio.freshness.message || 'materializedRevision không thể lớn hơn reviewRevision.'}
+          </div>
+        </div>
+      )}
 
       {/* OCC Conflict Alert Banner */}
       {studio.conflictState && (

@@ -125,6 +125,114 @@ describe('Translation Manifest Runtime Validators & Corpus Parity (#164)', () =>
       expect(result.errors.some((e) => e.includes('DUPLICATE_PAGE_NUMBER'))).toBe(true);
     });
 
+    it('should reject manifest with non-contiguous page numbers [1, 3] with NON_CONTIGUOUS_PAGES', () => {
+      const sparsePages = {
+        version: 1,
+        mediaFormat: 'COMIC',
+        pages: [
+          {
+            page: 1,
+            storageKey: 'outputs/page-1.webp',
+            previewKey: 'previews/page-1.webp',
+            width: 1200,
+            height: 1800,
+            fileSizeBytes: 102400,
+          },
+          {
+            page: 3,
+            storageKey: 'outputs/page-3.webp',
+            previewKey: 'previews/page-3.webp',
+            width: 1200,
+            height: 1800,
+            fileSizeBytes: 102400,
+          },
+        ],
+      };
+
+      const result = validateMangaResultManifestV1(sparsePages);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => e.includes('NON_CONTIGUOUS_PAGES'))).toBe(true);
+    });
+
+    it('should reject manifest starting at page 2 [2, 3] with NON_CONTIGUOUS_PAGES', () => {
+      const startsAtTwo = {
+        version: 1,
+        mediaFormat: 'COMIC',
+        pages: [
+          {
+            page: 2,
+            storageKey: 'outputs/page-2.webp',
+            previewKey: 'previews/page-2.webp',
+            width: 1200,
+            height: 1800,
+            fileSizeBytes: 102400,
+          },
+          {
+            page: 3,
+            storageKey: 'outputs/page-3.webp',
+            previewKey: 'previews/page-3.webp',
+            width: 1200,
+            height: 1800,
+            fileSizeBytes: 102400,
+          },
+        ],
+      };
+
+      const result = validateMangaResultManifestV1(startsAtTwo);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => e.includes('NON_CONTIGUOUS_PAGES'))).toBe(true);
+    });
+
+    it('should accept valid Manga manifest with out-of-order pages [2, 1] and normalize canonical output to sorted [1, 2]', () => {
+      const input = {
+        version: 1,
+        mediaFormat: 'COMIC',
+        pages: [
+          {
+            page: 2,
+            storageKey: 'outputs/page-2.webp',
+            previewKey: 'previews/page-2.webp',
+            width: 1200,
+            height: 1800,
+            fileSizeBytes: 204800,
+          },
+          {
+            page: 1,
+            storageKey: 'outputs/page-1.webp',
+            previewKey: 'previews/page-1.webp',
+            width: 1000,
+            height: 1500,
+            fileSizeBytes: 102400,
+          },
+        ],
+      };
+
+      const inputCopy = JSON.parse(JSON.stringify(input));
+      const result = validateMangaResultManifestV1(input);
+      expect(result.valid).toBe(true);
+      expect(result.errors).toHaveLength(0);
+      expect(result.value?.pages).toHaveLength(2);
+      // Assert input was not mutated
+      expect(input).toEqual(inputCopy);
+      // Assert output is sorted by page 1..N and metadata matches corresponding pages
+      expect(result.value?.pages[0]).toEqual({
+        page: 1,
+        storageKey: 'outputs/page-1.webp',
+        previewKey: 'previews/page-1.webp',
+        width: 1000,
+        height: 1500,
+        fileSizeBytes: 102400,
+      });
+      expect(result.value?.pages[1]).toEqual({
+        page: 2,
+        storageKey: 'outputs/page-2.webp',
+        previewKey: 'previews/page-2.webp',
+        width: 1200,
+        height: 1800,
+        fileSizeBytes: 204800,
+      });
+    });
+
     it('should reject manifest with duplicate page numbers in cleanBases', () => {
       const duplicateCleanBases = {
         version: 1,

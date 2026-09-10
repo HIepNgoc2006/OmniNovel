@@ -928,6 +928,153 @@ describe('Studio Foundation E2E (#144, #148, #155)', () => {
         );
       }
     });
+
+    it('#178 / F14 E2E: Sparse resultManifest [1, 3] with valid schema yields resultPageCount: null on detail and 500 PREVIEW_MANIFEST_INVARIANT_VIOLATION on previews', async () => {
+      const sparseManifest = {
+        version: 1,
+        mediaFormat: 'COMIC',
+        pages: [
+          {
+            page: 1,
+            storageKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+            previewKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+            width: 1200,
+            height: 1800,
+            fileSizeBytes: 102400,
+          },
+          {
+            page: 3,
+            storageKey: `ai/jobs/${jobA1Id}/attempt-1/p3.webp`,
+            previewKey: `ai/jobs/${jobA1Id}/attempt-1/p3.webp`,
+            width: 1200,
+            height: 1800,
+            fileSizeBytes: 102400,
+          },
+        ],
+      };
+
+      await dataSource.query(
+        `UPDATE translation_jobs SET result_manifest = $1::jsonb WHERE id = $2`,
+        [JSON.stringify(sparseManifest), jobA1Id],
+      );
+
+      try {
+        // 1. GET detail must have resultPageCount === null
+        const detailRes = await request(app.getHttpServer())
+          .get(`/api/v1/ai/jobs/${jobA1Id}`)
+          .set('Authorization', `Bearer ${translatorAToken}`)
+          .expect(200);
+
+        expect(detailRes.body.reviewSummary.resultPageCount).toBeNull();
+
+        // 2. GET previews must fail-closed with 500 PREVIEW_MANIFEST_INVARIANT_VIOLATION
+        const previewRes = await request(app.getHttpServer())
+          .get(`/api/v1/ai/jobs/${jobA1Id}/previews?pageNumber=1`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(500);
+
+        expect(previewRes.body.error.code).toBe('PREVIEW_MANIFEST_INVARIANT_VIOLATION');
+      } finally {
+        // Restore original manifest
+        await dataSource.query(
+          `UPDATE translation_jobs SET result_manifest = $1::jsonb WHERE id = $2`,
+          [
+            JSON.stringify({
+              version: 1,
+              mediaFormat: 'COMIC',
+              pages: [
+                {
+                  page: 1,
+                  storageKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+                  previewKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+                  width: 1200,
+                  height: 1800,
+                  fileSizeBytes: 102400,
+                },
+                {
+                  page: 2,
+                  storageKey: `ai/jobs/${jobA1Id}/attempt-1/p2.webp`,
+                  previewKey: `ai/jobs/${jobA1Id}/materializations/rev-1/page_2.webp`,
+                  width: 1200,
+                  height: 1800,
+                  fileSizeBytes: 105000,
+                },
+                {
+                  page: 3,
+                  storageKey: `ai/jobs/${jobA1Id}/attempt-1/p3.webp`,
+                  previewKey: `ai/jobs/${jobA1Id}/attempt-1/p3.webp`,
+                  width: 1200,
+                  height: 1800,
+                  fileSizeBytes: 101000,
+                },
+              ],
+            }),
+            jobA1Id,
+          ],
+        );
+      }
+    });
+
+    it('#178 / F14 E2E: Malformed string JSON in resultManifest yields resultPageCount: null on detail and 500 PREVIEW_MANIFEST_INVARIANT_VIOLATION on previews', async () => {
+      // In PostgreSQL jsonb column, store scalar JSON string containing invalid JSON text:
+      await dataSource.query(
+        `UPDATE translation_jobs SET result_manifest = $1::jsonb WHERE id = $2`,
+        [JSON.stringify('not-valid-json{'), jobA1Id],
+      );
+
+      try {
+        const detailRes = await request(app.getHttpServer())
+          .get(`/api/v1/ai/jobs/${jobA1Id}`)
+          .set('Authorization', `Bearer ${translatorAToken}`)
+          .expect(200);
+
+        expect(detailRes.body.reviewSummary.resultPageCount).toBeNull();
+
+        const previewRes = await request(app.getHttpServer())
+          .get(`/api/v1/ai/jobs/${jobA1Id}/previews?pageNumber=1`)
+          .set('Authorization', `Bearer ${adminToken}`)
+          .expect(500);
+
+        expect(previewRes.body.error.code).toBe('PREVIEW_MANIFEST_INVARIANT_VIOLATION');
+      } finally {
+        await dataSource.query(
+          `UPDATE translation_jobs SET result_manifest = $1::jsonb WHERE id = $2`,
+          [
+            JSON.stringify({
+              version: 1,
+              mediaFormat: 'COMIC',
+              pages: [
+                {
+                  page: 1,
+                  storageKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+                  previewKey: `ai/jobs/${jobA1Id}/attempt-1/p1.webp`,
+                  width: 1200,
+                  height: 1800,
+                  fileSizeBytes: 102400,
+                },
+                {
+                  page: 2,
+                  storageKey: `ai/jobs/${jobA1Id}/attempt-1/p2.webp`,
+                  previewKey: `ai/jobs/${jobA1Id}/materializations/rev-1/page_2.webp`,
+                  width: 1200,
+                  height: 1800,
+                  fileSizeBytes: 105000,
+                },
+                {
+                  page: 3,
+                  storageKey: `ai/jobs/${jobA1Id}/attempt-1/p3.webp`,
+                  previewKey: `ai/jobs/${jobA1Id}/attempt-1/p3.webp`,
+                  width: 1200,
+                  height: 1800,
+                  fileSizeBytes: 101000,
+                },
+              ],
+            }),
+            jobA1Id,
+          ],
+        );
+      }
+    });
   });
 });
 

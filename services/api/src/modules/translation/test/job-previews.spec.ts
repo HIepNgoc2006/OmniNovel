@@ -658,6 +658,42 @@ describe('Lazy Bounded Manga Preview API - Unit Tests (#155)', () => {
           expect(respStr).not.toContain('arbitrary/source');
         }
       });
+
+      it('rejects malformed JSON string resultManifest with sanitized 500 PREVIEW_MANIFEST_INVARIANT_VIOLATION and does not sign any URLs', async () => {
+        jobRepo.findOne.mockResolvedValueOnce({
+          ...baseMangaJob,
+          resultManifest: 'not-a-valid-json{',
+        });
+
+        storageService.createInternalDownloadUrl.mockClear();
+
+        try {
+          await service.getJobPreviews(validJobId, adminUser, { pageNumber: 1 });
+          fail('Should have thrown InternalServerErrorException');
+        } catch (err: any) {
+          expect(err).toBeInstanceOf(InternalServerErrorException);
+          expect(err.getResponse()).toEqual({
+            code: 'PREVIEW_MANIFEST_INVARIANT_VIOLATION',
+            message:
+              'Preview assets are unavailable because the persisted manifest is invalid.',
+          });
+          expect(storageService.createInternalDownloadUrl).not.toHaveBeenCalled();
+        }
+      });
+
+      it('accepts valid JSON string resultManifest and resolves previews properly', async () => {
+        const validJsonString = JSON.stringify(baseMangaJob.resultManifest);
+        jobRepo.findOne.mockResolvedValueOnce({
+          ...baseMangaJob,
+          resultManifest: validJsonString,
+        });
+
+        const res = await service.getJobPreviews(validJobId, adminUser, {
+          pageNumber: 1,
+        });
+        expect(res.resultAssets).toHaveLength(1);
+        expect(res.resultAssets[0].pageNumber).toBe(1);
+      });
     });
 
     describe('RED 5: Response Privacy & Bounded Presigning', () => {

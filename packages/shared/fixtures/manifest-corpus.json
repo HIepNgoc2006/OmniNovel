@@ -251,6 +251,55 @@
     }
   },
   {
+    "id": "valid-manga-result-out-of-order",
+    "schema": "MANGA_RESULT_V1",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 2,
+          "storageKey": "ai/jobs/job-1/page-002.webp",
+          "previewKey": "ai/jobs/job-1/preview-002.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 204800
+        },
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1000,
+          "height": 1500,
+          "fileSizeBytes": 102400
+        }
+      ]
+    },
+    "canonical": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1000,
+          "height": 1500,
+          "fileSizeBytes": 102400
+        },
+        {
+          "page": 2,
+          "storageKey": "ai/jobs/job-1/page-002.webp",
+          "previewKey": "ai/jobs/job-1/preview-002.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 204800
+        }
+      ]
+    }
+  },
+  {
     "id": "valid-novel-result-v1",
     "schema": "NOVEL_RESULT_V1",
     "valid": true,
@@ -756,6 +805,60 @@
           "width": 1200,
           "height": 1800,
           "fileSizeBytes": 0
+        }
+      ]
+    }
+  },
+  {
+    "id": "invalid-manga-result-sparse-pages",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 1,
+          "storageKey": "ai/jobs/job-1/page-001.webp",
+          "previewKey": "ai/jobs/job-1/preview-001.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        },
+        {
+          "page": 3,
+          "storageKey": "ai/jobs/job-1/page-003.webp",
+          "previewKey": "ai/jobs/job-1/preview-003.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        }
+      ]
+    }
+  },
+  {
+    "id": "invalid-manga-result-starts-at-two",
+    "schema": "MANGA_RESULT_V1",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "COMIC",
+      "pages": [
+        {
+          "page": 2,
+          "storageKey": "ai/jobs/job-1/page-002.webp",
+          "previewKey": "ai/jobs/job-1/preview-002.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
+        },
+        {
+          "page": 3,
+          "storageKey": "ai/jobs/job-1/page-003.webp",
+          "previewKey": "ai/jobs/job-1/preview-003.webp",
+          "width": 1200,
+          "height": 1800,
+          "fileSizeBytes": 102400
         }
       ]
     }

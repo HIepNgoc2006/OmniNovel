@@ -317,7 +317,22 @@ export function validateMangaResultManifestV1(
         });
       }
     });
+
+    // Sequence check: pages must be a complete 1..N sequence where N = pages.length
+    if (errors.length === 0) {
+      for (let i = 1; i <= obj.pages.length; i++) {
+        if (!seenPages.has(i)) {
+          errors.push(
+            `NON_CONTIGUOUS_PAGES: Missing page ${i} in 1..${obj.pages.length} sequence`,
+          );
+          break;
+        }
+      }
+    }
   }
+
+  // Sort canonical validatedPages ascending by page number
+  validatedPages.sort((a, b) => a.page - b.page);
 
   // Validate cleanBases if present
   let validatedCleanBases: MangaCleanBasePageV1[] | undefined;

@@ -390,11 +390,11 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             <Button
               variant="primary"
               size="sm"
-              disabled={!studio.workspaceMode?.canMaterialize}
+              disabled={!studio.workspaceMode?.canMaterialize || studio.isMaterializing}
               onClick={() => studio.triggerMaterialization()}
             >
-              <Sparkles className="w-3.5 h-3.5 mr-1" />
-              Tạo Kết Xuất (Re-render)
+              <Sparkles className={`w-3.5 h-3.5 mr-1 ${studio.isMaterializing ? 'animate-spin' : ''}`} />
+              {studio.isMaterializing ? 'Đang Kết Xuất...' : 'Tạo Kết Xuất (Re-render)'}
             </Button>
           )}
           {studio.freshness.status === 'FRESH' && (
@@ -440,10 +440,16 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
             <div className="text-xs text-amber-200">
               <span className="font-bold">Xung Đột Phiên Bản (409 VERSION_CONFLICT): </span>
-              Bản ghi segment đã được sửa bởi người khác (Server v{studio.conflictState.currentVersion} vs Bạn v{studio.conflictState.expectedVersion}). Bản nháp của bạn đã được giữ nguyên.
+              {studio.conflictState.currentVersion !== undefined
+                ? `Bản ghi segment đã được sửa bởi người khác (Server v${studio.conflictState.currentVersion} vs Bạn v${studio.conflictState.expectedVersion}). Bản nháp của bạn đã được giữ nguyên.`
+                : 'Phiên bản trên máy chủ đã thay đổi. Bản nháp của bạn đã được giữ nguyên.'}
             </div>
           </div>
-          <Button variant="secondary" size="sm" onClick={() => studio.clearConflict()}>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => studio.clearConflict(studio.conflictState?.segmentId)}
+          >
             Đóng
           </Button>
         </div>

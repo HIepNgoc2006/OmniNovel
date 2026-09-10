@@ -80,8 +80,9 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     selectedSegmentId: null,
     setSelectedSegmentId: vi.fn(),
     conflictState: null,
+    conflictStates: {},
     clearConflict: vi.fn(),
-    saveSegment: vi.fn(),
+    saveSegment: vi.fn().mockResolvedValue({ success: true, outcome: 'SAVED_AND_SYNCED' }),
     triggerMaterialization: vi.fn(),
     materializationStatus: null,
     isMaterializing: false,
@@ -351,6 +352,64 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
 
     expect(await screen.findByText(/Chưa gán trang • Thứ tự #42/)).toBeDefined();
     expect(screen.queryByText(/Trang 1 • Thứ tự #42/)).toBeNull();
+  });
+
+  it('disables materialization button when isMaterializing is true', async () => {
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      freshness: { isFresh: false, needsMaterialize: true, status: 'STALE' },
+      isMaterializing: true,
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    const btn = await screen.findByText('Đang Kết Xuất...');
+    expect(btn).toBeDefined();
+    expect(btn.closest('button')?.disabled).toBe(true);
+  });
+
+  it('gracefully handles VERSION_CONFLICT without version numbers without rendering vundefined', async () => {
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      conflictState: {
+        segmentId: 'seg-1',
+        currentVersion: undefined,
+        expectedVersion: undefined,
+        draftText: 'Draft with no version',
+      },
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    expect(await screen.findByText('Xung Đột Phiên Bản (409 VERSION_CONFLICT):')).toBeDefined();
+    expect(screen.getByText(/Phiên bản trên máy chủ đã thay đổi/)).toBeDefined();
+    expect(screen.queryByText(/vundefined/)).toBeNull();
+  });
+
+  it('passes target segmentId to clearConflict when close button is clicked', async () => {
+    const clearConflictSpy = vi.fn();
+    vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+      ...defaultMockReturn,
+      conflictState: {
+        segmentId: 'seg-42',
+        currentVersion: 3,
+        expectedVersion: 2,
+        draftText: 'Draft',
+      },
+      clearConflict: clearConflictSpy,
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    const closeBtn = await screen.findByText('Đóng');
+    fireEvent.click(closeBtn);
+    expect(clearConflictSpy).toHaveBeenCalledWith('seg-42');
   });
 });
 

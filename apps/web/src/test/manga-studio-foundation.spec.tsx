@@ -99,6 +99,23 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       blockType: null,
       version: 1,
     },
+    {
+      id: 'seg-2',
+      jobId: mockJobId,
+      pageNumber: 1,
+      anchorBlockId: null,
+      sortOrder: 2,
+      bboxX: 10,
+      bboxY: 80,
+      bboxW: 100,
+      bboxH: 50,
+      rawText: 'ありがとう',
+      translatedText: 'Cảm ơn',
+      confidence: 0.95,
+      isHumanVerified: false,
+      blockType: null,
+      version: 1,
+    },
   ];
 
   beforeEach(() => {
@@ -118,7 +135,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
     vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockComicJobDetail);
     vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
       data: mockSegments,
-      pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+      pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
     });
     vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
       sourceAssets: [],
@@ -250,7 +267,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
 
       // Mutations MUST be blocked
       const saveOk = await result.current.saveSegment('seg-1', 'Thử lưu');
-      expect(saveOk).toBe(false);
+      expect(saveOk.success).toBe(false);
       expect(translationApi.updateTranslationSegment).not.toHaveBeenCalled();
 
       const matRes = await result.current.triggerMaterialization();
@@ -282,12 +299,13 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(result.current.workspaceMode?.canMaterialize).toBe(false);
 
       // Attempting to save a segment in APPLIED state MUST fail without calling API
-      let saveResult = false;
+      let saveResult: any;
       await act(async () => {
         saveResult = await result.current.saveSegment('seg-1', 'Bản sửa mới');
       });
 
-      expect(saveResult).toBe(false);
+      expect(saveResult.success).toBe(false);
+      expect(saveResult.outcome).toBe('STATE_CHANGED');
       expect(translationApi.updateTranslationSegment).not.toHaveBeenCalled();
     });
   });
@@ -433,12 +451,13 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         expect(result.current.status).toBe('ready');
       });
 
-      let saveSuccess = true;
+      let saveResult: any;
       await act(async () => {
-        saveSuccess = await result.current.saveSegment('seg-1', 'Bản dịch của tôi');
+        saveResult = await result.current.saveSegment('seg-1', 'Bản dịch của tôi');
       });
 
-      expect(saveSuccess).toBe(false);
+      expect(saveResult.success).toBe(false);
+      expect(saveResult.outcome).toBe('VERSION_CONFLICT');
       expect(result.current.conflictState).toEqual({
         segmentId: 'seg-1',
         currentVersion: 3,
@@ -480,12 +499,13 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         expect(result.current.segments.length).toBeGreaterThan(0);
       });
 
-      let saveResult: boolean | undefined;
+      let saveResult: any;
       await act(async () => {
         saveResult = await result.current.saveSegment('seg-1', 'Bản dịch mới');
       });
 
-      expect(saveResult).toBe(false);
+      expect(saveResult.success).toBe(false);
+      expect(saveResult.outcome).toBe('STATE_CHANGED');
       expect(result.current.jobDetail?.job.status).toBe(TranslationJobStatus.APPLIED);
       expect(result.current.workspaceMode?.mode).toBe('APPLIED');
       expect(result.current.workspaceMode?.mode).not.toBe('PIPELINE_MONITOR');
@@ -527,9 +547,13 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         expect(result.current.status).toBe('ready');
       });
 
+      let saveResult: any;
       await act(async () => {
-        await result.current.saveSegment('seg-1', 'Bản dịch');
+        saveResult = await result.current.saveSegment('seg-1', 'Bản dịch');
       });
+
+      expect(saveResult.success).toBe(false);
+      expect(saveResult.outcome).toBe('STATE_CHANGED');
 
       expect(result.current.jobDetail?.job.status).toBe(TranslationJobStatus.FAILED);
       expect(result.current.workspaceMode?.mode).toBe('TERMINAL_STATE');
@@ -987,7 +1011,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
 
       await act(async () => {
         const saved = await result.current.saveSegment('seg-2', 'Seg 2 saved');
-        expect(saved).toBe(true);
+        expect(saved.success).toBe(true);
       });
 
       // Switch back to Segment A
@@ -1042,7 +1066,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       });
 
       // Trigger Save A1
-      let save1ResultPromise: Promise<boolean>;
+      let save1ResultPromise: Promise<any>;
       act(() => {
         save1ResultPromise = result.current.saveSegment('seg-1', 'Text A1');
       });
@@ -1074,12 +1098,14 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
 
       await waitFor(() => {
         expect(result.current.status).toBe('ready');
+        expect(result.current.segments.length).toBeGreaterThanOrEqual(2);
       });
 
-      // Mock updateTranslationSegment to succeed for both
+      // Mock updateTranslationSegment to succeed for both seg-1 and seg-2 independently
       vi.spyOn(translationApi, 'updateTranslationSegment').mockImplementation(async (_job, segId, payload) => {
+        const seg = mockSegments.find((s) => s.id === segId) || mockSegments[0];
         return {
-          ...mockSegments[0],
+          ...seg,
           id: segId,
           translatedText: payload.translatedText ?? null,
           version: 2,
@@ -1104,20 +1130,21 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         };
       });
 
-      let save1Promise: Promise<boolean>;
+      let save1Promise: Promise<any>;
       act(() => {
         save1Promise = result.current.saveSegment('seg-1', 'Text 1');
       });
 
-      // Save 2 starts and completes with newer refetch detail
-      let save2Success: boolean | undefined;
+      // Save 2 on seg-2 starts and completes with newer refetch detail
+      let save2Result: any;
       await act(async () => {
-        save2Success = await result.current.saveSegment('seg-1', 'Text 2');
+        save2Result = await result.current.saveSegment('seg-2', 'Text 2');
       });
 
-      expect(save2Success).toBe(true);
+      expect(save2Result.success).toBe(true);
+      expect(save2Result.outcome).toBe('SAVED_AND_SYNCED');
 
-      // Now Refetch 1 resolves (it is superseded by refetch 2)
+      // Now Refetch 1 resolves (it is superseded by successful refetch 2)
       await act(async () => {
         resolveDetail1!({
           ...mockComicJobDetail,
@@ -1125,9 +1152,10 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         });
       });
 
-      const save1Success = await save1Promise!;
-      // Invariant: Save 1 committed on backend and its refetch was superseded by a newer one -> MUST report true!
-      expect(save1Success).toBe(true);
+      const save1Result = await save1Promise!;
+      // Invariant: Save 1 on seg-1 committed on backend and its refetch was superseded by a newer successful sync -> MUST report true!
+      expect(save1Result.success).toBe(true);
+      expect(save1Result.outcome).toBe('SAVED_AND_SYNCED');
     });
 
     it('should clear old segments when detail reviewRevision increments so stale segments are not shown if new fetch fails', async () => {
@@ -1196,13 +1224,14 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         },
       });
 
-      let saveSuccess: boolean | undefined;
+      let saveResult: any;
       await act(async () => {
-        saveSuccess = await result.current.saveSegment('seg-1', 'Nội dung mới');
+        saveResult = await result.current.saveSegment('seg-1', 'Nội dung mới');
       });
 
       // Invariant: Save must NOT report clean success if authoritative sync failed!
-      expect(saveSuccess).toBe(false);
+      expect(saveResult.success).toBe(false);
+      expect(saveResult.outcome).toBe('SAVED_SYNC_FAILED');
       // Invariant: Freshness MUST NOT remain FRESH!
       expect(result.current.freshness.status).not.toBe('FRESH');
       expect(result.current.freshness.status).toBe('UNKNOWN');
@@ -1232,13 +1261,14 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         },
       });
 
-      let saveSuccess: boolean | undefined;
+      let saveResult: any;
       await act(async () => {
-        saveSuccess = await result.current.saveSegment('seg-1', 'Nội dung mới');
+        saveResult = await result.current.saveSegment('seg-1', 'Nội dung mới');
       });
 
       // Invariant: Save MUST NOT return true when workspace was purged!
-      expect(saveSuccess).toBe(false);
+      expect(saveResult.success).toBe(false);
+      expect(saveResult.outcome).toBe('ACCESS_REVOKED');
       expect(result.current.status).toBe('error');
       expect(result.current.error?.code).toBe('FORBIDDEN');
     });
@@ -1267,12 +1297,13 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       // Job Detail is still valid (200)
       vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockComicJobDetail);
 
-      let saveSuccess: boolean | undefined;
+      let saveResult: any;
       await act(async () => {
-        saveSuccess = await result.current.saveSegment('seg-1', 'Nội dung');
+        saveResult = await result.current.saveSegment('seg-1', 'Nội dung');
       });
 
-      expect(saveSuccess).toBe(false);
+      expect(saveResult.success).toBe(false);
+      expect(saveResult.outcome).toBe('FAILED_BEFORE_COMMIT');
       // Invariant: Workspace MUST NOT be purged!
       expect(result.current.status).not.toBe('error');
       expect(result.current.jobDetail).not.toBeNull();
@@ -1675,7 +1706,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       });
 
       // Start save on Job A
-      let savePromise: Promise<boolean>;
+      let savePromise: Promise<any>;
       act(() => {
         savePromise = result.current.saveSegment('seg-1', 'Text A');
       });
@@ -2130,6 +2161,436 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(computeMaterializationFreshness(null, 0).status).toBe('UNKNOWN');
       expect(computeMaterializationFreshness(-1, 0).status).toBe('UNKNOWN');
       expect(computeMaterializationFreshness(1, -1).status).toBe('UNKNOWN');
+    });
+  });
+
+  describe('13. Interleaving Invariants & Concurrency Hardening (Round 3)', () => {
+    it('1 & 11. should NOT treat in-flight detail refetch A as superseded when newer refetch B starts then FAILS', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      let resolveDetailA: (val: any) => void;
+      const detailAPromise = new Promise((resolve) => {
+        resolveDetailA = resolve;
+      });
+
+      let detailCall = 0;
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockImplementation(async () => {
+        detailCall++;
+        if (detailCall === 1) {
+          // Refetch A hangs
+          return detailAPromise as any;
+        }
+        // Refetch B fails with 500
+        throw {
+          isAxiosError: true,
+          response: {
+            status: 500,
+            data: { error: { code: 'INTERNAL_SERVER_ERROR', message: 'DB error on B' } },
+          },
+        };
+      });
+
+      // Launch Refetch A
+      let refetchAPromise: Promise<ReconciliationOutcome>;
+      act(() => {
+        refetchAPromise = result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      // Launch Refetch B which starts newer than A, but fails
+      let refetchBOutcome: ReconciliationOutcome | undefined;
+      await act(async () => {
+        refetchBOutcome = await result.current.refetchDetail({ requirement: 'BEST_EFFORT' });
+      });
+
+      expect(refetchBOutcome).toBe('FAILED');
+
+      // Now Refetch A returns valid 200 with reviewRevision: 2
+      await act(async () => {
+        resolveDetailA!({
+          ...mockComicJobDetail,
+          job: { ...mockComicJobDetail.job, reviewRevision: 2 },
+        });
+      });
+
+      const outcomeA = await refetchAPromise!;
+      // Invariant: Because B failed, A is NOT discarded as superseded by newer sync! A successfully applies!
+      expect(outcomeA).toBe('SYNCED');
+      expect(result.current.jobDetail?.job.reviewRevision).toBe(2);
+    });
+
+    it('2. should preserve conflict draft A when PATCH segment B returns 404', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // 1. Create conflict draft on seg-1
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: 'VERSION_CONFLICT',
+              message: 'Conflict on seg-1',
+              currentVersion: 3,
+              expectedVersion: 1,
+            },
+          },
+        },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Draft of Seg A');
+      });
+
+      expect(result.current.conflictStates['seg-1']).toBeDefined();
+      expect(result.current.conflictStates['seg-1'].draftText).toBe('Draft of Seg A');
+
+      // 2. Now user saves seg-2 which returns 404 NOT_FOUND
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 404,
+          data: {
+            error: {
+              code: 'NOT_FOUND',
+              message: 'Segment seg-2 not found on server',
+            },
+          },
+        },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockComicJobDetail);
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        data: [mockSegments[0]],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+      });
+
+      let saveBResult: any;
+      await act(async () => {
+        saveBResult = await result.current.saveSegment('seg-2', 'Text B');
+      });
+
+      expect(saveBResult.success).toBe(false);
+      expect(saveBResult.outcome).toBe('FAILED_BEFORE_COMMIT');
+
+      // Invariant: Draft on seg-1 MUST survive, NOT be wiped by segment 404!
+      expect(result.current.conflictStates['seg-1']).toBeDefined();
+      expect(result.current.conflictStates['seg-1'].draftText).toBe('Draft of Seg A');
+
+      // Invariant: Segment 404 operation error MUST remain visible!
+      expect(result.current.operationError?.code).toBe('NOT_FOUND');
+
+      // Invariant: seg-2 was removed, seg-1 remains
+      expect(result.current.segments.find((s) => s.id === 'seg-2')).toBeUndefined();
+      expect(result.current.segments.find((s) => s.id === 'seg-1')).toBeDefined();
+      expect(result.current.workspaceMode?.mode).toBe('REVIEWABLE');
+    });
+
+    it('3. should boundedly stop with STATE_DESYNCHRONIZED error when preview repeatedly returns 409', async () => {
+      let previewCallCount = 0;
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockComicJobDetail);
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async () => {
+        previewCallCount++;
+        throw {
+          isAxiosError: true,
+          response: {
+            status: 409,
+            data: {
+              error: {
+                code: 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS',
+                message: 'Previews not available for current status',
+              },
+            },
+          },
+        };
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('error');
+      });
+
+      // Invariant: Preview calls must be bounded (initial + 2 reconcile attempts = 3 calls max)
+      expect(previewCallCount).toBeLessThanOrEqual(3);
+      expect(result.current.fatalError?.code).toBe('STATE_DESYNCHRONIZED');
+    });
+
+    it('4. should NOT clear isMaterializing on Job B when stale materialization on Job A settles', async () => {
+      let resolveMatA: (val: any) => void;
+      const matPromiseA = new Promise((resolve) => {
+        resolveMatA = resolve;
+      });
+
+      let resolveMatB: (val: any) => void;
+      const matPromiseB = new Promise((resolve) => {
+        resolveMatB = resolve;
+      });
+
+      let matCall = 0;
+      vi.spyOn(translationApi, 'requestJobMaterialization').mockImplementation(async () => {
+        matCall++;
+        if (matCall === 1) return matPromiseA as any;
+        return matPromiseB as any;
+      });
+
+      const { result, rerender } = renderHook(({ id }) => useMangaReviewStudio(id), {
+        initialProps: { id: 'job-A' },
+      });
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Start materialization on Job A
+      act(() => {
+        result.current.triggerMaterialization();
+      });
+      expect(result.current.isMaterializing).toBe(true);
+
+      // Switch to Job B
+      const jobBDetail = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, id: 'job-B', reviewRevision: 2, materializedRevision: 1 },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(jobBDetail);
+
+      rerender({ id: 'job-B' });
+
+      await waitFor(() => {
+        expect(result.current.jobDetail?.job.id).toBe('job-B');
+      });
+
+      // Start materialization on Job B
+      let triggerPromiseB: Promise<any>;
+      act(() => {
+        triggerPromiseB = result.current.triggerMaterialization();
+      });
+      expect(result.current.isMaterializing).toBe(true);
+
+      // Settle Job A materialization
+      await act(async () => {
+        resolveMatA!({
+          status: 'ENQUEUED',
+          targetRevision: 1,
+        });
+      });
+
+      // Invariant: Settling Job A must NOT set Job B isMaterializing to false!
+      expect(result.current.isMaterializing).toBe(true);
+
+      // Now settle Job B materialization
+      await act(async () => {
+        resolveMatB!({
+          status: 'ENQUEUED',
+          targetRevision: 2,
+        });
+        await triggerPromiseB!;
+      });
+      expect(result.current.isMaterializing).toBe(false);
+    });
+
+    it('5. should NOT repopulate materializationStatus if old materialization settles after transitioning to APPLIED', async () => {
+      let resolveMat: (val: any) => void;
+      const matPromise = new Promise((resolve) => {
+        resolveMat = resolve;
+      });
+
+      vi.spyOn(translationApi, 'requestJobMaterialization').mockReturnValue(matPromise as any);
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Start materialization
+      act(() => {
+        result.current.triggerMaterialization();
+      });
+
+      // Server transitions to APPLIED
+      const appliedJob: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, status: TranslationJobStatus.APPLIED },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(appliedJob);
+
+      await act(async () => {
+        await result.current.refetchDetail();
+      });
+
+      expect(result.current.workspaceMode?.mode).toBe('APPLIED');
+      expect(result.current.materializationStatus).toBeNull();
+
+      // Old materialization response arrives
+      await act(async () => {
+        resolveMat!({
+          status: 'ENQUEUED',
+          targetRevision: 1,
+        });
+      });
+
+      // Invariant: Old materialization MUST NOT repopulate status after leaving REVIEWABLE!
+      expect(result.current.materializationStatus).toBeNull();
+    });
+
+    it('6. should issue exactly ONE network request when triggerMaterialization is called twice in the same tick', async () => {
+      const matSpy = vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValue({
+        status: 'ENQUEUED',
+        targetRevision: 2,
+      });
+
+      // Job needs materialize (reviewRevision 2 > materializedRevision 1)
+      const staleJob: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, reviewRevision: 2, materializedRevision: 1 },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(staleJob);
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+        expect(result.current.freshness.needsMaterialize).toBe(true);
+      });
+
+      let res1: any;
+      let res2: any;
+      await act(async () => {
+        const p1 = result.current.triggerMaterialization();
+        const p2 = result.current.triggerMaterialization();
+        [res1, res2] = await Promise.all([p1, p2]);
+      });
+
+      // Invariant: Synchronous atomic in-flight guard allows exactly ONE network request!
+      expect(matSpy).toHaveBeenCalledTimes(1);
+      expect(res1?.status).toBe('ENQUEUED');
+      expect(res2).toBeNull();
+    });
+
+    it('7. should set operationError when child segments fetch fails on verification-only update with unchanged reviewRevision', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Server detail still has reviewRevision: 1 (verification-only update does not bump revision)
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockComicJobDetail);
+      // But child segments fetch fails
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 500,
+          data: { error: { code: 'INTERNAL_SERVER_ERROR', message: 'Segments fetch failed' } },
+        },
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'BEST_EFFORT' });
+      });
+
+      // Invariant: Child fetch failure MUST be surfaced via operationError!
+      expect(result.current.operationError?.code).toBe('SEGMENTS_SYNC_FAILED');
+    });
+
+    it('8. should clear operationError when retry succeeds', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Set an operation error via failed save
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 500,
+          data: { error: { code: 'INTERNAL_SERVER_ERROR', message: 'Database save error' } },
+        },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Test text');
+      });
+
+      expect(result.current.operationError).not.toBeNull();
+
+      // Now retry succeeds
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockComicJobDetail);
+      await act(async () => {
+        await result.current.retry();
+      });
+
+      // Invariant: Operation error MUST be cleared after retry!
+      expect(result.current.operationError).toBeNull();
+    });
+
+    it('9. should only clear target conflict when clearConflict is called with targetSegmentId and no selection exists', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Conflict 1 on seg-1
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: {
+            error: { code: 'VERSION_CONFLICT', currentVersion: 2, expectedVersion: 1 },
+          },
+        },
+      });
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Draft 1');
+      });
+
+      // Conflict 2 on seg-2
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: {
+            error: { code: 'VERSION_CONFLICT', currentVersion: 2, expectedVersion: 1 },
+          },
+        },
+      });
+      await act(async () => {
+        await result.current.saveSegment('seg-2', 'Draft 2');
+      });
+
+      // Deselect segment
+      act(() => {
+        result.current.setSelectedSegmentId(null);
+      });
+
+      expect(result.current.conflictStates['seg-1']).toBeDefined();
+      expect(result.current.conflictStates['seg-2']).toBeDefined();
+
+      // User closes conflict for seg-1
+      act(() => {
+        result.current.clearConflict('seg-1');
+      });
+
+      // Invariant: Only seg-1 conflict was cleared; seg-2 conflict MUST survive!
+      expect(result.current.conflictStates['seg-1']).toBeUndefined();
+      expect(result.current.conflictStates['seg-2']).toBeDefined();
+      expect(result.current.conflictStates['seg-2'].draftText).toBe('Draft 2');
+
+      // Calling clearConflict with no args and null selection is a safe no-op
+      act(() => {
+        result.current.clearConflict();
+      });
+      expect(result.current.conflictStates['seg-2']).toBeDefined();
     });
   });
 });

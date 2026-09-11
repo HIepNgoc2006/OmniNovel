@@ -239,7 +239,18 @@ describe('Lazy Bounded Manga Preview API - Unit Tests (#155)', () => {
 
       dataSource = {
         query: jest.fn(),
-        transaction: jest.fn(),
+        transaction: jest.fn().mockImplementation((...args: any[]) => {
+          const callback = typeof args[0] === 'function' ? args[0] : args[1];
+          const managerMock = {
+            findOne: jobRepo.findOne,
+            find: jest.fn().mockImplementation((...args: any[]) => {
+              const options = args.length > 1 ? args[1] : args[0];
+              return mediaAssetRepo.find(options);
+            }),
+            query: dataSource.query,
+          };
+          return callback(managerMock);
+        }),
       };
 
       const module: TestingModule = await Test.createTestingModule({

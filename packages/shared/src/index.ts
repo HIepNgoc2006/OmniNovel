@@ -366,6 +366,7 @@ export interface TranslationJobReviewDetailResponse {
     expiresAt: IsoDateString | null;
     reviewRevision: number;
     materializedRevision: number;
+    workspaceRevision: number;
   };
   context: {
     story: {
@@ -460,8 +461,14 @@ export type ReviewAssetDto =
       url: string;
     };
 
+export interface TranslationJobSegmentsResponse extends PaginatedResponse<TranslationSegmentDto> {
+  workspaceRevision: number;
+}
+
 export interface TranslationJobPreviewsResponse {
+  workspaceRevision: number;
   sourceAssets: ReviewAssetDto[];
   resultAssets: ReviewAssetDto[];
 }
+
 

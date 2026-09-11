@@ -53,6 +53,22 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
 
     dataSource = {
       query: jest.fn(),
+      transaction: jest.fn().mockImplementation((...args: any[]) => {
+        const callback = typeof args[0] === 'function' ? args[0] : args[1];
+        const managerMock = {
+          findOne: jobRepo.findOne,
+          find: segmentRepo.find,
+          count: segmentRepo.count,
+          createQueryBuilder: segmentRepo.createQueryBuilder,
+          getRepository: jest.fn().mockImplementation((entity) => {
+            if (entity === TranslationSegment) return segmentRepo;
+            if (entity === TranslationJob) return jobRepo;
+            return {};
+          }),
+          query: dataSource.query,
+        };
+        return callback(managerMock);
+      }),
     };
 
     const module: TestingModule = await Test.createTestingModule({

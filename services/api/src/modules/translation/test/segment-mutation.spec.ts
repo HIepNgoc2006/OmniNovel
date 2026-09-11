@@ -262,8 +262,8 @@ describe('Segment Mutation & Freshness Gate (#147, #156)', () => {
 
       mockDataSource.transaction.mockImplementation(async (cb: any) => {
         const manager = {
-          query: jest.fn().mockImplementation((sql: string) => {
-            if (sql.includes('UPDATE translation_jobs SET review_revision = review_revision + 1')) {
+          query: jest.fn().mockImplementation((sql: string, params?: any[]) => {
+            if (/UPDATE\s+translation_jobs[\s\S]*review_revision/i.test(sql) && params && params[1] === true) {
               reviewRevisionIncremented = true;
             }
           }),
@@ -329,8 +329,8 @@ describe('Segment Mutation & Freshness Gate (#147, #156)', () => {
 
       mockDataSource.transaction.mockImplementation(async (cb: any) => {
         const manager = {
-          query: jest.fn().mockImplementation((sql: string) => {
-            if (sql.includes('UPDATE translation_jobs SET review_revision = review_revision + 1')) {
+          query: jest.fn().mockImplementation((sql: string, params?: any[]) => {
+            if (/UPDATE\s+translation_jobs[\s\S]*review_revision/i.test(sql) && params && params[1] === true) {
               reviewRevisionIncremented = true;
             }
           }),

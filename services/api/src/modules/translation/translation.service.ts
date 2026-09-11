@@ -24,6 +24,7 @@ import {
   TranslationProjectSummaryDto,
   TranslationJobSummaryDto,
   TranslationJobReviewDetailResponse,
+  TranslationJobSegmentsResponse,
   TranslationSegmentDto,
   PaginatedResponse,
   validateProtectedAnchorTopology,
@@ -353,9 +354,29 @@ export class TranslationService {
         },
       );
 
-      // Enqueue thành công -> Cập nhật DB sang QUEUED
-      job.status = TranslationJobStatus.QUEUED;
-      await this.jobRepo.save(job);
+      // Enqueue thành công -> Cập nhật DB sang QUEUED với atomic conditional update
+      const updateRes = await this.dataSource.query(
+        `UPDATE translation_jobs
+         SET status = 'QUEUED', workspace_revision = workspace_revision + 1
+         WHERE id = $1 AND status = 'VALIDATING'
+         RETURNING workspace_revision, status;`,
+        [job.id],
+      );
+
+      if (updateRes[0]?.length > 0) {
+        job.status = updateRes[0][0].status;
+        job.workspaceRevision = updateRes[0][0].workspace_revision;
+      } else {
+        // Zero-row: Watchdog (hoặc process concurrent) đã enqueue và chuyển status
+        const current = await this.jobRepo.findOne({ where: { id: job.id } });
+        if (current?.status === TranslationJobStatus.QUEUED) {
+          job.status = current.status;
+          job.workspaceRevision = current.workspaceRevision;
+        } else if (current) {
+          job.status = current.status;
+          job.workspaceRevision = current.workspaceRevision;
+        }
+      }
     } catch (enqueueErr: any) {
       this.logger.error(
         `Không thể enqueue BullMQ cho TranslationJob ${job.id}: ${enqueueErr.message}. Giữ trạng thái VALIDATING để reconciler xử lý.`,
@@ -580,160 +601,163 @@ export class TranslationService {
    * KHÔNG load segments relation, KHÔNG sign 200 diff URLs, KHÔNG expose raw errorTrace/storageKey.
    */
   async getJob(id: string, user: any): Promise<TranslationJobReviewDetailResponse> {
-    const job = await this.jobRepo.findOne({
-      where: { id },
-      relations: [
-        'project',
-        'project.storyEdition',
-        'project.storyEdition.story',
-        'sourceVersion',
-        'sourceVersion.chapter',
-        'targetVersion',
-      ],
-    });
+    return await this.dataSource.transaction('REPEATABLE READ', async (manager) => {
+      const job = await manager.findOne(TranslationJob, {
+        where: { id },
+        relations: [
+          'project',
+          'project.storyEdition',
+          'project.storyEdition.story',
+          'sourceVersion',
+          'sourceVersion.chapter',
+          'targetVersion',
+        ],
+      });
 
-    if (!job) {
-      throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
-    }
-
-    const story = job.project?.storyEdition?.story;
-    const edition = job.project?.storyEdition;
-    const chapter = job.sourceVersion?.chapter;
-
-    if (!story || !edition || !chapter) {
-      throw new NotFoundException(
-        'Không tìm thấy đầy đủ ngữ cảnh Story/Edition/Chapter cho TranslationJob này.',
-      );
-    }
-
-    await this.checkStoryPermission(story.id, user, [
-      'OWNER',
-      'EDITOR',
-      'TRANSLATOR',
-    ]);
-
-    // SQL Aggregation trực tiếp để đếm segments/pages mà không load toàn bộ vào RAM
-    const aggResult = await this.dataSource.query(
-      `SELECT
-        COUNT(*)::int as segment_count,
-        COUNT(*) FILTER (WHERE is_human_verified = true)::int as verified_count,
-        COUNT(DISTINCT page_number)::int as page_count,
-        COUNT(DISTINCT anchor_block_id)::int as block_count
-      FROM translation_segments
-      WHERE job_id = $1`,
-      [job.id],
-    );
-
-    const agg = aggResult[0] || {
-      segment_count: 0,
-      verified_count: 0,
-      page_count: 0,
-      block_count: 0,
-    };
-
-    const isComic = story.mediaFormat === MediaFormat.COMIC;
-    const isNovel = story.mediaFormat === MediaFormat.NOVEL;
-
-    let resultPageCount: number | null = null;
-    if (
-      isComic &&
-      (job.status === TranslationJobStatus.READY_FOR_REVIEW ||
-        job.status === TranslationJobStatus.APPLIED) &&
-      job.resultManifest
-    ) {
-      try {
-        const rawManifest =
-          typeof job.resultManifest === 'string'
-            ? JSON.parse(job.resultManifest)
-            : job.resultManifest;
-        const validation = validateTranslationResultManifest(
-          rawManifest,
-          'COMIC',
-        );
-        if (
-          validation.valid &&
-          validation.value &&
-          validation.value.mediaFormat === 'COMIC'
-        ) {
-          resultPageCount = validation.value.pages.length;
-        }
-      } catch {
-        resultPageCount = null;
+      if (!job) {
+        throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
       }
-    }
 
-    const reviewSummary: ReviewSummaryDto = {
-      segmentCount: Number(agg.segment_count || 0),
-      verifiedCount: Number(agg.verified_count || 0),
-      pageCount: isComic ? Number(agg.page_count || 0) : null,
-      resultPageCount,
-      blockCount: isNovel ? Number(agg.block_count || 0) : null,
-    };
+      const story = job.project?.storyEdition?.story;
+      const edition = job.project?.storyEdition;
+      const chapter = job.sourceVersion?.chapter;
 
-    let errorSummary: { code: string; message: string } | undefined;
-    if (job.status === TranslationJobStatus.FAILED) {
-      errorSummary = {
-        code: 'TRANSLATION_JOB_FAILED',
-        message: 'Translation job failed. Please retry or review job diagnostics.',
+      if (!story || !edition || !chapter) {
+        throw new NotFoundException(
+          'Không tìm thấy đầy đủ ngữ cảnh Story/Edition/Chapter cho TranslationJob này.',
+        );
+      }
+
+      await this.checkStoryPermission(story.id, user, [
+        'OWNER',
+        'EDITOR',
+        'TRANSLATOR',
+      ]);
+
+      // SQL Aggregation trực tiếp qua manager để đếm segments/pages mà không load toàn bộ vào RAM
+      const aggResult = await manager.query(
+        `SELECT
+          COUNT(*)::int as segment_count,
+          COUNT(*) FILTER (WHERE is_human_verified = true)::int as verified_count,
+          COUNT(DISTINCT page_number)::int as page_count,
+          COUNT(DISTINCT anchor_block_id)::int as block_count
+        FROM translation_segments
+        WHERE job_id = $1`,
+        [job.id],
+      );
+
+      const agg = aggResult[0] || {
+        segment_count: 0,
+        verified_count: 0,
+        page_count: 0,
+        block_count: 0,
       };
-    }
 
-    return {
-      job: {
-        id: job.id,
-        status: job.status,
-        progressPercentage: job.progressPercentage,
-        provider: job.provider,
-        modelName: job.modelName,
-        promptVersion: job.promptVersion,
-        attemptCount: job.attemptCount,
-        maxAttempts: job.maxAttempts,
-        createdAt: job.createdAt.toISOString(),
-        startedAt: job.startedAt ? job.startedAt.toISOString() : null,
-        heartbeatAt: job.heartbeatAt ? job.heartbeatAt.toISOString() : null,
-        completedAt: job.completedAt ? job.completedAt.toISOString() : null,
-        expiresAt: job.expiresAt ? job.expiresAt.toISOString() : null,
-        reviewRevision: Number(job.reviewRevision || 0),
-        materializedRevision: Number(job.materializedRevision || 0),
-      },
-      context: {
-        story: {
-          id: story.id,
-          title: story.title,
-          slug: story.slug,
-          mediaFormat: story.mediaFormat,
+      const isComic = story.mediaFormat === MediaFormat.COMIC;
+      const isNovel = story.mediaFormat === MediaFormat.NOVEL;
+
+      let resultPageCount: number | null = null;
+      if (
+        isComic &&
+        (job.status === TranslationJobStatus.READY_FOR_REVIEW ||
+          job.status === TranslationJobStatus.APPLIED) &&
+        job.resultManifest
+      ) {
+        try {
+          const rawManifest =
+            typeof job.resultManifest === 'string'
+              ? JSON.parse(job.resultManifest)
+              : job.resultManifest;
+          const validation = validateTranslationResultManifest(
+            rawManifest,
+            'COMIC',
+          );
+          if (
+            validation.valid &&
+            validation.value &&
+            validation.value.mediaFormat === 'COMIC'
+          ) {
+            resultPageCount = validation.value.pages.length;
+          }
+        } catch {
+          resultPageCount = null;
+        }
+      }
+
+      const reviewSummary: ReviewSummaryDto = {
+        segmentCount: Number(agg.segment_count || 0),
+        verifiedCount: Number(agg.verified_count || 0),
+        pageCount: isComic ? Number(agg.page_count || 0) : null,
+        resultPageCount,
+        blockCount: isNovel ? Number(agg.block_count || 0) : null,
+      };
+
+      let errorSummary: { code: string; message: string } | undefined;
+      if (job.status === TranslationJobStatus.FAILED) {
+        errorSummary = {
+          code: 'TRANSLATION_JOB_FAILED',
+          message: 'Translation job failed. Please retry or review job diagnostics.',
+        };
+      }
+
+      return {
+        job: {
+          id: job.id,
+          status: job.status,
+          progressPercentage: job.progressPercentage,
+          provider: job.provider,
+          modelName: job.modelName,
+          promptVersion: job.promptVersion,
+          attemptCount: job.attemptCount,
+          maxAttempts: job.maxAttempts,
+          createdAt: job.createdAt.toISOString(),
+          startedAt: job.startedAt ? job.startedAt.toISOString() : null,
+          heartbeatAt: job.heartbeatAt ? job.heartbeatAt.toISOString() : null,
+          completedAt: job.completedAt ? job.completedAt.toISOString() : null,
+          expiresAt: job.expiresAt ? job.expiresAt.toISOString() : null,
+          reviewRevision: Number(job.reviewRevision || 0),
+          materializedRevision: Number(job.materializedRevision || 0),
+          workspaceRevision: job.workspaceRevision,
         },
-        edition: {
-          id: edition.id,
-          editionName: edition.editionName,
-          language: edition.language,
-          isDefault: edition.isDefault,
+        context: {
+          story: {
+            id: story.id,
+            title: story.title,
+            slug: story.slug,
+            mediaFormat: story.mediaFormat,
+          },
+          edition: {
+            id: edition.id,
+            editionName: edition.editionName,
+            language: edition.language,
+            isDefault: edition.isDefault,
+          },
+          chapter: {
+            id: chapter.id,
+            chapterNumber: String(chapter.chapterNumber),
+            title: chapter.title || null,
+          },
+          project: {
+            id: job.project.id,
+            sourceLanguage: job.project.sourceLanguage,
+            targetLanguage: job.project.targetLanguage,
+          },
+          sourceVersion: {
+            id: job.sourceVersion.id,
+            versionNumber: job.sourceVersion.versionNumber,
+          },
+          targetVersion: job.targetVersion
+            ? {
+                id: job.targetVersion.id,
+                versionNumber: job.targetVersion.versionNumber,
+              }
+            : null,
         },
-        chapter: {
-          id: chapter.id,
-          chapterNumber: String(chapter.chapterNumber),
-          title: chapter.title || null,
-        },
-        project: {
-          id: job.project.id,
-          sourceLanguage: job.project.sourceLanguage,
-          targetLanguage: job.project.targetLanguage,
-        },
-        sourceVersion: {
-          id: job.sourceVersion.id,
-          versionNumber: job.sourceVersion.versionNumber,
-        },
-        targetVersion: job.targetVersion
-          ? {
-              id: job.targetVersion.id,
-              versionNumber: job.targetVersion.versionNumber,
-            }
-          : null,
-      },
-      reviewSummary,
-      glossarySnapshot: job.inputManifest?.glossarySnapshot || undefined,
-      error: errorSummary,
-    };
+        reviewSummary,
+        glossarySnapshot: job.inputManifest?.glossarySnapshot || undefined,
+        error: errorSummary,
+      };
+    });
   }
 
   /**
@@ -743,87 +767,91 @@ export class TranslationService {
     id: string,
     user: any,
     query: FindJobSegmentsQueryDto,
-  ): Promise<PaginatedResponse<TranslationSegmentDto>> {
-    const job = await this.jobRepo.findOne({
-      where: { id },
-      relations: [
-        'project',
-        'project.storyEdition',
-        'project.storyEdition.story',
-      ],
-    });
-
-    if (!job) {
-      throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
-    }
-
-    const story = job.project?.storyEdition?.story;
-    if (!story) {
-      throw new NotFoundException(
-        'Không tìm thấy Story context hợp lệ cho TranslationJob.',
-      );
-    }
-
-    await this.checkStoryPermission(story.id, user, [
-      'OWNER',
-      'EDITOR',
-      'TRANSLATOR',
-    ]);
-
-    const page = Math.max(1, Number(query.page) || 1);
-    const limit = Math.min(200, Math.max(1, Number(query.limit) || 50));
-    const skip = (page - 1) * limit;
-
-    const qb = this.segmentRepo
-      .createQueryBuilder('segment')
-      .where('segment.jobId = :jobId', { jobId: job.id });
-
-    if (query.pageNumber !== undefined && query.pageNumber !== null) {
-      qb.andWhere('segment.pageNumber = :pageNumber', {
-        pageNumber: query.pageNumber,
+  ): Promise<TranslationJobSegmentsResponse> {
+    return await this.dataSource.transaction('REPEATABLE READ', async (manager) => {
+      const job = await manager.findOne(TranslationJob, {
+        where: { id },
+        relations: [
+          'project',
+          'project.storyEdition',
+          'project.storyEdition.story',
+        ],
       });
-    }
 
-    if (story?.mediaFormat === MediaFormat.COMIC) {
-      qb.orderBy('segment.pageNumber', 'ASC')
-        .addOrderBy('segment.sortOrder', 'ASC')
-        .addOrderBy('segment.id', 'ASC');
-    } else {
-      qb.orderBy('segment.sortOrder', 'ASC').addOrderBy('segment.id', 'ASC');
-    }
+      if (!job) {
+        throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
+      }
 
-    qb.skip(skip).take(limit);
+      const story = job.project?.storyEdition?.story;
+      if (!story) {
+        throw new NotFoundException(
+          'Không tìm thấy Story context hợp lệ cho TranslationJob.',
+        );
+      }
 
-    const [segments, total] = await qb.getManyAndCount();
+      await this.checkStoryPermission(story.id, user, [
+        'OWNER',
+        'EDITOR',
+        'TRANSLATOR',
+      ]);
 
-    const data: TranslationSegmentDto[] = segments.map((s) => ({
-      id: s.id,
-      jobId: s.jobId,
-      pageNumber: s.pageNumber,
-      anchorBlockId: s.anchorBlockId,
-      sortOrder: s.sortOrder,
-      bboxX: s.bboxX !== null ? Number(s.bboxX) : null,
-      bboxY: s.bboxY !== null ? Number(s.bboxY) : null,
-      bboxW: s.bboxW !== null ? Number(s.bboxW) : null,
-      bboxH: s.bboxH !== null ? Number(s.bboxH) : null,
-      rawText: s.rawText,
-      translatedText: s.translatedText,
-      confidence: s.confidence !== null ? Number(s.confidence) : null,
-      isHumanVerified: s.isHumanVerified,
-      blockType: s.blockType ?? null,
-      version: s.version ?? 1,
-      createdAt: s.createdAt.toISOString(),
-    }));
+      const page = Math.max(1, Number(query.page) || 1);
+      const limit = Math.min(200, Math.max(1, Number(query.limit) || 50));
+      const skip = (page - 1) * limit;
 
-    return {
-      data,
-      pagination: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
-    };
+      const qb = manager
+        .getRepository(TranslationSegment)
+        .createQueryBuilder('segment')
+        .where('segment.jobId = :jobId', { jobId: job.id });
+
+      if (query.pageNumber !== undefined && query.pageNumber !== null) {
+        qb.andWhere('segment.pageNumber = :pageNumber', {
+          pageNumber: query.pageNumber,
+        });
+      }
+
+      if (story?.mediaFormat === MediaFormat.COMIC) {
+        qb.orderBy('segment.pageNumber', 'ASC')
+          .addOrderBy('segment.sortOrder', 'ASC')
+          .addOrderBy('segment.id', 'ASC');
+      } else {
+        qb.orderBy('segment.sortOrder', 'ASC').addOrderBy('segment.id', 'ASC');
+      }
+
+      qb.skip(skip).take(limit);
+
+      const [segments, total] = await qb.getManyAndCount();
+
+      const data: TranslationSegmentDto[] = segments.map((s) => ({
+        id: s.id,
+        jobId: s.jobId,
+        pageNumber: s.pageNumber,
+        anchorBlockId: s.anchorBlockId,
+        sortOrder: s.sortOrder,
+        bboxX: s.bboxX !== null ? Number(s.bboxX) : null,
+        bboxY: s.bboxY !== null ? Number(s.bboxY) : null,
+        bboxW: s.bboxW !== null ? Number(s.bboxW) : null,
+        bboxH: s.bboxH !== null ? Number(s.bboxH) : null,
+        rawText: s.rawText,
+        translatedText: s.translatedText,
+        confidence: s.confidence !== null ? Number(s.confidence) : null,
+        isHumanVerified: s.isHumanVerified,
+        blockType: s.blockType ?? null,
+        version: s.version ?? 1,
+        createdAt: s.createdAt.toISOString(),
+      }));
+
+      return {
+        data,
+        pagination: {
+          total,
+          page,
+          limit,
+          totalPages: Math.ceil(total / limit),
+        },
+        workspaceRevision: job.workspaceRevision,
+      };
+    });
   }
 
   /**
@@ -836,117 +864,154 @@ export class TranslationService {
   ): Promise<TranslationJobPreviewsResponse> {
     const window = normalizePreviewWindow(query);
 
-    const job = await this.jobRepo.findOne({
-      where: { id },
-      relations: [
-        'project',
-        'project.storyEdition',
-        'project.storyEdition.story',
-      ],
-    });
-
-    if (!job) {
-      throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
-    }
-
-    const story = job.project?.storyEdition?.story;
-    if (!story) {
-      throw new NotFoundException(
-        'Không tìm thấy Story context hợp lệ cho TranslationJob.',
-      );
-    }
-
-    await this.checkStoryPermission(story.id, user, [
-      'OWNER',
-      'EDITOR',
-      'TRANSLATOR',
-    ]);
-
-    if (story.mediaFormat !== MediaFormat.COMIC) {
-      throw new BadRequestException({
-        code: 'PREVIEWS_ONLY_SUPPORTED_FOR_COMIC',
-        message: 'Previews are only supported for COMIC media format.',
+    // Phase 1: REPEATABLE READ snapshot - Đóng băng toàn bộ DB-derived metadata và giải phóng kết nối DB
+    const frozen = await this.dataSource.transaction('REPEATABLE READ', async (manager) => {
+      const job = await manager.findOne(TranslationJob, {
+        where: { id },
+        relations: [
+          'project',
+          'project.storyEdition',
+          'project.storyEdition.story',
+        ],
       });
-    }
 
-    if (job.status !== TranslationJobStatus.READY_FOR_REVIEW) {
-      throw new ConflictException({
-        code: 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS',
-        message: `Previews are only available for status READY_FOR_REVIEW, current status: ${job.status}`,
-      });
-    }
+      if (!job) {
+        throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
+      }
 
-    let rawManifest: unknown = job.resultManifest;
-    if (typeof rawManifest === 'string') {
-      try {
-        rawManifest = JSON.parse(rawManifest);
-      } catch (error: unknown) {
-        if (!(error instanceof SyntaxError)) {
-          throw error;
-        }
-        this.throwPreviewManifestInvariant(
-          `Manifest JSON is malformed for job ${id}`,
+      const story = job.project?.storyEdition?.story;
+      if (!story) {
+        throw new NotFoundException(
+          'Không tìm thấy Story context hợp lệ cho TranslationJob.',
         );
       }
-    }
 
-    const manifestValidation = validateTranslationResultManifest(
-      rawManifest,
-      'COMIC',
-    );
-    if (!manifestValidation.valid || !manifestValidation.value) {
-      this.throwPreviewManifestInvariant(
-        `Manifest validation failed for job ${id}: ${manifestValidation.errors?.join('; ') || 'invalid manifest'}`,
+      await this.checkStoryPermission(story.id, user, [
+        'OWNER',
+        'EDITOR',
+        'TRANSLATOR',
+      ]);
+
+      if (story.mediaFormat !== MediaFormat.COMIC) {
+        throw new BadRequestException({
+          code: 'PREVIEWS_ONLY_SUPPORTED_FOR_COMIC',
+          message: 'Previews are only supported for COMIC media format.',
+        });
+      }
+
+      if (job.status !== TranslationJobStatus.READY_FOR_REVIEW) {
+        throw new ConflictException({
+          code: 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS',
+          message: `Previews are only available for status READY_FOR_REVIEW, current status: ${job.status}`,
+        });
+      }
+
+      let rawManifest: unknown = job.resultManifest;
+      if (typeof rawManifest === 'string') {
+        try {
+          rawManifest = JSON.parse(rawManifest);
+        } catch (error: unknown) {
+          if (!(error instanceof SyntaxError)) {
+            throw error;
+          }
+          this.throwPreviewManifestInvariant(
+            `Manifest JSON is malformed for job ${id}`,
+          );
+        }
+      }
+
+      const manifestValidation = validateTranslationResultManifest(
+        rawManifest,
+        'COMIC',
       );
-    }
+      if (!manifestValidation.valid || !manifestValidation.value) {
+        this.throwPreviewManifestInvariant(
+          `Manifest validation failed for job ${id}: ${manifestValidation.errors?.join('; ') || 'invalid manifest'}`,
+        );
+      }
 
-    const mangaManifest = manifestValidation.value as MangaResultManifestV1;
+      const mangaManifest = manifestValidation.value as MangaResultManifestV1;
+
+      // 1. Source Asset Resolution: Rule A (sourceReview precedence) vs Rule B (MediaAsset fallback)
+      let targetSourceReviewPages: Array<{
+        page: number;
+        storageKey: string;
+        width: number | null;
+        height: number | null;
+      }> = [];
+      let fallbackMediaAssets: MediaAsset[] = [];
+
+      const sourceReview = mangaManifest.sourceReview;
+      if (sourceReview && Array.isArray(sourceReview.pages)) {
+        targetSourceReviewPages = sourceReview.pages
+          .filter((p) => p.page >= window.fromPage && p.page <= window.toPage)
+          .map((p) => ({
+            page: p.page,
+            storageKey: p.storageKey,
+            width: p.width ?? null,
+            height: p.height ?? null,
+          }));
+      } else if (job.sourceVersionId) {
+        fallbackMediaAssets = await manager.find(MediaAsset, {
+          where: {
+            versionId: job.sourceVersionId,
+            assetType: MediaAssetType.MANGA_PAGE,
+            sortOrder: Between(window.fromPage, window.toPage),
+          },
+          order: {
+            sortOrder: 'ASC',
+            id: 'ASC',
+          },
+        });
+      }
+
+      // 2. Result Asset Resolution
+      const targetResultPages = mangaManifest.pages
+        .filter((p) => p.page >= window.fromPage && p.page <= window.toPage)
+        .map((p) => ({
+          page: p.page,
+          previewKey: p.previewKey,
+          width: p.width ?? null,
+          height: p.height ?? null,
+          fileSizeBytes: p.fileSizeBytes !== undefined ? Number(p.fileSizeBytes) : undefined,
+        }));
+
+      return {
+        jobId: job.id,
+        workspaceRevision: job.workspaceRevision,
+        targetSourceReviewPages,
+        fallbackMediaAssets,
+        targetResultPages,
+      };
+    });
+
+    // Phase 2: Ký Presigned URLs NGOÀI transaction DB
     const sourceAssets: ReviewAssetDto[] = [];
     const resultAssets: ReviewAssetDto[] = [];
 
-    // 1. Source Asset Resolution: Rule A (sourceReview precedence) vs Rule B (MediaAsset fallback)
-    const sourceReview = mangaManifest.sourceReview;
-    if (sourceReview && Array.isArray(sourceReview.pages)) {
-      const targetPages = sourceReview.pages.filter(
-        (p) => p.page >= window.fromPage && p.page <= window.toPage,
-      );
-
-      for (const p of targetPages) {
-        this.assertSourceReviewPreviewKey(job.id, p.page, p.storageKey);
-        const presignedUrl =
-          await this.storageService.createInternalDownloadUrl(
-            p.storageKey,
-            true,
-            900,
-          );
+    if (frozen.targetSourceReviewPages.length > 0) {
+      for (const p of frozen.targetSourceReviewPages) {
+        this.assertSourceReviewPreviewKey(frozen.jobId, p.page, p.storageKey);
+        const presignedUrl = await this.storageService.createInternalDownloadUrl(
+          p.storageKey,
+          true,
+          900,
+        );
         sourceAssets.push({
           kind: 'SOURCE_REVIEW',
           pageNumber: p.page,
-          width: p.width ?? null,
-          height: p.height ?? null,
+          width: p.width,
+          height: p.height,
           url: presignedUrl,
         });
       }
-    } else if (job.sourceVersionId) {
-      const mediaAssets = await this.mediaAssetRepo.find({
-        where: {
-          versionId: job.sourceVersionId,
-          assetType: MediaAssetType.MANGA_PAGE,
-          sortOrder: Between(window.fromPage, window.toPage),
-        },
-        order: {
-          sortOrder: 'ASC',
-          id: 'ASC',
-        },
-      });
-
-      for (const asset of mediaAssets) {
-        const presignedUrl =
-          await this.storageService.createInternalDownloadUrl(
-            asset.storageKey,
-            true,
-            900,
-          );
+    } else if (frozen.fallbackMediaAssets.length > 0) {
+      for (const asset of frozen.fallbackMediaAssets) {
+        const presignedUrl = await this.storageService.createInternalDownloadUrl(
+          asset.storageKey,
+          true,
+          900,
+        );
         sourceAssets.push({
           kind: 'SOURCE_MEDIA',
           id: asset.id,
@@ -958,26 +1023,20 @@ export class TranslationService {
       }
     }
 
-    // 2. Result Asset Resolution
-    const targetResultPages = mangaManifest.pages.filter(
-      (p) => p.page >= window.fromPage && p.page <= window.toPage,
-    );
-
-    for (const p of targetResultPages) {
-      this.assertResultPreviewKey(job.id, p.page, p.previewKey);
-      const presignedUrl =
-        await this.storageService.createInternalDownloadUrl(
-          p.previewKey,
-          true,
-          900,
-        );
+    for (const p of frozen.targetResultPages) {
+      this.assertResultPreviewKey(frozen.jobId, p.page, p.previewKey);
+      const presignedUrl = await this.storageService.createInternalDownloadUrl(
+        p.previewKey,
+        true,
+        900,
+      );
       resultAssets.push({
         kind: 'RESULT',
         pageNumber: p.page,
-        width: p.width ?? null,
-        height: p.height ?? null,
+        width: p.width,
+        height: p.height,
         ...(p.fileSizeBytes !== undefined && {
-          fileSizeBytes: Number(p.fileSizeBytes),
+          fileSizeBytes: p.fileSizeBytes,
         }),
         url: presignedUrl,
       });
@@ -987,6 +1046,7 @@ export class TranslationService {
     resultAssets.sort((a, b) => a.pageNumber - b.pageNumber);
 
     return {
+      workspaceRevision: frozen.workspaceRevision,
       sourceAssets,
       resultAssets,
     };
@@ -1219,14 +1279,18 @@ export class TranslationService {
         });
       }
 
-      // 9. Freshness Counter Semantic Separation:
-      // Chỉ tăng reviewRevision của Job khi translatedText thực sự thay đổi!
-      if (textChanged) {
-        await manager.query(
-          `UPDATE translation_jobs SET review_revision = review_revision + 1 WHERE id = $1`,
-          [jobId],
-        );
-      }
+      // 9. Atomic Revision Bump (P1-I):
+      // Luôn tăng workspace_revision + 1 atomically cho bất kỳ thay đổi nào (text hoặc verification).
+      // Chỉ tăng review_revision + 1 khi translatedText thực sự thay đổi.
+      // Cả hai được gom trong MỘT câu lệnh SQL duy nhất loại trừ tương hỗ (exactly 1 bump to workspace_revision).
+      await manager.query(
+        `UPDATE translation_jobs
+         SET review_revision = CASE WHEN $2::boolean THEN review_revision + 1 ELSE review_revision END,
+             workspace_revision = workspace_revision + 1
+         WHERE id = $1
+         RETURNING workspace_revision, review_revision;`,
+        [jobId, textChanged],
+      );
 
       // Đọc lại segment vừa cập nhật
       const updatedSegment = await manager.findOneOrFail(TranslationSegment, {
@@ -1766,12 +1830,17 @@ export class TranslationService {
         }
         // Mode CREATE_ALTERNATE_VERSION -> Giữ nguyên chapter.activeVersionId
 
-        // 6. Cập nhật TranslationJob sang APPLIED
-        job.targetVersionId = savedVersion.id;
-        job.status = TranslationJobStatus.APPLIED;
-        job.applyIdempotencyKey = idempotencyKey || null;
-        job.completedAt = new Date();
-        await manager.save(TranslationJob, job);
+        // 6. Cập nhật TranslationJob sang APPLIED với atomic SQL bump
+        await manager.query(
+          `UPDATE translation_jobs
+           SET target_version_id = $2,
+               status = 'APPLIED',
+               apply_idempotency_key = $3,
+               completed_at = NOW(),
+               workspace_revision = workspace_revision + 1
+           WHERE id = $1`,
+          [job.id, savedVersion.id, idempotencyKey || null],
+        );
 
         return {
           chapterId: chapter.id,
@@ -1791,11 +1860,16 @@ export class TranslationService {
         await manager.save(Chapter, chapter);
       }
 
-      job.targetVersionId = savedVersion.id;
-      job.status = TranslationJobStatus.APPLIED;
-      job.applyIdempotencyKey = idempotencyKey || null;
-      job.completedAt = new Date();
-      await manager.save(TranslationJob, job);
+      await manager.query(
+        `UPDATE translation_jobs
+         SET target_version_id = $2,
+             status = 'APPLIED',
+             apply_idempotency_key = $3,
+             completed_at = NOW(),
+             workspace_revision = workspace_revision + 1
+         WHERE id = $1`,
+        [job.id, savedVersion.id, idempotencyKey || null],
+      );
 
       return {
         chapterId: chapter.id,
@@ -1882,9 +1956,14 @@ export class TranslationService {
         );
       }
 
-      job.status = TranslationJobStatus.CANCELED;
-      job.completedAt = new Date();
-      await manager.save(TranslationJob, job);
+      await manager.query(
+        `UPDATE translation_jobs
+         SET status = 'CANCELED',
+             completed_at = NOW(),
+             workspace_revision = workspace_revision + 1
+         WHERE id = $1`,
+        [job.id],
+      );
       canceledJobId = job.id;
     });
 
@@ -2329,26 +2408,32 @@ export class TranslationService {
         }
       }
 
-      // Cập nhật state & sequence atomically
-      job.status = eventDto.stage;
-      job.progressPercentage = eventDto.progress;
-      job.lastSequence = eventDto.sequence;
-      job.heartbeatAt = new Date();
-
-      if (eventDto.errorTrace) {
-        job.errorTrace = eventDto.errorTrace;
-      }
-      if (eventDto.resultManifest) {
-        job.resultManifest = eventDto.resultManifest;
-      }
-
-      await manager.save(TranslationJob, job);
+      // Cập nhật state & sequence atomically kèm workspace_revision bump (P1-I: đúng 1 bump cho mọi worker event)
+      await manager.query(
+        `UPDATE translation_jobs
+         SET status = $2,
+             progress_percentage = $3,
+             last_sequence = $4,
+             heartbeat_at = NOW(),
+             error_trace = COALESCE($5, error_trace),
+             result_manifest = COALESCE($6, result_manifest),
+             workspace_revision = workspace_revision + 1
+         WHERE id = $1`,
+        [
+          job.id,
+          eventDto.stage,
+          eventDto.progress,
+          eventDto.sequence,
+          eventDto.errorTrace || null,
+          eventDto.resultManifest ? JSON.stringify(eventDto.resultManifest) : null,
+        ],
+      );
 
       return {
         received: true,
-        status: job.status,
-        sequence: job.lastSequence,
-        manifest: job.resultManifest,
+        status: eventDto.stage,
+        sequence: eventDto.sequence,
+        manifest: eventDto.resultManifest || job.resultManifest,
       };
     });
 
@@ -2379,7 +2464,8 @@ export class TranslationService {
    * Bắt đầu một BullMQ attempt mới (Anti-resurrection & State guard)
    */
   async startAttempt(jobId: string, attemptNumber: number) {
-    return await this.dataSource.transaction(async (manager) => {
+    // 1. Transaction DB: Khóa hàng, cập nhật PREPROCESSING + bump workspace_revision, commit giải phóng lock
+    const frozen = await this.dataSource.transaction(async (manager) => {
       await manager.query(
         `SELECT id FROM translation_jobs WHERE id = $1 FOR UPDATE`,
         [jobId],
@@ -2427,48 +2513,74 @@ export class TranslationService {
         );
       }
 
-      job.attemptCount = attemptNumber;
-      job.lastSequence = 0; // Reset sequence mỗi attempt mới
-      job.status = TranslationJobStatus.PREPROCESSING;
-      job.startedAt = job.startedAt || new Date();
-      job.heartbeatAt = new Date();
-      await manager.save(TranslationJob, job);
+      // Atomic SQL Update: Bảo toàn writer semantics (COALESCE started_at, heartbeat_at = NOW())
+      await manager.query(
+        `UPDATE translation_jobs
+         SET status = 'PREPROCESSING',
+             attempt_count = $2,
+             last_sequence = 0,
+             started_at = COALESCE(started_at, NOW()),
+             heartbeat_at = NOW(),
+             workspace_revision = workspace_revision + 1
+         WHERE id = $1`,
+        [job.id, attemptNumber],
+      );
 
       const story =
         job.project?.storyEdition?.story ||
         job.sourceVersion?.chapter?.storyEdition?.story;
 
-      let sourceDownloadUrl = '';
+      let sessionFinalKey: string | null = null;
+      let sessionFileType: string | null = null;
       if (job.sourceUploadSessionId) {
         const session = await manager.findOne(UploadSession, {
           where: { id: job.sourceUploadSessionId },
         });
         if (session?.finalKey) {
-          const isManga =
-            session.fileType === 'MANGA_PACKAGE' ||
-            session.fileType === 'MANGA_ZIP_ARCHIVE' ||
-            session.fileType === 'IMAGE' ||
-            session.fileType?.startsWith('MANGA') ||
-            story?.mediaFormat === 'COMIC';
-          sourceDownloadUrl =
-            await this.storageService.createInternalDownloadUrl(
-              session.finalKey,
-              isManga,
-              3600,
-            );
+          sessionFinalKey = session.finalKey;
+          sessionFileType = session.fileType;
         }
       }
 
       return {
         jobId: job.id,
-        attemptNumber: job.attemptCount,
-        sourceDownloadUrl,
-        mediaFormat: story?.mediaFormat || 'COMIC',
+        attemptNumber,
+        sessionFinalKey,
+        sessionFileType,
+        storyMediaFormat: story?.mediaFormat,
         sourceLang: job.inputManifest.sourceLang || job.project.sourceLanguage,
         targetLang: job.inputManifest.targetLang || job.project.targetLanguage,
         inputManifest: job.inputManifest,
       };
     });
+
+    if (!frozen) return null;
+
+    // 2. NGOÀI Transaction DB: Ký Presigned URL (Hướng B: không giữ row-lock DB trong lúc I/O mạng)
+    let sourceDownloadUrl = '';
+    if (frozen.sessionFinalKey) {
+      const isManga =
+        frozen.sessionFileType === 'MANGA_PACKAGE' ||
+        frozen.sessionFileType === 'MANGA_ZIP_ARCHIVE' ||
+        frozen.sessionFileType === 'IMAGE' ||
+        frozen.sessionFileType?.startsWith('MANGA') ||
+        frozen.storyMediaFormat === 'COMIC';
+      sourceDownloadUrl = await this.storageService.createInternalDownloadUrl(
+        frozen.sessionFinalKey,
+        isManga,
+        3600,
+      );
+    }
+
+    return {
+      jobId: frozen.jobId,
+      attemptNumber: frozen.attemptNumber,
+      sourceDownloadUrl,
+      mediaFormat: frozen.storyMediaFormat || 'COMIC',
+      sourceLang: frozen.sourceLang,
+      targetLang: frozen.targetLang,
+      inputManifest: frozen.inputManifest,
+    };
   }
 
   /**
@@ -2509,10 +2621,15 @@ export class TranslationService {
         return { transitioned: false, jobId: job.id };
       }
 
-      job.status = TranslationJobStatus.FAILED;
-      job.errorTrace = errorTrace;
-      job.completedAt = new Date();
-      await manager.save(TranslationJob, job);
+      await manager.query(
+        `UPDATE translation_jobs
+         SET status = 'FAILED',
+             error_trace = $2,
+             completed_at = NOW(),
+             workspace_revision = workspace_revision + 1
+         WHERE id = $1`,
+        [job.id, errorTrace],
+      );
 
       return { transitioned: true, jobId: job.id };
     });
@@ -3051,6 +3168,7 @@ export class TranslationService {
         .set({
           resultManifest: mergedManifest,
           materializedRevision: dto.targetRevision,
+          workspaceRevision: () => 'workspace_revision + 1',
         })
         .where('id = :id', { id: jobId })
         .execute();

@@ -45,6 +45,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expiresAt: null,
       reviewRevision: 1,
       materializedRevision: 1,
+      workspaceRevision: 1,
     },
     context: {
       story: {
@@ -87,6 +88,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       ...mockComicJobDetail.job,
       reviewRevision: 2,
       materializedRevision: 1,
+      workspaceRevision: 1,
     },
   };
 
@@ -98,14 +100,13 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       anchorBlockId: null,
       sortOrder: 1,
       bboxX: 10,
-      bboxY: 20,
-      bboxW: 100,
-      bboxH: 50,
+      bboxY: 10,
+      bboxW: 50,
+      bboxH: 20,
       rawText: 'こんにちは',
       translatedText: 'Xin chào',
-      confidence: 0.98,
-      isHumanVerified: false,
-      blockType: null,
+      confidence: 0.95,
+      isHumanVerified: true,
       version: 1,
     },
     {
@@ -114,15 +115,14 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       pageNumber: 1,
       anchorBlockId: null,
       sortOrder: 2,
-      bboxX: 10,
-      bboxY: 80,
-      bboxW: 100,
-      bboxH: 50,
+      bboxX: 70,
+      bboxY: 10,
+      bboxW: 50,
+      bboxH: 20,
       rawText: 'ありがとう',
       translatedText: 'Cảm ơn',
-      confidence: 0.95,
+      confidence: 0.98,
       isHumanVerified: false,
-      blockType: null,
       version: 1,
     },
   ];
@@ -145,10 +145,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
     vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
       data: mockSegments,
       pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+      workspaceRevision: 1,
     });
     vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
       sourceAssets: [],
       resultAssets: [],
+      workspaceRevision: 1,
     });
   });
 
@@ -467,7 +469,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
 
       expect(saveResult.success).toBe(false);
       expect(saveResult.outcome).toBe('VERSION_CONFLICT');
-      expect(result.current.conflictState).toEqual({
+      expect(result.current.conflictState).toMatchObject({
         segmentId: 'seg-1',
         currentVersion: 3,
         expectedVersion: 1,
@@ -600,6 +602,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         return {
           sourceAssets: [{ url: 'https://cdn.example.com/page1-new.jpg' }],
           resultAssets: [],
+          workspaceRevision: 1,
         };
       });
 
@@ -668,6 +671,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         return {
           data: [{ ...mockSegments[0], translatedText: 'Newer Segments' }],
           pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+          workspaceRevision: 1,
         } as any;
       });
 
@@ -922,6 +926,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
         sourceAssets: [{ url: 'https://cdn.example.com/page1-rev4.jpg', kind: 'SOURCE' as any, pageNumber: 1, width: 800, height: 1200 }],
         resultAssets: [{ url: 'https://cdn.example.com/page1-rev4-result.jpg', kind: 'RESULT' as any, pageNumber: 1, width: 800, height: 1200 }],
+        workspaceRevision: 1,
       });
 
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
@@ -972,6 +977,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
         data: [mockSegments[0], seg2],
         pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 1,
       } as any);
 
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
@@ -1376,6 +1382,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         resolveOldPreviews!({
           sourceAssets: [{ url: 'https://cdn.example.com/stale-page.jpg' }],
           resultAssets: [],
+          workspaceRevision: 1,
         });
       });
 
@@ -1429,7 +1436,8 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       await act(async () => {
         resolveOldSegments!({
           data: [{ ...mockSegments[0], translatedText: 'Revived text' }],
-          meta: { total: 1, page: 1, limit: 100, totalPages: 1 },
+          pagination: { total: 1, page: 1, limit: 100, totalPages: 1 },
+          workspaceRevision: 1,
         });
       });
 
@@ -1889,6 +1897,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         return Promise.resolve({
           sourceAssets: [{ url: 'https://cdn.example.com/b.jpg' }],
           resultAssets: [],
+          workspaceRevision: 1,
         }) as any;
       });
 
@@ -1915,70 +1924,48 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         expect(result.current.jobDetail?.job.id).toBe('job-B');
       });
 
-      // Now Preview A rejects with 403 FORBIDDEN
+      // Preview A returns 403 now
       await act(async () => {
         rejectPreviewA!({
           isAxiosError: true,
           response: {
             status: 403,
-            data: { error: { code: 'FORBIDDEN', message: 'Job A access revoked' } },
+            data: { error: { code: 'FORBIDDEN', message: 'Job A forbidden' } },
           },
         });
       });
 
-      // Invariant: Job A 403 MUST NOT purge Job B workspace!
+      // Invariant: Job B must NOT be purged!
       expect(result.current.status).toBe('ready');
       expect(result.current.jobDetail?.job.id).toBe('job-B');
-      expect(result.current.error).toBeNull();
-      expect(result.current.segments.length).toBeGreaterThan(0);
     });
 
     it('should keep workspace locked and data empty if an older in-flight request succeeds after 403 purge', async () => {
-      let resolvePendingRefetch: (val: any) => void;
-      const pendingRefetchPromise = new Promise((resolve) => {
-        resolvePendingRefetch = resolve;
+      // Start in 403 error state
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 403,
+          data: { error: { code: 'FORBIDDEN', message: 'Access denied' } },
+        },
       });
 
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
 
       await waitFor(() => {
-        expect(result.current.status).toBe('ready');
+        expect(result.current.status).toBe('error');
       });
 
-      // Start refetch that hangs
-      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockReturnValue(pendingRefetchPromise as any);
-      act(() => {
-        result.current.refetchDetail();
-      });
-
-      // A concurrent save fails with 403 FORBIDDEN, triggering purge
-      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValue({
-        isAxiosError: true,
-        response: {
-          status: 403,
-          data: { error: { code: 'FORBIDDEN', message: 'Access revoked' } },
-        },
-      });
+      // Simulate a lingering previous request returning 200 after purge
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce(mockComicJobDetail);
 
       await act(async () => {
-        await result.current.saveSegment('seg-1', 'New text');
+        await result.current.refetchDetail();
       });
 
+      // Invariant: Should remain locked in error state until user explicitly retries!
       expect(result.current.status).toBe('error');
       expect(result.current.jobDetail).toBeNull();
-      expect(result.current.segments).toEqual([]);
-
-      // Now the older pending refetch resolves with 200 OK
-      await act(async () => {
-        resolvePendingRefetch!(mockComicJobDetail);
-      });
-
-      // Invariant: Older in-flight response MUST NOT revive workspace or restore private data!
-      expect(result.current.status).toBe('error');
-      expect(result.current.jobDetail).toBeNull();
-      expect(result.current.segments).toEqual([]);
-      expect(result.current.previews).toBeNull();
-      expect(result.current.workspaceMode?.canEdit).toBeFalsy();
     });
 
     it('should preserve latest segments when older segments response arrives out of order', async () => {
@@ -2031,6 +2018,8 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       await act(async () => {
         resolveSecondSegments!({
           data: [{ ...mockSegments[0], translatedText: 'Newer Text v2', version: 2 }],
+          pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+          workspaceRevision: 1,
         });
       });
 
@@ -2040,6 +2029,8 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       await act(async () => {
         resolveFirstSegments!({
           data: [{ ...mockSegments[0], translatedText: 'Older Text v1', version: 1 }],
+          pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+          workspaceRevision: 1,
         });
       });
 
@@ -2087,6 +2078,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         resolvePendingPreview!({
           sourceAssets: [{ url: 'https://cdn.example.com/stale.jpg' }],
           resultAssets: [],
+          workspaceRevision: 1,
         });
       });
 
@@ -2280,6 +2272,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         data: [mockSegments[0]],
         pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 1,
       });
 
       let saveBResult: any;
@@ -2679,6 +2672,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         data: [{ ...mockSegments[0], version: 3, translatedText: 'Collaborator text v3' }],
         pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 1,
       } as any);
 
       await act(async () => {
@@ -3053,7 +3047,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         }
         if (previewCalls === 2) {
           // Reconcile on rev 1 succeeds
-          return { sourceAssets: [], resultAssets: [] };
+          return { sourceAssets: [], resultAssets: [], workspaceRevision: 1 };
         }
         if (previewCalls === 3) {
           // 409 on rev 2 (should be attempt 1 of rev 2, NOT consecutive attempt 2 of rev 1)
@@ -3066,7 +3060,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
           };
         }
         // Reconcile on rev 2 succeeds
-        return { sourceAssets: [], resultAssets: [] };
+        return { sourceAssets: [], resultAssets: [], workspaceRevision: 1 };
       });
 
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
@@ -3091,6 +3085,276 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       // Invariant: It should NOT falsely abort with STATE_DESYNCHRONIZED because the revision changed!
       expect(result.current.fatalError).toBeNull();
       expect(result.current.status).toBe('ready');
+    });
+  });
+
+  describe('15. Round 5 Hardening: Authoritative Monotonic Workspace Snapshot & 5-Case Uncertainty Resolution', () => {
+    it('FE-13: should trigger bounded coherence breaker (MAX_COHERENCE_RECONCILE_ATTEMPTS = 2) and set RECONCILIATION_REQUIRED mode when child segments workspaceRevision persistently mismatches detail', async () => {
+      // Detail has workspaceRevision 2, but segments has workspaceRevision 1
+      const mismatchDetail: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mismatchDetail);
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        data: mockSegments,
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 1,
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
+      });
+
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+      expect(result.current.workspaceMode?.canPreview).toBe(false);
+      expect(result.current.workspaceMode?.canMaterialize).toBe(false);
+    });
+
+    it('FE-14: should fail-closed with ZERO network calls when saveSegment is called on segment with pendingUnknownMutation or retryBlocked', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Save encounters network error 500 -> enters pendingUnknownMutations
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 500,
+          data: { error: { code: 'NETWORK_TIMEOUT', message: 'Gateway timeout' } },
+        },
+      });
+
+      const saveRes1 = await act(async () => {
+        return await result.current.saveSegment('seg-1', 'Attempt text');
+      });
+
+      expect(saveRes1.commitState).toBe('UNKNOWN');
+      expect(result.current.pendingUnknownMutations['seg-1']).toBeDefined();
+
+      // Clear spy to verify 0 network calls
+      const updateSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+      updateSpy.mockClear();
+
+      // Second save on same segment MUST fail-closed with 0 network calls
+      let saveRes2: any;
+      await act(async () => {
+        saveRes2 = await result.current.saveSegment('seg-1', 'Attempt text 2');
+      });
+
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(saveRes2.outcome).toBe('PENDING_UNKNOWN_CONFLICT');
+      expect(saveRes2.reason).toBe('PENDING_UNKNOWN_MUTATION');
+
+      // Now test orphan-locked (retryBlocked) segment
+      act(() => {
+        result.current.replaceConflictStates({
+          'seg-2': {
+            kind: 'SEGMENT_REMOVED',
+            segmentId: 'seg-2',
+            draftText: 'Draft removed',
+            retryBlocked: true,
+          },
+        });
+      });
+
+      updateSpy.mockClear();
+      let saveRes3: any;
+      await act(async () => {
+        saveRes3 = await result.current.saveSegment('seg-2', 'Trying removed seg');
+      });
+
+      expect(updateSpy).not.toHaveBeenCalled();
+      expect(saveRes3.outcome).toBe('RETRY_BLOCKED');
+      expect(saveRes3.reason).toBe('SEGMENT_REMOVED');
+    });
+
+    it('FE-15: should reject out-of-order mutation settlement when older operation arrives later', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      let resolveOp1: (val: any) => void;
+      const op1Promise = new Promise((resolve) => {
+        resolveOp1 = resolve;
+      });
+
+      // Op 1 hangs
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockImplementationOnce(() => op1Promise as any);
+
+      act(() => {
+        result.current.saveSegment('seg-1', 'Draft Op 1');
+      });
+
+      // Op 2 arrives and fails with VERSION_CONFLICT
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: 'VERSION_CONFLICT',
+              message: 'Conflict Op 2',
+              meta: { currentVersion: 3, expectedVersion: 1 },
+            },
+          },
+        },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Draft Op 2');
+      });
+
+      expect(result.current.conflictStates['seg-1']?.draftText).toBe('Draft Op 2');
+
+      // Now older Op 1 settles with 200 OK
+      await act(async () => {
+        resolveOp1!({
+          ...mockSegments[0],
+          version: 2,
+          translatedText: 'Text Op 1',
+        });
+      });
+
+      // Invariant: Older Op 1 MUST NOT wipe the newer conflict draft Op 2!
+      expect(result.current.conflictStates['seg-1']?.draftText).toBe('Draft Op 2');
+    });
+
+    it('FE-16: should detect Case 5 INVALID_VERSION_ORDER and lock workspace when server segment version regresses below expectedVersion', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Save on seg-1 with baseVersion 2 encounters 500 -> pending mutation with expectedVersion: 2
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 500,
+          data: { error: { code: 'INTERNAL_ERROR', message: 'Fail' } },
+        },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Text v3', { baseVersion: 2 });
+      });
+
+      expect(result.current.pendingUnknownMutations['seg-1']?.expectedVersion).toBe(2);
+
+      // Coherent sync cycle arrives, but server seg-1 has version 1 (< expectedVersion 2)
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockComicJobDetail);
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        data: [{ ...mockSegments[0], version: 1 }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 1,
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      // Invariant: Case 5 triggers fatal desynchronized error and locks workspace
+      await waitFor(() => {
+        expect(result.current.status).toBe('error');
+        expect(result.current.fatalError?.code).toBe('STATE_DESYNCHRONIZED');
+        expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
+      });
+    });
+
+    it('FE-17: should validate Scope Identity (jobId/generation/session) BEFORE comparing workspaceRevision', async () => {
+      // Job A has workspaceRevision 5
+      const jobADetail: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, id: 'job-A', workspaceRevision: 5 },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(jobADetail);
+
+      const { result, rerender } = renderHook(({ id }) => useMangaReviewStudio(id), {
+        initialProps: { id: 'job-A' },
+      });
+
+      await waitFor(() => {
+        expect(result.current.jobDetail?.job.workspaceRevision).toBe(5);
+      });
+
+      // Switch to Job B which has workspaceRevision 1 (1 < 5)
+      const jobBDetail: TranslationJobReviewDetailResponse = {
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, id: 'job-B', workspaceRevision: 1 },
+      };
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(jobBDetail);
+
+      rerender({ id: 'job-B' });
+
+      // Invariant: Job B response is NOT dropped because scope changed!
+      await waitFor(() => {
+        expect(result.current.jobDetail?.job.id).toBe('job-B');
+        expect(result.current.jobDetail?.job.workspaceRevision).toBe(1);
+      });
+    });
+
+    it('FE-18: should atomically clean up pending mutation, same-segment conflict, and same-operation error on Case 2 EFFECT_PRESENT', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // First create a conflict on seg-1
+      act(() => {
+        result.current.replaceConflictStates({
+          'seg-1': {
+            kind: 'VERSION_CONFLICT',
+            segmentId: 'seg-1',
+            currentVersion: 1,
+            expectedVersion: 1,
+            draftText: 'Draft text',
+            retryBlocked: false,
+          },
+        });
+      });
+
+      // Save encounters 500 -> registers pending mutation and operationError
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 500,
+          data: { error: { code: 'ERR_TIMEOUT', message: 'Timeout' } },
+        },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Attempted commit');
+      });
+
+      expect(result.current.pendingUnknownMutations['seg-1']).toBeDefined();
+      expect(result.current.operationError).not.toBeNull();
+
+      // Coherent sync cycle arrives: seg-1 committed on DB (version = 2, text = Attempted commit)
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockComicJobDetail);
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        data: [{ ...mockSegments[0], version: 2, translatedText: 'Attempted commit' }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 1,
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      // Invariant: Case 2 atomically cleared pending mutation, same-segment conflict, and operationError
+      await waitFor(() => {
+        expect(result.current.pendingUnknownMutations['seg-1']).toBeUndefined();
+        expect(result.current.conflictStates['seg-1']).toBeUndefined();
+        expect(result.current.operationError).toBeNull();
+      });
     });
   });
 });

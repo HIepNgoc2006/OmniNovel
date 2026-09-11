@@ -2,6 +2,7 @@ import { apiClient } from './client';
 import {
   TranslationJobReviewDetailResponse,
   TranslationSegmentDto,
+  TranslationJobSegmentsResponse,
   TranslationJobPreviewsResponse,
   PaginatedResponse,
   UpdateTranslationSegmentRequest,
@@ -73,8 +74,8 @@ export async function fetchTranslationJobSegments(
   jobId: string,
   page = 1,
   limit = 50,
-): Promise<PaginatedResponse<TranslationSegmentDto>> {
-  const response = await apiClient.get<PaginatedResponse<TranslationSegmentDto>>(
+): Promise<TranslationJobSegmentsResponse> {
+  const response = await apiClient.get<TranslationJobSegmentsResponse>(
     `/ai/jobs/${jobId}/segments`,
     {
       params: { page, limit },

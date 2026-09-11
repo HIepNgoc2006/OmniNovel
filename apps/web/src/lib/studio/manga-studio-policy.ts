@@ -12,7 +12,16 @@ export type WorkspaceMode =
   | 'COUNT_UNAVAILABLE'
   | 'APPLIED'
   | 'TERMINAL_STATE'
-  | 'PIPELINE_MONITOR';
+  | 'PIPELINE_MONITOR'
+  | 'RECONCILIATION_REQUIRED';
+
+export function isValidWorkspaceRevision(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isSafeInteger(value) &&
+    value > 0
+  );
+}
 
 export interface WorkspaceModeResult {
   mode: WorkspaceMode;

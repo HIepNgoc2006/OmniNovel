@@ -30,6 +30,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
         expiresAt: null,
         reviewRevision: 1,
         materializedRevision: 1,
+        workspaceRevision: 1,
       },
       context: {
         story: { id: 's1', title: 'One Piece', slug: 'one-piece', mediaFormat: MediaFormat.COMIC },
@@ -82,8 +83,15 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     setSelectedSegmentId: vi.fn(),
     conflictState: null,
     conflictStates: {},
+    pendingUnknownMutations: {},
     clearConflict: vi.fn(),
-    saveSegment: vi.fn().mockResolvedValue({ success: true, outcome: 'SAVED_AND_SYNCED' }),
+    replaceConflictStates: vi.fn(),
+    saveSegment: vi.fn().mockResolvedValue({
+      success: true,
+      outcome: 'SAVED_AND_SYNCED',
+      commitState: 'COMMITTED',
+      workspaceState: 'SYNCED',
+    }),
     triggerMaterialization: vi.fn(),
     materializationStatus: null,
     isMaterializing: false,
@@ -375,10 +383,12 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
       ...defaultMockReturn,
       conflictState: {
+        kind: 'VERSION_CONFLICT',
         segmentId: 'seg-1',
         currentVersion: undefined,
         expectedVersion: undefined,
         draftText: 'Draft with no version',
+        retryBlocked: false,
       },
     });
 
@@ -396,10 +406,12 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
       ...defaultMockReturn,
       conflictState: {
+        kind: 'VERSION_CONFLICT',
         segmentId: 'seg-42',
         currentVersion: 3,
         expectedVersion: 2,
         draftText: 'Draft',
+        retryBlocked: false,
       },
       clearConflict: clearConflictSpy,
     });

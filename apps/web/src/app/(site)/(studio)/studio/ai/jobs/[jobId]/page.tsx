@@ -176,6 +176,48 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     );
   }
 
+  // 5.5. Reconciliation Required state (Desynchronized / Coherence breaker triggered)
+  if (studio.workspaceMode?.mode === 'RECONCILIATION_REQUIRED') {
+    return (
+      <div className="max-w-xl mx-auto my-20 p-8 bg-slate-900 border border-amber-500/30 rounded-3xl text-center space-y-5">
+        <AlertTriangle className="w-12 h-12 text-amber-400 mx-auto" />
+        <div className="space-y-2">
+          <Badge variant="warning">Yêu Cầu Đồng Bộ Lại</Badge>
+          <h2 className="text-xl font-black text-white">
+            Trạng Thái Dữ Liệu Chưa Nhất Quán
+          </h2>
+          <p className="text-xs text-slate-400 leading-relaxed">
+            {studio.workspaceMode.message ||
+              'Dữ liệu phân đoạn hoặc bản xem trước chưa khớp phiên bản với chi tiết job. Vui lòng bấm Đồng Bộ Lại để thử tải lại dữ liệu mới nhất.'}
+          </p>
+        </div>
+        <div className="pt-2 flex justify-center gap-3">
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => studio.reconcileAuthoritativeWorkspace()}
+          >
+            <RefreshCw className="w-3.5 h-3.5 mr-1" />
+            Đồng Bộ Lại (Reconcile)
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => studio.retry()}
+          >
+            Tải Lại Toàn Bộ
+          </Button>
+          <Link href="/studio">
+            <Button variant="outline" size="sm">
+              <ChevronLeft className="w-4 h-4 mr-1" />
+              Studio Dashboard
+            </Button>
+          </Link>
+        </div>
+      </div>
+    );
+  }
+
   // 6. Terminal ended state (FAILED / CANCELED / EXPIRED)
   if (studio.workspaceMode?.mode === 'TERMINAL_STATE') {
     const job = studio.jobDetail?.job;
@@ -439,11 +481,25 @@ export default function MangaStudioJobPage({ params }: PageProps) {
           <div className="flex items-center gap-3">
             <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
             <div className="text-xs text-amber-200">
-              <span className="font-bold">Xung Đột Phiên Bản (409 VERSION_CONFLICT): </span>
-              {studio.conflictState.currentVersion !== undefined &&
-              studio.conflictState.expectedVersion !== undefined
-                ? `Bản ghi segment đã được sửa bởi người khác (Server v${studio.conflictState.currentVersion} vs Bạn v${studio.conflictState.expectedVersion}). Bản nháp của bạn đã được giữ nguyên.`
-                : 'Phiên bản trên máy chủ đã thay đổi. Bản nháp của bạn đã được giữ nguyên.'}
+              {studio.conflictState.kind === 'SEGMENT_REMOVED' ? (
+                <span>
+                  <span className="font-bold">Phân đoạn đã bị xóa: </span>
+                  Phân đoạn này không còn tồn tại trên máy chủ. Bản nháp của bạn đã được giữ lại và thao tác lưu bị khóa.
+                </span>
+              ) : studio.conflictState.kind === 'COMMIT_UNKNOWN_CONFLICT' ? (
+                <span>
+                  <span className="font-bold">Xung đột sau khi lưu: </span>
+                  Phân đoạn này đã bị chỉnh sửa bởi phiên bản khác trên máy chủ sau khi thử lưu. Bản nháp của bạn đã được bảo lưu.
+                </span>
+              ) : (
+                <span>
+                  <span className="font-bold">Xung Đột Phiên Bản (409 VERSION_CONFLICT): </span>
+                  {studio.conflictState.currentVersion !== undefined &&
+                  studio.conflictState.expectedVersion !== undefined
+                    ? `Bản ghi segment đã được sửa bởi người khác (Server v${studio.conflictState.currentVersion} vs Bạn v${studio.conflictState.expectedVersion}). Bản nháp của bạn đã được giữ nguyên.`
+                    : 'Phiên bản trên máy chủ đã thay đổi. Bản nháp của bạn đã được giữ nguyên.'}
+                </span>
+              )}
             </div>
           </div>
           <Button
@@ -519,43 +575,59 @@ export default function MangaStudioJobPage({ params }: PageProps) {
           </h3>
 
           <div className="flex-1 overflow-y-auto space-y-3 max-h-[500px] pr-1">
-            {studio.segments.map((seg) => (
-              <div
-                key={seg.id}
-                onClick={() => studio.setSelectedSegmentId(seg.id)}
-                className={`p-3 rounded-2xl border transition-all cursor-pointer ${
-                  studio.selectedSegmentId === seg.id
-                    ? 'bg-red-500/10 border-red-500/40'
-                    : 'bg-slate-950 border-slate-800 hover:border-slate-700'
-                }`}
-              >
-                <div className="flex justify-between items-center text-[11px] text-slate-400 mb-1">
-                  <span>
-                    {typeof seg.pageNumber === 'number'
-                      ? `Trang ${seg.pageNumber}`
-                      : 'Chưa gán trang'}{' '}
-                    • Thứ tự #{seg.sortOrder}
-                  </span>
-                  {studio.segmentsSyncStatus !== 'SYNCED' ? (
-                    <Badge variant="outline" className="text-amber-400 border-amber-500/40">
-                      Chưa xác minh
-                    </Badge>
-                  ) : seg.isHumanVerified ? (
-                    <Badge variant="success">Đã Duyệt</Badge>
-                  ) : (
-                    <Badge variant="outline">Chưa Duyệt</Badge>
-                  )}
+            {studio.segments.map((seg) => {
+              const hasPending = Boolean(studio.pendingUnknownMutations[seg.id]);
+              const segConflict = studio.conflictStates[seg.id];
+              return (
+                <div
+                  key={seg.id}
+                  onClick={() => studio.setSelectedSegmentId(seg.id)}
+                  className={`p-3 rounded-2xl border transition-all cursor-pointer ${
+                    studio.selectedSegmentId === seg.id
+                      ? 'bg-red-500/10 border-red-500/40'
+                      : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                  }`}
+                >
+                  <div className="flex justify-between items-center text-[11px] text-slate-400 mb-1">
+                    <span>
+                      {typeof seg.pageNumber === 'number'
+                        ? `Trang ${seg.pageNumber}`
+                        : 'Chưa gán trang'}{' '}
+                      • Thứ tự #{seg.sortOrder}
+                    </span>
+                    <div className="flex items-center gap-1">
+                      {hasPending && (
+                        <Badge variant="warning" className="animate-pulse">
+                          Chờ xác nhận
+                        </Badge>
+                      )}
+                      {segConflict?.retryBlocked && (
+                        <Badge variant="outline" className="text-rose-400 border-rose-500/40">
+                          Bị khóa
+                        </Badge>
+                      )}
+                      {studio.segmentsSyncStatus !== 'SYNCED' ? (
+                        <Badge variant="outline" className="text-amber-400 border-amber-500/40">
+                          Chưa xác minh
+                        </Badge>
+                      ) : seg.isHumanVerified ? (
+                        <Badge variant="success">Đã Duyệt</Badge>
+                      ) : (
+                        <Badge variant="outline">Chưa Duyệt</Badge>
+                      )}
+                    </div>
+                  </div>
+                  <p className="text-xs font-mono text-slate-400 line-clamp-1 mb-1">
+                    {seg.rawText}
+                  </p>
+                  <p className="text-xs text-white line-clamp-2">
+                    {seg.translatedText || (
+                      <span className="text-slate-600 italic">Chưa có bản dịch</span>
+                    )}
+                  </p>
                 </div>
-                <p className="text-xs font-mono text-slate-400 line-clamp-1 mb-1">
-                  {seg.rawText}
-                </p>
-                <p className="text-xs text-white line-clamp-2">
-                  {seg.translatedText || (
-                    <span className="text-slate-600 italic">Chưa có bản dịch</span>
-                  )}
-                </p>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>

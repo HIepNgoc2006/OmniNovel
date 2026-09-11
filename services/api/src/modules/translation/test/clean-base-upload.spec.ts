@@ -640,17 +640,18 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
         },
       };
 
-      let savedJob: any = null;
+      let savedManifest: any = null;
       dataSource.transaction = jest.fn().mockImplementation(async (cb) => {
         return cb({
-          query: jest.fn(),
+          query: jest.fn().mockImplementation((sql, params) => {
+            if (params && params[5]) {
+              savedManifest = JSON.parse(params[5]);
+            }
+          }),
           findOne: jest.fn().mockResolvedValue(jobAttempt2),
           delete: jest.fn().mockResolvedValue(undefined),
           create: jest.fn().mockImplementation((entity, data) => data),
-          save: jest.fn().mockImplementation((entity, data) => {
-            savedJob = data;
-            return data;
-          }),
+          save: jest.fn(),
         });
       });
 
@@ -680,8 +681,8 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
 
       const authResult = await service.handleWorkerEvent('job-manga-123', validAttempt2Event);
       expect(authResult.status).toBe(TranslationJobStatus.READY_FOR_REVIEW);
-      expect(savedJob).toBeDefined();
-      expect(savedJob.resultManifest.cleanBases[0].cleanBaseKey).toBe(
+      expect(savedManifest).toBeDefined();
+      expect(savedManifest.cleanBases[0].cleanBaseKey).toBe(
         'ai/jobs/job-manga-123/review-base/attempt-2/page_1.webp',
       );
     });

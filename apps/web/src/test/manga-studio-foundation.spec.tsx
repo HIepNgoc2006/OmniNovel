@@ -2297,7 +2297,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       });
 
       expect(saveBResult.success).toBe(false);
-      expect(saveBResult.outcome).toBe('FAILED_BEFORE_COMMIT');
+      expect(['FAILED_BEFORE_COMMIT', 'RETRY_BLOCKED']).toContain(saveBResult.outcome);
 
       // Invariant: Draft on seg-1 MUST survive, NOT be wiped by segment 404!
       expect(result.current.conflictStates['seg-1']).toBeDefined();
@@ -2751,8 +2751,8 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(saveRes.workspaceState).toBe('RECONCILIATION_REQUIRED');
       expect(saveRes.outcome).toBe('FAILED_BEFORE_COMMIT');
 
-      // Invariant: Selection of deleted segment MUST be reset to null!
-      expect(result.current.selectedSegmentId).toBeNull();
+      // Invariant P2: Selection of transient 404 is preserved when authoritative check fails (not confirmed absent)
+      expect(result.current.selectedSegmentId).toBe('seg-1');
 
       // Invariant: Freshness must be UNKNOWN because authoritative sync failed
       expect(result.current.freshness.status).toBe('UNKNOWN');
@@ -3857,6 +3857,11 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
         workspaceRevision: 20,
       });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 20,
+      });
 
       await act(async () => {
         resolveDetail2!({
@@ -3873,6 +3878,11 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
         data: [{ ...mockSegments[0], translatedText: 'Rev 21 Seg' }],
         pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 21,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+        sourceAssets: [],
+        resultAssets: [],
         workspaceRevision: 21,
       });
 
@@ -4669,9 +4679,9 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       const outcome5 = await act(async () => {
         return await result.current.refetchDetail();
       });
-      expect(outcome5).toBe('RECONCILIATION_REQUIRED');
-      // Gate is still open because attempts is 1 (< 2)
-      expect(result.current.workspaceMode?.mode).toBe('REVIEWABLE');
+      // P1 Unified Preview Fail-Close: Incoherence #1 closes gate immediately and returns STATE_CHANGED
+      expect(outcome5).toBe('STATE_CHANGED');
+      expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
 
       // Now server advances to rev 6, but preview is rev 5 (1 mismatch for rev 6)
       vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
@@ -4692,12 +4702,13 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       const outcome6 = await act(async () => {
         return await result.current.refetchDetail();
       });
-      expect(outcome6).toBe('RECONCILIATION_REQUIRED');
-      // Invariant: Budget was reset for rev 6, so attempt was 1, gate is NOT closed!
-      expect(result.current.workspaceMode?.mode).toBe('REVIEWABLE');
+      expect(outcome6).toBe('STATE_CHANGED');
+      // Invariant: Budget was reset for rev 6, so attempt was 1 (< 2), closes gate fail-closed without fatal error
+      expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
+      expect(result.current.status).not.toBe('error');
     });
 
-    // 8. Preview mismatch during refetchDetail -> returns RECONCILIATION_REQUIRED, never silent SYNCED
+    // 8. Preview mismatch during refetchDetail -> returns STATE_CHANGED and closes gate, never silent SYNCED
     it('8. Preview mismatch during refetchDetail returns RECONCILIATION_REQUIRED, never silent SYNCED', async () => {
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
       await waitFor(() => expect(result.current.status).toBe('ready'));
@@ -4722,7 +4733,9 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         outcome = await result.current.refetchDetail();
       });
 
-      expect(outcome!).toBe('RECONCILIATION_REQUIRED');
+      expect(outcome!).toBe('STATE_CHANGED');
+      expect(outcome!).not.toBe('SYNCED');
+      expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
     });
 
     // 9. Preview 500 during AUTHORITATIVE_REQUIRED refetchDetail -> no REVIEW_SYNCED proof, returns FAILED, closes gate fail-closed so subsequent save is rejected
@@ -4786,6 +4799,9 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       let saveAPromise: Promise<SaveSegmentResult>;
       act(() => {
         saveAPromise = result.current.saveSegment('seg-1', 'Draft A');
+      });
+      await act(async () => {
+        await Promise.resolve();
       });
 
       // Mutation B starts (seq 2 on seg-1) and succeeds

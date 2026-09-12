@@ -409,7 +409,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             <Button
               variant="ghost"
               size="sm"
-              onClick={studio.clearOperationError}
+              onClick={() => studio.clearOperationError()}
               className="h-6 px-2 text-xs text-amber-300 hover:text-white hover:bg-amber-500/20"
             >
               Đóng

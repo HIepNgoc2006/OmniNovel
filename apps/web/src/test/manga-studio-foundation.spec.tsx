@@ -7,7 +7,12 @@ import {
   TranslationJobReviewDetailResponse,
   TranslationSegmentDto,
 } from '@omninovel/shared';
-import { useMangaReviewStudio, ReconciliationOutcome } from '../lib/studio/use-manga-review-studio';
+import {
+  useMangaReviewStudio,
+  ReconciliationOutcome,
+  buildSaveSegmentResult,
+  SaveSegmentResult,
+} from '../lib/studio/use-manga-review-studio';
 import { computeMaterializationFreshness } from '../lib/studio/manga-studio-policy';
 import * as translationApi from '../lib/api/translation';
 import * as authContext from '../lib/auth/auth-context';
@@ -3355,6 +3360,453 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         expect(result.current.conflictStates['seg-1']).toBeUndefined();
         expect(result.current.operationError).toBeNull();
       });
+    });
+  });
+
+  describe('16. Round 6 Hardening: Final RED 0 Robustness & Regression Protection', () => {
+    it('Round 6 P1-1: should preserve user conflict drafts and pending unknown mutations across user retry()', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // User has a draft from VERSION_CONFLICT
+      act(() => {
+        result.current.replaceConflictStates({
+          'seg-1': {
+            kind: 'VERSION_CONFLICT',
+            segmentId: 'seg-1',
+            currentVersion: 2,
+            expectedVersion: 1,
+            draftText: 'User Draft On Seg 1',
+            retryBlocked: false,
+          },
+        });
+      });
+
+      expect(result.current.conflictStates['seg-1']?.draftText).toBe('User Draft On Seg 1');
+
+      // Transient reconcile/detail error (e.g. 500)
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 500,
+          data: { error: { code: 'SERVER_ERROR', message: 'Transient 500' } },
+        },
+      });
+
+      // User hits Retry button
+      await act(async () => {
+        await result.current.retry();
+      });
+
+      // Status becomes error due to transient 500
+      expect(result.current.status).toBe('error');
+
+      // Invariant P1-1: User draft MUST NOT be wiped on retry!
+      expect(result.current.conflictStates['seg-1']).toBeDefined();
+      expect(result.current.conflictStates['seg-1']?.draftText).toBe('User Draft On Seg 1');
+
+      // Server recovers, user hits Retry again
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockComicJobDetail);
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        data: mockSegments,
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 1,
+      });
+
+      await act(async () => {
+        await result.current.retry();
+      });
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Draft is STILL preserved even when workspace recovers to ready!
+      expect(result.current.conflictStates['seg-1']?.draftText).toBe('User Draft On Seg 1');
+    });
+
+    it('Round 6 P1-2: should preserve user drafts when workspace transitions to COUNT_UNAVAILABLE', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // User has a conflict draft
+      act(() => {
+        result.current.replaceConflictStates({
+          'seg-1': {
+            kind: 'VERSION_CONFLICT',
+            segmentId: 'seg-1',
+            currentVersion: 2,
+            expectedVersion: 1,
+            draftText: 'Preserved Draft Across Mode Change',
+            retryBlocked: false,
+          },
+        });
+      });
+
+      // Server detail returns READY_FOR_REVIEW but resultPageCount is null/0 (COUNT_UNAVAILABLE mode)
+      const countUnavailableDetail: typeof mockComicJobDetail = {
+        ...mockComicJobDetail,
+        reviewSummary: {
+          ...mockComicJobDetail.reviewSummary!,
+          resultPageCount: 0,
+        },
+      };
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(countUnavailableDetail);
+
+      await act(async () => {
+        await result.current.refetchDetail();
+      });
+
+      // Mode changed to COUNT_UNAVAILABLE (not REVIEWABLE)
+      expect(result.current.workspaceMode?.mode).toBe('COUNT_UNAVAILABLE');
+
+      // Invariant P1-2: Server cache (segments) cleared, but user-owned conflict drafts MUST NOT be cleared!
+      expect(result.current.segments).toEqual([]);
+      expect(result.current.conflictStates['seg-1']).toBeDefined();
+      expect(result.current.conflictStates['seg-1']?.draftText).toBe('Preserved Draft Across Mode Change');
+    });
+
+    it('Round 6 P1-3: should return COMMITTED + RECONCILIATION_REQUIRED when PATCH succeeds but segments fetch fails with 500', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValueOnce({
+        ...mockSegments[0],
+        translatedText: 'New text',
+        version: 2,
+      });
+
+      // Detail fetch succeeds with bumped workspace revision 2
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+      });
+
+      // Segments fetch fails with 500 (transient network or server crash)
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 500,
+          data: { error: { code: 'INTERNAL_ERROR', message: 'Segments DB error' } },
+        },
+      });
+
+      let saveRes: SaveSegmentResult;
+      await act(async () => {
+        saveRes = await result.current.saveSegment('seg-1', 'New text');
+      });
+
+      // Invariant P1-3: PATCH succeeded (COMMITTED) but segments are NOT coherent (RECONCILIATION_REQUIRED)
+      // saveSegment MUST NEVER return SYNCED!
+      expect(saveRes!.commitState).toBe('COMMITTED');
+      expect(saveRes!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+      expect(saveRes!.success).toBe(false);
+      expect(saveRes!.outcome).toBe('SAVED_SYNC_FAILED');
+      expect(result.current.segmentsSyncStatus).toBe('FAILED');
+    });
+
+    it('Round 6 P1-4: should return REJECTED + RECONCILIATION_REQUIRED when saveSegment encounters 409 VERSION_CONFLICT', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // PATCH returns 409 VERSION_CONFLICT
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: 'VERSION_CONFLICT',
+              message: 'Phiên bản không khớp',
+              meta: { currentVersion: 3, expectedVersion: 1 },
+            },
+          },
+        },
+      });
+
+      let saveRes: SaveSegmentResult;
+      await act(async () => {
+        saveRes = await result.current.saveSegment('seg-1', 'My draft edit');
+      });
+
+      // Invariant P1-4: Local expectedVersion != server currentVersion -> workspaceState MUST be RECONCILIATION_REQUIRED!
+      expect(saveRes!.commitState).toBe('REJECTED');
+      expect(saveRes!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+      expect(saveRes!.reason).toBe('VERSION_CONFLICT');
+      expect(saveRes!.success).toBe(false);
+      expect(saveRes!.outcome).toBe('VERSION_CONFLICT');
+      expect(saveRes!.conflict?.currentVersion).toBe(3);
+      expect(saveRes!.conflict?.draftText).toBe('My draft edit');
+    });
+
+    it('Round 6 P1-5A: should preserve error of mutation B when older mutation A succeeds late', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      let resolveMutationA: (val: any) => void;
+      const mutationAPromise = new Promise((resolve) => {
+        resolveMutationA = resolve;
+      });
+
+      // Mutation A starts (deferred)
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockImplementationOnce(() => mutationAPromise as any);
+
+      let saveAPromise: Promise<SaveSegmentResult>;
+      act(() => {
+        saveAPromise = result.current.saveSegment('seg-1', 'Text A');
+      });
+
+      // Mutation B starts and FAILS with 500
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 500,
+          data: { error: { code: 'FAIL_B', message: 'Mutation B failed' } },
+        },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Text B');
+      });
+
+      // Error B is recorded
+      expect(result.current.operationError?.code).toBe('FAIL_B');
+
+      // Now Mutation A resolves successfully late
+      await act(async () => {
+        resolveMutationA!({
+          ...mockSegments[0],
+          translatedText: 'Text A',
+          version: 2,
+        });
+      });
+
+      await saveAPromise!;
+
+      // Invariant P1-5A: Mutation A is stale (mutationSeq A < mutationSeq B)
+      // A MUST NOT call clearSegmentSaveError to clear B's error!
+      expect(result.current.operationError?.code).toBe('FAIL_B');
+    });
+
+    it('Round 6 P1-5B: should NOT overwrite newer mutation B success with stale 409 from older mutation A', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      let rejectMutationA: (err: any) => void;
+      const mutationAPromise = new Promise((_, reject) => {
+        rejectMutationA = reject;
+      });
+
+      // Mutation A starts (deferred)
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockImplementationOnce(() => mutationAPromise as any);
+
+      let saveAPromise: Promise<SaveSegmentResult>;
+      act(() => {
+        saveAPromise = result.current.saveSegment('seg-1', 'Text A');
+      });
+
+      // Mutation B starts and SUCCEEDS
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValueOnce({
+        ...mockSegments[0],
+        translatedText: 'Text B',
+        version: 2,
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Text B');
+      });
+
+      expect(result.current.conflictStates['seg-1']).toBeUndefined();
+      expect(result.current.operationError).toBeNull();
+
+      // Now Mutation A finishes late with 409 VERSION_CONFLICT
+      await act(async () => {
+        rejectMutationA!({
+          isAxiosError: true,
+          response: {
+            status: 409,
+            data: {
+              error: {
+                code: 'VERSION_CONFLICT',
+                message: 'Stale 409',
+                meta: { currentVersion: 2, expectedVersion: 1 },
+              },
+            },
+          },
+        });
+      });
+
+      await saveAPromise!;
+
+      // Invariant P1-5B: Mutation A is stale -> MUST NOT set stale conflict or error over B's success!
+      expect(result.current.conflictStates['seg-1']).toBeUndefined();
+      expect(result.current.operationError).toBeNull();
+    });
+
+    it('Round 6 P1-6: should classify HTTP 400 validation as REJECTED + VALIDATION without creating PendingUnknownMutation', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Backend returns deterministic 400 ANCHOR_TOPOLOGY_VIOLATION before commit
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 400,
+          data: {
+            error: {
+              code: 'ANCHOR_TOPOLOGY_VIOLATION',
+              message: 'Anchor tags are misaligned with source tokens',
+            },
+          },
+        },
+      });
+
+      let saveRes: SaveSegmentResult;
+      await act(async () => {
+        saveRes = await result.current.saveSegment('seg-1', 'Malformed <anchor> text');
+      });
+
+      // Invariant P1-6: Deterministic reject happened BEFORE commit
+      expect(saveRes!.commitState).toBe('REJECTED');
+      expect(saveRes!.workspaceState).toBe('SYNCED');
+      expect(saveRes!.reason).toBe('VALIDATION');
+      expect(saveRes!.backendCode).toBe('ANCHOR_TOPOLOGY_VIOLATION');
+      expect(saveRes!.success).toBe(false);
+
+      // Invariant P1-6: TUYỆT ĐỐI KHÔNG tạo PendingUnknownMutation!
+      expect(result.current.pendingUnknownMutations['seg-1']).toBeUndefined();
+      expect(result.current.operationError?.code).toBe('ANCHOR_TOPOLOGY_VIOLATION');
+    });
+
+    it('Round 6 P2-1: should dismiss only the active error channel without clearing unrelated error channels', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // 1. Trigger Segment Error on seg-1
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 400,
+          data: { error: { code: 'SEGMENT_ERROR_A', message: 'Segment A failed' } },
+        },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Invalid text');
+      });
+
+      expect(result.current.operationError?.code).toBe('SEGMENT_ERROR_A');
+
+      // 2. Trigger Segments Sync Error (e.g. refetchDetail segment fetch 500)
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 500,
+          data: { error: { code: 'SEGMENTS_SYNC_FAILED', message: 'Segments sync down' } },
+        },
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail();
+      });
+
+      // Currently active error is SEGMENTS_SYNC_FAILED (latest)
+      expect(result.current.operationError?.code).toBe('SEGMENTS_SYNC_FAILED');
+
+      // 3. User clicks Dismiss on the currently displayed banner
+      act(() => {
+        result.current.clearOperationError();
+      });
+
+      // Invariant P2-1: SEGMENTS_SYNC_FAILED was dismissed, but SEGMENT_ERROR_A on seg-1 is NOT wiped!
+      // When selectedSegmentId is seg-1, operationError re-surfaces SEGMENT_ERROR_A
+      act(() => {
+        result.current.setSelectedSegmentId('seg-1');
+      });
+
+      expect(result.current.operationError?.code).toBe('SEGMENT_ERROR_A');
+    });
+
+    it('Round 6 P2-2 & P2-3: should derive success strictly from commitState === COMMITTED && workspaceState === SYNCED, and resolve Case 2 when serverVersion > expectedVersion', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Verify two-axis builder contract:
+      const resCommSynced = buildSaveSegmentResult('COMMITTED', 'SYNCED');
+      expect(resCommSynced.success).toBe(true);
+      expect(resCommSynced.outcome).toBe('SAVED_AND_SYNCED');
+
+      const resCommRecon = buildSaveSegmentResult('COMMITTED', 'RECONCILIATION_REQUIRED');
+      expect(resCommRecon.success).toBe(false);
+      expect(resCommRecon.outcome).toBe('SAVED_SYNC_FAILED');
+
+      const resRejRecon = buildSaveSegmentResult('REJECTED', 'RECONCILIATION_REQUIRED', { reason: 'VERSION_CONFLICT' });
+      expect(resRejRecon.success).toBe(false);
+      expect(resRejRecon.outcome).toBe('VERSION_CONFLICT');
+
+      // Resolver Case 2: serverVersion = 7, expectedVersion = 5, text and verification match
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 500,
+          data: { error: { code: 'NETWORK_ERROR', message: 'Connection timed out' } },
+        },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Matching Text', {
+          baseVersion: 5,
+          isHumanVerified: true,
+        });
+      });
+
+      expect(result.current.pendingUnknownMutations['seg-1']).toBeDefined();
+      expect(result.current.pendingUnknownMutations['seg-1'].expectedVersion).toBe(5);
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 8 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        data: [{ ...mockSegments[0], version: 7, translatedText: 'Matching Text', isHumanVerified: true }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 8,
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      // Invariant: Case 2 clears pending unknown lock because desired effect is present, even if serverVersion > expectedVersion + 1!
+      expect(result.current.pendingUnknownMutations['seg-1']).toBeUndefined();
     });
   });
 });

@@ -18,6 +18,7 @@ export type SaveSegmentReason =
   | 'NETWORK'
   | 'FORBIDDEN'
   | 'UNAUTHORIZED'
+  | 'ACCESS_REVOKED'
   | 'PENDING_UNKNOWN_MUTATION'
   | 'INVALID_VERSION_ORDER'
   | 'SEGMENT_REMOVED';
@@ -49,10 +50,10 @@ export type SaveSegmentOutcome =
   | 'RETRY_BLOCKED';
 
 export interface SaveSegmentResult {
-  success: boolean;
-  outcome: SaveSegmentOutcome;
   commitState: SegmentCommitState;
   workspaceState: WorkspaceSyncState;
+  success: boolean;
+  outcome: SaveSegmentOutcome;
   reason?: SaveSegmentReason;
   backendCode?: string;
   conflict?: ConflictState;
@@ -65,4 +66,53 @@ export interface PendingUnknownMutation {
   attemptedText?: string;
   attemptedVerification?: boolean;
   expectedVersion: number;
+}
+
+export function buildSaveSegmentResult(
+  commitState: SegmentCommitState,
+  workspaceState: WorkspaceSyncState,
+  options?: {
+    outcome?: SaveSegmentOutcome;
+    reason?: SaveSegmentReason;
+    backendCode?: string;
+    conflict?: ConflictState;
+    error?: ParsedApiError;
+  },
+): SaveSegmentResult {
+  const success = commitState === 'COMMITTED' && workspaceState === 'SYNCED';
+  let outcome: SaveSegmentOutcome = options?.outcome ?? 'FAILED_BEFORE_COMMIT';
+
+  if (!options?.outcome) {
+    if (workspaceState === 'ACCESS_REVOKED') {
+      outcome = 'ACCESS_REVOKED';
+    } else if (workspaceState === 'STATE_CHANGED') {
+      outcome = 'STATE_CHANGED';
+    } else if (commitState === 'COMMITTED' && workspaceState === 'SYNCED') {
+      outcome = 'SAVED_AND_SYNCED';
+    } else if (commitState === 'COMMITTED') {
+      outcome = 'SAVED_SYNC_FAILED';
+    } else if (options?.reason === 'VERSION_CONFLICT') {
+      outcome = 'VERSION_CONFLICT';
+    } else if (options?.reason === 'PENDING_UNKNOWN_MUTATION') {
+      outcome = 'PENDING_UNKNOWN_CONFLICT';
+    } else if (
+      options?.reason === 'SEGMENT_REMOVED' &&
+      options.conflict?.retryBlocked
+    ) {
+      outcome = 'RETRY_BLOCKED';
+    } else {
+      outcome = 'FAILED_BEFORE_COMMIT';
+    }
+  }
+
+  return {
+    commitState,
+    workspaceState,
+    success,
+    outcome,
+    reason: options?.reason,
+    backendCode: options?.backendCode,
+    conflict: options?.conflict,
+    error: options?.error,
+  };
 }

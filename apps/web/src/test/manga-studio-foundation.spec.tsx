@@ -2740,9 +2740,11 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         saveRes = await result.current.saveSegment('seg-1', 'Updated text');
       });
 
-      // Invariant: Fail closed with SAVED_SYNC_FAILED, NOT FAILED_BEFORE_COMMIT
+      // Invariant: Fail closed with FAILED_BEFORE_COMMIT when commitState is REJECTED (canonical two-axis, no contradictory SAVED_SYNC_FAILED)
       expect(saveRes.success).toBe(false);
-      expect(saveRes.outcome).toBe('SAVED_SYNC_FAILED');
+      expect(saveRes.commitState).toBe('REJECTED');
+      expect(saveRes.workspaceState).toBe('RECONCILIATION_REQUIRED');
+      expect(saveRes.outcome).toBe('FAILED_BEFORE_COMMIT');
 
       // Invariant: Selection of deleted segment MUST be reset to null!
       expect(result.current.selectedSegmentId).toBeNull();
@@ -3807,6 +3809,549 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
 
       // Invariant: Case 2 clears pending unknown lock because desired effect is present, even if serverVersion > expectedVersion + 1!
       expect(result.current.pendingUnknownMutations['seg-1']).toBeUndefined();
+    });
+  });
+
+  describe('17. Round 7 Hardening: Revision Ordering, Authoritative Gates, Safe Purge & Proof Isolation', () => {
+    it('P1-1: Inverted sequence with newer revision applies rev 21 and child segments match rev 21', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Request 1: Started first, resolves later with newer revision 21
+      let resolveDetail1: (val: any) => void;
+      const detail1Promise = new Promise((resolve) => {
+        resolveDetail1 = resolve;
+      });
+
+      // Request 2: Started second, resolves earlier with revision 20
+      let resolveDetail2: (val: any) => void;
+      const detail2Promise = new Promise((resolve) => {
+        resolveDetail2 = resolve;
+      });
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail')
+        .mockImplementationOnce(() => detail1Promise as any)
+        .mockImplementationOnce(() => detail2Promise as any);
+
+      let refetch1Promise: Promise<ReconciliationOutcome>;
+      let refetch2Promise: Promise<ReconciliationOutcome>;
+
+      act(() => {
+        refetch1Promise = result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+      act(() => {
+        refetch2Promise = result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      // Resolve Request 2 first (seq 2, rev 20)
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: [{ ...mockSegments[0], translatedText: 'Rev 20 Seg' }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 20,
+      });
+
+      await act(async () => {
+        resolveDetail2!({
+          ...mockComicJobDetail,
+          job: { ...mockComicJobDetail.job, workspaceRevision: 20 },
+        });
+      });
+      await refetch2Promise!;
+
+      expect(result.current.jobDetail?.job.workspaceRevision).toBe(20);
+      expect(result.current.segments[0].translatedText).toBe('Rev 20 Seg');
+
+      // Now Resolve Request 1 (seq 1, rev 21) - newer revision wins even though sequence is older!
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: [{ ...mockSegments[0], translatedText: 'Rev 21 Seg' }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 21,
+      });
+
+      await act(async () => {
+        resolveDetail1!({
+          ...mockComicJobDetail,
+          job: { ...mockComicJobDetail.job, workspaceRevision: 21 },
+        });
+      });
+      await refetch1Promise!;
+
+      expect(result.current.jobDetail?.job.workspaceRevision).toBe(21);
+      expect(result.current.segments[0].translatedText).toBe('Rev 21 Seg');
+    });
+
+    it('P1-2: AuthoritativeSyncProof mode-awareness returns STATE_CHANGED when superseded by STATE_CHANGED proof', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Refetch A starts (seq 1) with slow network
+      let resolveDetailA: (val: any) => void;
+      const detailAPromise = new Promise((resolve) => {
+        resolveDetailA = resolve;
+      });
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail')
+        .mockImplementationOnce(() => detailAPromise as any);
+
+      let refetchAPromise: Promise<ReconciliationOutcome>;
+      act(() => {
+        refetchAPromise = result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      // Refetch B starts (seq 2) and records STATE_CHANGED proof (status: APPLIED)
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: {
+          ...mockComicJobDetail.job,
+          workspaceRevision: 2,
+          status: TranslationJobStatus.APPLIED,
+        },
+      });
+
+      let outcomeB: ReconciliationOutcome;
+      await act(async () => {
+        outcomeB = await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      expect(outcomeB!).toBe('STATE_CHANGED');
+
+      // Now Refetch A finishes (seq 1, rev 1). It is superseded by proof with outcome 'STATE_CHANGED'.
+      let outcomeA: ReconciliationOutcome;
+      await act(async () => {
+        resolveDetailA!({
+          ...mockComicJobDetail,
+          job: { ...mockComicJobDetail.job, workspaceRevision: 1 },
+        });
+        outcomeA = await refetchAPromise!;
+      });
+
+      // Invariant P1-2: Must return 'STATE_CHANGED', NEVER 'SUPERSEDED_BY_SUCCESSFUL_SYNC'!
+      expect(outcomeA!).toBe('STATE_CHANGED');
+    });
+
+    it('P1-2: Segment fetch 500 prevents SUPERSEDED_BY_SUCCESSFUL_SYNC proof from being recorded', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Refetch 1 detail 200, but segments 500
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 5 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 500, data: { error: { code: 'SYNC_FAILED' } } },
+      });
+
+      let outcome: ReconciliationOutcome;
+      await act(async () => {
+        outcome = await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      // Must fail with FAILED and lock gate with RECONCILIATION_REQUIRED
+      expect(outcome!).toBe('FAILED');
+      expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
+    });
+
+    it('P1-3: Concurrent transition to APPLIED returns COMMITTED + STATE_CHANGED', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // saveSegment succeeds on server with 200
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValueOnce({
+        ...mockSegments[0],
+        version: 2,
+        translatedText: 'Saved text',
+      });
+
+      // But follow-up refetchDetail finds job has transitioned to APPLIED
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: {
+          ...mockComicJobDetail.job,
+          workspaceRevision: 2,
+          status: TranslationJobStatus.APPLIED,
+        },
+      });
+
+      let saveResult: SaveSegmentResult;
+      await act(async () => {
+        saveResult = await result.current.saveSegment('seg-1', 'Saved text');
+      });
+
+      expect(saveResult!.commitState).toBe('COMMITTED');
+      expect(saveResult!.workspaceState).toBe('STATE_CHANGED');
+      expect(saveResult!.outcome).toBe('STATE_CHANGED');
+      expect(saveResult!.success).toBe(false);
+    });
+
+    it('P1-4: Detail 200 + segments 500 locks workspace with 0 subsequent PATCH calls', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Trigger detail 200 + segments 500
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 6 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 500, data: { error: { code: 'INTERNAL_ERROR' } } },
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+
+      // Subsequent saveSegment call MUST fail-closed with 0 network calls
+      const patchSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+
+      let saveResult: SaveSegmentResult;
+      await act(async () => {
+        saveResult = await result.current.saveSegment('seg-1', 'Blocked text');
+      });
+
+      expect(patchSpy).not.toHaveBeenCalled();
+      expect(saveResult!.commitState).toBe('REJECTED');
+      expect(saveResult!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+      expect(saveResult!.success).toBe(false);
+    });
+
+    it('P1-4: Revision mismatch breaker exhaustion locks workspace with 0 subsequent PATCH calls', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Detail returns rev 10, but segments persistently returns rev 9
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 10 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        data: mockSegments,
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 9, // persistent mismatch
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+
+      const patchSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+      let saveResult: SaveSegmentResult;
+      await act(async () => {
+        saveResult = await result.current.saveSegment('seg-1', 'Blocked edit');
+      });
+
+      expect(patchSpy).not.toHaveBeenCalled();
+      expect(saveResult!.commitState).toBe('REJECTED');
+      expect(saveResult!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+    });
+
+    it('P1-5: Terminal draft purge on APPLIED/FAILED vs preservation on COUNT_UNAVAILABLE', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Create a pending unknown draft by simulating network timeout
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 500, data: { error: { code: 'NETWORK_TIMEOUT' } } },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Draft to preserve');
+      });
+
+      expect(result.current.pendingUnknownMutations['seg-1']).toBeDefined();
+
+      // Case A: COUNT_UNAVAILABLE (non-terminal transient degradation) preserves drafts
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        reviewSummary: {
+          ...mockComicJobDetail.reviewSummary!,
+          resultPageCount: 0,
+        },
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      expect(result.current.pendingUnknownMutations['seg-1']).toBeDefined();
+
+      // Case B: APPLIED (terminal state) purges all drafts
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: {
+          ...mockComicJobDetail.job,
+          status: TranslationJobStatus.APPLIED,
+          workspaceRevision: 2,
+        },
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      expect(result.current.pendingUnknownMutations).toEqual({});
+      expect(result.current.conflictState).toBeNull();
+    });
+
+    it('P2-1 & Lock 1: Canonical builder commitState === UNKNOWN takes precedence over workspaceState and produces COMMIT_UNKNOWN', () => {
+      // UNKNOWN + SYNCED
+      const res1 = buildSaveSegmentResult('UNKNOWN', 'SYNCED');
+      expect(res1.commitState).toBe('UNKNOWN');
+      expect(res1.outcome).toBe('COMMIT_UNKNOWN');
+      expect(res1.success).toBe(false);
+
+      // Lock 1: UNKNOWN + STATE_CHANGED MUST produce COMMIT_UNKNOWN, not STATE_CHANGED!
+      const res2 = buildSaveSegmentResult('UNKNOWN', 'STATE_CHANGED');
+      expect(res2.commitState).toBe('UNKNOWN');
+      expect(res2.outcome).toBe('COMMIT_UNKNOWN');
+      expect(res2.success).toBe(false);
+
+      // UNKNOWN + ACCESS_REVOKED MUST produce COMMIT_UNKNOWN, not ACCESS_REVOKED!
+      const res3 = buildSaveSegmentResult('UNKNOWN', 'ACCESS_REVOKED');
+      expect(res3.commitState).toBe('UNKNOWN');
+      expect(res3.outcome).toBe('COMMIT_UNKNOWN');
+      expect(res3.success).toBe(false);
+
+      // Exception: pending unknown conflict
+      const res4 = buildSaveSegmentResult('UNKNOWN', 'RECONCILIATION_REQUIRED', {
+        reason: 'PENDING_UNKNOWN_MUTATION',
+      });
+      expect(res4.outcome).toBe('PENDING_UNKNOWN_CONFLICT');
+
+      // REJECTED + RECONCILIATION_REQUIRED yields FAILED_BEFORE_COMMIT, never SAVED_SYNC_FAILED
+      const res5 = buildSaveSegmentResult('REJECTED', 'RECONCILIATION_REQUIRED');
+      expect(res5.outcome).toBe('FAILED_BEFORE_COMMIT');
+
+      // REJECTED + NOT_FOUND yields FAILED_BEFORE_COMMIT, never RETRY_BLOCKED
+      const res6 = buildSaveSegmentResult('REJECTED', 'SYNCED', { reason: 'NOT_FOUND' });
+      expect(res6.outcome).toBe('FAILED_BEFORE_COMMIT');
+
+      // REJECTED + SEGMENT_REMOVED with retryBlocked yields RETRY_BLOCKED
+      const res7 = buildSaveSegmentResult('REJECTED', 'RECONCILIATION_REQUIRED', {
+        reason: 'SEGMENT_REMOVED',
+        conflict: { kind: 'SEGMENT_REMOVED', segmentId: 'seg-1', retryBlocked: true },
+      });
+      expect(res7.outcome).toBe('RETRY_BLOCKED');
+    });
+
+    it('P2-2: Case 1 creates UNCOMMITTED_DRAFT, and clearConflict clears both conflict and same-segment operation error', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // saveSegment fails with 500 (packet loss before commit)
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 500,
+          data: { error: { code: 'TIMEOUT', message: 'Connection timeout' } },
+        },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Uncommitted draft text', { baseVersion: 1 });
+      });
+
+      expect(result.current.pendingUnknownMutations['seg-1']).toBeDefined();
+      expect(result.current.operationError?.code).toBe('TIMEOUT');
+
+      // Server segment still at version 1 (packet loss -> effect not present)
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: [{ ...mockSegments[0], version: 1 }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      // Case 1 converts to UNCOMMITTED_DRAFT
+      expect(result.current.conflictState?.kind).toBe('UNCOMMITTED_DRAFT');
+      expect(result.current.conflictState?.draftText).toBe('Uncommitted draft text');
+      expect(result.current.operationError?.code).toBe('TIMEOUT'); // Error preserved
+
+      // User clears conflict
+      act(() => {
+        result.current.clearConflict('seg-1');
+      });
+
+      // Invariant: Both conflict and same-segment error are cleared!
+      expect(result.current.conflictState).toBeNull();
+      expect(result.current.operationError).toBeNull();
+    });
+
+    it('P2-3: clearOperationError actively dismisses error from backing channel without clearing other channels', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Trigger segment save error (HTTP 400 validation error)
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 400,
+          data: { error: { code: 'VALIDATION_FAILED', message: 'Invalid segment text' } },
+        },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', '');
+      });
+
+      expect(result.current.operationError?.code).toBe('VALIDATION_FAILED');
+
+      // User calls clearOperationError('latest')
+      act(() => {
+        result.current.clearOperationError('latest');
+      });
+
+      expect(result.current.operationError).toBeNull();
+    });
+
+    it('Lock 2: Stale REVIEW_SYNCED proof is cleared and rejected when authoritative gate is closed', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      // Refetch 1 starts (seq 1) with slow network
+      let resolveDetail1: (val: any) => void;
+      const detail1Promise = new Promise((resolve) => {
+        resolveDetail1 = resolve;
+      });
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail')
+        .mockImplementationOnce(() => detail1Promise as any);
+
+      let refetch1Promise: Promise<ReconciliationOutcome>;
+      act(() => {
+        refetch1Promise = result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      // Now gate is closed due to segment fetch 500
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 500, data: { error: { code: 'SEGMENTS_500' } } },
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
+
+      // Refetch 1 finishes late
+      let outcome1: ReconciliationOutcome;
+      await act(async () => {
+        resolveDetail1!({
+          ...mockComicJobDetail,
+          job: { ...mockComicJobDetail.job, workspaceRevision: 1 },
+        });
+        outcome1 = await refetch1Promise!;
+      });
+
+      // Invariant Lock 2: Gate is closed -> must return RECONCILIATION_REQUIRED, never SUPERSEDED_BY_SUCCESSFUL_SYNC
+      expect(outcome1!).toBe('RECONCILIATION_REQUIRED');
+    });
+
+    it('Same-segment mutation race: Newer mutation B rejects older in-flight mutation A', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result.current.status).toBe('ready');
+      });
+
+      let resolveMutationA: (val: any) => void;
+      const mutationAPromise = new Promise((resolve) => {
+        resolveMutationA = resolve;
+      });
+
+      // Mutation A starts (seq 1)
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockImplementationOnce(() => mutationAPromise as any);
+
+      let saveAPromise: Promise<SaveSegmentResult>;
+      act(() => {
+        saveAPromise = result.current.saveSegment('seg-1', 'Text A');
+      });
+
+      // Mutation B starts (seq 2) and completes immediately
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValueOnce({
+        ...mockSegments[0],
+        version: 2,
+        translatedText: 'Text B',
+      });
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        data: [{ ...mockSegments[0], version: 2, translatedText: 'Text B' }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'Text B');
+      });
+
+      expect(result.current.segments[0].translatedText).toBe('Text B');
+
+      // Mutation A now resolves late with Text A
+      await act(async () => {
+        resolveMutationA!({
+          ...mockSegments[0],
+          version: 2,
+          translatedText: 'Text A',
+        });
+      });
+      await saveAPromise!;
+
+      // Invariant: Mutation A is stale, does NOT overwrite Mutation B's Text B
+      expect(result.current.segments[0].translatedText).toBe('Text B');
     });
   });
 });

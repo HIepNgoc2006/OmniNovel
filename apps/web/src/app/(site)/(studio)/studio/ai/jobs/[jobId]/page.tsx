@@ -491,6 +491,11 @@ export default function MangaStudioJobPage({ params }: PageProps) {
                   <span className="font-bold">Xung đột sau khi lưu: </span>
                   Phân đoạn này đã bị chỉnh sửa bởi phiên bản khác trên máy chủ sau khi thử lưu. Bản nháp của bạn đã được bảo lưu.
                 </span>
+              ) : studio.conflictState.kind === 'UNCOMMITTED_DRAFT' ? (
+                <span>
+                  <span className="font-bold">Bản nháp chưa lưu: </span>
+                  Yêu cầu lưu trước đó bị gián đoạn mạng và chưa được ghi nhận trên máy chủ. Bản nháp của bạn đã được bảo lưu để thử lại.
+                </span>
               ) : (
                 <span>
                   <span className="font-bold">Xung Đột Phiên Bản (409 VERSION_CONFLICT): </span>

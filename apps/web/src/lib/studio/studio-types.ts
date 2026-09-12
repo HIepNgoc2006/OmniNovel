@@ -27,7 +27,8 @@ export type DraftConflictKind =
   | 'VERSION_CONFLICT'
   | 'SEGMENT_REMOVED'
   | 'COMMIT_UNKNOWN_CONFLICT'
-  | 'INVALID_VERSION_ORDER';
+  | 'INVALID_VERSION_ORDER'
+  | 'UNCOMMITTED_DRAFT';
 
 export interface ConflictState {
   kind: DraftConflictKind;
@@ -47,6 +48,7 @@ export type SaveSegmentOutcome =
   | 'ACCESS_REVOKED'
   | 'FAILED_BEFORE_COMMIT'
   | 'PENDING_UNKNOWN_CONFLICT'
+  | 'COMMIT_UNKNOWN'
   | 'RETRY_BLOCKED';
 
 export interface SaveSegmentResult {
@@ -72,7 +74,6 @@ export function buildSaveSegmentResult(
   commitState: SegmentCommitState,
   workspaceState: WorkspaceSyncState,
   options?: {
-    outcome?: SaveSegmentOutcome;
     reason?: SaveSegmentReason;
     backendCode?: string;
     conflict?: ConflictState;
@@ -80,29 +81,35 @@ export function buildSaveSegmentResult(
   },
 ): SaveSegmentResult {
   const success = commitState === 'COMMITTED' && workspaceState === 'SYNCED';
-  let outcome: SaveSegmentOutcome = options?.outcome ?? 'FAILED_BEFORE_COMMIT';
+  let outcome: SaveSegmentOutcome;
 
-  if (!options?.outcome) {
-    if (workspaceState === 'ACCESS_REVOKED') {
-      outcome = 'ACCESS_REVOKED';
-    } else if (workspaceState === 'STATE_CHANGED') {
-      outcome = 'STATE_CHANGED';
-    } else if (commitState === 'COMMITTED' && workspaceState === 'SYNCED') {
-      outcome = 'SAVED_AND_SYNCED';
-    } else if (commitState === 'COMMITTED') {
-      outcome = 'SAVED_SYNC_FAILED';
-    } else if (options?.reason === 'VERSION_CONFLICT') {
+  // Implementation Lock 1: commitState === 'UNKNOWN' takes precedence over workspaceState
+  if (commitState === 'UNKNOWN') {
+    outcome =
+      options?.reason === 'PENDING_UNKNOWN_MUTATION'
+        ? 'PENDING_UNKNOWN_CONFLICT'
+        : 'COMMIT_UNKNOWN';
+  } else if (workspaceState === 'ACCESS_REVOKED') {
+    outcome = 'ACCESS_REVOKED';
+  } else if (workspaceState === 'STATE_CHANGED') {
+    outcome = 'STATE_CHANGED';
+  } else if (commitState === 'COMMITTED') {
+    outcome = workspaceState === 'SYNCED' ? 'SAVED_AND_SYNCED' : 'SAVED_SYNC_FAILED';
+  } else if (commitState === 'REJECTED') {
+    if (options?.reason === 'VERSION_CONFLICT') {
       outcome = 'VERSION_CONFLICT';
     } else if (options?.reason === 'PENDING_UNKNOWN_MUTATION') {
       outcome = 'PENDING_UNKNOWN_CONFLICT';
     } else if (
       options?.reason === 'SEGMENT_REMOVED' &&
-      options.conflict?.retryBlocked
+      options?.conflict?.retryBlocked
     ) {
       outcome = 'RETRY_BLOCKED';
     } else {
       outcome = 'FAILED_BEFORE_COMMIT';
     }
+  } else {
+    outcome = 'FAILED_BEFORE_COMMIT';
   }
 
   return {
@@ -116,3 +123,4 @@ export function buildSaveSegmentResult(
     error: options?.error,
   };
 }
+

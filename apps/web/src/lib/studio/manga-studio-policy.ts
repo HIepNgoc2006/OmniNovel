@@ -271,8 +271,14 @@ export function classifyConflictError(error: unknown): ConflictClassification {
   if (parsed.code === 'VERSION_CONFLICT') {
     return {
       type: 'VERSION_CONFLICT',
-      currentVersion: parsed.meta?.currentVersion,
-      expectedVersion: parsed.meta?.expectedVersion,
+      currentVersion:
+        parsed.meta?.currentVersion ??
+        (parsed as any).details?.currentVersion ??
+        (parsed.meta as any)?.details?.currentVersion,
+      expectedVersion:
+        parsed.meta?.expectedVersion ??
+        (parsed as any).details?.expectedVersion ??
+        (parsed.meta as any)?.details?.expectedVersion,
       message: parsed.message,
       meta: parsed.meta,
     };

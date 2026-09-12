@@ -130,6 +130,21 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   const [jobDetail, setJobDetail] =
     useState<TranslationJobReviewDetailResponse | null>(null);
   const [segments, setSegments] = useState<TranslationSegmentDto[]>([]);
+  const segmentsRef = useRef<TranslationSegmentDto[]>([]);
+
+  const replaceSegments = useCallback(
+    (
+      updater:
+        | TranslationSegmentDto[]
+        | ((prev: TranslationSegmentDto[]) => TranslationSegmentDto[]),
+    ) => {
+      const next =
+        typeof updater === 'function' ? updater(segmentsRef.current) : updater;
+      segmentsRef.current = next;
+      setSegments(next);
+    },
+    [],
+  );
   const [segmentsSyncStatus, setSegmentsSyncStatus] =
     useState<SegmentsSyncStatus>('SYNCED');
   const [previews, setPreviews] =
@@ -389,6 +404,61 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   const userSessionIdRef = useRef<string | null>(user?.id ?? null);
   const reconcileRef = useRef<() => Promise<void>>(() => Promise.resolve());
 
+  const previewMismatchBudgetRef = useRef<{
+    jobId: string | null;
+    userId: string | null;
+    workspaceRevision: number;
+    attempts: number;
+  }>({
+    jobId: null,
+    userId: null,
+    workspaceRevision: -1,
+    attempts: 0,
+  });
+
+  const recordPreviewMismatch = useCallback(
+    (targetJob: string, targetUser: string | null, targetRev: number): number => {
+      const budget = previewMismatchBudgetRef.current;
+      if (
+        budget.jobId !== targetJob ||
+        budget.userId !== targetUser ||
+        budget.workspaceRevision !== targetRev
+      ) {
+        previewMismatchBudgetRef.current = {
+          jobId: targetJob,
+          userId: targetUser,
+          workspaceRevision: targetRev,
+          attempts: 1,
+        };
+        return 1;
+      }
+      budget.attempts += 1;
+      return budget.attempts;
+    },
+    [],
+  );
+
+  const resetPreviewMismatchBudget = useCallback(
+    (targetJob?: string, targetUser?: string | null, targetRev?: number) => {
+      if (typeof targetRev === 'number') {
+        previewMismatchBudgetRef.current = {
+          jobId: targetJob ?? null,
+          userId: targetUser ?? null,
+          workspaceRevision: targetRev,
+          attempts: 0,
+        };
+      } else {
+        previewMismatchBudgetRef.current = {
+          jobId: null,
+          userId: null,
+          workspaceRevision: -1,
+          attempts: 0,
+        };
+      }
+    },
+    [],
+  );
+
   const isRequestCurrent = useCallback(
     (targetGen: number, targetJob: string): boolean => {
       return (
@@ -416,13 +486,14 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   const resetServerOwnedState = useCallback(
     (preserveDrafts: boolean = true) => {
       setJobDetail(null);
-      setSegments([]);
+      replaceSegments([]);
       setSegmentsSyncStatus('SYNCED');
       setPreviews(null);
       setSelectedSegmentId(null);
       if (!preserveDrafts) {
         replaceConflictStates({});
         replacePendingUnknownMutations({});
+        resetPreviewMismatchBudget();
       }
       setMaterializationState(null);
       materializationInFlightRef.current = false;
@@ -440,9 +511,11 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     },
     [
       clearAllErrors,
+      replaceSegments,
       replaceConflictStates,
       replacePendingUnknownMutations,
       replaceAuthoritativeGate,
+      resetPreviewMismatchBudget,
     ],
   );
 
@@ -458,19 +531,25 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       materializationInFlightRef.current = false;
       setIsMaterializing(false);
       setPreviews(null);
-      setSegments([]);
+      replaceSegments([]);
       setSegmentsSyncStatus('SYNCED');
       setSelectedSegmentId(null);
       if (!preserveDrafts) {
         replaceConflictStates({});
         replacePendingUnknownMutations({});
+        resetPreviewMismatchBudget();
       }
       setMaterializationState(null);
       setCurrentPage(1);
       previewReconcileAttemptsRef.current = 0;
       lastPreviewConflictRevisionRef.current = null;
     },
-    [replaceConflictStates, replacePendingUnknownMutations],
+    [
+      replaceSegments,
+      replaceConflictStates,
+      replacePendingUnknownMutations,
+      resetPreviewMismatchBudget,
+    ],
   );
 
   const purgeOnAccessError = useCallback(
@@ -523,18 +602,18 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       currentSegments: TranslationSegmentDto[],
       detailWorkspaceRev: number,
       segmentsWorkspaceRev: number,
-    ) => {
+    ): boolean => {
       if (
         !isValidWorkspaceRevision(detailWorkspaceRev) ||
         !isValidWorkspaceRevision(segmentsWorkspaceRev) ||
         detailWorkspaceRev !== segmentsWorkspaceRev
       ) {
-        return;
+        return true;
       }
 
       const pendingMap = pendingUnknownMutationsRef.current;
       const pendingKeys = Object.keys(pendingMap);
-      if (pendingKeys.length === 0) return;
+      if (pendingKeys.length === 0) return true;
 
       for (const segId of pendingKeys) {
         const pending = pendingMap[segId];
@@ -582,7 +661,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
               'Phát hiện dữ liệu phân đoạn bị thoái lui phiên bản trên máy chủ. Vui lòng làm mới trang.',
           });
           setStatus('error');
-          return;
+          return false;
         }
 
         // Case 2: EFFECT_PRESENT (Mutation committed on server, desired effect present)
@@ -629,6 +708,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
               retryBlocked: false,
             },
           }));
+          clearSegmentSaveError(segId);
           continue;
         }
 
@@ -656,8 +736,10 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
               retryBlocked: false,
             },
           }));
+          clearSegmentSaveError(segId);
         }
       }
+      return true;
     },
     [
       replacePendingUnknownMutations,
@@ -722,11 +804,13 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           latestConfirmedWorkspaceRevisionRef.current =
             detail.job.workspaceRevision;
           latestAppliedDetailSeqRef.current = detailSeq;
+          authoritativeProofRef.current = null;
         } else {
           latestAppliedDetailSeqRef.current = Math.max(
             latestAppliedDetailSeqRef.current,
             detailSeq,
           );
+          authoritativeProofRef.current = null;
         }
 
         setJobDetail(detail);
@@ -770,28 +854,21 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
               return;
             }
 
-            // Coherent cycle succeeded: Reset breaker budget & register proof
+            // Coherent cycle succeeded: Reset breaker budget
             coherenceReconcileEpochRef.current = 0;
-            setSegments(segRes.data || []);
+            replaceSegments(segRes.data || []);
             setSegmentsSyncStatus('SYNCED');
             clearSegmentsSyncError();
-            replaceAuthoritativeGate(false, null);
-
-            authoritativeProofRef.current = {
-              generation: currentGen,
-              jobId: currentJob,
-              userId: user?.id ?? null,
-              revision: detail.job.workspaceRevision,
-              seq: detailSeq,
-              outcome: 'REVIEW_SYNCED',
-            };
 
             // Resolve any pending unknown mutations against coherent segments
-            resolvePendingUnknownMutations(
+            const isResolvedOk = resolvePendingUnknownMutations(
               segRes.data || [],
               detail.job.workspaceRevision,
               segRes.workspaceRevision,
             );
+            if (!isResolvedOk || authoritativeSyncErrorRef.current) {
+              return;
+            }
 
             if (modeResult.canPreview) {
               try {
@@ -807,11 +884,13 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
                   !isValidWorkspaceRevision(prevRes.workspaceRevision) ||
                   prevRes.workspaceRevision !== detail.job.workspaceRevision
                 ) {
-                  if (
-                    coherenceReconcileEpochRef.current <
-                    MAX_COHERENCE_RECONCILE_ATTEMPTS
-                  ) {
-                    coherenceReconcileEpochRef.current++;
+                  const attempts = recordPreviewMismatch(
+                    currentJob,
+                    user?.id ?? null,
+                    detail.job.workspaceRevision,
+                  );
+
+                  if (attempts < MAX_COHERENCE_RECONCILE_ATTEMPTS) {
                     await reconcileRef.current();
                   } else {
                     replaceAuthoritativeGate(true, {
@@ -826,10 +905,25 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
                   return;
                 }
 
-                previewReconcileAttemptsRef.current = 0;
+                resetPreviewMismatchBudget(
+                  currentJob,
+                  user?.id ?? null,
+                  detail.job.workspaceRevision,
+                );
                 lastPreviewConflictRevisionRef.current = null;
                 setPreviews(prevRes);
                 clearPreviewsSyncError();
+                replaceAuthoritativeGate(false, null);
+
+                // Implementation Lock 2: Proof is recorded as FINAL STEP after all are coherent!
+                authoritativeProofRef.current = {
+                  generation: currentGen,
+                  jobId: currentJob,
+                  userId: user?.id ?? null,
+                  revision: detail.job.workspaceRevision,
+                  seq: detailSeq,
+                  outcome: 'REVIEW_SYNCED',
+                };
               } catch (prevErr) {
                 if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) {
                   return;
@@ -861,11 +955,31 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
                   }
                   return;
                 }
-                setPreviewsSyncError({
-                  code: 'PREVIEWS_SYNC_FAILED',
-                  message: 'Không thể đồng bộ bản xem trước từ máy chủ.',
+
+                // Full Coherence Lock: Preview 500 / network error on initial/reload load locks workspace fail-closed!
+                replaceAuthoritativeGate(true, {
+                  mode: 'RECONCILIATION_REQUIRED',
+                  canPreview: false,
+                  canEdit: false,
+                  canMaterialize: false,
+                  message:
+                    'Không thể đồng bộ bản xem trước từ máy chủ. Không gian làm việc bị khóa để bảo vệ dữ liệu.',
                 });
+                setPreviewsSyncError(parsed);
+                setStatus('ready');
+                return;
               }
+            } else {
+              // Non-previewable reviewable state: proof recorded after segments!
+              replaceAuthoritativeGate(false, null);
+              authoritativeProofRef.current = {
+                generation: currentGen,
+                jobId: currentJob,
+                userId: user?.id ?? null,
+                revision: detail.job.workspaceRevision,
+                seq: detailSeq,
+                outcome: 'REVIEW_SYNCED',
+              };
             }
           } catch (segErr) {
             if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) {
@@ -929,7 +1043,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           purgeOnAccessError(parsedErr, currentGen, currentJob);
         } else {
           setJobDetail(null);
-          setSegments([]);
+          replaceSegments([]);
           setPreviews(null);
           setFatalError(parsedErr);
           setStatus('error');
@@ -943,12 +1057,15 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       isChildRequestCurrent,
       isJobAccessError,
       purgeOnAccessError,
+      replaceSegments,
       clearSegmentsSyncError,
       setSegmentsSyncError,
       clearPreviewsSyncError,
       setPreviewsSyncError,
       resolvePendingUnknownMutations,
       replaceAuthoritativeGate,
+      recordPreviewMismatch,
+      resetPreviewMismatchBudget,
       clearReviewOnlyState,
       user?.id,
     ],
@@ -1029,7 +1146,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     const currentJob = activeJobIdRef.current;
 
     setJobDetail(null);
-    setSegments([]);
+    replaceSegments([]);
     setSegmentsSyncStatus('SYNCED');
     setPreviews(null);
     setSelectedSegmentId(null);
@@ -1045,7 +1162,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     latestAppliedDetailSeqRef.current = 0;
 
     await loadJobData(newGen, currentJob);
-  }, [loadJobData, clearOperationError, replaceAuthoritativeGate]);
+  }, [loadJobData, clearOperationError, replaceAuthoritativeGate, replaceSegments]);
 
   useEffect(() => {
     reconcileRef.current = reconcileAuthoritativeWorkspace;
@@ -1127,6 +1244,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
             proof.generation === currentGen &&
             proof.jobId === currentJob &&
             proof.userId === (user?.id ?? null) &&
+            proof.revision === latestConfirmedWorkspaceRevisionRef.current &&
             (proof.revision > detail.job.workspaceRevision ||
               (proof.revision === detail.job.workspaceRevision &&
                 proof.seq >= detailSeq));
@@ -1146,11 +1264,13 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           latestConfirmedWorkspaceRevisionRef.current =
             detail.job.workspaceRevision;
           latestAppliedDetailSeqRef.current = detailSeq;
+          authoritativeProofRef.current = null;
         } else {
           latestAppliedDetailSeqRef.current = Math.max(
             latestAppliedDetailSeqRef.current,
             detailSeq,
           );
+          authoritativeProofRef.current = null;
         }
 
         const reviewRevisionChanged =
@@ -1175,7 +1295,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         }
 
         if (reviewRevisionChanged || workspaceRevisionChanged || statusChanged) {
-          setSegments([]);
+          replaceSegments([]);
         }
 
         setJobDetail(detail);
@@ -1223,51 +1343,83 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
             // Coherent sync cycle succeeded!
             coherenceReconcileEpochRef.current = 0;
-            setSegments(segRes.data || []);
+            replaceSegments(segRes.data || []);
             setSegmentsSyncStatus('SYNCED');
             clearSegmentsSyncError();
-            replaceAuthoritativeGate(false, null);
-
-            authoritativeProofRef.current = {
-              generation: currentGen,
-              jobId: currentJob,
-              userId: user?.id ?? null,
-              revision: detail.job.workspaceRevision,
-              seq: detailSeq,
-              outcome: 'REVIEW_SYNCED',
-            };
 
             // Resolve pending unknown mutations
-            resolvePendingUnknownMutations(
+            const isResolvedOk = resolvePendingUnknownMutations(
               segRes.data || [],
               detail.job.workspaceRevision,
               segRes.workspaceRevision,
             );
+            if (!isResolvedOk || authoritativeSyncErrorRef.current) {
+              return 'RECONCILIATION_REQUIRED';
+            }
 
-            // Fetch previews non-blocking for workspace coherence
-            fetchTranslationJobPreviews(currentJob, { pageNumber: 1 })
-              .then((prevRes) => {
+            if (newMode.canPreview) {
+              try {
+                const prevRes = await fetchTranslationJobPreviews(currentJob, {
+                  pageNumber: 1,
+                });
                 if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) {
-                  return;
+                  return 'SCOPE_INVALIDATED';
                 }
 
                 if (
-                  isValidWorkspaceRevision(prevRes.workspaceRevision) &&
-                  prevRes.workspaceRevision === detail.job.workspaceRevision
+                  !isValidWorkspaceRevision(prevRes.workspaceRevision) ||
+                  prevRes.workspaceRevision !== detail.job.workspaceRevision
                 ) {
-                  previewReconcileAttemptsRef.current = 0;
-                  lastPreviewConflictRevisionRef.current = null;
-                  setPreviews(prevRes);
-                  clearPreviewsSyncError();
+                  const attempts = recordPreviewMismatch(
+                    currentJob,
+                    user?.id ?? null,
+                    detail.job.workspaceRevision,
+                  );
+
+                  if (attempts >= MAX_COHERENCE_RECONCILE_ATTEMPTS) {
+                    replaceAuthoritativeGate(true, {
+                      mode: 'RECONCILIATION_REQUIRED',
+                      canPreview: false,
+                      canEdit: false,
+                      canMaterialize: false,
+                      message:
+                        'Không thể đồng bộ trạng thái nhất quán giữa chi tiết và bản xem trước.',
+                    });
+                  }
+                  return 'RECONCILIATION_REQUIRED';
                 }
-              })
-              .catch(async (err) => {
-                if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) return;
-                const parsed = parseApiError(err);
+
+                resetPreviewMismatchBudget(
+                  currentJob,
+                  user?.id ?? null,
+                  detail.job.workspaceRevision,
+                );
+                lastPreviewConflictRevisionRef.current = null;
+                setPreviews(prevRes);
+                clearPreviewsSyncError();
+                replaceAuthoritativeGate(false, null);
+
+                // Implementation Lock 2: Proof is recorded as FINAL STEP after all are coherent!
+                authoritativeProofRef.current = {
+                  generation: currentGen,
+                  jobId: currentJob,
+                  userId: user?.id ?? null,
+                  revision: detail.job.workspaceRevision,
+                  seq: detailSeq,
+                  outcome: 'REVIEW_SYNCED',
+                };
+
+                return 'SYNCED';
+              } catch (prevErr) {
+                if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) {
+                  return 'SCOPE_INVALIDATED';
+                }
+                const parsed = parseApiError(prevErr);
                 if (isJobAccessError(parsed)) {
                   purgeOnAccessError(parsed, currentGen, currentJob);
-                  return;
+                  return 'ACCESS_REVOKED';
                 }
+
                 if (
                   parsed.code === 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS' ||
                   parsed.code === 'NOT_REVIEWABLE'
@@ -1280,23 +1432,50 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
                   if (previewReconcileAttemptsRef.current < 2) {
                     previewReconcileAttemptsRef.current++;
                     await reconcileRef.current();
+                    return 'STATE_CHANGED';
                   } else {
                     setFatalError({
                       code: 'STATE_DESYNCHRONIZED',
                       message:
                         'Trạng thái dữ liệu giữa chi tiết job và bản xem trước không nhất quán từ máy chủ. Vui lòng tải lại trang.',
                     });
-                    setStatus('error');
+                    return 'FAILED';
                   }
-                  return;
                 }
+
                 setPreviewsSyncError({
                   code: 'PREVIEWS_SYNC_FAILED',
                   message: 'Không thể đồng bộ bản xem trước từ máy chủ.',
                 });
-              });
 
-            return 'SYNCED';
+                if (options?.requirement === 'AUTHORITATIVE_REQUIRED') {
+                  replaceAuthoritativeGate(true, {
+                    mode: 'RECONCILIATION_REQUIRED',
+                    canPreview: false,
+                    canEdit: false,
+                    canMaterialize: false,
+                    message:
+                      'Không thể đồng bộ bản xem trước từ máy chủ. Không gian làm việc bị khóa để bảo vệ dữ liệu.',
+                  });
+                  return 'FAILED';
+                }
+
+                return 'RECONCILIATION_REQUIRED';
+              }
+            } else {
+              // Non-previewable reviewable state: proof recorded after segments!
+              replaceAuthoritativeGate(false, null);
+              authoritativeProofRef.current = {
+                generation: currentGen,
+                jobId: currentJob,
+                userId: user?.id ?? null,
+                revision: detail.job.workspaceRevision,
+                seq: detailSeq,
+                outcome: 'REVIEW_SYNCED',
+              };
+
+              return 'SYNCED';
+            }
           } catch (err) {
             if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) {
               return 'SCOPE_INVALIDATED';
@@ -1369,6 +1548,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
             proof.generation === currentGen &&
             proof.jobId === currentJob &&
             proof.userId === (user?.id ?? null) &&
+            proof.revision === latestConfirmedWorkspaceRevisionRef.current &&
             proof.seq >= detailSeq;
 
           if (hasValidProof) {
@@ -1406,11 +1586,14 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       isJobAccessError,
       purgeOnAccessError,
       jobDetail,
+      replaceSegments,
       clearReviewOnlyState,
       clearSegmentsSyncError,
       clearPreviewsSyncError,
       resolvePendingUnknownMutations,
       replaceAuthoritativeGate,
+      recordPreviewMismatch,
+      resetPreviewMismatchBudget,
       user?.id,
     ],
   );
@@ -1447,6 +1630,36 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
               'Phân đoạn này đã bị xóa trên máy chủ và bị khóa thử lại.',
           },
         });
+      }
+
+      // In-hook fail-closed: If VERSION_CONFLICT exists, reject retry unless reconciled to newer version AND baseVersion exact-matches local authoritative version!
+      const existingConflict = conflictStatesRef.current[segmentId];
+      if (existingConflict?.kind === 'VERSION_CONFLICT') {
+        const serverLocal = segmentsRef.current.find((s) => s.id === segmentId);
+        const isReconciledNewer =
+          serverLocal &&
+          typeof serverLocal.version === 'number' &&
+          typeof existingConflict.expectedVersion === 'number' &&
+          serverLocal.version > existingConflict.expectedVersion;
+
+        const isExactBaseVersion =
+          serverLocal &&
+          typeof serverLocal.version === 'number' &&
+          (options?.baseVersion ?? serverLocal.version) === serverLocal.version;
+
+        const isSafeRetry = isReconciledNewer && isExactBaseVersion;
+
+        if (!isSafeRetry) {
+          return buildSaveSegmentResult('REJECTED', 'RECONCILIATION_REQUIRED', {
+            reason: 'VERSION_CONFLICT',
+            conflict: existingConflict,
+            error: {
+              code: 'VERSION_CONFLICT_PENDING_RECONCILIATION',
+              message:
+                'Phân đoạn này đang chờ đồng bộ lại phiên bản mới từ máy chủ trước khi có thể lưu.',
+            },
+          });
+        }
       }
 
       if (
@@ -1507,34 +1720,38 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           return buildSaveSegmentResult('COMMITTED', 'STATE_CHANGED');
         }
 
+        // Sequence guard: If this mutation was superseded by a newer mutation on the same segment,
+        // do not mutate local state or trigger side effects!
+        if (!isCurrent()) {
+          return buildSaveSegmentResult('COMMITTED', 'STATE_CHANGED');
+        }
+
         // Monotonic segment version rule: Never replace local version N with response version < N
         // Sequence-guarded by isCurrent()
-        if (isCurrent()) {
-          setSegments((prev) =>
-            prev.map((s) => {
-              if (s.id !== segmentId) return s;
-              if (
-                typeof s.version === 'number' &&
-                typeof updated.version === 'number' &&
-                updated.version < s.version
-              ) {
-                return s;
-              }
-              return { ...s, ...updated };
-            }),
-          );
+        replaceSegments((prev) =>
+          prev.map((s) => {
+            if (s.id !== segmentId) return s;
+            if (
+              typeof s.version === 'number' &&
+              typeof updated.version === 'number' &&
+              updated.version < s.version
+            ) {
+              return s;
+            }
+            return { ...s, ...updated };
+          }),
+        );
 
-          // Clear conflict state if this is still the latest operation
-          replaceConflictStates((prev) => {
-            if (!prev[segmentId]) return prev;
-            const next = { ...prev };
-            delete next[segmentId];
-            return next;
-          });
+        // Clear conflict state if this is still the latest operation
+        replaceConflictStates((prev) => {
+          if (!prev[segmentId]) return prev;
+          const next = { ...prev };
+          delete next[segmentId];
+          return next;
+        });
 
-          // P1-5: Sequence guard clearSegmentSaveError with isCurrent()!
-          clearSegmentSaveError(segmentId);
-        }
+        // P1-5: Sequence guard clearSegmentSaveError with isCurrent()!
+        clearSegmentSaveError(segmentId);
 
         const syncOutcome = await refetchDetail({
           requirement: 'AUTHORITATIVE_REQUIRED',
@@ -1573,58 +1790,94 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           });
         }
 
-        // Ambiguous segment 404: Orphan lock with retryBlocked = true
+        // Ambiguous segment 404 handling
         if (parsed.status === 404 || parsed.code === 'NOT_FOUND') {
-          let orphanConflict: ConflictState | undefined;
+          const provisionalDraftText = text;
+          const provisionalDraftVerification = options?.isHumanVerified;
           if (isCurrent()) {
+            setSegmentSaveError(segmentId, parsed);
             if (selectedSegmentId === segmentId) {
               setSelectedSegmentId(null);
             }
-            setSegments((prev) => prev.filter((s) => s.id !== segmentId));
-
-            orphanConflict = {
-              kind: 'SEGMENT_REMOVED',
-              segmentId,
-              draftText: text,
-              draftVerification: options?.isHumanVerified,
-              retryBlocked: true,
-            };
-            replaceConflictStates((prev) => ({
-              ...prev,
-              [segmentId]: orphanConflict!,
-            }));
-
-            setSegmentSaveError(segmentId, parsed);
           }
 
           const syncOutcome = await refetchDetail({
             requirement: 'AUTHORITATIVE_REQUIRED',
           });
 
+          // Implementation Lock 4: If mutation is no longer current, DO NOT alter any per-segment state!
+          if (!isCurrent()) {
+            return buildSaveSegmentResult('REJECTED', 'STATE_CHANGED', {
+              reason: 'SUPERSEDED_BY_NEWER_MUTATION',
+            });
+          }
+
+          if (syncOutcome === 'ACCESS_REVOKED') {
+            return buildSaveSegmentResult('REJECTED', 'ACCESS_REVOKED', {
+              reason: 'ACCESS_REVOKED',
+              error: parsed,
+            });
+          }
+
+          if (syncOutcome === 'STATE_CHANGED') {
+            return buildSaveSegmentResult('REJECTED', 'STATE_CHANGED', {
+              error: parsed,
+            });
+          }
+
           if (
-            syncOutcome === 'FAILED' ||
-            syncOutcome === 'ACCESS_REVOKED' ||
-            syncOutcome === 'SCOPE_INVALIDATED' ||
-            syncOutcome === 'STATE_CHANGED'
+            syncOutcome !== 'SYNCED' &&
+            syncOutcome !== 'SUPERSEDED_BY_SUCCESSFUL_SYNC'
           ) {
             return buildSaveSegmentResult(
               'REJECTED',
-              syncOutcome === 'ACCESS_REVOKED'
-                ? 'ACCESS_REVOKED'
-                : syncOutcome === 'STATE_CHANGED'
-                ? 'STATE_CHANGED'
-                : 'RECONCILIATION_REQUIRED',
+              'RECONCILIATION_REQUIRED',
               {
                 reason: 'NOT_FOUND',
-                conflict: orphanConflict,
                 error: parsed,
               },
             );
           }
 
+          // Authoritative sync established! Inspect authoritative segments
+          const serverSeg = segmentsRef.current.find((s) => s.id === segmentId);
+          if (!serverSeg) {
+            // Segment truly absent on server: confirm orphan lock
+            if (selectedSegmentId === segmentId) {
+              setSelectedSegmentId(null);
+            }
+            replaceSegments((prev) => prev.filter((s) => s.id !== segmentId));
+
+            const orphanConflict: ConflictState = {
+              kind: 'SEGMENT_REMOVED',
+              segmentId,
+              draftText: provisionalDraftText,
+              draftVerification: provisionalDraftVerification,
+              retryBlocked: true,
+            };
+            replaceConflictStates((prev) => ({
+              ...prev,
+              [segmentId]: orphanConflict,
+            }));
+            setSegmentSaveError(segmentId, parsed);
+
+            return buildSaveSegmentResult('REJECTED', 'SYNCED', {
+              reason: 'NOT_FOUND',
+              conflict: orphanConflict,
+              error: parsed,
+            });
+          }
+
+          // Segment still present on server: do NOT orphan lock, allow retry!
+          replaceConflictStates((prev) => {
+            if (!prev[segmentId]) return prev;
+            const next = { ...prev };
+            delete next[segmentId];
+            return next;
+          });
+
           return buildSaveSegmentResult('REJECTED', 'SYNCED', {
             reason: 'NOT_FOUND',
-            conflict: orphanConflict,
             error: parsed,
           });
         }
@@ -1729,6 +1982,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       reconcileAuthoritativeWorkspace,
       clearSegmentSaveError,
       setSegmentSaveError,
+      replaceSegments,
       replaceConflictStates,
       replacePendingUnknownMutations,
     ],

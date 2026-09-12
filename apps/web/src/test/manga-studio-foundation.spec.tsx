@@ -979,11 +979,17 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         translatedText: 'Seg 2 original',
         version: 1,
       };
-      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
-        data: [mockSegments[0], seg2],
-        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
-        workspaceRevision: 1,
-      } as any);
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments')
+        .mockResolvedValueOnce({
+          data: [mockSegments[0], seg2],
+          pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+          workspaceRevision: 1,
+        } as any)
+        .mockResolvedValue({
+          data: [{ ...mockSegments[0], version: 2 }, seg2],
+          pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+          workspaceRevision: 1,
+        } as any);
 
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
 
@@ -2238,6 +2244,11 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       });
 
       // 1. Create conflict draft on seg-1
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        data: [{ ...mockSegments[0], version: 3 }, { ...mockSegments[0], id: 'seg-2', version: 1 }],
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 1,
+      });
       vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
         isAxiosError: true,
         response: {
@@ -2555,32 +2566,26 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         expect(result.current.status).toBe('ready');
       });
 
-      // Conflict 1 on seg-1
-      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
-        isAxiosError: true,
-        response: {
-          status: 409,
-          data: {
-            error: { code: 'VERSION_CONFLICT', currentVersion: 2, expectedVersion: 1 },
+      // Seed conflicts for seg-1 and seg-2
+      act(() => {
+        result.current.replaceConflictStates({
+          'seg-1': {
+            kind: 'VERSION_CONFLICT',
+            segmentId: 'seg-1',
+            currentVersion: 2,
+            expectedVersion: 1,
+            draftText: 'Draft 1',
+            retryBlocked: false,
           },
-        },
-      });
-      await act(async () => {
-        await result.current.saveSegment('seg-1', 'Draft 1');
-      });
-
-      // Conflict 2 on seg-2
-      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
-        isAxiosError: true,
-        response: {
-          status: 409,
-          data: {
-            error: { code: 'VERSION_CONFLICT', currentVersion: 2, expectedVersion: 1 },
+          'seg-2': {
+            kind: 'VERSION_CONFLICT',
+            segmentId: 'seg-2',
+            currentVersion: 2,
+            expectedVersion: 1,
+            draftText: 'Draft 2',
+            retryBlocked: false,
           },
-        },
-      });
-      await act(async () => {
-        await result.current.saveSegment('seg-2', 'Draft 2');
+        });
       });
 
       // Deselect segment
@@ -4995,6 +5000,633 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(patchSpy).not.toHaveBeenCalled();
       expect(saveRes!.commitState).toBe('REJECTED');
       expect(saveRes!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+    });
+  });
+
+  describe('19. Round 9 Hardening & Closed-Gate Invariants (12 Regression Cases)', () => {
+    // 1. Closed-gate recovery via refetchDetail() succeeds when gate was previously closed
+    it('1. Closed-gate recovery via refetchDetail() establishes full coherence and reopens gate without aborting', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // Close gate via preview 500
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: mockSegments,
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 500, data: { error: { code: 'PREVIEW_FAIL' } } },
+      });
+
+      let failOutcome: ReconciliationOutcome;
+      await act(async () => {
+        failOutcome = await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+      expect(failOutcome!).toBe('FAILED');
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+
+      // Now run recovery via refetchDetail under closed gate
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 3 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: mockSegments,
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 3,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 3,
+      });
+
+      let recoveryOutcome: ReconciliationOutcome;
+      await act(async () => {
+        recoveryOutcome = await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      // Implementation Lock 1: Closed-gate recovery succeeds and reopens gate!
+      expect(recoveryOutcome!).toBe('SYNCED');
+      expect(result.current.workspaceMode?.canEdit).toBe(true);
+      expect(result.current.workspaceMode?.mode).toBe('REVIEWABLE');
+    });
+
+    // 2. Closed-gate recovery via loadJobData() (same-scope retry/reconcile) succeeds when gate was closed
+    it('2. Closed-gate recovery via loadJobData() (retry) establishes full coherence and reopens gate', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // Close gate
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 500, data: { error: { code: 'SEGMENT_500' } } },
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+
+      // Now retry() triggers loadJobData under closed gate
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 3 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: mockSegments,
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 3,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 3,
+      });
+
+      await act(async () => {
+        await result.current.retry();
+      });
+
+      // Implementation Lock 1: Recovery via loadJobData succeeds, gate reopens!
+      expect(result.current.workspaceMode?.canEdit).toBe(true);
+      expect(result.current.workspaceMode?.mode).toBe('REVIEWABLE');
+    });
+
+    // 3. Reconcile does NOT prematurely reopen gate at start; gate remains closed throughout in-flight recovery
+    it('3. Reconcile does not prematurely reopen gate at start and keeps gate closed throughout recovery', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      let resolveDetail: (val: any) => void;
+      const detailPromise = new Promise((res) => {
+        resolveDetail = res;
+      });
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockImplementationOnce(() => detailPromise as any);
+
+      // Start reconcile
+      let reconcilePromise: Promise<void>;
+      act(() => {
+        reconcilePromise = result.current.reconcileAuthoritativeWorkspace();
+      });
+
+      // In-flight assertion: gate must be closed RECONCILIATION_REQUIRED, NOT open!
+      expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+
+      // Save while reconcile is in flight: rejected fail-closed with 0 network calls!
+      const patchSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+      let saveRes: SaveSegmentResult;
+      await act(async () => {
+        saveRes = await result.current.saveSegment('seg-1', 'Text');
+      });
+      expect(patchSpy).not.toHaveBeenCalled();
+      expect(saveRes!.commitState).toBe('REJECTED');
+      expect(saveRes!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+
+      // Now resolve reconcile
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: mockSegments,
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 2,
+      });
+
+      await act(async () => {
+        resolveDetail!({
+          ...mockComicJobDetail,
+          job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+        });
+        await reconcilePromise!;
+      });
+
+      expect(result.current.workspaceMode?.canEdit).toBe(true);
+    });
+
+    // 4. Global gate blocks saveSegment() before checking pending VERSION_CONFLICT safe-retry logic
+    it('4. Global gate blocks saveSegment() before checking pending VERSION_CONFLICT safe-retry logic', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // Inject VERSION_CONFLICT with expectedVersion 1
+      act(() => {
+        result.current.replaceConflictStates({
+          'seg-1': {
+            kind: 'VERSION_CONFLICT',
+            segmentId: 'seg-1',
+            currentVersion: 2,
+            expectedVersion: 1,
+            draftText: 'Draft',
+            retryBlocked: false,
+          },
+        });
+      });
+
+      // Segment local version is 1
+      expect(result.current.segments[0].version).toBe(1);
+
+      // Close global gate
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 500, data: { error: { code: 'ERROR' } } },
+      });
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+
+      // Implementation Lock 2: Even with baseVersion 2, closed gate blocks with 0 network calls!
+      const patchSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+      let saveRes: SaveSegmentResult;
+      await act(async () => {
+        saveRes = await result.current.saveSegment('seg-1', 'Text', { baseVersion: 2 });
+      });
+
+      expect(patchSpy).not.toHaveBeenCalled();
+      expect(saveRes!.commitState).toBe('REJECTED');
+      expect(saveRes!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+    });
+
+    // 5. Canonical 409 VERSION_CONFLICT locks workspace: records outbound expectedVersion and closes gate
+    it('5. Canonical 409 VERSION_CONFLICT records outbound expectedVersion and closes global gate immediately', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: 'VERSION_CONFLICT',
+              message: 'Conflict',
+              meta: { currentVersion: 3, expectedVersion: 1 },
+            },
+          },
+        },
+      });
+
+      let saveRes: SaveSegmentResult;
+      await act(async () => {
+        saveRes = await result.current.saveSegment('seg-1', 'My draft', { baseVersion: 1 });
+      });
+
+      expect(saveRes!.commitState).toBe('REJECTED');
+      expect(saveRes!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+
+      // 1. Outbound expectedVersion recorded
+      expect(result.current.conflictState?.kind).toBe('VERSION_CONFLICT');
+      expect(result.current.conflictState?.expectedVersion).toBe(1);
+
+      // 2. Global gate closed
+      expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+
+      // 3. Subsequent save on any other segment is rejected with 0 network calls
+      const patchSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+      let secondSaveRes: SaveSegmentResult;
+      await act(async () => {
+        secondSaveRes = await result.current.saveSegment('seg-2', 'Other');
+      });
+
+      expect(patchSpy).not.toHaveBeenCalled();
+      expect(secondSaveRes!.commitState).toBe('REJECTED');
+      expect(secondSaveRes!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+    });
+
+    // 6. Authoritative finalization resolves VERSION_CONFLICT lock when serverSeg.version > attemptedExpectedVersion
+    it('6. Authoritative finalization resolves VERSION_CONFLICT lock when serverSeg.version > attemptedExpectedVersion', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // Trigger 409 on seg-1 with expectedVersion 1
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: 'VERSION_CONFLICT',
+              meta: { currentVersion: 2, expectedVersion: 1 },
+            },
+          },
+        },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-1', 'My draft', { baseVersion: 1 });
+      });
+      expect(result.current.conflictState?.kind).toBe('VERSION_CONFLICT');
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+
+      // Authoritative recovery returns segment with version 2 (> 1)
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: [{ ...mockSegments[0], version: 2 }, mockSegments[1]],
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 2,
+      });
+
+      let syncOutcome: ReconciliationOutcome;
+      await act(async () => {
+        syncOutcome = await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      // Implementation Lock 4: Lock is cleared (converted to uncommitted draft), proof is written, gate reopens!
+      expect(syncOutcome!).toBe('SYNCED');
+      expect(result.current.conflictStates['seg-1']?.kind).toBe('UNCOMMITTED_DRAFT');
+      expect(result.current.conflictStates['seg-1']?.retryBlocked).toBe(false);
+      expect(result.current.workspaceMode?.canEdit).toBe(true);
+    });
+
+    // 7. Authoritative finalization does NOT resolve VERSION_CONFLICT if serverSeg.version <= attemptedExpectedVersion
+    it('7. Authoritative finalization does not resolve VERSION_CONFLICT if serverSeg.version <= attemptedExpectedVersion', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // Conflict has expectedVersion 2
+      act(() => {
+        result.current.replaceConflictStates({
+          'seg-1': {
+            kind: 'VERSION_CONFLICT',
+            segmentId: 'seg-1',
+            currentVersion: 2,
+            expectedVersion: 2,
+            draftText: 'Draft',
+            retryBlocked: false,
+          },
+        });
+      });
+
+      // Refetch detail returns segment with version 2 (<= 2)
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: [{ ...mockSegments[0], version: 2 }, mockSegments[1]],
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 2,
+      });
+
+      let syncOutcome: ReconciliationOutcome;
+      await act(async () => {
+        syncOutcome = await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      // Implementation Lock 4: Conflict remains unresolved, no proof, gate remains closed!
+      expect(syncOutcome!).toBe('RECONCILIATION_REQUIRED');
+      expect(result.current.conflictStates['seg-1']?.kind).toBe('VERSION_CONFLICT');
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+    });
+
+    // 8. Disappeared segment during VERSION_CONFLICT recovery converts to confirmed SEGMENT_REMOVED and reopens valid segments
+    it('8. Disappeared segment during VERSION_CONFLICT recovery converts to SEGMENT_REMOVED and reopens valid segments', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // Conflict on seg-1
+      act(() => {
+        result.current.replaceConflictStates({
+          'seg-1': {
+            kind: 'VERSION_CONFLICT',
+            segmentId: 'seg-1',
+            currentVersion: 2,
+            expectedVersion: 1,
+            draftText: 'Draft seg 1',
+            retryBlocked: false,
+          },
+        });
+      });
+
+      // Server returns segments list WITHOUT seg-1 (seg-1 deleted)
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: [mockSegments[1]], // only seg-2
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 2,
+      });
+
+      let syncOutcome: ReconciliationOutcome;
+      await act(async () => {
+        syncOutcome = await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      expect(syncOutcome!).toBe('SYNCED');
+      // Converted to SEGMENT_REMOVED with draft preserved and retryBlocked: true
+      expect(result.current.conflictStates['seg-1']?.kind).toBe('SEGMENT_REMOVED');
+      expect(result.current.conflictStates['seg-1']?.draftText).toBe('Draft seg 1');
+      expect(result.current.conflictStates['seg-1']?.retryBlocked).toBe(true);
+
+      // Version lock removed: workspace gate opens for remaining valid segments
+      expect(result.current.workspaceMode?.canEdit).toBe(true);
+    });
+
+    // 9. Ref-based triggerMaterialization fail-closed: rejects immediately with 0 network calls when gate closed or FRESH
+    it('9. Ref-based triggerMaterialization rejects immediately with 0 network calls when gate is closed or FRESH', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      const matSpy = vi.spyOn(translationApi, 'requestJobMaterialization');
+
+      // 1. When workspace is FRESH: returns null with 0 network calls
+      expect(result.current.freshness.status).toBe('FRESH');
+      let matRes: any;
+      await act(async () => {
+        matRes = await result.current.triggerMaterialization();
+      });
+      expect(matRes).toBeNull();
+      expect(matSpy).not.toHaveBeenCalled();
+
+      // 2. When gate is closed: returns null with 0 network calls
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockStaleComicJobDetail,
+        job: { ...mockStaleComicJobDetail.job, workspaceRevision: 3 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 500, data: { error: { code: 'FAIL' } } },
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+
+      await act(async () => {
+        matRes = await result.current.triggerMaterialization();
+      });
+      expect(matRes).toBeNull();
+      expect(matSpy).not.toHaveBeenCalled();
+    });
+
+    // 10. In-flight recovery blocks save and materialize: deferred network promise verifies fail-closed while pending
+    it('10. Defer network promise during recovery: saveSegment and triggerMaterialization are blocked with 0 network calls while recovery is pending', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // 409 triggers recovery
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: {
+          status: 409,
+          data: {
+            error: {
+              code: 'VERSION_CONFLICT',
+              meta: { currentVersion: 2, expectedVersion: 1 },
+            },
+          },
+        },
+      });
+
+      let resolveRecoveryDetail: (val: any) => void;
+      const deferredDetailPromise = new Promise((res) => {
+        resolveRecoveryDetail = res;
+      });
+
+      // Defer recovery network call
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockImplementationOnce(() => deferredDetailPromise as any);
+
+      // Trigger saveSegment which receives 409 and starts deferred background recovery
+      let saveRes409: SaveSegmentResult;
+      await act(async () => {
+        saveRes409 = await result.current.saveSegment('seg-1', 'Text 1', { baseVersion: 1 });
+      });
+
+      expect(saveRes409!.commitState).toBe('REJECTED');
+      expect(saveRes409!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+
+      // WHILE RECOVERY IS STILL PENDING:
+      const patchSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+      const matSpy = vi.spyOn(translationApi, 'requestJobMaterialization');
+
+      let concurrentSaveRes: SaveSegmentResult;
+      let concurrentMatRes: any;
+      await act(async () => {
+        concurrentSaveRes = await result.current.saveSegment('seg-2', 'Text 2');
+        concurrentMatRes = await result.current.triggerMaterialization();
+      });
+
+      // Both rejected fail-closed with ZERO network calls!
+      expect(patchSpy).not.toHaveBeenCalled();
+      expect(matSpy).not.toHaveBeenCalled();
+      expect(concurrentSaveRes!.commitState).toBe('REJECTED');
+      expect(concurrentSaveRes!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+      expect(concurrentMatRes).toBeNull();
+
+      // Now resolve the deferred recovery
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: [{ ...mockSegments[0], version: 2 }, mockSegments[1]],
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 2,
+      });
+
+      await act(async () => {
+        resolveRecoveryDetail!({
+          ...mockComicJobDetail,
+          job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+        });
+      });
+
+      // Recovery completes and gate opens!
+      await waitFor(() => {
+        expect(result.current.workspaceMode?.canEdit).toBe(true);
+      });
+      expect(result.current.conflictStates['seg-1']?.kind).toBe('UNCOMMITTED_DRAFT');
+      expect(result.current.conflictStates['seg-1']?.retryBlocked).toBe(false);
+    });
+
+    // 11. Scope boundary vs chronology preservation: same-scope rev11 rejects rev10, new scope accepts rev1
+    it('11. Chronology and Scope Boundary: same-scope rev11 drops delayed rev10 after retry, but new scope accepts rev1', async () => {
+      // Half A: Same Scope - establish rev 11
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 11 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: mockSegments,
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 11,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 11,
+      });
+
+      const { result, rerender } = renderHook(({ id }) => useMangaReviewStudio(id), {
+        initialProps: { id: mockJobId },
+      });
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+      expect(result.current.jobDetail?.job.workspaceRevision).toBe(11);
+
+      // Call retry() on same job
+      // Delayed out-of-order response with revision 10 arrives
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 10 },
+      });
+
+      await act(async () => {
+        await result.current.retry();
+      });
+
+      // Half A assertion: Same scope preserves watermark 11, drops rev 10!
+      expect(result.current.jobDetail?.job.workspaceRevision).not.toBe(10);
+
+      // Half B: New Scope - switch to new jobId
+      const newJobId = 'job-comic-scope-2';
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, id: newJobId, workspaceRevision: 1 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: mockSegments,
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 1,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 1,
+      });
+
+      rerender({ id: newJobId });
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // Half B assertion: New scope resets watermark to 0, accepts rev 1!
+      expect(result.current.jobDetail?.job.id).toBe(newJobId);
+      expect(result.current.jobDetail?.job.workspaceRevision).toBe(1);
+    });
+
+    // 12. Unified preview breaker: trips after 2 consecutive attempts within same revision, resets on revision advance
+    it('12. Unified preview breaker trips after 2 attempts in same revision and resets on revision advance', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // Attempt 1: Preview 409 NOT_REVIEWABLE triggers reconcile
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2, reviewRevision: 2 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: mockSegments,
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 409, data: { error: { code: 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS' } } },
+      });
+
+      // Reconcile response for Attempt 1 also returns preview 409 (Attempt 2)
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2, reviewRevision: 2 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: mockSegments,
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 409, data: { error: { code: 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS' } } },
+      });
+
+      await act(async () => {
+        await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      });
+
+      // Breaker trips on consecutive attempt 2: sets fatal error STATE_DESYNCHRONIZED
+      expect(result.current.fatalError?.code).toBe('STATE_DESYNCHRONIZED');
+      expect(result.current.status).toBe('error');
     });
   });
 });

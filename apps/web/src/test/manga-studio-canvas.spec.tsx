@@ -146,6 +146,36 @@ describe('Manga Review Studio Canvas & OCR Bounding Box Geometry (#149 RED 2)', 
       expect(normalized!.widthPct).toBe(20);
       expect(segTolX.bboxW).toBe(200.8);
     });
+
+    it('G8. Boundary & Zero-size rejection (P2): bbox starting at or beyond image boundary is rejected, zero-size box returns null', () => {
+      // bboxX starts exactly at image width (1000)
+      const segAtBoundaryX = createMockSegment({
+        bboxX: 1000,
+        bboxW: 0.5,
+      });
+      expect(computeNormalizedBoundingBox(segAtBoundaryX, mockAuthoritativeDims)).toBeNull();
+
+      // bboxX starts beyond image width (1000.5)
+      const segBeyondX = createMockSegment({
+        bboxX: 1000.5,
+        bboxW: 0.2,
+      });
+      expect(computeNormalizedBoundingBox(segBeyondX, mockAuthoritativeDims)).toBeNull();
+
+      // bboxY starts exactly at image height (1500)
+      const segAtBoundaryY = createMockSegment({
+        bboxY: 1500,
+        bboxH: 0.5,
+      });
+      expect(computeNormalizedBoundingBox(segAtBoundaryY, mockAuthoritativeDims)).toBeNull();
+
+      // bboxY starts beyond image height (1500.5)
+      const segBeyondY = createMockSegment({
+        bboxY: 1500.5,
+        bboxH: 0.3,
+      });
+      expect(computeNormalizedBoundingBox(segBeyondY, mockAuthoritativeDims)).toBeNull();
+    });
   });
 
   describe('Phase 2: Component Presentation & Race Guards (C1 - C10)', () => {
@@ -222,9 +252,18 @@ describe('Manga Review Studio Canvas & OCR Bounding Box Geometry (#149 RED 2)', 
 
       // Switch to SIDE_BY_SIDE
       fireEvent.click(screen.getByTestId('view-mode-split-button'));
-      expect(screen.getByTestId('canvas-source-image')).toBeInTheDocument();
+      const splitSourceImg = screen.getByTestId('canvas-source-image');
+      expect(splitSourceImg).toBeInTheDocument();
       expect(screen.getByTestId('canvas-result-image')).toBeInTheDocument();
-      // Bounding box only in source pane
+      // Invariant P1: Before newly mounted source image loads, bounding box must NOT render
+      expect(screen.queryByTestId('bbox-item-seg-1')).not.toBeInTheDocument();
+
+      // Trigger load on the newly mounted split source image
+      Object.defineProperty(splitSourceImg, 'naturalWidth', { value: 1000 });
+      Object.defineProperty(splitSourceImg, 'naturalHeight', { value: 1500 });
+      fireEvent.load(splitSourceImg);
+
+      // Bounding box now renders in source pane
       expect(screen.getByTestId('bbox-item-seg-1')).toBeInTheDocument();
     });
 
@@ -569,6 +608,105 @@ describe('Manga Review Studio Canvas & OCR Bounding Box Geometry (#149 RED 2)', 
 
       expect(screen.getByTestId('canvas-source-error')).toBeInTheDocument();
       expect(screen.queryByTestId('bbox-item-seg-1')).not.toBeInTheDocument();
+    });
+
+    it('C15. Pane unmount/remount integrity reset (P1): remounted source pane resets state to LOADING and prevents stale VERIFIED reuse', () => {
+      const { rerender } = render(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={mockSourceAsset}
+          resultAsset={mockResultAsset}
+          segments={[createMockSegment({ id: 'seg-remount-1' })]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+        />
+      );
+
+      // 1. Initial SOURCE mode: load image -> verified -> bbox appears
+      const sourceImg1 = screen.getByTestId('canvas-source-image');
+      Object.defineProperty(sourceImg1, 'naturalWidth', { value: 1000 });
+      Object.defineProperty(sourceImg1, 'naturalHeight', { value: 1500 });
+      fireEvent.load(sourceImg1);
+      expect(screen.getByTestId('bbox-item-seg-remount-1')).toBeInTheDocument();
+
+      // 2. Switch to RESULT mode: source pane completely unmounts
+      fireEvent.click(screen.getByTestId('view-mode-result-button'));
+      expect(screen.queryByTestId('canvas-source-image')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('bbox-item-seg-remount-1')).not.toBeInTheDocument();
+
+      // 3. Switch to SIDE_BY_SIDE: source pane remounts with a NEW DOM instance
+      fireEvent.click(screen.getByTestId('view-mode-split-button'));
+      const sourceImg2 = screen.getByTestId('canvas-source-image');
+      expect(sourceImg2).toBeInTheDocument();
+
+      // CRITICAL P1 INVARIANT: Bounding box MUST NOT exist before sourceImg2 finishes onLoad/integrity check!
+      expect(screen.queryByTestId('bbox-item-seg-remount-1')).not.toBeInTheDocument();
+
+      // 4. Now sourceImg2 finishes loading
+      Object.defineProperty(sourceImg2, 'naturalWidth', { value: 1000 });
+      Object.defineProperty(sourceImg2, 'naturalHeight', { value: 1500 });
+      fireEvent.load(sourceImg2);
+      expect(screen.getByTestId('bbox-item-seg-remount-1')).toBeInTheDocument();
+
+      // 5. Test asset -> null -> same asset transition
+      rerender(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={null} // Null out source asset
+          resultAsset={mockResultAsset}
+          segments={[createMockSegment({ id: 'seg-remount-1' })]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+        />
+      );
+      expect(screen.queryByTestId('canvas-source-image')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('bbox-item-seg-remount-1')).not.toBeInTheDocument();
+
+      // Restore same asset
+      rerender(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={mockSourceAsset}
+          resultAsset={mockResultAsset}
+          segments={[createMockSegment({ id: 'seg-remount-1' })]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+        />
+      );
+      const sourceImg3 = screen.getByTestId('canvas-source-image');
+      // Must still be LOADING, old VERIFIED must not revive
+      expect(screen.queryByTestId('bbox-item-seg-remount-1')).not.toBeInTheDocument();
+      Object.defineProperty(sourceImg3, 'naturalWidth', { value: 1000 });
+      Object.defineProperty(sourceImg3, 'naturalHeight', { value: 1500 });
+      fireEvent.load(sourceImg3);
+      expect(screen.getByTestId('bbox-item-seg-remount-1')).toBeInTheDocument();
+    });
+
+    it('C16. Result image decode failure (P2): triggers onError and renders result error placeholder', () => {
+      render(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={null}
+          resultAsset={mockResultAsset}
+          segments={[]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+        />
+      );
+
+      // Switch to RESULT mode
+      fireEvent.click(screen.getByTestId('view-mode-result-button'));
+      const resultImg = screen.getByTestId('canvas-result-image');
+      expect(resultImg).toBeInTheDocument();
+
+      // Trigger error on result image
+      fireEvent.error(resultImg);
+      expect(screen.getByTestId('canvas-result-error')).toBeInTheDocument();
+      expect(screen.queryByTestId('canvas-result-image')).not.toBeInTheDocument();
     });
   });
 });

@@ -90,6 +90,11 @@ export function validateSegmentCoordinates(
     return false;
   }
 
+  // Strict boundary rule: bounding box must start strictly inside the authoritative dimensions
+  if (bboxX >= authoritativeDims.width || bboxY >= authoritativeDims.height) {
+    return false;
+  }
+
   // Strict overflow rule: right and bottom cannot exceed authoritative dimension + 1px tolerance
   const right = bboxX + bboxW;
   const bottom = bboxY + bboxH;
@@ -131,6 +136,11 @@ export function computeNormalizedBoundingBox(
   // Render-only clipping: ensure leftPct + widthPct does not exceed 100%
   const widthPct = Math.min(rawWidthPct, Math.max(0, 100 - leftPct));
   const heightPct = Math.min(rawHeightPct, Math.max(0, 100 - topPct));
+
+  // Reject zero-size or degenerate boxes after clipping
+  if (widthPct <= 0 || heightPct <= 0) {
+    return null;
+  }
 
   return {
     segmentId: segment.id,

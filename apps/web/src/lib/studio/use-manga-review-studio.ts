@@ -938,6 +938,15 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         });
 
         if (modeResult.mode === 'REVIEWABLE') {
+          authoritativeProofRef.current = null;
+          replaceAuthoritativeGate(false, {
+            mode: 'RECONCILIATION_REQUIRED',
+            canPreview: false,
+            canEdit: false,
+            canMaterialize: false,
+            message: 'Đang xác minh tính toàn vẹn của dữ liệu từ máy chủ...',
+          });
+
           // P1 Implementation Lock: Only assign dataLoadSeq AFTER detail wins revision ordering!
           const dataLoadSeq = ++dataLoadSeqRef.current;
           setSegmentsSyncStatus('STALE');
@@ -952,20 +961,21 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
               !isValidWorkspaceRevision(segRes.workspaceRevision) ||
               segRes.workspaceRevision !== detail.job.workspaceRevision
             ) {
+              authoritativeProofRef.current = null;
+              replaceAuthoritativeGate(false, {
+                mode: 'RECONCILIATION_REQUIRED',
+                canPreview: false,
+                canEdit: false,
+                canMaterialize: false,
+                message:
+                  'Không thể đồng bộ trạng thái nhất quán giữa chi tiết và danh sách phân đoạn.',
+              });
+
               if (
                 coherenceReconcileEpochRef.current < MAX_COHERENCE_RECONCILE_ATTEMPTS
               ) {
                 coherenceReconcileEpochRef.current++;
                 await reconcileRef.current();
-              } else {
-                replaceAuthoritativeGate(true, {
-                  mode: 'RECONCILIATION_REQUIRED',
-                  canPreview: false,
-                  canEdit: false,
-                  canMaterialize: false,
-                  message:
-                    'Không thể đồng bộ trạng thái nhất quán giữa chi tiết và danh sách phân đoạn.',
-                });
               }
               return;
             }
@@ -1399,22 +1409,24 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           return 'SCOPE_INVALIDATED';
         }
 
-        // Fail-closed token validation
+        // Fail-closed token validation: Unconditionally close gate on invalid token
         if (!isValidWorkspaceRevision(detail.job.workspaceRevision)) {
-          setFatalError({
-            code: 'INVALID_WORKSPACE_REVISION',
-            message: 'Phiên bản không gian làm việc máy chủ trả về không hợp lệ.',
-          });
-          setStatus('error');
-          if (options?.requirement === 'AUTHORITATIVE_REQUIRED') {
-            replaceAuthoritativeGate(true, {
+          authoritativeProofRef.current = null;
+          replaceAuthoritativeGate(
+            options?.requirement === 'AUTHORITATIVE_REQUIRED',
+            {
               mode: 'RECONCILIATION_REQUIRED',
               canPreview: false,
               canEdit: false,
               canMaterialize: false,
               message: 'Phiên bản không gian làm việc máy chủ trả về không hợp lệ.',
-            });
-          }
+            },
+          );
+          setFatalError({
+            code: 'INVALID_WORKSPACE_REVISION',
+            message: 'Phiên bản không gian làm việc máy chủ trả về không hợp lệ.',
+          });
+          setStatus('error');
           return 'FAILED';
         }
 
@@ -1506,6 +1518,18 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         });
 
         if (newMode.mode === 'REVIEWABLE') {
+          // P1 Architecture Fix: Close authoritative gate immediately upon accepting a REVIEWABLE detail!
+          // Every subsequent child sync (segments, previews, locks) starts in a fail-closed posture.
+          // Gate is ONLY reopened at the final authoritative step when ALL components are proven coherent.
+          authoritativeProofRef.current = null;
+          replaceAuthoritativeGate(false, {
+            mode: 'RECONCILIATION_REQUIRED',
+            canPreview: false,
+            canEdit: false,
+            canMaterialize: false,
+            message: 'Đang xác minh tính toàn vẹn của dữ liệu từ máy chủ...',
+          });
+
           // P1: Only assign dataLoadSeq AFTER detail wins revision ordering!
           const dataLoadSeq = ++dataLoadSeqRef.current;
           setSegmentsSyncStatus('STALE');
@@ -1521,6 +1545,16 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
               !isValidWorkspaceRevision(segRes.workspaceRevision) ||
               segRes.workspaceRevision !== detail.job.workspaceRevision
             ) {
+              authoritativeProofRef.current = null;
+              replaceAuthoritativeGate(false, {
+                mode: 'RECONCILIATION_REQUIRED',
+                canPreview: false,
+                canEdit: false,
+                canMaterialize: false,
+                message:
+                  'Không thể đồng bộ trạng thái nhất quán giữa chi tiết và danh sách phân đoạn.',
+              });
+
               if (
                 coherenceReconcileEpochRef.current <
                 MAX_COHERENCE_RECONCILE_ATTEMPTS
@@ -1528,14 +1562,6 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
                 coherenceReconcileEpochRef.current++;
                 return await refetchDetail(options);
               } else {
-                replaceAuthoritativeGate(true, {
-                  mode: 'RECONCILIATION_REQUIRED',
-                  canPreview: false,
-                  canEdit: false,
-                  canMaterialize: false,
-                  message:
-                    'Không thể đồng bộ trạng thái nhất quán giữa chi tiết và danh sách phân đoạn.',
-                });
                 return 'RECONCILIATION_REQUIRED';
               }
             }
@@ -1678,16 +1704,20 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
                   code: 'PREVIEWS_SYNC_FAILED',
                   message: 'Không thể đồng bộ bản xem trước từ máy chủ.',
                 });
-
-                if (options?.requirement === 'AUTHORITATIVE_REQUIRED') {
-                  replaceAuthoritativeGate(true, {
+                authoritativeProofRef.current = null;
+                replaceAuthoritativeGate(
+                  options?.requirement === 'AUTHORITATIVE_REQUIRED',
+                  {
                     mode: 'RECONCILIATION_REQUIRED',
                     canPreview: false,
                     canEdit: false,
                     canMaterialize: false,
                     message:
                       'Không thể đồng bộ bản xem trước từ máy chủ. Không gian làm việc bị khóa để bảo vệ dữ liệu.',
-                  });
+                  },
+                );
+
+                if (options?.requirement === 'AUTHORITATIVE_REQUIRED') {
                   return 'FAILED';
                 }
 
@@ -1735,16 +1765,18 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
               message:
                 'Không thể đồng bộ danh sách phân đoạn mới nhất từ máy chủ.',
             });
-            if (options?.requirement === 'AUTHORITATIVE_REQUIRED') {
-              replaceAuthoritativeGate(true, {
+            authoritativeProofRef.current = null;
+            replaceAuthoritativeGate(
+              options?.requirement === 'AUTHORITATIVE_REQUIRED',
+              {
                 mode: 'RECONCILIATION_REQUIRED',
                 canPreview: false,
                 canEdit: false,
                 canMaterialize: false,
                 message:
                   'Không thể đồng bộ danh sách phân đoạn từ máy chủ. Không gian làm việc bị khóa để bảo vệ dữ liệu.',
-              });
-            }
+              },
+            );
             return 'FAILED';
           }
         } else {

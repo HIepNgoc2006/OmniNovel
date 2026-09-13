@@ -5645,5 +5645,218 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(result.current.status).toBe('error');
     });
   });
+
+  describe('20. Round 10 Hardening: Full Coherence Fail-Closed Invariants & BEST_EFFORT Protection', () => {
+    // 1. BEST_EFFORT + segments 500 => save/materialize 0 network
+    it('1. BEST_EFFORT + segments 500 closes gate fail-closed: save and materialize issue 0 network calls', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+      expect(result.current.workspaceMode?.canEdit).toBe(true);
+
+      // BEST_EFFORT refetch accepts detail rev 2, but segments 500
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2, reviewRevision: 2, materializedRevision: 1 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 500, data: { error: { code: 'INTERNAL_ERROR', message: 'DB down' } } },
+      });
+
+      let outcome: ReconciliationOutcome;
+      await act(async () => {
+        outcome = await result.current.refetchDetail();
+      });
+
+      expect(outcome!).toBe('FAILED');
+      // Gate MUST be closed fail-closed even under BEST_EFFORT!
+      expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+      expect(result.current.workspaceMode?.canMaterialize).toBe(false);
+
+      // Verify saveSegment() is rejected with 0 network calls
+      const patchSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+      let saveRes: SaveSegmentResult;
+      await act(async () => {
+        saveRes = await result.current.saveSegment('seg-1', 'New Draft');
+      });
+      expect(saveRes!.commitState).toBe('REJECTED');
+      expect(saveRes!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+      expect(patchSpy).not.toHaveBeenCalled();
+
+      // Verify triggerMaterialization() is rejected with 0 network calls
+      const matSpy = vi.spyOn(translationApi, 'requestJobMaterialization');
+      let matRes: any;
+      await act(async () => {
+        matRes = await result.current.triggerMaterialization();
+      });
+      expect(matRes).toBeNull();
+      expect(matSpy).not.toHaveBeenCalled();
+    });
+
+    // 2. BEST_EFFORT + preview 500 => save/materialize 0 network
+    it('2. BEST_EFFORT + preview 500 closes gate fail-closed: save and materialize issue 0 network calls', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // BEST_EFFORT refetch accepts detail rev 2 and segments rev 2, but preview 500
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2, reviewRevision: 2, materializedRevision: 1 },
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: [{ ...mockSegments[0], version: 2, translatedText: 'Rev 2 Seg' }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockRejectedValueOnce({
+        isAxiosError: true,
+        response: { status: 500, data: { error: { code: 'INTERNAL_ERROR', message: 'Storage error' } } },
+      });
+
+      let outcome: ReconciliationOutcome;
+      await act(async () => {
+        outcome = await result.current.refetchDetail();
+      });
+
+      expect(outcome!).toBe('RECONCILIATION_REQUIRED');
+      // Gate MUST be closed fail-closed even under BEST_EFFORT!
+      expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+      expect(result.current.workspaceMode?.canMaterialize).toBe(false);
+
+      // Verify saveSegment() is rejected with 0 network calls
+      const patchSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+      let saveRes: SaveSegmentResult;
+      await act(async () => {
+        saveRes = await result.current.saveSegment('seg-1', 'New Draft');
+      });
+      expect(saveRes!.commitState).toBe('REJECTED');
+      expect(saveRes!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+      expect(patchSpy).not.toHaveBeenCalled();
+
+      // Verify triggerMaterialization() is rejected with 0 network calls
+      const matSpy = vi.spyOn(translationApi, 'requestJobMaterialization');
+      let matRes: any;
+      await act(async () => {
+        matRes = await result.current.triggerMaterialization();
+      });
+      expect(matRes).toBeNull();
+      expect(matSpy).not.toHaveBeenCalled();
+    });
+
+    // 3. Segment revision mismatch attempt #1 with recursive detail deferred => materialize 0 network during pending
+    it('3. Segment revision mismatch attempt #1 closes gate immediately: materialize and save issue 0 network calls while recursive recovery is pending', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // Initial refetch detail rev 2
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: 2, reviewRevision: 2, materializedRevision: 1 },
+      });
+      // Segments returns rev 1 (mismatch attempt #1)
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: mockSegments,
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 1,
+      });
+
+      // Recursive refetchDetail() detail call is deferred
+      let resolveRecursiveDetail: (val: any) => void;
+      const recursiveDetailPromise = new Promise((res) => {
+        resolveRecursiveDetail = res;
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockImplementationOnce(
+        () => recursiveDetailPromise as any,
+      );
+
+      let refetchPromise: Promise<ReconciliationOutcome>;
+      act(() => {
+        refetchPromise = result.current.refetchDetail();
+      });
+
+      // Flush microtasks so refetchDetail reaches segments mismatch and calls recursive refetch
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      // Gate MUST already be fail-closed during the pending recursive recovery!
+      expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+      expect(result.current.workspaceMode?.canMaterialize).toBe(false);
+
+      // Verify triggerMaterialization() is blocked with 0 network calls
+      const matSpy = vi.spyOn(translationApi, 'requestJobMaterialization');
+      let matRes: any;
+      await act(async () => {
+        matRes = await result.current.triggerMaterialization();
+      });
+      expect(matRes).toBeNull();
+      expect(matSpy).not.toHaveBeenCalled();
+
+      // Verify saveSegment() is blocked with 0 network calls
+      const patchSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+      let saveRes: SaveSegmentResult;
+      await act(async () => {
+        saveRes = await result.current.saveSegment('seg-1', 'Attempt text');
+      });
+      expect(saveRes!.commitState).toBe('REJECTED');
+      expect(saveRes!.workspaceState).toBe('RECONCILIATION_REQUIRED');
+      expect(patchSpy).not.toHaveBeenCalled();
+
+      // Clean up deferred promise
+      await act(async () => {
+        resolveRecursiveDetail!({
+          ...mockComicJobDetail,
+          job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
+        });
+      });
+    });
+
+    // 4. BEST_EFFORT invalid workspaceRevision => save/materialize 0 network
+    it('4. BEST_EFFORT invalid workspaceRevision closes gate fail-closed: save and materialize issue 0 network calls', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // Server returns invalid negative workspaceRevision under BEST_EFFORT
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce({
+        ...mockComicJobDetail,
+        job: { ...mockComicJobDetail.job, workspaceRevision: -5 },
+      });
+
+      let outcome: ReconciliationOutcome;
+      await act(async () => {
+        outcome = await result.current.refetchDetail();
+      });
+
+      expect(outcome!).toBe('FAILED');
+      expect(result.current.status).toBe('error');
+      expect(result.current.fatalError?.code).toBe('INVALID_WORKSPACE_REVISION');
+      // Gate MUST be closed fail-closed even under BEST_EFFORT!
+      expect(result.current.workspaceMode?.mode).toBe('RECONCILIATION_REQUIRED');
+      expect(result.current.workspaceMode?.canEdit).toBe(false);
+      expect(result.current.workspaceMode?.canMaterialize).toBe(false);
+
+      // Verify saveSegment() is rejected with 0 network calls
+      const patchSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+      let saveRes: SaveSegmentResult;
+      await act(async () => {
+        saveRes = await result.current.saveSegment('seg-1', 'New Draft');
+      });
+      expect(saveRes!.commitState).toBe('REJECTED');
+      expect(patchSpy).not.toHaveBeenCalled();
+
+      // Verify triggerMaterialization() is rejected with 0 network calls
+      const matSpy = vi.spyOn(translationApi, 'requestJobMaterialization');
+      let matRes: any;
+      await act(async () => {
+        matRes = await result.current.triggerMaterialization();
+      });
+      expect(matRes).toBeNull();
+      expect(matSpy).not.toHaveBeenCalled();
+    });
+  });
 });
 

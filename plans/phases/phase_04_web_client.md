@@ -112,7 +112,7 @@
     - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).
     - [/] Manga Translation Studio (#149) [Prerequisites #147, #148, #155, #157, #159, #162, #178 Complete]:
       - [x] **RED 0: Route Foundation, Central State Orchestration & Request Identity** (COMPLETED & MERGED `main@153b3d1`, PR #182): Tuyến đường `/studio/ai/jobs/:id`, hook `useMangaReviewStudio` điều phối trạng thái trung tâm, full-coherence fail-closed gates, canonical `VERSION_CONFLICT` mutation lock, monotonic revision guards, same-scope retry isolation, transient 404 lifecycle, 123/123 foundation tests pass.
-      - [ ] **RED 1: Page Navigator** (NEXT): Chuyển trang `1..resultPageCount`, bounded window prefetching (`?pageNumber=N` & range), đồng bộ URL params / active page state.
+      - [/] **RED 1: Page Navigator** (IN PROGRESS - AUDIT ITERATION): Chuyển trang `1..resultPageCount`, bounded preview window ($\le 5$ trang), URL SSoT `?page=N`, phân tách read-model `pageSegments`, dọn state khi chuyển trang, bàn phím điều hướng fail-safe.
       - [ ] **RED 2: Canvas / OCR Bounding Box Geometry**: Trình xem ảnh gốc vs ảnh đã dịch, tỷ lệ co giãn phần trăm DOM fail-closed, hiển thị bounding box OCR.
       - [ ] **RED 3: Translation Editor / Draft / OCC**: Chỉnh sửa bản dịch từng ô thoại, lưu phân đoạn với OCC `VERSION_CONFLICT`, draft isolation.
       - [ ] **RED 4: Verification Interactions**: Duyệt từng ô thoại, đánh dấu `isHumanVerified`, hotkeys xác minh.

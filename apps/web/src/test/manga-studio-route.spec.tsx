@@ -3,13 +3,41 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import React from 'react';
 import MangaStudioJobPage from '../app/(site)/(studio)/studio/ai/jobs/[jobId]/page';
 import * as studioHook from '../lib/studio/use-manga-review-studio';
-import { TranslationJobStatus, MediaFormat } from '@omninovel/shared';
+import { TranslationJobStatus, MediaFormat, TranslationSegmentDto } from '@omninovel/shared';
 
 vi.mock('../lib/studio/use-manga-review-studio');
+
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+  }),
+  useSearchParams: () => new URLSearchParams('page=1'),
+  usePathname: () => '/studio/ai/jobs/job-route-test-123',
+}));
 
 describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
   const mockJobId = 'job-route-test-123';
   const mockParams = Promise.resolve({ jobId: mockJobId });
+
+  const mockDefaultSegments: TranslationSegmentDto[] = [
+    {
+      id: 'seg-1',
+      jobId: mockJobId,
+      pageNumber: 1,
+      anchorBlockId: null,
+      sortOrder: 1,
+      bboxX: 10,
+      bboxY: 10,
+      bboxW: 50,
+      bboxH: 20,
+      rawText: 'ヤッホー',
+      translatedText: 'Yoohoo',
+      confidence: 0.99,
+      isHumanVerified: false,
+      version: 1,
+    },
+  ];
 
   const defaultMockReturn: studioHook.UseMangaReviewStudioReturn = {
     status: 'ready',
@@ -48,24 +76,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
         blockCount: null,
       },
     },
-    segments: [
-      {
-        id: 'seg-1',
-        jobId: mockJobId,
-        pageNumber: 1,
-        anchorBlockId: null,
-        sortOrder: 1,
-        bboxX: 10,
-        bboxY: 10,
-        bboxW: 50,
-        bboxH: 20,
-        rawText: 'ヤッホー',
-        translatedText: 'Yoohoo',
-        confidence: 0.99,
-        isHumanVerified: false,
-        version: 1,
-      },
-    ],
+    segments: mockDefaultSegments,
     segmentsSyncStatus: 'SYNCED',
     previews: null,
     workspaceMode: {
@@ -77,8 +88,22 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     },
     pageCountInfo: { pageCount: 3, isAvailable: true },
     freshness: { isFresh: true, needsMaterialize: false, status: 'FRESH' },
+    isGateClosed: false,
+    previewWindow: null,
+    previewWindowLoading: false,
+    previewWindowError: null,
+    pageSegments: mockDefaultSegments,
+    pageSegmentsPagination: null,
+    pageSegmentsLoading: false,
+    pageSegmentsError: null,
     currentPage: 1,
     setCurrentPage: vi.fn(),
+    goToPage: vi.fn(),
+    nextPage: vi.fn(),
+    prevPage: vi.fn(),
+    retryPreviewWindow: vi.fn(),
+    retryPageSegments: vi.fn(),
+    goToPageSegmentsPage: vi.fn(),
     selectedSegmentId: null,
     setSelectedSegmentId: vi.fn(),
     conflictState: null,
@@ -344,15 +369,17 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
   });
 
   it('does NOT fallback null pageNumber to page 1 in segments list', async () => {
+    const customSegs = [
+      {
+        ...mockDefaultSegments[0],
+        pageNumber: null,
+        sortOrder: 42,
+      },
+    ];
     vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
       ...defaultMockReturn,
-      segments: [
-        {
-          ...defaultMockReturn.segments[0],
-          pageNumber: null,
-          sortOrder: 42,
-        },
-      ],
+      segments: customSegs,
+      pageSegments: customSegs,
     });
 
     await act(async () => {
@@ -426,14 +453,16 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
   });
 
   it('renders "Chưa xác minh" badge when segmentsSyncStatus is not SYNCED, even if segment has isHumanVerified: true', async () => {
+    const unverifiedSegs = [
+      {
+        ...mockDefaultSegments[0],
+        isHumanVerified: true,
+      },
+    ];
     vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
       ...defaultMockReturn,
-      segments: [
-        {
-          ...defaultMockReturn.segments[0],
-          isHumanVerified: true,
-        },
-      ],
+      segments: unverifiedSegs,
+      pageSegments: unverifiedSegs,
       segmentsSyncStatus: 'FAILED',
     });
 

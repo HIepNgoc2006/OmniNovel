@@ -15,7 +15,7 @@
     - TanStack Query v5 quản lý Server State & SWR Caching.
     - WebSocket Gateway (`/ws/ai`) xác thực qua `socket.handshake.auth.token` và tự động reconnect khi token xoay vòng.
     - Gamification: Tiêu thụ endpoint chuẩn `/gamification/progression` và `UserProgressionResponse` từ `@omninovel/shared`.
-- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core + #162 Manga Clean Bases + #166 WebSocket Security + #159 Manga Previews + #157 Manga Re-render + #155 Preview API + #178 Result Page Count HOÀN TẤT; Phase 4D.5 Manga Studio #149 RED 0 Foundation MERGED tại main@153b3d1 - Sẵn sàng mở RED 1 Page Navigator)
+- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core + #162 Manga Clean Bases + #166 WebSocket Security + #159 Manga Previews + #157 Manga Re-render + #155 Preview API + #178 Result Page Count HOÀN TẤT; Phase 4D.5 Manga Studio #149 RED 0 Foundation MERGED tại main@153b3d1; RED 1 Page Navigator MERGED tại main@2a0d7ae - Sẵn sàng mở RED 2 Canvas / OCR Bounding Box Geometry)
 
 ---
 
@@ -112,7 +112,7 @@
     - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).
     - [/] Manga Translation Studio (#149) [Prerequisites #147, #148, #155, #157, #159, #162, #178 Complete]:
       - [x] **RED 0: Route Foundation, Central State Orchestration & Request Identity** (COMPLETED & MERGED `main@153b3d1`, PR #182): Tuyến đường `/studio/ai/jobs/:id`, hook `useMangaReviewStudio` điều phối trạng thái trung tâm, full-coherence fail-closed gates, canonical `VERSION_CONFLICT` mutation lock, monotonic revision guards, same-scope retry isolation, transient 404 lifecycle, 123/123 foundation tests pass.
-      - [/] **RED 1: Page Navigator** (IN PROGRESS - AUDIT ITERATION): Chuyển trang `1..resultPageCount`, bounded preview window ($\le 5$ trang), URL SSoT `?page=N`, phân tách read-model `pageSegments`, dọn state khi chuyển trang, bàn phím điều hướng fail-safe.
+      - [x] **RED 1: Page Navigator** (COMPLETED & MERGED `main@2a0d7ae`, PR #183): Chuyển trang `1..resultPageCount`, bounded preview window ($\le 5$ trang), URL SSoT `?page=N`, phân tách read-model `pageSegments`, immediate cache invalidation on authoritative revision/status transition, dọn state khi chuyển trang, bàn phím điều hướng fail-safe, 48/48 RED 1 tests pass (231/231 total Vitest).
       - [ ] **RED 2: Canvas / OCR Bounding Box Geometry**: Trình xem ảnh gốc vs ảnh đã dịch, tỷ lệ co giãn phần trăm DOM fail-closed, hiển thị bounding box OCR.
       - [ ] **RED 3: Translation Editor / Draft / OCC**: Chỉnh sửa bản dịch từng ô thoại, lưu phân đoạn với OCC `VERSION_CONFLICT`, draft isolation.
       - [ ] **RED 4: Verification Interactions**: Duyệt từng ô thoại, đánh dấu `isHumanVerified`, hotkeys xác minh.

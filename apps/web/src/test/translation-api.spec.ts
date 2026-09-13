@@ -21,19 +21,32 @@ describe('Translation API Client & Error Parsing (#149 RED 0)', () => {
       expect(spy).toHaveBeenCalledWith('/ai/jobs/job-1');
     });
 
-    it('fetchTranslationJobSegments calls GET /ai/jobs/:id/segments with query params', async () => {
+    it('fetchTranslationJobSegments calls GET /ai/jobs/:id/segments with positional params', async () => {
       const spy = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { data: [] } } as any);
-      await fetchTranslationJobSegments('job-1', 2, 25);
+      await fetchTranslationJobSegments('job-1', 2, 25, 4);
       expect(spy).toHaveBeenCalledWith('/ai/jobs/job-1/segments', {
-        params: { page: 2, limit: 25 },
+        params: { page: 2, limit: 25, pageNumber: 4 },
       });
     });
 
-    it('fetchTranslationJobPreviews calls GET /ai/jobs/:id/previews with bounded query', async () => {
+    it('fetchTranslationJobSegments calls GET /ai/jobs/:id/segments with query object including pageNumber filter (#149 RED 1)', async () => {
+      const spy = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { data: [] } } as any);
+      await fetchTranslationJobSegments('job-1', { page: 1, limit: 50, pageNumber: 3 });
+      expect(spy).toHaveBeenCalledWith('/ai/jobs/job-1/segments', {
+        params: { page: 1, limit: 50, pageNumber: 3 },
+      });
+    });
+
+    it('fetchTranslationJobPreviews calls GET /ai/jobs/:id/previews with bounded query (pageNumber or fromPage/toPage)', async () => {
       const spy = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { sourceAssets: [], resultAssets: [] } } as any);
       await fetchTranslationJobPreviews('job-1', { pageNumber: 3 });
       expect(spy).toHaveBeenCalledWith('/ai/jobs/job-1/previews', {
         params: { pageNumber: 3 },
+      });
+
+      await fetchTranslationJobPreviews('job-1', { fromPage: 1, toPage: 5 });
+      expect(spy).toHaveBeenCalledWith('/ai/jobs/job-1/previews', {
+        params: { fromPage: 1, toPage: 5 },
       });
     });
 

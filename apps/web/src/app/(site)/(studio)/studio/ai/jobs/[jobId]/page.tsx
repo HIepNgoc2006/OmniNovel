@@ -2,7 +2,15 @@
 
 import React, { use } from 'react';
 import Link from 'next/link';
+import { useSearchParams, useRouter, usePathname } from 'next/navigation';
 import { useMangaReviewStudio } from '@/lib/studio/use-manga-review-studio';
+import {
+  parsePageQueryParam,
+  canNavigatePrev,
+  canNavigateNext,
+  clampPageNumber,
+  isEditableElement,
+} from '@/lib/studio/manga-page-navigator';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -24,6 +32,66 @@ interface PageProps {
 export default function MangaStudioJobPage({ params }: PageProps) {
   const { jobId } = use(params);
   const studio = useMangaReviewStudio(jobId);
+  const searchParams = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+
+  // Navigation handler
+  const navigateToPage = React.useCallback(
+    (targetPage: number) => {
+      const maxPages = studio.pageCountInfo.pageCount;
+      const clamped = clampPageNumber(targetPage, maxPages);
+      if (clamped !== studio.currentPage) {
+        router.push(`${pathname}?page=${clamped}`);
+        studio.goToPage(clamped);
+      }
+    },
+    [pathname, router, studio]
+  );
+
+  // URL SSoT Synchronization
+  React.useEffect(() => {
+    if (studio.status !== 'ready' || studio.workspaceMode?.mode !== 'REVIEWABLE') {
+      return;
+    }
+    const maxPages = studio.pageCountInfo.pageCount;
+    if (!maxPages) return;
+
+    const rawParam = searchParams.get('page');
+    const { page, isCanonical } = parsePageQueryParam(rawParam, maxPages);
+
+    if (!isCanonical) {
+      router.replace(`${pathname}?page=${page}`);
+    }
+
+    if (studio.currentPage !== page) {
+      studio.goToPage(page);
+    }
+  }, [searchParams, pathname, router, studio]);
+
+  // Keyboard navigation
+  React.useEffect(() => {
+    if (studio.status !== 'ready' || studio.workspaceMode?.mode !== 'REVIEWABLE') {
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (isEditableElement(event.target)) return;
+
+      const maxPages = studio.pageCountInfo.pageCount;
+      if (event.key === 'ArrowRight' && canNavigateNext(studio.currentPage, maxPages)) {
+        event.preventDefault();
+        navigateToPage(studio.currentPage + 1);
+      } else if (event.key === 'ArrowLeft' && canNavigatePrev(studio.currentPage)) {
+        event.preventDefault();
+        navigateToPage(studio.currentPage - 1);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [studio.status, studio.workspaceMode?.mode, studio.currentPage, studio.pageCountInfo.pageCount, navigateToPage]);
+
 
   // 1. Loading & Initializing state
   if (studio.status === 'initializing' || studio.status === 'loading') {
@@ -546,41 +614,119 @@ export default function MangaStudioJobPage({ params }: PageProps) {
           </div>
 
           {/* Page Navigator Navigation Bar */}
-          <div className="flex items-center justify-center gap-2 pt-3 border-t border-slate-800">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={studio.currentPage <= 1}
-              onClick={() => studio.setCurrentPage(Math.max(1, studio.currentPage - 1))}
-            >
-              Trang Trước
-            </Button>
-            <span className="text-xs font-semibold text-slate-300 px-3">
-              Trang {studio.currentPage}
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={
-                studio.pageCountInfo.pageCount
-                  ? studio.currentPage >= studio.pageCountInfo.pageCount
-                  : true
-              }
-              onClick={() => studio.setCurrentPage(studio.currentPage + 1)}
-            >
-              Trang Tiếp
-            </Button>
+          <div className="pt-3 border-t border-slate-800 space-y-3">
+            {/* Local Window Preview Error Banner (Amendment #1) */}
+            {studio.previewWindowError && (
+              <div
+                data-testid="window-error-banner"
+                className="p-3 bg-rose-950/40 border border-rose-500/40 rounded-2xl flex items-center justify-between gap-3 text-xs text-rose-300"
+              >
+                <div className="flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                  <span>Không thể tải hình ảnh xem trước cho trang hiện tại.</span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => studio.retryPreviewWindow()}
+                  className="h-7 px-2.5 text-xs text-rose-200 hover:text-white hover:bg-rose-500/20"
+                >
+                  <RefreshCw className="w-3 h-3 mr-1" />
+                  Thử lại tải ảnh
+                </Button>
+              </div>
+            )}
+
+            {/* Bounded Thumbnail Strip (<= 5 thumbnails) */}
+            {studio.previewWindow && (
+              <div
+                data-testid="thumbnail-strip"
+                className="py-1 px-2 flex items-center justify-center gap-2 overflow-x-auto"
+              >
+                {Array.from(
+                  { length: studio.previewWindow.toPage - studio.previewWindow.fromPage + 1 },
+                  (_, idx) => studio.previewWindow!.fromPage + idx
+                ).map((p) => {
+                  const isActive = p === studio.currentPage;
+                  const resultThumb = studio.previewWindow?.resultAssets.find((a) => a.pageNumber === p);
+                  const sourceThumb = studio.previewWindow?.sourceAssets.find((a) => a.pageNumber === p);
+                  const thumbUrl = resultThumb?.url || sourceThumb?.url;
+
+                  return (
+                    <button
+                      key={p}
+                      type="button"
+                      data-testid={`thumbnail-item-${p}`}
+                      onClick={() => navigateToPage(p)}
+                      className={`relative group flex flex-col items-center justify-center w-14 h-20 rounded-xl border text-xs transition-all cursor-pointer overflow-hidden ${
+                        isActive
+                          ? 'border-red-500 ring-2 ring-red-500/40 bg-red-950/30 text-white'
+                          : 'border-slate-800 bg-slate-950/60 text-slate-400 hover:border-slate-700 hover:text-slate-200'
+                      }`}
+                    >
+                      {thumbUrl ? (
+                        <img
+                          src={thumbUrl}
+                          alt={`Trang ${p}`}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <span className="font-semibold text-xs">P.{p}</span>
+                      )}
+                      <div
+                        className={`absolute bottom-0 inset-x-0 text-[10px] font-mono py-0.5 text-center ${
+                          isActive ? 'bg-red-600 text-white font-bold' : 'bg-slate-900/80 text-slate-400'
+                        }`}
+                      >
+                        {p}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* Main Navigation Controls */}
+            <div className="flex items-center justify-center gap-3">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canNavigatePrev(studio.currentPage)}
+                onClick={() => navigateToPage(studio.currentPage - 1)}
+              >
+                Trang Trước
+              </Button>
+              <span className="text-xs font-semibold text-slate-300 px-3">
+                Trang {studio.currentPage} / {studio.pageCountInfo.pageCount ?? '—'}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={!canNavigateNext(studio.currentPage, studio.pageCountInfo.pageCount)}
+                onClick={() => navigateToPage(studio.currentPage + 1)}
+              >
+                Trang Tiếp
+              </Button>
+            </div>
           </div>
         </div>
 
         {/* Right Panel: Segments List & Translation Editor (Col 4) */}
         <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 flex flex-col">
-          <h3 className="text-sm font-bold text-white border-b border-slate-800 pb-3">
-            Danh Sách Ô Thoại (Segments)
-          </h3>
+          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+            <h3 className="text-sm font-bold text-white">
+              Danh Sách Ô Thoại (Segments)
+            </h3>
+            {studio.pageSegmentsLoading && (
+              <RefreshCw className="w-3.5 h-3.5 text-slate-400 animate-spin" />
+            )}
+          </div>
 
           <div className="flex-1 overflow-y-auto space-y-3 max-h-[500px] pr-1">
-            {studio.segments.map((seg) => {
+            {(studio.pageSegments && studio.pageSegments.length > 0
+              ? studio.pageSegments
+              : studio.segments
+            ).map((seg) => {
               const hasPending = Boolean(studio.pendingUnknownMutations[seg.id]);
               const segConflict = studio.conflictStates[seg.id];
               return (

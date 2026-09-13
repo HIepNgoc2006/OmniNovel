@@ -7,6 +7,8 @@ import {
   MaterializationRequestResponse,
   MaterializationRequestStatus,
   UpdateTranslationSegmentRequest,
+  ReviewAssetDto,
+  PaginatedResponse,
 } from '@omninovel/shared';
 import {
   fetchTranslationJobDetail,
@@ -26,6 +28,11 @@ import {
   WorkspaceModeResult,
   MaterializationFreshnessResult,
 } from './manga-studio-policy';
+import {
+  computeBoundedPreviewWindow,
+  clampPageNumber,
+  BoundedPreviewWindow,
+} from './manga-page-navigator';
 import {
   SegmentCommitState,
   WorkspaceSyncState,
@@ -70,6 +77,20 @@ export interface AuthoritativeSyncProof {
   outcome: 'REVIEW_SYNCED' | 'STATE_CHANGED';
 }
 
+export interface BoundedPreviewWindowState {
+  fromPage: number;
+  toPage: number;
+  size: number;
+  sourceAssets: ReviewAssetDto[];
+  resultAssets: ReviewAssetDto[];
+  workspaceRevision: number;
+}
+export interface PageSegmentsPagination {
+  page: number;
+  limit: number;
+  totalItems: number;
+  totalPages: number;
+}
 export interface UseMangaReviewStudioReturn {
   status: 'initializing' | 'auth_required' | 'loading' | 'ready' | 'error';
   jobDetail: TranslationJobReviewDetailResponse | null;
@@ -79,10 +100,24 @@ export interface UseMangaReviewStudioReturn {
   workspaceMode: WorkspaceModeResult | null;
   pageCountInfo: { pageCount: number | null; isAvailable: boolean };
   freshness: MaterializationFreshnessResult;
+  isGateClosed: boolean;
   currentPage: number;
   setCurrentPage: (page: number) => void;
   selectedSegmentId: string | null;
   setSelectedSegmentId: (id: string | null) => void;
+  // RED 1 Page Navigator additions
+  previewWindow: BoundedPreviewWindowState | null;
+  previewWindowLoading: boolean;
+  previewWindowError: string | null;
+  pageSegments: TranslationSegmentDto[];
+  pageSegmentsPagination: PageSegmentsPagination | null;
+  pageSegmentsLoading: boolean;
+  pageSegmentsError: string | null;
+  goToPage: (page: number) => void;
+  nextPage: () => void;
+  prevPage: () => void;
+  retryPreviewWindow: () => Promise<void>;
+  retryPageSegments: () => Promise<void>;
   conflictState: ConflictState | null;
   conflictStates: Record<string, ConflictState>;
   pendingUnknownMutations: Record<string, PendingUnknownMutation>;
@@ -159,6 +194,19 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   const [previews, setPreviews] =
     useState<TranslationJobPreviewsResponse | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
+  const currentPageRef = useRef(1);
+
+  // RED 1: Page Navigator states
+  const [previewWindow, setPreviewWindow] = useState<BoundedPreviewWindowState | null>(null);
+  const [previewWindowLoading, setPreviewWindowLoading] = useState(false);
+  const [previewWindowError, setPreviewWindowError] = useState<string | null>(null);
+
+  const [pageSegments, setPageSegments] = useState<TranslationSegmentDto[]>([]);
+  const [pageSegmentsPagination, setPageSegmentsPagination] = useState<PageSegmentsPagination | null>(null);
+  const [pageSegmentsLoading, setPageSegmentsLoading] = useState(false);
+  const [pageSegmentsError, setPageSegmentsError] = useState<string | null>(null);
+
+  const pageNavSeqRef = useRef(0);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
 
   // Synchronous State / Ref Mirrors
@@ -538,7 +586,14 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       setFatalError(null);
       clearAllErrors();
       authoritativeProofRef.current = null;
-      setCurrentPage(1);
+      // RED 1: currentPage is UI-owned and preserved on same-scope reset
+      setPreviewWindow(null);
+      setPreviewWindowLoading(false);
+      setPreviewWindowError(null);
+      setPageSegments([]);
+      setPageSegmentsPagination(null);
+      setPageSegmentsLoading(false);
+      setPageSegmentsError(null);
       coherenceReconcileEpochRef.current = 0;
       // NOTE: Watermark (latestConfirmedWorkspaceRevisionRef) and latestAppliedDetailSeqRef
       // are deliberately NOT reset here! They belong to the scope boundary, NOT server owned state reset!
@@ -574,7 +629,14 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         resetPreviewBreaker();
       }
       setMaterializationState(null);
-      setCurrentPage(1);
+      // RED 1: currentPage is UI-owned and preserved on same-scope reset
+      setPreviewWindow(null);
+      setPreviewWindowLoading(false);
+      setPreviewWindowError(null);
+      setPageSegments([]);
+      setPageSegmentsPagination(null);
+      setPageSegmentsLoading(false);
+      setPageSegmentsError(null);
     },
     [
       replaceSegments,
@@ -1044,6 +1106,38 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
                 setPreviews(prevRes);
                 clearPreviewsSyncError();
 
+                // RED 1: Initialize bounded preview window and page segments for currentPage
+                const pageCount = computeAuthoritativePageCount(detail.reviewSummary).pageCount;
+                const win = computeBoundedPreviewWindow(currentPageRef.current, pageCount);
+                if (win) {
+                  setPreviewWindow({
+                    fromPage: win.fromPage,
+                    toPage: win.toPage,
+                    size: win.size,
+                    sourceAssets: prevRes.sourceAssets || [],
+                    resultAssets: prevRes.resultAssets || [],
+                    workspaceRevision: prevRes.workspaceRevision,
+                  });
+                } else {
+                  setPreviewWindow(null);
+                }
+                const curPage = currentPageRef.current;
+                const initialPageSegs = (segRes.data || []).filter(
+                  (s) => s.pageNumber === curPage || s.pageNumber === undefined || s.pageNumber === null
+                );
+                setPageSegments(initialPageSegs);
+                const segsMeta = (segRes as any).meta ?? segRes.pagination;
+                setPageSegmentsPagination({
+                  page: segsMeta?.page ?? 1,
+                  limit: 50,
+                  totalItems:
+                    segsMeta?.totalPages && segsMeta.totalPages > 1
+                      ? (segsMeta.totalItems ?? segsMeta.total ?? initialPageSegs.length)
+                      : initialPageSegs.length,
+                  totalPages: segsMeta?.totalPages ?? 1,
+                });
+
+
                 // Round 9 Lock 4: Adjudicate all pending VERSION_CONFLICT locks during authoritative finalization
                 const conflictsResolved = adjudicatePendingVersionConflicts(segRes.data || []);
                 if (!conflictsResolved) {
@@ -1357,7 +1451,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     clearOperationError();
     setMaterializationState(null);
     setIsMaterializing(false);
-    setCurrentPage(1);
+    // RED 1: currentPage is UI-owned and preserved on reconcile
 
     await loadJobData(newGen, currentJob);
   }, [loadJobData, clearOperationError, replaceAuthoritativeGate, replaceSegments, replaceJobDetail]);
@@ -2404,6 +2498,185 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       ? materializationState.status
       : null;
 
+  const loadPageData = useCallback(
+    async (
+      targetPage: number,
+      explicitGen?: number,
+      explicitDetail?: TranslationJobReviewDetailResponse | null,
+    ) => {
+      const currentGen = explicitGen ?? generationRef.current;
+      const currentJob = activeJobIdRef.current;
+      const detail = explicitDetail ?? jobDetailRef.current;
+
+      if (!currentJob || !detail) {
+        return;
+      }
+
+      const pageCount = computeAuthoritativePageCount(detail.reviewSummary).pageCount;
+      const win = computeBoundedPreviewWindow(targetPage, pageCount);
+
+      if (!win) {
+        setPreviewWindow(null);
+        setPageSegments([]);
+        setPageSegmentsPagination(null);
+        return;
+      }
+
+      const navSeq = ++pageNavSeqRef.current;
+
+      setPreviewWindowLoading(true);
+      setPreviewWindowError(null);
+
+      setPageSegmentsLoading(true);
+      setPageSegmentsError(null);
+
+      // 1. Fetch bounded preview window
+      fetchTranslationJobPreviews(currentJob, {
+        fromPage: win.fromPage,
+        toPage: win.toPage,
+      })
+        .then((prevRes) => {
+          if (
+            generationRef.current !== currentGen ||
+            activeJobIdRef.current !== currentJob ||
+            pageNavSeqRef.current !== navSeq
+          ) {
+            return;
+          }
+
+          // Amendment #1: Check workspace revision against current detail
+          const currentRev = jobDetailRef.current?.job.workspaceRevision;
+          if (currentRev !== undefined && prevRes.workspaceRevision !== currentRev) {
+            // Global coherence failure!
+            setPreviewWindow(null);
+            setPreviewWindowLoading(false);
+            authoritativeProofRef.current = null;
+            replaceAuthoritativeGate(false, {
+              mode: 'RECONCILIATION_REQUIRED',
+              canPreview: false,
+              canEdit: false,
+              canMaterialize: false,
+              message:
+                'Phát hiện lệch phiên bản không gian làm việc giữa trang xem trước và máy chủ.',
+            });
+            reconcileAuthoritativeWorkspace();
+            return;
+          }
+
+          setPreviewWindow({
+            fromPage: win.fromPage,
+            toPage: win.toPage,
+            size: win.size,
+            sourceAssets: prevRes.sourceAssets || [],
+            resultAssets: prevRes.resultAssets || [],
+            workspaceRevision: prevRes.workspaceRevision,
+          });
+          setPreviewWindowLoading(false);
+        })
+        .catch((_err) => {
+          if (
+            generationRef.current !== currentGen ||
+            activeJobIdRef.current !== currentJob ||
+            pageNavSeqRef.current !== navSeq
+          ) {
+            return;
+          }
+          // Amendment #1: Navigator-local failure! Leaves authoritative gate OPEN!
+          setPreviewWindow(null);
+          setPreviewWindowLoading(false);
+          setPreviewWindowError('PREVIEWS_WINDOW_FAILED');
+        });
+
+      // 2. Fetch page segments
+      fetchTranslationJobSegments(currentJob, {
+        page: 1,
+        limit: 50,
+        pageNumber: targetPage,
+      })
+        .then((segRes) => {
+          if (
+            generationRef.current !== currentGen ||
+            activeJobIdRef.current !== currentJob ||
+            pageNavSeqRef.current !== navSeq
+          ) {
+            return;
+          }
+          const segsMeta = (segRes as any).pagination ?? (segRes as any).meta;
+          setPageSegments(segRes.data || []);
+          setPageSegmentsPagination(
+            segsMeta
+              ? {
+                  page: segsMeta.page ?? 1,
+                  limit: segsMeta.limit ?? 50,
+                  totalItems: segsMeta.totalItems ?? segsMeta.total ?? (segRes.data || []).length,
+                  totalPages: segsMeta.totalPages ?? 1,
+                }
+              : null
+          );
+          setPageSegmentsLoading(false);
+        })
+        .catch((_err) => {
+          if (
+            generationRef.current !== currentGen ||
+            activeJobIdRef.current !== currentJob ||
+            pageNavSeqRef.current !== navSeq
+          ) {
+            return;
+          }
+          setPageSegments([]);
+          setPageSegmentsPagination(null);
+          setPageSegmentsLoading(false);
+          setPageSegmentsError('SEGMENTS_PAGE_FAILED');
+        });
+    },
+    [replaceAuthoritativeGate, reconcileAuthoritativeWorkspace],
+  );
+
+  const goToPage = useCallback(
+    (targetPage: number) => {
+      const maxPage = jobDetailRef.current
+        ? computeAuthoritativePageCount(jobDetailRef.current.reviewSummary).pageCount
+        : null;
+      const clamped = clampPageNumber(targetPage, maxPage);
+
+      // Amendment #4: Page switch clears old page selection
+      setSelectedSegmentId(null);
+
+      setCurrentPage(clamped);
+      currentPageRef.current = clamped;
+
+      loadPageData(clamped);
+    },
+    [loadPageData],
+  );
+
+  const setCurrentPageWrapper = useCallback(
+    (page: number) => {
+      goToPage(page);
+    },
+    [goToPage],
+  );
+
+  const nextPage = useCallback(() => {
+    goToPage(currentPageRef.current + 1);
+  }, [goToPage]);
+
+  const prevPage = useCallback(() => {
+    goToPage(currentPageRef.current - 1);
+  }, [goToPage]);
+
+  const retryPreviewWindow = useCallback(async () => {
+    await loadPageData(currentPageRef.current);
+  }, [loadPageData]);
+
+  const retryPageSegments = useCallback(async () => {
+    await loadPageData(currentPageRef.current);
+  }, [loadPageData]);
+
+  const isGateClosed =
+    authoritativeSyncError ||
+    overrideWorkspaceMode?.mode === 'RECONCILIATION_REQUIRED';
+
   return {
     status,
     jobDetail,
@@ -2413,10 +2686,23 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     workspaceMode,
     pageCountInfo,
     freshness,
+    isGateClosed,
     currentPage,
-    setCurrentPage,
+    setCurrentPage: setCurrentPageWrapper,
     selectedSegmentId,
     setSelectedSegmentId,
+    previewWindow,
+    previewWindowLoading,
+    previewWindowError,
+    pageSegments,
+    pageSegmentsPagination,
+    pageSegmentsLoading,
+    pageSegmentsError,
+    goToPage,
+    nextPage,
+    prevPage,
+    retryPreviewWindow,
+    retryPageSegments,
     conflictState,
     conflictStates,
     pendingUnknownMutations,

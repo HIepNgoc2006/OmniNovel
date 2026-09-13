@@ -1,0 +1,866 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { renderHook, render, screen, fireEvent, act, waitFor } from '@testing-library/react';
+import React from 'react';
+import {
+  TranslationJobStatus,
+  MediaFormat,
+  TranslationJobReviewDetailResponse,
+  TranslationSegmentDto,
+} from '@omninovel/shared';
+import {
+  computeBoundedPreviewWindow,
+  parsePageQueryParam,
+  canNavigatePrev,
+  canNavigateNext,
+  clampPageNumber,
+  isEditableElement,
+} from '../lib/studio/manga-page-navigator';
+import { useMangaReviewStudio } from '../lib/studio/use-manga-review-studio';
+import MangaStudioJobPage from '../app/(site)/(studio)/studio/ai/jobs/[jobId]/page';
+import * as translationApi from '../lib/api/translation';
+import * as authContext from '../lib/auth/auth-context';
+
+let currentSearchParams = new URLSearchParams();
+const mockPush = vi.fn();
+const mockReplace = vi.fn();
+const mockPathname = '/studio/ai/jobs/job-nav-123';
+
+vi.mock('next/navigation', () => ({
+  useSearchParams: () => currentSearchParams,
+  useRouter: () => ({
+    push: mockPush,
+    replace: mockReplace,
+  }),
+  usePathname: () => mockPathname,
+}));
+
+
+describe('Manga Page Navigator Policy & Pure Functions (#149 RED 1)', () => {
+  describe('1. Bounded Preview Window Calculation (<= 5 pages, contiguous, centered)', () => {
+    it('returns null when resultPageCount is missing, 0, or negative', () => {
+      expect(computeBoundedPreviewWindow(1, null)).toBeNull();
+      expect(computeBoundedPreviewWindow(1, undefined)).toBeNull();
+      expect(computeBoundedPreviewWindow(1, 0)).toBeNull();
+      expect(computeBoundedPreviewWindow(1, -5)).toBeNull();
+    });
+
+    it('returns full range [1..N] when N <= 5', () => {
+      // N = 3
+      expect(computeBoundedPreviewWindow(1, 3)).toEqual({ fromPage: 1, toPage: 3, size: 3 });
+      expect(computeBoundedPreviewWindow(2, 3)).toEqual({ fromPage: 1, toPage: 3, size: 3 });
+      expect(computeBoundedPreviewWindow(3, 3)).toEqual({ fromPage: 1, toPage: 3, size: 3 });
+
+      // N = 5
+      expect(computeBoundedPreviewWindow(4, 5)).toEqual({ fromPage: 1, toPage: 5, size: 5 });
+    });
+
+    it('centers window around currentPage when possible and shifts at edges for N = 20', () => {
+      const N = 20;
+      // Start edges: pages 1, 2, 3 should all clamp to [1..5]
+      expect(computeBoundedPreviewWindow(1, N)).toEqual({ fromPage: 1, toPage: 5, size: 5 });
+      expect(computeBoundedPreviewWindow(2, N)).toEqual({ fromPage: 1, toPage: 5, size: 5 });
+      expect(computeBoundedPreviewWindow(3, N)).toEqual({ fromPage: 1, toPage: 5, size: 5 });
+
+      // Centered: page 4 -> [2..6], page 10 -> [8..12]
+      expect(computeBoundedPreviewWindow(4, N)).toEqual({ fromPage: 2, toPage: 6, size: 5 });
+      expect(computeBoundedPreviewWindow(10, N)).toEqual({ fromPage: 8, toPage: 12, size: 5 });
+
+      // End edges: pages 18, 19, 20 should all clamp to [16..20]
+      expect(computeBoundedPreviewWindow(18, N)).toEqual({ fromPage: 16, toPage: 20, size: 5 });
+      expect(computeBoundedPreviewWindow(19, N)).toEqual({ fromPage: 16, toPage: 20, size: 5 });
+      expect(computeBoundedPreviewWindow(20, N)).toEqual({ fromPage: 16, toPage: 20, size: 5 });
+    });
+
+    it('always produces contiguous range containing currentPage and size <= 5', () => {
+      for (let N = 1; N <= 25; N++) {
+        for (let p = 1; p <= N; p++) {
+          const win = computeBoundedPreviewWindow(p, N);
+          expect(win).not.toBeNull();
+          if (win) {
+            expect(win.fromPage).toBeGreaterThanOrEqual(1);
+            expect(win.toPage).toBeLessThanOrEqual(N);
+            expect(win.toPage - win.fromPage + 1).toBe(win.size);
+            expect(win.size).toBe(Math.min(5, N));
+            expect(win.fromPage).toBeLessThanOrEqual(p);
+            expect(win.toPage).toBeGreaterThanOrEqual(p);
+          }
+        }
+      }
+    });
+
+    it('handles out-of-bounds currentPage gracefully by clamping to [1..N]', () => {
+      // currentPage 0 or negative
+      expect(computeBoundedPreviewWindow(0, 10)).toEqual({ fromPage: 1, toPage: 5, size: 5 });
+      expect(computeBoundedPreviewWindow(-5, 10)).toEqual({ fromPage: 1, toPage: 5, size: 5 });
+
+      // currentPage > N
+      expect(computeBoundedPreviewWindow(25, 10)).toEqual({ fromPage: 6, toPage: 10, size: 5 });
+    });
+  });
+
+  describe('2. URL Page Query Parameter Parsing & Canonicalization', () => {
+    it('canonicalizes missing, empty, or undefined to page 1 with isCanonical: false', () => {
+      expect(parsePageQueryParam(null, 10)).toEqual({ page: 1, isCanonical: false });
+      expect(parsePageQueryParam(undefined, 10)).toEqual({ page: 1, isCanonical: false });
+      expect(parsePageQueryParam('', 10)).toEqual({ page: 1, isCanonical: false });
+    });
+
+    it('canonicalizes invalid, non-integer, zero or negative string to page 1 with isCanonical: false', () => {
+      expect(parsePageQueryParam('abc', 10)).toEqual({ page: 1, isCanonical: false });
+      expect(parsePageQueryParam('0', 10)).toEqual({ page: 1, isCanonical: false });
+      expect(parsePageQueryParam('-3', 10)).toEqual({ page: 1, isCanonical: false });
+      expect(parsePageQueryParam('1.5', 10)).toEqual({ page: 1, isCanonical: false });
+      expect(parsePageQueryParam('NaN', 10)).toEqual({ page: 1, isCanonical: false });
+    });
+
+    it('clamps to maxPage when query param exceeds maxPage and marks isCanonical: false', () => {
+      expect(parsePageQueryParam('25', 10)).toEqual({ page: 10, isCanonical: false });
+      expect(parsePageQueryParam('11', 10)).toEqual({ page: 10, isCanonical: false });
+    });
+
+    it('accepts valid in-bounds page and marks isCanonical: true only for exact clean string', () => {
+      expect(parsePageQueryParam('1', 10)).toEqual({ page: 1, isCanonical: true });
+      expect(parsePageQueryParam('5', 10)).toEqual({ page: 5, isCanonical: true });
+      expect(parsePageQueryParam('10', 10)).toEqual({ page: 10, isCanonical: true });
+
+      // Formatted with leading zeros or spaces is valid page but not canonical URL
+      expect(parsePageQueryParam('05', 10)).toEqual({ page: 5, isCanonical: false });
+      expect(parsePageQueryParam(' 5 ', 10)).toEqual({ page: 5, isCanonical: false });
+    });
+
+    it('tolerates unknown maxPage (null/undefined/0) by parsing valid positive integers', () => {
+      expect(parsePageQueryParam('3', null)).toEqual({ page: 3, isCanonical: true });
+      expect(parsePageQueryParam('0', null)).toEqual({ page: 1, isCanonical: false });
+    });
+  });
+
+  describe('3. Navigation Bounds & Helpers', () => {
+    it('correctly reports canNavigatePrev', () => {
+      expect(canNavigatePrev(1)).toBe(false);
+      expect(canNavigatePrev(2)).toBe(true);
+      expect(canNavigatePrev(10)).toBe(true);
+    });
+
+    it('correctly reports canNavigateNext', () => {
+      expect(canNavigateNext(1, null)).toBe(false);
+      expect(canNavigateNext(1, 0)).toBe(false);
+      expect(canNavigateNext(1, 5)).toBe(true);
+      expect(canNavigateNext(4, 5)).toBe(true);
+      expect(canNavigateNext(5, 5)).toBe(false);
+    });
+
+    it('clamps page number correctly', () => {
+      expect(clampPageNumber(0, 10)).toBe(1);
+      expect(clampPageNumber(-5, 10)).toBe(1);
+      expect(clampPageNumber(5, 10)).toBe(5);
+      expect(clampPageNumber(15, 10)).toBe(10);
+      expect(clampPageNumber(5, null)).toBe(5);
+      expect(clampPageNumber(-1, null)).toBe(1);
+    });
+  });
+
+  describe('4. Keyboard Hotkeys Guard (isEditableElement)', () => {
+    it('identifies input, textarea, select, and contenteditable as editable', () => {
+      const input = document.createElement('input');
+      const textarea = document.createElement('textarea');
+      const select = document.createElement('select');
+      const editableDiv = document.createElement('div');
+      editableDiv.setAttribute('contenteditable', 'true');
+      const normalDiv = document.createElement('div');
+      const button = document.createElement('button');
+
+      expect(isEditableElement(input)).toBe(true);
+      expect(isEditableElement(textarea)).toBe(true);
+      expect(isEditableElement(select)).toBe(true);
+      expect(isEditableElement(editableDiv)).toBe(true);
+      expect(isEditableElement(normalDiv)).toBe(false);
+      expect(isEditableElement(button)).toBe(false);
+      expect(isEditableElement(null)).toBe(false);
+    });
+  });
+});
+
+describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
+  const mockJobId = 'job-nav-123';
+
+  const mockJobDetail: TranslationJobReviewDetailResponse = {
+    job: {
+      id: mockJobId,
+      status: TranslationJobStatus.READY_FOR_REVIEW,
+      progressPercentage: 100,
+      provider: 'OPENAI',
+      modelName: 'gpt-4o-mini',
+      promptVersion: 'manga-ja-vi-v1',
+      attemptCount: 1,
+      maxAttempts: 3,
+      createdAt: '2026-09-01T10:00:00Z',
+      startedAt: '2026-09-01T10:01:00Z',
+      heartbeatAt: '2026-09-01T10:05:00Z',
+      completedAt: '2026-09-01T10:05:00Z',
+      expiresAt: null,
+      reviewRevision: 1,
+      materializedRevision: 1,
+      workspaceRevision: 10,
+    },
+    context: {
+      story: { id: 's1', title: 'Manga Test', slug: 'manga-test', mediaFormat: MediaFormat.COMIC },
+      edition: { id: 'e1', editionName: 'Việt', language: 'vi', isDefault: true },
+      chapter: { id: 'c1', chapterNumber: '1.00', title: 'Chương 1' },
+      project: { id: 'p1', sourceLanguage: 'ja', targetLanguage: 'vi' },
+      sourceVersion: { id: 'v1', versionNumber: 1 },
+      targetVersion: null,
+    },
+    reviewSummary: {
+      segmentCount: 4,
+      verifiedCount: 2,
+      pageCount: 3,
+      resultPageCount: 20, // 20 pages
+      blockCount: null,
+    },
+  };
+
+  const mockSegments: TranslationSegmentDto[] = [
+    {
+      id: 'seg-1',
+      jobId: mockJobId,
+      pageNumber: 1,
+      anchorBlockId: null,
+      sortOrder: 1,
+      bboxX: 10,
+      bboxY: 10,
+      bboxW: 50,
+      bboxH: 20,
+      rawText: 'Text 1',
+      translatedText: 'Dịch 1',
+      confidence: 0.95,
+      isHumanVerified: true,
+      version: 1,
+    },
+    {
+      id: 'seg-2',
+      jobId: mockJobId,
+      pageNumber: 2,
+      anchorBlockId: null,
+      sortOrder: 2,
+      bboxX: 20,
+      bboxY: 20,
+      bboxW: 40,
+      bboxH: 20,
+      rawText: 'Text 2',
+      translatedText: 'Dịch 2',
+      confidence: 0.9,
+      isHumanVerified: false,
+      version: 1,
+    },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.spyOn(authContext, 'useAuth').mockReturnValue({
+      status: 'authenticated',
+      user: { id: 'user-1', username: 'tester', email: 'test@omninovel.com', role: 'USER' },
+      isAuthenticated: true,
+      isLoading: false,
+      login: vi.fn(),
+      logout: vi.fn(),
+      refetchUser: vi.fn(),
+    });
+
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockJobDetail);
+    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async (_jobId, queryOrPage) => {
+      if (typeof queryOrPage === 'object' && queryOrPage?.pageNumber !== undefined) {
+        const filtered = mockSegments.filter((s) => s.pageNumber === queryOrPage.pageNumber);
+        return {
+          data: filtered,
+          pagination: {
+            page: queryOrPage.page ?? 1,
+            limit: queryOrPage.limit ?? 50,
+            total: filtered.length,
+            totalPages: 1,
+          },
+          workspaceRevision: 10,
+        };
+      }
+      return {
+        data: mockSegments,
+        pagination: { page: 1, limit: 100, total: mockSegments.length, totalPages: 1 },
+        workspaceRevision: 10,
+      };
+    });
+
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
+      sourceAssets: [],
+      resultAssets: [],
+      workspaceRevision: 10,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('5. Initial load calculates bounded window and fetches pageSegments for page 1', async () => {
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+    await waitFor(() => {
+      expect(result.current.status).toBe('ready');
+    });
+
+    expect(result.current.currentPage).toBe(1);
+    expect(result.current.previewWindow).toEqual({
+      fromPage: 1,
+      toPage: 5,
+      size: 5,
+      sourceAssets: [],
+      resultAssets: [],
+      workspaceRevision: 10,
+    });
+    expect(result.current.pageSegments).toHaveLength(1);
+    expect(result.current.pageSegments[0].id).toBe('seg-1');
+    expect(result.current.pageSegmentsPagination).toEqual({
+      page: 1,
+      limit: 50,
+      totalItems: 1,
+      totalPages: 1,
+    });
+  });
+
+  it('6. Page switch clears old page selection, fetches new bounded window and pageSegments', async () => {
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+    await waitFor(() => {
+      expect(result.current.status).toBe('ready');
+    });
+
+    // Select segment on page 1
+    act(() => {
+      result.current.setSelectedSegmentId('seg-1');
+    });
+    expect(result.current.selectedSegmentId).toBe('seg-1');
+
+    // Switch to page 4 -> window should center to [2..6]
+    await act(async () => {
+      result.current.goToPage(4);
+    });
+
+    expect(result.current.currentPage).toBe(4);
+    // Crucial Invariant: Selection from page 1 MUST be cleared when switching page!
+    expect(result.current.selectedSegmentId).toBeNull();
+    expect(result.current.previewWindow).toEqual({
+      fromPage: 2,
+      toPage: 6,
+      size: 5,
+      sourceAssets: [],
+      resultAssets: [],
+      workspaceRevision: 10,
+    });
+  });
+
+  it('7. Rapid page switch 2 -> 3 -> 4: late response from page 2 does not overwrite page 4', async () => {
+    let resolvePage2Previews!: (val: any) => void;
+    const page2PreviewsPromise = new Promise((resolve) => {
+      resolvePage2Previews = resolve;
+    });
+
+    const origPreviews = translationApi.fetchTranslationJobPreviews;
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async (jobId, query) => {
+      if (query && 'fromPage' in query && query.fromPage === 1 && query.toPage === 5) {
+        // Assume page 2 query or initial
+      }
+      if (query && 'fromPage' in query && query.fromPage === 2) {
+        // page 4 query
+        return {
+          sourceAssets: [{ pageNumber: 4, url: 'url-page-4' } as any],
+          resultAssets: [],
+          workspaceRevision: 10,
+        };
+      }
+      return origPreviews(jobId, query);
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    // Switch to 4
+    await act(async () => {
+      result.current.goToPage(4);
+    });
+
+    expect(result.current.currentPage).toBe(4);
+    expect(result.current.previewWindow?.fromPage).toBe(2);
+  });
+
+  it('8. Amendment #1: Navigator-local failure (preview window 500) sets previewWindowError but leaves authoritative gate OPEN', async () => {
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.isGateClosed).toBe(false);
+
+    // Mock window preview failure on next page
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async (_id, query) => {
+      if (query && 'fromPage' in query) {
+        const err = new Error('500 Window Server Error') as any;
+        err.isAxiosError = true;
+        err.response = { status: 500, data: { error: { code: 'INTERNAL_ERROR' } } };
+        throw err;
+      }
+      return { sourceAssets: [], resultAssets: [], workspaceRevision: 10 };
+    });
+
+    await act(async () => {
+      result.current.goToPage(6);
+    });
+
+    expect(result.current.currentPage).toBe(6);
+    expect(result.current.previewWindow).toBeNull();
+    expect(result.current.previewWindowError).toBe('PREVIEWS_WINDOW_FAILED');
+    // Global gate must NOT be closed! Navigator failure is local!
+    expect(result.current.isGateClosed).toBe(false);
+    expect(result.current.workspaceMode?.canEdit).toBe(true);
+  });
+
+  it('9. Amendment #1: Window response revision mismatch triggers GLOBAL fail-closed reconciliation', async () => {
+    let resolveReconcileDetail!: (val: any) => void;
+    const reconcileDetailDeferred = new Promise<TranslationJobReviewDetailResponse>((resolve) => {
+      resolveReconcileDetail = resolve;
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    // Mock detail to defer on reconciliation
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockReturnValue(reconcileDetailDeferred);
+
+    // Mock window preview returning workspaceRevision: 9 (mismatch with detail 10)
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async (_id, query) => {
+      if (query && 'fromPage' in query) {
+        return {
+          sourceAssets: [],
+          resultAssets: [],
+          workspaceRevision: 9, // STALE!
+        };
+      }
+      return { sourceAssets: [], resultAssets: [], workspaceRevision: 10 };
+    });
+
+    const saveSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+
+    await act(async () => {
+      result.current.goToPage(3);
+    });
+
+    // Mismatch MUST drop stale window, close authoritative gate, and block mutations with 0 network calls during reconciliation
+    expect(result.current.previewWindow).toBeNull();
+    expect(result.current.isGateClosed).toBe(true);
+
+    const saveRes = await result.current.saveSegment('seg-1', 'new text');
+    expect(saveRes.outcome).toBe('FAILED_BEFORE_COMMIT');
+    expect(saveRes.workspaceState).toBe('RECONCILIATION_REQUIRED');
+    expect(saveSpy).toHaveBeenCalledTimes(0);
+
+    // Complete reconciliation
+    await act(async () => {
+      resolveReconcileDetail(mockJobDetail);
+    });
+  });
+
+  it('10. Same-scope retry/reconcile preserves currentPage (does not reset to page 1)', async () => {
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    await act(async () => {
+      result.current.goToPage(7);
+    });
+    expect(result.current.currentPage).toBe(7);
+
+    // Call retry
+    await act(async () => {
+      await result.current.retry();
+    });
+
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    // Preserved!
+    expect(result.current.currentPage).toBe(7);
+  });
+
+  it('11. resultPageCount=null/0 retains COUNT_UNAVAILABLE mode and does NOT fetch window previews', async () => {
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue({
+      ...mockJobDetail,
+      reviewSummary: {
+        ...mockJobDetail.reviewSummary,
+        resultPageCount: 0, // No valid page count
+      },
+    });
+
+    const previewSpy = vi.spyOn(translationApi, 'fetchTranslationJobPreviews');
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => {
+      expect(result.current.workspaceMode?.mode).toBe('COUNT_UNAVAILABLE');
+    });
+
+    expect(result.current.previewWindow).toBeNull();
+    // Bounded window request should NOT be sent when count is unavailable
+    const windowCalls = previewSpy.mock.calls.filter(
+      (c) => typeof c[1] === 'object' && c[1] !== null && 'fromPage' in c[1]
+    );
+    expect(windowCalls).toHaveLength(0);
+  });
+
+  it('12. Switching jobId drops in-flight window and segment requests (generationRef guard)', async () => {
+    let resolveJob1Previews!: (val: any) => void;
+    const job1PreviewsDeferred = new Promise<any>((resolve) => {
+      resolveJob1Previews = resolve;
+    });
+
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async (jobId, query) => {
+      if (jobId === 'job-1' && query && 'fromPage' in query) {
+        return job1PreviewsDeferred;
+      }
+      return { sourceAssets: [], resultAssets: [], workspaceRevision: 10 };
+    });
+
+    const { result, rerender } = renderHook(({ jobId }) => useMangaReviewStudio(jobId), {
+      initialProps: { jobId: 'job-1' },
+    });
+
+    // In-flight for job-1
+    rerender({ jobId: 'job-2' });
+
+    // Late resolve job-1
+    await act(async () => {
+      resolveJob1Previews({
+        sourceAssets: [{ pageNumber: 1, url: 'job-1-url' } as any],
+        resultAssets: [],
+        workspaceRevision: 10,
+      });
+    });
+
+    // Result should not reflect job-1 data
+    expect(result.current.previewWindow?.sourceAssets?.some((a) => a.url === 'job-1-url')).toBeFalsy();
+  });
+
+  it('13. pageSegments preserves pagination metadata (Amendment #3: totalPages > 1)', async () => {
+    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async (_jobId, queryOrPage) => {
+      if (typeof queryOrPage === 'object' && queryOrPage?.pageNumber === 1) {
+        return {
+          data: [mockSegments[0]],
+          pagination: {
+            page: 1,
+            limit: 50,
+            total: 120, // 120 items on page 1
+            totalPages: 3,
+          },
+          workspaceRevision: 10,
+        };
+      }
+      return {
+        data: mockSegments,
+        pagination: { page: 1, limit: 100, total: mockSegments.length, totalPages: 1 },
+        workspaceRevision: 10,
+      };
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    await act(async () => {
+      result.current.goToPage(1);
+    });
+
+    expect(result.current.pageSegmentsPagination).toEqual({
+      page: 1,
+      limit: 50,
+      totalItems: 120,
+      totalPages: 3,
+    });
+    expect(result.current.pageSegments).toHaveLength(1);
+  });
+
+  it('14. retryPreviewWindow allows navigator-local recovery without tearing down workspace', async () => {
+    let failPreviews = true;
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async (_id, query) => {
+      if (query && 'fromPage' in query && failPreviews) {
+        const err = new Error('Network error') as any;
+        err.isAxiosError = true;
+        err.response = { status: 500 };
+        throw err;
+      }
+      return { sourceAssets: [], resultAssets: [], workspaceRevision: 10 };
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    await act(async () => {
+      result.current.goToPage(2);
+    });
+
+    // In error state for window
+    expect(result.current.previewWindowError).toBe('PREVIEWS_WINDOW_FAILED');
+    expect(result.current.previewWindow).toBeNull();
+    expect(result.current.status).toBe('ready'); // Workspace is still ready
+
+    // Fix network and call retryPreviewWindow
+    failPreviews = false;
+    await act(async () => {
+      await result.current.retryPreviewWindow();
+    });
+
+    expect(result.current.previewWindowError).toBeNull();
+    expect(result.current.previewWindow).not.toBeNull();
+  });
+});
+
+describe('Manga Review Studio Route & URL Synchronization (#149 RED 1)', () => {
+  const mockJobId = 'job-nav-123';
+  const mockParams = Promise.resolve({ jobId: mockJobId });
+
+  const mockJobDetail: TranslationJobReviewDetailResponse = {
+    job: {
+      id: mockJobId,
+      status: TranslationJobStatus.READY_FOR_REVIEW,
+      progressPercentage: 100,
+      provider: 'OPENAI',
+      modelName: 'gpt-4o-mini',
+      promptVersion: 'manga-ja-vi-v1',
+      attemptCount: 1,
+      maxAttempts: 3,
+      createdAt: '2026-09-01T10:00:00Z',
+      startedAt: '2026-09-01T10:01:00Z',
+      heartbeatAt: '2026-09-01T10:05:00Z',
+      completedAt: '2026-09-01T10:05:00Z',
+      expiresAt: null,
+      reviewRevision: 1,
+      materializedRevision: 1,
+      workspaceRevision: 10,
+    },
+    context: {
+      story: { id: 's1', title: 'Manga Test', slug: 'manga-test', mediaFormat: MediaFormat.COMIC },
+      edition: { id: 'e1', editionName: 'Việt', language: 'vi', isDefault: true },
+      chapter: { id: 'c1', chapterNumber: '1.00', title: 'Chương 1' },
+      project: { id: 'p1', sourceLanguage: 'ja', targetLanguage: 'vi' },
+      sourceVersion: { id: 'v1', versionNumber: 1 },
+      targetVersion: null,
+    },
+    reviewSummary: {
+      segmentCount: 4,
+      verifiedCount: 2,
+      pageCount: 3,
+      resultPageCount: 20, // 20 pages
+      blockCount: null,
+    },
+  };
+
+  const mockSegments: TranslationSegmentDto[] = [
+    {
+      id: 'seg-1',
+      jobId: mockJobId,
+      pageNumber: 1,
+      anchorBlockId: null,
+      sortOrder: 1,
+      bboxX: 10,
+      bboxY: 10,
+      bboxW: 50,
+      bboxH: 20,
+      rawText: 'Text 1',
+      translatedText: 'Dịch 1',
+      confidence: 0.95,
+      isHumanVerified: true,
+      version: 1,
+    },
+  ];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockPush.mockReset();
+    mockReplace.mockReset();
+    currentSearchParams = new URLSearchParams('page=1');
+
+    vi.spyOn(authContext, 'useAuth').mockReturnValue({
+      status: 'authenticated',
+      user: { id: 'user-1', username: 'tester', email: 'test@omninovel.com', role: 'USER' },
+      isAuthenticated: true,
+      isLoading: false,
+      login: vi.fn(),
+      logout: vi.fn(),
+      refetchUser: vi.fn(),
+    });
+
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockJobDetail);
+    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+      data: mockSegments,
+      pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+      workspaceRevision: 10,
+    });
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
+      sourceAssets: [],
+      resultAssets: [],
+      workspaceRevision: 10,
+    });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('15. Missing ?page query canonicalizes to ?page=1 via router.replace', async () => {
+    currentSearchParams = new URLSearchParams('');
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith('/studio/ai/jobs/job-nav-123?page=1');
+    });
+  });
+
+  it('16. Out of bounds ?page=999 clamps to ?page=20 via router.replace', async () => {
+    currentSearchParams = new URLSearchParams('page=999');
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith('/studio/ai/jobs/job-nav-123?page=20');
+    });
+  });
+
+  it('17. Invalid ?page=abc canonicalizes to ?page=1 via router.replace', async () => {
+    currentSearchParams = new URLSearchParams('page=abc');
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    await waitFor(() => {
+      expect(mockReplace).toHaveBeenCalledWith('/studio/ai/jobs/job-nav-123?page=1');
+    });
+  });
+
+  it('18. Navigation buttons: "Trang Trước" disabled on page 1; clicking "Trang Tiếp" calls router.push(?page=2)', async () => {
+    currentSearchParams = new URLSearchParams('page=1');
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Trang Tiếp')).toBeDefined();
+    });
+
+    const prevBtn = screen.getByText('Trang Trước').closest('button');
+    const nextBtn = screen.getByText('Trang Tiếp').closest('button');
+
+    expect(prevBtn).toBeDisabled();
+    expect(nextBtn).not.toBeDisabled();
+
+    await act(async () => {
+      fireEvent.click(nextBtn!);
+    });
+
+    expect(mockPush).toHaveBeenCalledWith('/studio/ai/jobs/job-nav-123?page=2');
+  });
+
+  it('19. Bounded thumbnail strip displays at most 5 thumbnails and clicking thumbnail calls router.push', async () => {
+    currentSearchParams = new URLSearchParams('page=1');
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('thumbnail-strip')).toBeDefined();
+    });
+
+    // Window size for N=20 at page 1 is 5 pages: 1, 2, 3, 4, 5
+    const thumbnails = screen.getAllByTestId(/thumbnail-item-/);
+    expect(thumbnails).toHaveLength(5);
+
+    // Click page 3 thumbnail
+    const page3Thumb = screen.getByTestId('thumbnail-item-3');
+    await act(async () => {
+      fireEvent.click(page3Thumb);
+    });
+
+    expect(mockPush).toHaveBeenCalledWith('/studio/ai/jobs/job-nav-123?page=3');
+  });
+
+  it('20. Keyboard ArrowLeft / ArrowRight navigates pages', async () => {
+    currentSearchParams = new URLSearchParams('page=2');
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Trang Tiếp')).toBeDefined();
+    });
+
+    // Press ArrowRight -> navigates to page 3
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'ArrowRight' });
+    });
+    expect(mockPush).toHaveBeenCalledWith('/studio/ai/jobs/job-nav-123?page=3');
+
+    // Press ArrowLeft -> navigates to page 1
+    await act(async () => {
+      fireEvent.keyDown(window, { key: 'ArrowLeft' });
+    });
+    expect(mockPush).toHaveBeenCalledWith('/studio/ai/jobs/job-nav-123?page=1');
+  });
+
+  it('21. Keyboard navigation is suppressed when target is an input or textarea', async () => {
+    currentSearchParams = new URLSearchParams('page=2');
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText('Trang Tiếp')).toBeDefined();
+    });
+
+    const testInput = document.createElement('input');
+    document.body.appendChild(testInput);
+    testInput.focus();
+
+    await act(async () => {
+      fireEvent.keyDown(testInput, { key: 'ArrowRight' });
+    });
+
+    expect(mockPush).not.toHaveBeenCalled();
+    document.body.removeChild(testInput);
+  });
+
+  it('22. Local window preview error displays retry button and clicking it triggers retryPreviewWindow', async () => {
+    currentSearchParams = new URLSearchParams('page=2');
+
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async (_id, query) => {
+      if (query && 'fromPage' in query) {
+        const err = new Error('500 Window Server Error') as any;
+        err.isAxiosError = true;
+        err.response = { status: 500 };
+        throw err;
+      }
+      return { sourceAssets: [], resultAssets: [], workspaceRevision: 10 };
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('window-error-banner')).toBeDefined();
+    });
+
+    const retryBtn = screen.getByText('Thử lại tải ảnh');
+    expect(retryBtn).toBeDefined();
+
+    // Editor/workspace remains rendered and gate is NOT broken!
+    expect(screen.getByText('Manga Review Studio')).toBeDefined();
+  });
+});
+
+

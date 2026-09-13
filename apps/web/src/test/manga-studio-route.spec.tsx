@@ -7,6 +7,15 @@ import { TranslationJobStatus, MediaFormat } from '@omninovel/shared';
 
 vi.mock('../lib/studio/use-manga-review-studio');
 
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+    replace: vi.fn(),
+  }),
+  useSearchParams: () => new URLSearchParams('page=1'),
+  usePathname: () => '/studio/ai/jobs/job-route-test-123',
+}));
+
 describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
   const mockJobId = 'job-route-test-123';
   const mockParams = Promise.resolve({ jobId: mockJobId });
@@ -77,8 +86,21 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     },
     pageCountInfo: { pageCount: 3, isAvailable: true },
     freshness: { isFresh: true, needsMaterialize: false, status: 'FRESH' },
+    isGateClosed: false,
+    previewWindow: null,
+    previewWindowLoading: false,
+    previewWindowError: null,
+    pageSegments: [],
+    pageSegmentsPagination: null,
+    pageSegmentsLoading: false,
+    pageSegmentsError: null,
     currentPage: 1,
     setCurrentPage: vi.fn(),
+    goToPage: vi.fn(),
+    nextPage: vi.fn(),
+    prevPage: vi.fn(),
+    retryPreviewWindow: vi.fn(),
+    retryPageSegments: vi.fn(),
     selectedSegmentId: null,
     setSelectedSegmentId: vi.fn(),
     conflictState: null,

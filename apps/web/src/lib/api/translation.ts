@@ -66,19 +66,44 @@ export async function fetchTranslationJobDetail(
   return response.data;
 }
 
+export interface FetchTranslationJobSegmentsQuery {
+  page?: number;
+  limit?: number;
+  pageNumber?: number;
+}
+
 /**
- * Fetch paginated segments for a TranslationJob
+ * Fetch paginated segments for a TranslationJob with optional pageNumber filtering
  * GET /api/v1/ai/jobs/:jobId/segments
  */
 export async function fetchTranslationJobSegments(
   jobId: string,
-  page = 1,
+  pageOrQuery?: number | FetchTranslationJobSegmentsQuery,
   limit = 50,
+  pageNumber?: number,
 ): Promise<TranslationJobSegmentsResponse> {
+  let params: Record<string, any>;
+
+  if (typeof pageOrQuery === 'object' && pageOrQuery !== null) {
+    params = {
+      page: pageOrQuery.page ?? 1,
+      limit: pageOrQuery.limit ?? 50,
+      ...(pageOrQuery.pageNumber !== undefined && pageOrQuery.pageNumber !== null
+        ? { pageNumber: pageOrQuery.pageNumber }
+        : {}),
+    };
+  } else {
+    params = {
+      page: typeof pageOrQuery === 'number' ? pageOrQuery : 1,
+      limit,
+      ...(pageNumber !== undefined && pageNumber !== null ? { pageNumber } : {}),
+    };
+  }
+
   const response = await apiClient.get<TranslationJobSegmentsResponse>(
     `/ai/jobs/${jobId}/segments`,
     {
-      params: { page, limit },
+      params,
     },
   );
   return response.data;

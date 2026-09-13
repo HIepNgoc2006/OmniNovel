@@ -1456,7 +1456,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(result.current.segments).toEqual([]);
     });
 
-    it('should clear materializationStatus and reset currentPage during authoritative reconciliation', async () => {
+    it('should clear materializationStatus and preserve currentPage during same-scope authoritative reconciliation (#149 RED 1)', async () => {
       vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockStaleComicJobDetail);
       vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValueOnce({
         status: 'ENQUEUED',
@@ -1496,9 +1496,9 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         await result.current.saveSegment('seg-1', 'Bản dịch');
       });
 
-      // Invariant: materializationStatus and currentPage MUST be reset!
+      // Invariant: materializationStatus is cleared while currentPage is preserved across same-scope reconciliation (RED 1)
       expect(result.current.materializationStatus).toBeNull();
-      expect(result.current.currentPage).toBe(1);
+      expect(result.current.currentPage).toBe(3);
       expect(result.current.workspaceMode?.mode).toBe('APPLIED');
     });
 

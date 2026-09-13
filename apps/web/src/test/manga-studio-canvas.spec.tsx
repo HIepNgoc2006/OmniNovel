@@ -458,5 +458,117 @@ describe('Manga Review Studio Canvas & OCR Bounding Box Geometry (#149 RED 2)', 
       // Must be calculated relative to SOURCE (1000x1500), NOT RESULT (2000x3000)
       expect(box.style.left).toBe('10%'); // 100 / 1000 = 10% (NOT 100 / 2000 = 5%)
     });
+
+    it('C11. Wide-image scaling & overlay plane alignment (P1-1): source image enforces max-w-full and overlay container matches wrapper', () => {
+      render(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={{
+            kind: 'SOURCE_REVIEW',
+            pageNumber: 1,
+            width: 2000, // Wide landscape image
+            height: 800,
+            url: 'https://cdn.example.com/source-wide.jpg',
+          }}
+          resultAsset={null}
+          segments={[createMockSegment({ bboxX: 1000, bboxY: 400, bboxW: 500, bboxH: 200 })]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+        />
+      );
+
+      const sourceImg = screen.getByTestId('canvas-source-image');
+      // Critical P1-1 invariant: Image must be constrained by max-w-full to prevent horizontal overflow and unaligned overlay plane
+      expect(sourceImg.className).toContain('max-w-full');
+      expect(sourceImg.className).toContain('max-h-[75vh]');
+      expect(sourceImg.className).toContain('w-auto');
+      expect(sourceImg.className).toContain('h-auto');
+      expect(sourceImg.className).toContain('object-contain');
+      expect(sourceImg.className).toContain('block');
+
+      // Trigger image load to render overlay
+      Object.defineProperty(sourceImg, 'naturalWidth', { value: 2000 });
+      Object.defineProperty(sourceImg, 'naturalHeight', { value: 800 });
+      fireEvent.load(sourceImg);
+
+      // Wrapper and overlay container must have identical bounding plane
+      const wrapper = screen.getByTestId('canvas-source-wrapper');
+      const overlay = screen.getByTestId('canvas-overlay-container');
+      expect(wrapper.className).toContain('relative');
+      expect(wrapper.className).toContain('inline-block');
+      expect(overlay.className).toContain('absolute');
+      expect(overlay.className).toContain('inset-0');
+    });
+
+    it('C12. Independent pane availability (P1-2): RESULT mode accessible when sourceAsset is null', () => {
+      render(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={null} // Source asset missing/not available
+          resultAsset={mockResultAsset} // Result asset is available!
+          segments={[]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+        />
+      );
+
+      // In RESULT mode, result image MUST be rendered without being blocked by missing sourceAsset
+      fireEvent.click(screen.getByTestId('view-mode-result-button'));
+      expect(screen.getByTestId('canvas-result-image')).toBeInTheDocument();
+      expect(screen.queryByTestId('canvas-loading-placeholder')).not.toBeInTheDocument();
+
+      // Switch to SOURCE mode: should show source unavailable placeholder
+      fireEvent.click(screen.getByTestId('view-mode-source-button'));
+      expect(screen.getByTestId('canvas-source-unavailable')).toBeInTheDocument();
+      expect(screen.queryByTestId('canvas-source-image')).not.toBeInTheDocument();
+
+      // Switch to SIDE_BY_SIDE: source pane shows unavailable, but result pane shows image
+      fireEvent.click(screen.getByTestId('view-mode-split-button'));
+      expect(screen.getByTestId('canvas-source-unavailable')).toBeInTheDocument();
+      expect(screen.getByTestId('canvas-result-image')).toBeInTheDocument();
+    });
+
+    it('C13. Error prop fail-safe (P2-1): renders canvas-error-state when error is provided and suppresses content', () => {
+      render(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={mockSourceAsset}
+          resultAsset={mockResultAsset}
+          segments={[createMockSegment()]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+          error="PREVIEWS_WINDOW_FAILED"
+        />
+      );
+
+      expect(screen.getByTestId('canvas-error-state')).toBeInTheDocument();
+      expect(screen.getByText('PREVIEWS_WINDOW_FAILED')).toBeInTheDocument();
+      expect(screen.queryByTestId('canvas-source-image')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('bbox-item-seg-1')).not.toBeInTheDocument();
+    });
+
+    it('C14. Broken image decode failure (P2-2): triggers onError and displays broken image placeholder', () => {
+      render(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={mockSourceAsset}
+          resultAsset={null}
+          segments={[createMockSegment()]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+        />
+      );
+
+      const sourceImg = screen.getByTestId('canvas-source-image');
+      // Simulate image decode failure
+      fireEvent.error(sourceImg);
+
+      expect(screen.getByTestId('canvas-source-error')).toBeInTheDocument();
+      expect(screen.queryByTestId('bbox-item-seg-1')).not.toBeInTheDocument();
+    });
   });
 });

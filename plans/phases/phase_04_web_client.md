@@ -15,7 +15,7 @@
     - TanStack Query v5 quản lý Server State & SWR Caching.
     - WebSocket Gateway (`/ws/ai`) xác thực qua `socket.handshake.auth.token` và tự động reconnect khi token xoay vòng.
     - Gamification: Tiêu thụ endpoint chuẩn `/gamification/progression` và `UserProgressionResponse` từ `@omninovel/shared`.
-- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core + #162 Manga Clean Bases + #166 WebSocket Security + #159 Manga Previews + #157 Manga Re-render + #155 Preview API 100% HOÀN TẤT & MERGED tại main@7072b31 - Sẵn sàng triển khai Phase 4D.5 Studio Frontend UI #149)
+- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core + #162 Manga Clean Bases + #166 WebSocket Security + #159 Manga Previews + #157 Manga Re-render + #155 Preview API + #178 Result Page Count HOÀN TẤT; Phase 4D.5 Manga Studio #149 RED 0 Foundation MERGED tại main@153b3d1 - Sẵn sàng mở RED 1 Page Navigator)
 
 ---
 
@@ -110,6 +110,13 @@
     - [x] Full test coverage: unit tests in `manifest-validation.spec.ts` (sparse [1,3], starts-at-2 [2,3], canonical sort [2,1]), `translation-foundation.spec.ts`, `job-previews.spec.ts`, worker `test_manifest_parity.py`, and E2E in `studio-foundation.e2e-spec.ts`.
   - [ ] **Phase 4D.5 Studio Frontend UI (#149)**:
     - [ ] Studio Dashboard: Danh sách Translation Projects, Bảng theo dõi tiến độ Job thời gian thực qua WebSocket `/ws/ai` (14 stages).
-    - [ ] Manga Translation Studio (#149) [UNBLOCKED — Prerequisites #147, #148, #155, #157, #159, #162, #178 Complete]: Trình xem ảnh gốc vs ảnh đã dịch, xem vùng nhận diện thoại OCR (DOM percentage scaling, fail-closed), chỉnh sửa bản dịch từng ô thoại với OCC `VERSION_CONFLICT` handling, Page Navigator (`1..resultPageCount`), và tích hợp Materialization freshness CTA (#157).
+    - [/] Manga Translation Studio (#149) [Prerequisites #147, #148, #155, #157, #159, #162, #178 Complete]:
+      - [x] **RED 0: Route Foundation, Central State Orchestration & Request Identity** (COMPLETED & MERGED `main@153b3d1`, PR #182): Tuyến đường `/studio/ai/jobs/:id`, hook `useMangaReviewStudio` điều phối trạng thái trung tâm, full-coherence fail-closed gates, canonical `VERSION_CONFLICT` mutation lock, monotonic revision guards, same-scope retry isolation, transient 404 lifecycle, 123/123 foundation tests pass.
+      - [ ] **RED 1: Page Navigator** (NEXT): Chuyển trang `1..resultPageCount`, bounded window prefetching (`?pageNumber=N` & range), đồng bộ URL params / active page state.
+      - [ ] **RED 2: Canvas / OCR Bounding Box Geometry**: Trình xem ảnh gốc vs ảnh đã dịch, tỷ lệ co giãn phần trăm DOM fail-closed, hiển thị bounding box OCR.
+      - [ ] **RED 3: Translation Editor / Draft / OCC**: Chỉnh sửa bản dịch từng ô thoại, lưu phân đoạn với OCC `VERSION_CONFLICT`, draft isolation.
+      - [ ] **RED 4: Verification Interactions**: Duyệt từng ô thoại, đánh dấu `isHumanVerified`, hotkeys xác minh.
+      - [ ] **RED 5: Materialization Lifecycle / UX**: Trigger render ảnh hoàn chỉnh khi `STALE`, theo dõi tiến trình và refresh kết quả.
+      - [ ] **RED 6: Realtime / Cleanup / Integration**: Đồng bộ WebSocket `/ws/ai`, xử lý huỷ job/hoàn tất và dọn dẹp state.
     - [ ] Novel Translation Studio: Trình đối chiếu AST đoạn văn bản song ngữ, đánh dấu thuật ngữ Glossary, kiểm tra protected inline tags (`⟦...⟧`).
     - [ ] Modal xuất bản chương: Lựa chọn 2 chiến lược `OVERWRITE_ACTIVE_VERSION` vs `CREATE_ALTERNATE_VERSION` kèm preview trực quan.

@@ -47,11 +47,22 @@ export class TranslationWatchdogService {
             },
           );
         }
-        job.status = TranslationJobStatus.QUEUED;
-        await this.jobRepo.save(job);
-        this.logger.log(
-          `[Watchdog Reconciler] Đã phục hồi và đưa TranslationJob ${job.id} vào hàng đợi QUEUED.`,
+        const updateRes = await this.jobRepo.query(
+          `UPDATE translation_jobs
+           SET status = 'QUEUED', workspace_revision = workspace_revision + 1
+           WHERE id = $1 AND status = 'VALIDATING'
+           RETURNING workspace_revision, status;`,
+          [job.id],
         );
+        if (updateRes[0]?.length > 0) {
+          this.logger.log(
+            `[Watchdog Reconciler] Đã phục hồi và đưa TranslationJob ${job.id} vào hàng đợi QUEUED.`,
+          );
+        } else {
+          this.logger.debug?.(
+            `[Watchdog Reconciler] Job ${job.id} không còn ở trạng thái VALIDATING (benign lost race).`,
+          );
+        }
       } catch (err: any) {
         this.logger.error(
           `[Watchdog Reconciler] Lỗi phục hồi job ${job.id}: ${err.message}`,

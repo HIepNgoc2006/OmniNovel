@@ -103,7 +103,7 @@
     - [x] Source precedence: Rule A `sourceReview` (package-backed Manga from #159) over Rule B `SOURCE_MEDIA` fallback (`media_assets.sortOrder === pageNumber`) (#155, PR #177).
     - [x] RESULT asset resolution from `resultManifest.pages` with hardened prefix jail (initial `page_{paddedPage}.webp` & materialization `rev-{n}/page_{p}.webp`) (#155, PR #177).
     - [x] Security & privacy: 900s presigned URLs, zero leakage of storage keys / diffAssets, sanitized 500 error path (`PREVIEW_MANIFEST_INVARIANT_VIOLATION` with server-only raw key logging), and bounded presigning without HEAD fan-out (#155, PR #177).
-  - [x] **Manga Authoritative Result Page Count for Review Studio (COMPLETED — PR #179 MERGED `main@f48a6aa`, Hardened via PR #180 `main@e97a5d7`, F14 Follow-up in progress, Closed #178)**:
+  - [x] **Manga Authoritative Result Page Count for Review Studio (COMPLETED — PR #179 MERGED `main@f48a6aa`, Hardened via PR #180 `main@e97a5d7`, Hardened F14 via PR #181 MERGED `main@af40105`, Closed #178)**:
     - [x] Expose `resultPageCount: number | null` in `ReviewSummaryDto` on `GET /api/v1/ai/jobs/:id` for Manga jobs in `READY_FOR_REVIEW`/`APPLIED` (#178).
     - [x] Preserve existing `#148` semantic of `pageCount` (`COUNT(DISTINCT page_number) FROM translation_segments`) (#178).
     - [x] Hardening F14: Enforce strict $1..N$ contiguous page sequence in `MangaResultManifestV1` across TypeScript shared validator and Python Pydantic v2 worker models, canonical ascending sort output, malformed JSON string error standardization (`PREVIEW_MANIFEST_INVARIANT_VIOLATION`), and comprehensive RED->GREEN regression tests (#178 follow-up).

@@ -50,36 +50,35 @@ export class TranslationProcessor extends WorkerHost {
       `[BullMQ] Bắt đầu xử lý TranslationJob ${translationJobId} (Attempt ${attemptNumber}/${maxAttempts})`,
     );
 
-    // 1. Reset sequence = 0 và cập nhật attemptCount trong DB qua anti-resurrection guard
-    const jobContext = await this.translationService.startAttempt(
-      translationJobId,
-      attemptNumber,
-    );
-
-    if (!jobContext) {
-      this.logger.warn(
-        `[BullMQ] TranslationJob ${translationJobId} đã ở trạng thái Terminal/CANCELED. Dừng xử lý attempt ${attemptNumber}.`,
-      );
-      return { skipped: true, reason: 'JOB_TERMINAL_OR_CANCELED' };
-    }
-
-    // 2. Tạo AbortController cho attempt hiện tại
-    const abortController = new AbortController();
-    this.activeAbortControllers.set(translationJobId, abortController);
-
-    const aiWorkerBaseUrl = this.configService.get<string>(
-      'AI_WORKER_BASE_URL',
-      'http://localhost:8001',
-    );
-    const aiWorkerSecret = this.configService.get<string>('AI_WORKER_SECRET');
-
-    // Dynamic routing: Manga vs Novel
-    const endpoint =
-      jobContext.mediaFormat === 'NOVEL'
-        ? `${aiWorkerBaseUrl}/internal/v1/jobs/process-novel`
-        : `${aiWorkerBaseUrl}/internal/v1/jobs/process-manga`;
-
     try {
+      // 1. Reset sequence = 0 và cập nhật attemptCount trong DB qua anti-resurrection guard
+      const jobContext = await this.translationService.startAttempt(
+        translationJobId,
+        attemptNumber,
+      );
+
+      if (!jobContext) {
+        this.logger.warn(
+          `[BullMQ] TranslationJob ${translationJobId} đã ở trạng thái Terminal/CANCELED. Dừng xử lý attempt ${attemptNumber}.`,
+        );
+        return { skipped: true, reason: 'JOB_TERMINAL_OR_CANCELED' };
+      }
+
+      // 2. Tạo AbortController cho attempt hiện tại
+      const abortController = new AbortController();
+      this.activeAbortControllers.set(translationJobId, abortController);
+
+      const aiWorkerBaseUrl = this.configService.get<string>(
+        'AI_WORKER_BASE_URL',
+        'http://localhost:8001',
+      );
+      const aiWorkerSecret = this.configService.get<string>('AI_WORKER_SECRET');
+
+      // Dynamic routing: Manga vs Novel
+      const endpoint =
+        jobContext.mediaFormat === 'NOVEL'
+          ? `${aiWorkerBaseUrl}/internal/v1/jobs/process-novel`
+          : `${aiWorkerBaseUrl}/internal/v1/jobs/process-manga`;
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {

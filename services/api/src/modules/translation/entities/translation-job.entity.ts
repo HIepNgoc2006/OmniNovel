@@ -91,6 +91,9 @@ export class TranslationJob {
   @Column({ name: 'materialized_revision', type: 'int', default: 0 })
   materializedRevision: number;
 
+  @Column({ name: 'workspace_revision', type: 'int', default: 1 })
+  workspaceRevision: number;
+
   @Column({ length: 50, default: 'OPENAI' })
   provider: string;
 

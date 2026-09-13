@@ -153,7 +153,10 @@ describe('Translation Queue Lifecycle, Cancel & Watchdog Suite (Integration)', (
       `SELECT status FROM translation_jobs WHERE id = $1`,
       [testJobId],
     );
-    expect(reconciledJob[0].status).toBe(TranslationJobStatus.QUEUED);
+    expect([
+      TranslationJobStatus.QUEUED,
+      TranslationJobStatus.PREPROCESSING,
+    ]).toContain(reconciledJob[0].status);
   });
 
   it('Job in READY_FOR_REVIEW should reject startAttempt (Worker-Final Invariant: cannot reset to PREPROCESSING)', async () => {

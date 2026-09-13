@@ -27,6 +27,7 @@ import { FindTranslationJobsQueryDto } from './dto/find-translation-jobs-query.d
 import { FindJobSegmentsQueryDto } from './dto/find-job-segments-query.dto';
 import { FindJobPreviewsQueryDto } from './dto/find-job-previews-query.dto';
 import { UpdateTranslationSegmentDto } from './dto/update-translation-segment.dto';
+import { MaterializationRequestResponse } from '@omninovel/shared';
 
 const UUID_V4_REGEX =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -152,7 +153,7 @@ export class TranslationController {
     @Param('id', new ParseUUIDPipe()) id: string,
     @CurrentUser() user: any,
     @Res({ passthrough: true }) res: Response,
-  ) {
+  ): Promise<MaterializationRequestResponse> {
     const result = await this.translationService.requestMaterialization(id, user);
     res.status(
       result.status === 'ALREADY_FRESH'

@@ -70,16 +70,19 @@ describe('TranslationService.handleJobFailure Post-Commit Ordering & Invariants'
 
     mockDataSource.transaction.mockImplementation(async (callback) => {
       executionOrder.push('transaction_start');
+      let queryCount = 0;
       const mockManager = {
-        query: jest.fn().mockImplementation(async () => {
-          executionOrder.push('query_for_update');
+        query: jest.fn().mockImplementation(async (sql: string) => {
+          queryCount++;
+          if (queryCount === 1) {
+            executionOrder.push('query_for_update');
+          } else {
+            executionOrder.push('atomic_sql_update');
+            expect(sql).toContain('UPDATE translation_jobs');
+            expect(sql).toContain('workspace_revision = workspace_revision + 1');
+          }
         }),
         findOne: jest.fn().mockResolvedValue(mockJob),
-        save: jest.fn().mockImplementation(async (_entity, entityData) => {
-          executionOrder.push('manager_save');
-          expect(entityData.status).toBe(TranslationJobStatus.FAILED);
-          expect(entityData.errorTrace).toBe(errorTrace);
-        }),
       };
 
       const res = await callback(mockManager);
@@ -98,7 +101,7 @@ describe('TranslationService.handleJobFailure Post-Commit Ordering & Invariants'
     expect(executionOrder).toEqual([
       'transaction_start',
       'query_for_update',
-      'manager_save',
+      'atomic_sql_update',
       'transaction_commit',
       'broadcast_job_failed',
     ]);
@@ -109,13 +112,17 @@ describe('TranslationService.handleJobFailure Post-Commit Ordering & Invariants'
     const errorTrace = 'Stack trace details...';
 
     mockDataSource.transaction.mockImplementation(async (callback) => {
+      let queryCount = 0;
       const mockManager = {
-        query: jest.fn().mockResolvedValue([]),
+        query: jest.fn().mockImplementation(async () => {
+          queryCount++;
+          if (queryCount === 1) return [];
+          throw new Error('DB connection killed during commit');
+        }),
         findOne: jest.fn().mockResolvedValue({
           id: jobId,
           status: TranslationJobStatus.OCR,
         }),
-        save: jest.fn().mockRejectedValue(new Error('DB connection killed during commit')),
       };
       return callback(mockManager);
     });

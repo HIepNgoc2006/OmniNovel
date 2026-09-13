@@ -52,6 +52,16 @@ export type MaterializationOutcome =
   | 'ALREADY_APPLIED'
   | 'STALE_DISCARDED';
 
+export type MaterializationRequestStatus =
+  | 'ENQUEUED'
+  | 'ALREADY_ENQUEUED'
+  | 'ALREADY_FRESH';
+
+export interface MaterializationRequestResponse {
+  status: MaterializationRequestStatus;
+  targetRevision: number;
+}
+
 // ----------------------------------------------------------------------
 // Selective Materialization Output Contracts (Version 1)
 // ----------------------------------------------------------------------

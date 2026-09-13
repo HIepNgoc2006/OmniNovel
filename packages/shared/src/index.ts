@@ -247,12 +247,20 @@ export interface ReadChapterRewardResponse {
   dailyCap?: number;
 }
 
+export interface StandardErrorMeta {
+  currentVersion?: number;
+  expectedVersion?: number;
+  reviewRevision?: number;
+  materializedRevision?: number;
+}
+
 export interface StandardErrorResponse {
   error: {
     code: string;
     message: string;
     requestId: string;
     timestamp: string;
+    meta?: StandardErrorMeta;
     details?: Array<{ field: string; issue: string }>;
   };
 }
@@ -358,6 +366,7 @@ export interface TranslationJobReviewDetailResponse {
     expiresAt: IsoDateString | null;
     reviewRevision: number;
     materializedRevision: number;
+    workspaceRevision: number;
   };
   context: {
     story: {
@@ -452,8 +461,14 @@ export type ReviewAssetDto =
       url: string;
     };
 
+export interface TranslationJobSegmentsResponse extends PaginatedResponse<TranslationSegmentDto> {
+  workspaceRevision: number;
+}
+
 export interface TranslationJobPreviewsResponse {
+  workspaceRevision: number;
   sourceAssets: ReviewAssetDto[];
   resultAssets: ReviewAssetDto[];
 }
+
 

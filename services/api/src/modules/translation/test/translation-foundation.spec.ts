@@ -53,6 +53,22 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
 
     dataSource = {
       query: jest.fn(),
+      transaction: jest.fn().mockImplementation((...args: any[]) => {
+        const callback = typeof args[0] === 'function' ? args[0] : args[1];
+        const managerMock = {
+          findOne: jobRepo.findOne,
+          find: segmentRepo.find,
+          count: segmentRepo.count,
+          createQueryBuilder: segmentRepo.createQueryBuilder,
+          getRepository: jest.fn().mockImplementation((entity) => {
+            if (entity === TranslationSegment) return segmentRepo;
+            if (entity === TranslationJob) return jobRepo;
+            return {};
+          }),
+          query: dataSource.query,
+        };
+        return callback(managerMock);
+      }),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -532,6 +548,164 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
         });
         const result = await service.getJob('job-corrupt-manifest', translatorUser);
         expect(result.reviewSummary.resultPageCount).toBeNull();
+      });
+    });
+
+    describe('#178 Acceptance Matrix: resultPageCount across status, format, and manifest representation', () => {
+      const validComicPages = [
+        {
+          page: 1,
+          storageKey: 'ai/jobs/j1/attempt-1/p1.webp',
+          previewKey: 'ai/jobs/j1/attempt-1/p1.webp',
+          width: 1000,
+          height: 1500,
+          fileSizeBytes: 204800,
+        },
+        {
+          page: 2,
+          storageKey: 'ai/jobs/j1/attempt-1/p2.webp',
+          previewKey: 'ai/jobs/j1/attempt-1/p2.webp',
+          width: 1000,
+          height: 1500,
+          fileSizeBytes: 204800,
+        },
+      ];
+
+      const validComicManifestObj = {
+        version: 1,
+        mediaFormat: 'COMIC',
+        pages: validComicPages,
+      };
+
+      const validComicManifestJsonStr = JSON.stringify(validComicManifestObj);
+
+      beforeEach(() => {
+        storyMemberRepo.findOne.mockResolvedValue({
+          storyId: 'story-1',
+          userId: translatorUser.id,
+          role: StoryMemberRole.TRANSLATOR,
+        });
+
+        dataSource.query.mockResolvedValue([
+          {
+            segment_count: 5,
+            verified_count: 5,
+            page_count: 2,
+            block_count: 0,
+          },
+        ]);
+      });
+
+      it.each([
+        {
+          desc: 'COMIC in READY_FOR_REVIEW with valid manifest object returns N (2)',
+          status: TranslationJobStatus.READY_FOR_REVIEW,
+          mediaFormat: MediaFormat.COMIC,
+          resultManifest: validComicManifestObj,
+          expectedCount: 2,
+        },
+        {
+          desc: 'COMIC in APPLIED with valid manifest object returns N (2)',
+          status: TranslationJobStatus.APPLIED,
+          mediaFormat: MediaFormat.COMIC,
+          resultManifest: validComicManifestObj,
+          expectedCount: 2,
+        },
+        {
+          desc: 'COMIC in READY_FOR_REVIEW with valid manifest JSON string returns same count N (2)',
+          status: TranslationJobStatus.READY_FOR_REVIEW,
+          mediaFormat: MediaFormat.COMIC,
+          resultManifest: validComicManifestJsonStr,
+          expectedCount: 2,
+        },
+        {
+          desc: 'COMIC in APPLIED with valid manifest JSON string returns same count N (2)',
+          status: TranslationJobStatus.APPLIED,
+          mediaFormat: MediaFormat.COMIC,
+          resultManifest: validComicManifestJsonStr,
+          expectedCount: 2,
+        },
+        {
+          desc: 'COMIC in QUEUED (non-ready) returns null despite valid manifest',
+          status: TranslationJobStatus.QUEUED,
+          mediaFormat: MediaFormat.COMIC,
+          resultManifest: validComicManifestObj,
+          expectedCount: null,
+        },
+        {
+          desc: 'COMIC in PREPROCESSING (non-ready) returns null despite valid manifest',
+          status: TranslationJobStatus.PREPROCESSING,
+          mediaFormat: MediaFormat.COMIC,
+          resultManifest: validComicManifestObj,
+          expectedCount: null,
+        },
+        {
+          desc: 'NOVEL in READY_FOR_REVIEW returns null',
+          status: TranslationJobStatus.READY_FOR_REVIEW,
+          mediaFormat: MediaFormat.NOVEL,
+          resultManifest: {
+            version: 1,
+            mediaFormat: 'NOVEL',
+            htmlKey: 'k',
+            htmlFileSizeBytes: 100,
+            segmentCount: 1,
+            charCount: 10,
+            qa: { passed: true, score: 1.0, fingerprintMatch: true, issuesCount: 0 },
+          },
+          expectedCount: null,
+        },
+        {
+          desc: 'NOVEL in APPLIED returns null',
+          status: TranslationJobStatus.APPLIED,
+          mediaFormat: MediaFormat.NOVEL,
+          resultManifest: null,
+          expectedCount: null,
+        },
+      ])('$desc', async ({ status, mediaFormat, resultManifest, expectedCount }) => {
+        jobRepo.findOne.mockResolvedValue({
+          id: 'job-matrix-test',
+          status,
+          progressPercentage: 100,
+          provider: 'OPENAI',
+          modelName: 'gpt-4o-mini',
+          promptVersion: 'v1',
+          attemptCount: 1,
+          maxAttempts: 3,
+          createdAt: new Date('2026-09-01T10:00:00Z'),
+          startedAt: new Date('2026-09-01T10:01:00Z'),
+          heartbeatAt: new Date('2026-09-01T10:05:00Z'),
+          completedAt: new Date('2026-09-01T10:05:00Z'),
+          expiresAt: null,
+          errorTrace: null,
+          inputManifest: null,
+          resultManifest,
+          project: {
+            id: 'proj-1',
+            sourceLanguage: 'ja',
+            targetLanguage: 'vi',
+            storyEdition: {
+              id: 'ed-1',
+              editionName: 'Bản Tiếng Việt Chuẩn',
+              language: 'vi',
+              isDefault: true,
+              story: {
+                id: 'story-1',
+                title: 'Story Matrix',
+                slug: 'story-matrix',
+                mediaFormat,
+              },
+            },
+          },
+          sourceVersion: {
+            id: 'ver-src-1',
+            versionNumber: 1,
+            chapter: { id: 'chap-1', chapterNumber: '1.00', title: 'Chap 1' },
+          },
+          targetVersion: null,
+        });
+
+        const result = await service.getJob('job-matrix-test', translatorUser);
+        expect(result.reviewSummary.resultPageCount).toBe(expectedCount);
       });
     });
 

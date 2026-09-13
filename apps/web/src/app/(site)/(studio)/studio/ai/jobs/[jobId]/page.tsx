@@ -36,17 +36,16 @@ export default function MangaStudioJobPage({ params }: PageProps) {
   const router = useRouter();
   const pathname = usePathname();
 
-  // Navigation handler
+  // Navigation handler: URL is SSoT, UI only pushes router!
   const navigateToPage = React.useCallback(
     (targetPage: number) => {
       const maxPages = studio.pageCountInfo.pageCount;
       const clamped = clampPageNumber(targetPage, maxPages);
       if (clamped !== studio.currentPage) {
         router.push(`${pathname}?page=${clamped}`);
-        studio.goToPage(clamped);
       }
     },
-    [pathname, router, studio]
+    [pathname, router, studio.currentPage, studio.pageCountInfo.pageCount]
   );
 
   // URL SSoT Synchronization
@@ -722,64 +721,135 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto space-y-3 max-h-[500px] pr-1">
-            {(studio.pageSegments && studio.pageSegments.length > 0
-              ? studio.pageSegments
-              : studio.segments
-            ).map((seg) => {
-              const hasPending = Boolean(studio.pendingUnknownMutations[seg.id]);
-              const segConflict = studio.conflictStates[seg.id];
-              return (
-                <div
-                  key={seg.id}
-                  onClick={() => studio.setSelectedSegmentId(seg.id)}
-                  className={`p-3 rounded-2xl border transition-all cursor-pointer ${
-                    studio.selectedSegmentId === seg.id
-                      ? 'bg-red-500/10 border-red-500/40'
-                      : 'bg-slate-950 border-slate-800 hover:border-slate-700'
-                  }`}
-                >
-                  <div className="flex justify-between items-center text-[11px] text-slate-400 mb-1">
-                    <span>
-                      {typeof seg.pageNumber === 'number'
-                        ? `Trang ${seg.pageNumber}`
-                        : 'Chưa gán trang'}{' '}
-                      • Thứ tự #{seg.sortOrder}
-                    </span>
-                    <div className="flex items-center gap-1">
-                      {hasPending && (
-                        <Badge variant="warning" className="animate-pulse">
-                          Chờ xác nhận
-                        </Badge>
-                      )}
-                      {segConflict?.retryBlocked && (
-                        <Badge variant="outline" className="text-rose-400 border-rose-500/40">
-                          Bị khóa
-                        </Badge>
-                      )}
-                      {studio.segmentsSyncStatus !== 'SYNCED' ? (
-                        <Badge variant="outline" className="text-amber-400 border-amber-500/40">
-                          Chưa xác minh
-                        </Badge>
-                      ) : seg.isHumanVerified ? (
-                        <Badge variant="success">Đã Duyệt</Badge>
-                      ) : (
-                        <Badge variant="outline">Chưa Duyệt</Badge>
-                      )}
+          {/* Page Segments Error Banner */}
+          {studio.pageSegmentsError && (
+            <div
+              data-testid="page-segments-error-banner"
+              className="p-3 bg-rose-950/40 border border-rose-500/40 rounded-2xl flex items-center justify-between gap-2 text-xs text-rose-300"
+            >
+              <span>Lỗi tải danh sách ô thoại trang {studio.currentPage}.</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => studio.retryPageSegments()}
+                className="h-7 px-2 text-xs text-rose-200 hover:text-white hover:bg-rose-500/20"
+              >
+                <RefreshCw className="w-3 h-3 mr-1" />
+                Thử lại
+              </Button>
+            </div>
+          )}
+
+          {/* Page Segments Loading State */}
+          {studio.pageSegmentsLoading && (
+            <div className="py-8 text-center text-xs text-slate-500 space-y-2">
+              <RefreshCw className="w-5 h-5 text-slate-500 animate-spin mx-auto" />
+              <p>Đang tải ô thoại trang {studio.currentPage}...</p>
+            </div>
+          )}
+
+          {/* Empty Page State (P1-3 Invariant: NEVER fallback to all canonical segments!) */}
+          {!studio.pageSegmentsLoading && !studio.pageSegmentsError && studio.pageSegments.length === 0 && (
+            <div
+              data-testid="empty-page-segments"
+              className="py-12 text-center text-xs text-slate-500 border border-dashed border-slate-800 rounded-2xl space-y-1"
+            >
+              <p className="font-semibold text-slate-400">Không có ô thoại nào</p>
+              <p className="text-[11px] text-slate-600">Trang {studio.currentPage} chưa phát hiện hoặc không có ô thoại OCR.</p>
+            </div>
+          )}
+
+          {/* Segments List for Current Page */}
+          {!studio.pageSegmentsLoading && studio.pageSegments.length > 0 && (
+            <div className="flex-1 overflow-y-auto space-y-3 max-h-[500px] pr-1">
+              {studio.pageSegments.map((seg) => {
+                const hasPending = Boolean(studio.pendingUnknownMutations[seg.id]);
+                const segConflict = studio.conflictStates[seg.id];
+                return (
+                  <div
+                    key={seg.id}
+                    onClick={() => studio.setSelectedSegmentId(seg.id)}
+                    className={`p-3 rounded-2xl border transition-all cursor-pointer ${
+                      studio.selectedSegmentId === seg.id
+                        ? 'bg-red-500/10 border-red-500/40'
+                        : 'bg-slate-950 border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div className="flex justify-between items-center text-[11px] text-slate-400 mb-1">
+                      <span>
+                        {typeof seg.pageNumber === 'number'
+                          ? `Trang ${seg.pageNumber}`
+                          : 'Chưa gán trang'}{' '}
+                        • Thứ tự #{seg.sortOrder}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        {hasPending && (
+                          <Badge variant="warning" className="animate-pulse">
+                            Chờ xác nhận
+                          </Badge>
+                        )}
+                        {segConflict?.retryBlocked && (
+                          <Badge variant="outline" className="text-rose-400 border-rose-500/40">
+                            Bị khóa
+                          </Badge>
+                        )}
+                        {studio.segmentsSyncStatus !== 'SYNCED' ? (
+                          <Badge variant="outline" className="text-amber-400 border-amber-500/40">
+                            Chưa xác minh
+                          </Badge>
+                        ) : seg.isHumanVerified ? (
+                          <Badge variant="success">Đã Duyệt</Badge>
+                        ) : (
+                          <Badge variant="outline">Chưa Duyệt</Badge>
+                        )}
+                      </div>
                     </div>
+                    <p className="text-xs font-mono text-slate-400 line-clamp-1 mb-1">
+                      {seg.rawText}
+                    </p>
+                    <p className="text-xs text-white line-clamp-2">
+                      {seg.translatedText || (
+                        <span className="text-slate-600 italic">Chưa có bản dịch</span>
+                      )}
+                    </p>
                   </div>
-                  <p className="text-xs font-mono text-slate-400 line-clamp-1 mb-1">
-                    {seg.rawText}
-                  </p>
-                  <p className="text-xs text-white line-clamp-2">
-                    {seg.translatedText || (
-                      <span className="text-slate-600 italic">Chưa có bản dịch</span>
-                    )}
-                  </p>
-                </div>
-              );
-            })}
-          </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* P2-2: Segment Pagination Controls (when totalPages > 1 on current manga page) */}
+          {studio.pageSegmentsPagination && studio.pageSegmentsPagination.totalPages > 1 && (
+            <div
+              data-testid="segment-pagination-bar"
+              className="pt-3 border-t border-slate-800 flex items-center justify-between text-xs text-slate-400"
+            >
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={studio.pageSegmentsPagination.page <= 1 || studio.pageSegmentsLoading}
+                onClick={() => studio.goToPageSegmentsPage(studio.pageSegmentsPagination!.page - 1)}
+                className="h-7 px-2 text-xs"
+              >
+                Trước
+              </Button>
+              <span>
+                Phân đoạn {studio.pageSegmentsPagination.page} / {studio.pageSegmentsPagination.totalPages}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={
+                  studio.pageSegmentsPagination.page >= studio.pageSegmentsPagination.totalPages ||
+                  studio.pageSegmentsLoading
+                }
+                onClick={() => studio.goToPageSegmentsPage(studio.pageSegmentsPagination!.page + 1)}
+                className="h-7 px-2 text-xs"
+              >
+                Sau
+              </Button>
+            </div>
+          )}
         </div>
       </div>
     </div>

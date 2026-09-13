@@ -356,38 +356,122 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
     });
   });
 
-  it('7. Rapid page switch 2 -> 3 -> 4: late response from page 2 does not overwrite page 4', async () => {
-    let resolvePage2Previews!: (val: any) => void;
-    const page2PreviewsPromise = new Promise((resolve) => {
-      resolvePage2Previews = resolve;
+  it('6b. P1-2: Page switch synchronously clears page-owned read model before network requests resolve', async () => {
+    let resolveWindowDeferred!: (val: any) => void;
+    const windowDeferred = new Promise((resolve) => {
+      resolveWindowDeferred = resolve;
     });
-
-    const origPreviews = translationApi.fetchTranslationJobPreviews;
-    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async (jobId, query) => {
-      if (query && 'fromPage' in query && query.fromPage === 1 && query.toPage === 5) {
-        // Assume page 2 query or initial
-      }
-      if (query && 'fromPage' in query && query.fromPage === 2) {
-        // page 4 query
-        return {
-          sourceAssets: [{ pageNumber: 4, url: 'url-page-4' } as any],
-          resultAssets: [],
-          workspaceRevision: 10,
-        };
-      }
-      return origPreviews(jobId, query);
+    let resolveSegmentsDeferred!: (val: any) => void;
+    const segmentsDeferred = new Promise((resolve) => {
+      resolveSegmentsDeferred = resolve;
     });
 
     const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
     await waitFor(() => expect(result.current.status).toBe('ready'));
 
-    // Switch to 4
+    act(() => {
+      result.current.setSelectedSegmentId('seg-1');
+    });
+    expect(result.current.selectedSegmentId).toBe('seg-1');
+    expect(result.current.pageSegments).toHaveLength(1);
+    expect(result.current.previewWindow).not.toBeNull();
+
+    // Mock deferred response for page 6
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockReturnValue(windowDeferred as any);
+    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockReturnValue(segmentsDeferred as any);
+
+    // Switch to page 6
+    act(() => {
+      result.current.goToPage(6);
+    });
+
+    // Invariant P1-2: SYNCHRONOUSLY before network resolves, page-owned data must be cleared!
+    expect(result.current.currentPage).toBe(6);
+    expect(result.current.selectedSegmentId).toBeNull();
+    expect(result.current.pageSegments).toEqual([]);
+    expect(result.current.pageSegmentsPagination).toBeNull();
+    expect(result.current.pageSegmentsError).toBeNull();
+    expect(result.current.previewWindow).toBeNull(); // page 6 outside [1..5]
+    expect(result.current.previewWindowLoading).toBe(true);
+    expect(result.current.pageSegmentsLoading).toBe(true);
+
+    // Resolve deferred network
+    await act(async () => {
+      resolveWindowDeferred({ sourceAssets: [], resultAssets: [], workspaceRevision: 10 });
+      resolveSegmentsDeferred({ data: [], pagination: { total: 0, page: 1, limit: 50, totalPages: 1 }, workspaceRevision: 10 });
+    });
+  });
+
+  it('7. Rapid page switch 2 -> 3 -> 4: late response from page 2 and 3 does not overwrite page 4', async () => {
+    let resolvePage2Previews!: (val: any) => void;
+    const page2PreviewsPromise = new Promise((resolve) => {
+      resolvePage2Previews = resolve;
+    });
+    let resolvePage3Previews!: (val: any) => void;
+    const page3PreviewsPromise = new Promise((resolve) => {
+      resolvePage3Previews = resolve;
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    let callCount = 0;
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async (_jobId, query) => {
+      if (query && 'fromPage' in query) {
+        callCount++;
+        if (callCount === 1) {
+          // page 2 navigator request -> defer
+          return page2PreviewsPromise as any;
+        }
+        if (callCount === 2) {
+          // page 3 navigator request -> defer
+          return page3PreviewsPromise as any;
+        }
+        if (callCount === 3 || (query.fromPage === 2 && query.toPage === 6)) {
+          // page 4 navigator request -> resolve immediately with page 4 window data
+          return {
+            sourceAssets: [{ pageNumber: 4, url: 'url-page-4' } as any],
+            resultAssets: [],
+            workspaceRevision: 10,
+          };
+        }
+      }
+      return { sourceAssets: [], resultAssets: [], workspaceRevision: 10 };
+    });
+
+    // Rapidly switch 2 -> 3 -> 4
+    act(() => {
+      result.current.goToPage(2);
+    });
+    act(() => {
+      result.current.goToPage(3);
+    });
     await act(async () => {
       result.current.goToPage(4);
     });
 
     expect(result.current.currentPage).toBe(4);
     expect(result.current.previewWindow?.fromPage).toBe(2);
+    expect(result.current.previewWindow?.sourceAssets[0]?.url).toBe('url-page-4');
+
+    // Late resolution of page 2 and page 3
+    await act(async () => {
+      resolvePage2Previews({
+        sourceAssets: [{ pageNumber: 2, url: 'stale-url-page-2' } as any],
+        resultAssets: [],
+        workspaceRevision: 10,
+      });
+      resolvePage3Previews({
+        sourceAssets: [{ pageNumber: 3, url: 'stale-url-page-3' } as any],
+        resultAssets: [],
+        workspaceRevision: 10,
+      });
+    });
+
+    // Invariant: Late responses from 2 and 3 did NOT overwrite page 4 state!
+    expect(result.current.currentPage).toBe(4);
+    expect(result.current.previewWindow?.fromPage).toBe(2);
+    expect(result.current.previewWindow?.sourceAssets[0]?.url).toBe('url-page-4');
   });
 
   it('8. Amendment #1: Navigator-local failure (preview window 500) sets previewWindowError but leaves authoritative gate OPEN', async () => {
@@ -463,7 +547,56 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
     });
   });
 
-  it('10. Same-scope retry/reconcile preserves currentPage (does not reset to page 1)', async () => {
+  it('9b. P1-4: pageSegments workspaceRevision mismatch drops response, closes authoritative gate and triggers reconciliation', async () => {
+    let resolveReconcileDetail!: (val: any) => void;
+    const reconcileDetailDeferred = new Promise<TranslationJobReviewDetailResponse>((resolve) => {
+      resolveReconcileDetail = resolve;
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    // Mock detail to defer on reconciliation
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockReturnValue(reconcileDetailDeferred);
+
+    // Mock segments returning stale workspaceRevision: 9 (mismatch with detail 10)
+    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async (_id, queryOrPage) => {
+      if (typeof queryOrPage === 'object' && queryOrPage?.pageNumber === 4) {
+        return {
+          data: [{ id: 'stale-seg', pageNumber: 4, version: 1 } as any],
+          pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+          workspaceRevision: 9, // STALE!
+        };
+      }
+      return { data: mockSegments, pagination: { page: 1, limit: 100, total: 1, totalPages: 1 }, workspaceRevision: 10 };
+    });
+
+    const saveSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+
+    await act(async () => {
+      result.current.goToPage(4);
+    });
+
+    // Invariant P1-4: Gate must be fail-closed, stale pageSegments dropped!
+    expect(result.current.isGateClosed).toBe(true);
+    expect(result.current.pageSegments).toEqual([]);
+
+    // Mutation blocked fail-closed with 0 network calls!
+    const saveRes = await result.current.saveSegment('seg-1', 'test');
+    expect(saveRes.outcome).toBe('FAILED_BEFORE_COMMIT');
+    expect(saveRes.workspaceState).toBe('RECONCILIATION_REQUIRED');
+    expect(saveSpy).toHaveBeenCalledTimes(0);
+
+    // Complete reconciliation
+    await act(async () => {
+      resolveReconcileDetail(mockJobDetail);
+    });
+  });
+
+  it('10. Same-scope retry/reconcile preserves currentPage (does not reset to page 1) and fetches page 7 bounded window', async () => {
+    const previewSpy = vi.spyOn(translationApi, 'fetchTranslationJobPreviews');
+    const segmentSpy = vi.spyOn(translationApi, 'fetchTranslationJobSegments');
+
     const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
     await waitFor(() => expect(result.current.status).toBe('ready'));
 
@@ -472,14 +605,29 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
     });
     expect(result.current.currentPage).toBe(7);
 
+    previewSpy.mockClear();
+    segmentSpy.mockClear();
+
     // Call retry
     await act(async () => {
       await result.current.retry();
     });
 
     await waitFor(() => expect(result.current.status).toBe('ready'));
-    // Preserved!
+    // Invariant P1-5: Preserved currentPage=7 and bounded window [5..9] actually fetched for page 7!
     expect(result.current.currentPage).toBe(7);
+    expect(result.current.previewWindow?.fromPage).toBe(5);
+    expect(result.current.previewWindow?.toPage).toBe(9);
+
+    const windowCalls = previewSpy.mock.calls.filter(
+      (c) => typeof c[1] === 'object' && c[1] !== null && 'fromPage' in c[1],
+    );
+    expect(windowCalls.some((c: any) => c[1].fromPage === 5 && c[1].toPage === 9)).toBe(true);
+
+    const segmentCalls = segmentSpy.mock.calls.filter(
+      (c) => typeof c[1] === 'object' && c[1] !== null && 'pageNumber' in c[1],
+    );
+    expect(segmentCalls.some((c: any) => c[1].pageNumber === 7)).toBe(true);
   });
 
   it('11. resultPageCount=null/0 retains COUNT_UNAVAILABLE mode and does NOT fetch window previews', async () => {
@@ -537,6 +685,64 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
 
     // Result should not reflect job-1 data
     expect(result.current.previewWindow?.sourceAssets?.some((a) => a.url === 'job-1-url')).toBeFalsy();
+  });
+
+  it('12b. P1-6: Terminal transition to APPLIED purges in-flight navigator requests and prevents review revival', async () => {
+    let resolvePage2Previews!: (val: any) => void;
+    const page2PreviewsDeferred = new Promise((res) => {
+      resolvePage2Previews = res;
+    });
+    let resolvePage2Segments!: (val: any) => void;
+    const page2SegmentsDeferred = new Promise((res) => {
+      resolvePage2Segments = res;
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockReturnValue(page2PreviewsDeferred as any);
+    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockReturnValue(page2SegmentsDeferred as any);
+
+    // Navigate to page 2 (in-flight)
+    act(() => {
+      result.current.goToPage(2);
+    });
+
+    // Background transition to APPLIED arrives while requests are in flight
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue({
+      ...mockJobDetail,
+      job: {
+        ...mockJobDetail.job,
+        status: TranslationJobStatus.APPLIED,
+        workspaceRevision: 11,
+      },
+    });
+
+    await act(async () => {
+      await result.current.refetchDetail();
+    });
+
+    expect(result.current.workspaceMode?.mode).toBe('APPLIED');
+    expect(result.current.previewWindow).toBeNull();
+    expect(result.current.pageSegments).toEqual([]);
+
+    // In-flight navigator requests resolve late
+    await act(async () => {
+      resolvePage2Previews({
+        sourceAssets: [{ pageNumber: 2, url: 'revived-url' } as any],
+        resultAssets: [],
+        workspaceRevision: 10,
+      });
+      resolvePage2Segments({
+        data: [{ id: 'revived-seg', pageNumber: 2 } as any],
+        workspaceRevision: 10,
+      });
+    });
+
+    // Invariant P1-6: In-flight requests dropped, review state MUST NOT be revived!
+    expect(result.current.previewWindow).toBeNull();
+    expect(result.current.pageSegments).toEqual([]);
+    expect(result.current.workspaceMode?.mode).toBe('APPLIED');
   });
 
   it('13. pageSegments preserves pagination metadata (Amendment #3: totalPages > 1)', async () => {
@@ -608,6 +814,67 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
 
     expect(result.current.previewWindowError).toBeNull();
     expect(result.current.previewWindow).not.toBeNull();
+  });
+
+  it('14b. P2-1: retryPreviewWindow and retryPageSegments are isolated and do not churn each other', async () => {
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    const previewSpy = vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
+      sourceAssets: [],
+      resultAssets: [],
+      workspaceRevision: 10,
+    });
+    const segmentSpy = vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+      data: mockSegments,
+      pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+      workspaceRevision: 10,
+    });
+
+    // retryPreviewWindow only calls fetchTranslationJobPreviews
+    await act(async () => {
+      await result.current.retryPreviewWindow();
+    });
+    expect(previewSpy).toHaveBeenCalled();
+    expect(segmentSpy).not.toHaveBeenCalled();
+
+    previewSpy.mockClear();
+    segmentSpy.mockClear();
+
+    // retryPageSegments only calls fetchTranslationJobSegments
+    await act(async () => {
+      await result.current.retryPageSegments();
+    });
+    expect(segmentSpy).toHaveBeenCalled();
+    expect(previewSpy).not.toHaveBeenCalled();
+  });
+
+  it('14c. P2-2: goToPageSegmentsPage fetches next segment page for current manga page', async () => {
+    const segmentSpy = vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async (_id, queryOrPage) => {
+      if (typeof queryOrPage === 'object' && queryOrPage?.pageNumber === 1 && queryOrPage?.page === 2) {
+        return {
+          data: [{ id: 'seg-page1-item51', pageNumber: 1, version: 1 } as any],
+          pagination: { page: 2, limit: 50, total: 120, totalPages: 3 },
+          workspaceRevision: 10,
+        };
+      }
+      return { data: mockSegments, pagination: { page: 1, limit: 50, total: 120, totalPages: 3 }, workspaceRevision: 10 };
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    await act(async () => {
+      await result.current.goToPageSegmentsPage(2);
+    });
+
+    expect(segmentSpy).toHaveBeenCalledWith(mockJobId, {
+      page: 2,
+      limit: 50,
+      pageNumber: 1,
+    });
+    expect(result.current.pageSegmentsPagination?.page).toBe(2);
+    expect(result.current.pageSegments[0].id).toBe('seg-page1-item51');
   });
 });
 
@@ -860,6 +1127,122 @@ describe('Manga Review Studio Route & URL Synchronization (#149 RED 1)', () => {
 
     // Editor/workspace remains rendered and gate is NOT broken!
     expect(screen.getByText('Manga Review Studio')).toBeDefined();
+  });
+
+  it('23. P1-3: Empty page segments renders empty-page-segments and NEVER falls back to canonical segments', async () => {
+    currentSearchParams = new URLSearchParams('page=7');
+
+    // Mock page 7 having 0 segments
+    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async (_id, queryOrPage) => {
+      if (typeof queryOrPage === 'object' && queryOrPage?.pageNumber === 7) {
+        return {
+          data: [],
+          pagination: { page: 1, limit: 50, total: 0, totalPages: 1 },
+          workspaceRevision: 10,
+        };
+      }
+      return { data: mockSegments, pagination: { page: 1, limit: 100, total: 1, totalPages: 1 }, workspaceRevision: 10 };
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('empty-page-segments')).toBeDefined();
+    });
+
+    expect(screen.getByText('Không có ô thoại nào')).toBeDefined();
+    // Invariant P1-3: MUST NOT render canonical segment from page 1!
+    expect(screen.queryByText('Dịch 1')).toBeNull();
+    expect(screen.queryByText('Text 1')).toBeNull();
+  });
+
+  it('24. P1-3: Page segments error renders dedicated error banner with retry and NEVER falls back to canonical segments', async () => {
+    currentSearchParams = new URLSearchParams('page=2');
+
+    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async (_id, queryOrPage) => {
+      if (typeof queryOrPage === 'object' && queryOrPage?.pageNumber === 2) {
+        const err = new Error('Segments 500 Error') as any;
+        err.isAxiosError = true;
+        err.response = { status: 500 };
+        throw err;
+      }
+      return { data: mockSegments, pagination: { page: 1, limit: 100, total: 1, totalPages: 1 }, workspaceRevision: 10 };
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('page-segments-error-banner')).toBeDefined();
+    });
+
+    expect(screen.getByText(/Lỗi tải danh sách ô thoại trang 2/)).toBeDefined();
+    // Invariant P1-3: MUST NOT fallback to canonical segments!
+    expect(screen.queryByText('Dịch 1')).toBeNull();
+  });
+
+  it('25. P2-2: Multi-page segment pagination renders pagination controls and page indicator', async () => {
+    currentSearchParams = new URLSearchParams('page=1');
+
+    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async (_id, queryOrPage) => {
+      if (typeof queryOrPage === 'object' && queryOrPage?.pageNumber === 1) {
+        return {
+          data: [mockSegments[0]],
+          pagination: { page: 1, limit: 50, total: 120, totalPages: 3 },
+          workspaceRevision: 10,
+        };
+      }
+      return { data: mockSegments, pagination: { page: 1, limit: 100, total: 1, totalPages: 1 }, workspaceRevision: 10 };
+    });
+
+    await act(async () => {
+      render(<MangaStudioJobPage params={mockParams} />);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('segment-pagination-bar')).toBeDefined();
+    });
+
+    expect(screen.getByText(/Phân đoạn 1 \/ 3/)).toBeDefined();
+    const prevSegBtn = screen.getByText('Trước').closest('button');
+    const nextSegBtn = screen.getByText('Sau').closest('button');
+
+    expect(prevSegBtn).toBeDisabled();
+    expect(nextSegBtn).not.toBeDisabled();
+  });
+
+  it('26. P1-1: Internal navigation only pushes URL; delayed router update does not rollback hook page state', async () => {
+    currentSearchParams = new URLSearchParams('page=1');
+
+    const { rerender } = render(<MangaStudioJobPage params={mockParams} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Trang Tiếp')).toBeDefined();
+    });
+
+    const nextBtn = screen.getByText('Trang Tiếp').closest('button');
+
+    await act(async () => {
+      fireEvent.click(nextBtn!);
+    });
+
+    // Invariant P1-1: router.push was called
+    expect(mockPush).toHaveBeenCalledWith('/studio/ai/jobs/job-nav-123?page=2');
+
+    // While searchParams is still page=1 (router commit lag), rerendering does NOT cause state rollback
+    rerender(<MangaStudioJobPage params={mockParams} />);
+    expect(screen.getByText('Trang 1 / 20')).toBeDefined();
+
+    // When router eventually commits ?page=2:
+    currentSearchParams = new URLSearchParams('page=2');
+    rerender(<MangaStudioJobPage params={mockParams} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Trang 2 / 20')).toBeDefined();
+    });
   });
 });
 

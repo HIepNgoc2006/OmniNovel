@@ -3852,12 +3852,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       });
 
       // Resolve Request 2 first (seq 2, rev 20)
-      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         data: [{ ...mockSegments[0], translatedText: 'Rev 20 Seg' }],
         pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
         workspaceRevision: 20,
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
         sourceAssets: [],
         resultAssets: [],
         workspaceRevision: 20,
@@ -3875,12 +3875,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(result.current.segments[0].translatedText).toBe('Rev 20 Seg');
 
       // Now Resolve Request 1 (seq 1, rev 21) - newer revision wins even though sequence is older!
-      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         data: [{ ...mockSegments[0], translatedText: 'Rev 21 Seg' }],
         pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
         workspaceRevision: 21,
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
         sourceAssets: [],
         resultAssets: [],
         workspaceRevision: 21,
@@ -4530,12 +4530,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         ...mockComicJobDetail,
         job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         data: mockSegments, // contains seg-1
         pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
         workspaceRevision: 2,
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
         sourceAssets: [],
         resultAssets: [],
         workspaceRevision: 2,
@@ -4562,12 +4562,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         ...mockComicJobDetail,
         job: { ...mockComicJobDetail.job, workspaceRevision: 3 },
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         data: [{ ...mockSegments[0], version: 2 }],
         pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
         workspaceRevision: 3,
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
         sourceAssets: [],
         resultAssets: [],
         workspaceRevision: 3,
@@ -4814,12 +4814,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         ...mockComicJobDetail,
         job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         data: [{ ...mockSegments[0], version: 2, translatedText: 'Text B' }],
         pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
         workspaceRevision: 2,
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
         sourceAssets: [],
         resultAssets: [],
         workspaceRevision: 2,
@@ -4898,12 +4898,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         ...mockComicJobDetail,
         job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         data: [{ ...mockSegments[0], version: 2 }],
         pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
         workspaceRevision: 2,
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
         sourceAssets: [],
         resultAssets: [],
         workspaceRevision: 2,
@@ -4923,12 +4923,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         ...mockComicJobDetail,
         job: { ...mockComicJobDetail.job, workspaceRevision: 3 },
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         data: [{ ...mockSegments[0], version: 3, translatedText: 'Draft text' }],
         pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
         workspaceRevision: 3,
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
         sourceAssets: [],
         resultAssets: [],
         workspaceRevision: 3,
@@ -5052,12 +5052,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         ...mockComicJobDetail,
         job: { ...mockComicJobDetail.job, workspaceRevision: 3 },
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         data: mockSegments,
         pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
         workspaceRevision: 3,
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
         sourceAssets: [],
         resultAssets: [],
         workspaceRevision: 3,
@@ -5300,12 +5300,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         ...mockComicJobDetail,
         job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         data: [{ ...mockSegments[0], version: 2 }, mockSegments[1]],
         pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
         workspaceRevision: 2,
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
         sourceAssets: [],
         resultAssets: [],
         workspaceRevision: 2,
@@ -5393,12 +5393,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         ...mockComicJobDetail,
         job: { ...mockComicJobDetail.job, workspaceRevision: 2 },
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         data: [mockSegments[1]], // only seg-2
         pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
         workspaceRevision: 2,
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
         sourceAssets: [],
         resultAssets: [],
         workspaceRevision: 2,
@@ -5512,12 +5512,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       expect(concurrentMatRes).toBeNull();
 
       // Now resolve the deferred recovery
-      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         data: [{ ...mockSegments[0], version: 2 }, mockSegments[1]],
         pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
         workspaceRevision: 2,
       });
-      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValueOnce({
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
         sourceAssets: [],
         resultAssets: [],
         workspaceRevision: 2,

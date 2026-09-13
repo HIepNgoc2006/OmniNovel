@@ -876,6 +876,227 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
     expect(result.current.pageSegmentsPagination?.page).toBe(2);
     expect(result.current.pageSegments[0].id).toBe('seg-page1-item51');
   });
+
+  it('15a. P1-A: saveSegment authoritative refetchDetail refreshes previewWindow and pageSegments with updated revision and content', async () => {
+    let currentRev = 10;
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockImplementation(async () => ({
+      ...mockJobDetail,
+      job: {
+        ...mockJobDetail.job,
+        workspaceRevision: currentRev,
+        reviewRevision: currentRev,
+      },
+    }));
+
+    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async (_id, queryOrPage) => {
+      return {
+        data: [
+          {
+            id: 'seg-page1-item1',
+            pageNumber: 1,
+            version: currentRev === 10 ? 1 : 2,
+            rawText: 'Original raw text',
+            translatedText: currentRev === 10 ? 'Original raw text' : 'Bản dịch mới đã lưu',
+            isHumanVerified: currentRev !== 10,
+          } as any,
+        ],
+        pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+        workspaceRevision: currentRev,
+      };
+    });
+
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async () => ({
+      sourceAssets: [],
+      resultAssets: [],
+      workspaceRevision: currentRev,
+    }));
+
+    vi.spyOn(translationApi, 'updateTranslationSegment').mockImplementation(async () => {
+      currentRev = 11;
+      return {
+        id: 'seg-page1-item1',
+        version: 2,
+        translatedText: 'Bản dịch mới đã lưu',
+        isHumanVerified: true,
+        workspaceRevision: 11,
+      } as any;
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.pageSegments[0].translatedText).toBe('Original raw text');
+
+    let saveOutcome: any;
+    await act(async () => {
+      saveOutcome = await result.current.saveSegment('seg-page1-item1', 'Bản dịch mới đã lưu');
+    });
+
+    expect(saveOutcome.success).toBe(true);
+    expect(saveOutcome.outcome).toBe('SAVED_AND_SYNCED');
+
+    // P1-A Invariant: RED 1 pageSegments and previewWindow must be refreshed to rev 11
+    await waitFor(() => {
+      expect(result.current.pageSegments[0].translatedText).toBe('Bản dịch mới đã lưu');
+      expect(result.current.pageSegments[0].isHumanVerified).toBe(true);
+      expect(result.current.previewWindow?.workspaceRevision).toBe(11);
+    });
+  });
+
+  it('15b. P1-B: loadPreviewWindow and loadPageSegments purge workspace on 401/403/404 access errors', async () => {
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    // Preview fails with 403 FORBIDDEN
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockRejectedValue({
+      isAxiosError: true,
+      response: {
+        status: 403,
+        data: { error: { code: 'FORBIDDEN', message: 'Access denied' } },
+      },
+    });
+
+    await act(async () => {
+      await result.current.retryPreviewWindow();
+    });
+
+    // P1-B Invariant: Must NOT degrade to navigator-local PREVIEWS_WINDOW_FAILED! Must purge and set status error!
+    expect(result.current.status).toBe('error');
+    expect(result.current.fatalError?.code).toBe('FORBIDDEN');
+    expect(result.current.segments).toEqual([]);
+    expect(result.current.previewWindow).toBeNull();
+  });
+
+  it('15c. P1-B: loadPreviewWindow closes gate and reconciles on 409 PREVIEWS_NOT_AVAILABLE_FOR_STATUS / NOT_REVIEWABLE', async () => {
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    const reconcileSpy = vi.spyOn(translationApi, 'fetchTranslationJobDetail');
+
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockRejectedValue({
+      isAxiosError: true,
+      response: {
+        status: 409,
+        data: { error: { code: 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS', message: 'Status changed' } },
+      },
+    });
+
+    await act(async () => {
+      await result.current.retryPreviewWindow();
+    });
+
+    // P1-B Invariant: Closes authoritative gate and triggers reconciliation
+    expect(result.current.isGateClosed).toBe(true);
+    expect(reconcileSpy).toHaveBeenCalled();
+  });
+
+  it('15d. P2-A: retryPageSegments retries target segment subpage even after failure cleared pagination', async () => {
+    let failSegments = false;
+    const segmentSpy = vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async (_id, queryOrPage) => {
+      if (typeof queryOrPage === 'object' && queryOrPage?.pageNumber === 1 && queryOrPage?.page === 2) {
+        if (failSegments) {
+          throw new Error('Network failure on subpage 2');
+        }
+        return {
+          data: [{ id: 'seg-p1-item51', pageNumber: 1, version: 1 } as any],
+          pagination: { page: 2, limit: 50, total: 120, totalPages: 3 },
+          workspaceRevision: 10,
+        };
+      }
+      return { data: mockSegments, pagination: { page: 1, limit: 50, total: 120, totalPages: 3 }, workspaceRevision: 10 };
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    // Step 1: Navigate to subpage 2 successfully
+    await act(async () => {
+      await result.current.goToPageSegmentsPage(2);
+    });
+    expect(result.current.pageSegmentsPagination?.page).toBe(2);
+
+    // Step 2: Subpage 2 fails on network error
+    failSegments = true;
+    await act(async () => {
+      await result.current.goToPageSegmentsPage(2);
+    });
+    expect(result.current.pageSegmentsError).toBe('SEGMENTS_PAGE_FAILED');
+    expect(result.current.pageSegmentsPagination).toBeNull(); // Cleared on error!
+
+    // Step 3: P2-A Invariant: retryPageSegments MUST retry subpage 2, NOT fallback to subpage 1!
+    failSegments = false;
+    segmentSpy.mockClear();
+
+    await act(async () => {
+      await result.current.retryPageSegments();
+    });
+
+    expect(segmentSpy).toHaveBeenCalledWith(mockJobId, {
+      page: 2,
+      limit: 50,
+      pageNumber: 1,
+    });
+    expect(result.current.pageSegmentsPagination?.page).toBe(2);
+    expect(result.current.pageSegments[0].id).toBe('seg-p1-item51');
+  });
+
+  it('15e. P2-B: true job boundary immediately resets currentPage to 1 and cancels in-flight navigator requests', async () => {
+    const job2Id = 'job-boundary-test-2';
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockImplementation(async (id) => {
+      if (id === job2Id) {
+        return {
+          ...mockJobDetail,
+          job: { ...mockJobDetail.job, id: job2Id, workspaceRevision: 1 },
+          reviewSummary: { ...mockJobDetail.reviewSummary, totalPages: 3, resultPageCount: 3, verifiedSegments: 0, totalSegments: 5 },
+        };
+      }
+      return mockJobDetail;
+    });
+
+    const segmentSpy = vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async (id) => ({
+      data: mockSegments,
+      pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+      workspaceRevision: id === job2Id ? 1 : 10,
+    }));
+
+    const previewSpy = vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async (id) => ({
+      sourceAssets: [],
+      resultAssets: [],
+      workspaceRevision: id === job2Id ? 1 : 10,
+    }));
+
+    const { result, rerender } = renderHook(({ id }) => useMangaReviewStudio(id), {
+      initialProps: { id: mockJobId },
+    });
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    // Navigate to page 4 on Job 1
+    await act(async () => {
+      result.current.goToPage(4);
+    });
+    expect(result.current.currentPage).toBe(4);
+
+    previewSpy.mockClear();
+    segmentSpy.mockClear();
+
+    // Rerender with Job 2 (which has 3 pages)
+    rerender({ id: job2Id });
+
+    // P2-B Invariant: currentPage MUST immediately reset to 1, and requests for Job 2 MUST be for page 1!
+    expect(result.current.currentPage).toBe(1);
+
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+
+    // Assert preview and segment requests for Job 2 were for page 1 (or bounded window starting page 1), NOT page 4
+    expect(previewSpy).toHaveBeenCalledWith(job2Id, {
+      fromPage: 1,
+      toPage: 3,
+    });
+    expect(segmentSpy).toHaveBeenCalledWith(job2Id, {
+      page: 1,
+      limit: 50,
+      pageNumber: 1,
+    });
+  });
 });
 
 describe('Manga Review Studio Route & URL Synchronization (#149 RED 1)', () => {

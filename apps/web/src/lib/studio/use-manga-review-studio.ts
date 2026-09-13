@@ -210,6 +210,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   const pageNavSeqRef = useRef(0);
   const previewWindowSeqRef = useRef(0);
   const pageSegmentsSeqRef = useRef(0);
+  const currentSegmentSubpageRef = useRef(1);
   const loadPreviewWindowRef = useRef<
     ((targetPage: number, explicitGen?: number, explicitDetail?: TranslationJobReviewDetailResponse | null) => Promise<void>) | null
   >(null);
@@ -584,6 +585,13 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     replaceConflictStates({});
     replacePendingUnknownMutations({});
     resetPreviewBreaker();
+    // P2-B: Scope boundary reset resets page navigation to 1 and invalidates pending navigator requests
+    setCurrentPage(1);
+    currentPageRef.current = 1;
+    currentSegmentSubpageRef.current = 1;
+    pageNavSeqRef.current++;
+    previewWindowSeqRef.current++;
+    pageSegmentsSeqRef.current++;
   }, [replaceConflictStates, replacePendingUnknownMutations, resetPreviewBreaker]);
 
   // Invariant P1-1 & Round 9: Separate server-owned state reset from user drafts and scope boundary
@@ -601,6 +609,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         resetPreviewBreaker();
         windowCoherenceBreakerRef.current = { revision: -1, attempts: 0 };
         pageSegmentsCoherenceBreakerRef.current = { revision: -1, attempts: 0 };
+        currentSegmentSubpageRef.current = 1;
       }
       setMaterializationState(null);
       materializationInFlightRef.current = false;
@@ -1165,8 +1174,9 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
                 // RED 1: Load real bounded preview window and page segments for currentPage
                 const curPage = currentPageRef.current;
+                const curSubpage = currentSegmentSubpageRef.current;
                 loadPreviewWindowRef.current?.(curPage, currentGen, detail);
-                loadPageSegmentsRef.current?.(curPage, 1, currentGen, detail);
+                loadPageSegmentsRef.current?.(curPage, curSubpage, currentGen, detail);
               } catch (prevErr) {
                 if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) {
                   return;
@@ -1355,6 +1365,12 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     // Reset scope boundary ONLY on true boundary: job change or user change!
     if (isNewJob || isNewUser) {
       resetScopeBoundary();
+      setCurrentPage(1);
+      currentPageRef.current = 1;
+      currentSegmentSubpageRef.current = 1;
+      pageNavSeqRef.current++;
+      previewWindowSeqRef.current++;
+      pageSegmentsSeqRef.current++;
     }
 
     resetState();
@@ -1753,6 +1769,12 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
                   outcome: 'REVIEW_SYNCED',
                 };
 
+                // P1-A: Refresh RED1 bounded preview window and pageSegments for current page upon authoritative sync!
+                const curPage = currentPageRef.current;
+                const curSubpage = currentSegmentSubpageRef.current;
+                loadPreviewWindowRef.current?.(curPage, currentGen, detail);
+                loadPageSegmentsRef.current?.(curPage, curSubpage, currentGen, detail);
+
                 return 'SYNCED';
               } catch (prevErr) {
                 if (!isChildRequestCurrent(currentGen, currentJob, dataLoadSeq)) {
@@ -1844,6 +1866,11 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
                 seq: detailSeq,
                 outcome: 'REVIEW_SYNCED',
               };
+
+              // P1-A: Refresh RED1 page segments for current page upon authoritative sync!
+              const curPage = currentPageRef.current;
+              const curSubpage = currentSegmentSubpageRef.current;
+              loadPageSegmentsRef.current?.(curPage, curSubpage, currentGen, detail);
 
               return 'SYNCED';
             }
@@ -2610,7 +2637,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           workspaceRevision: prevRes.workspaceRevision,
         });
         setPreviewWindowLoading(false);
-      } catch (_err) {
+      } catch (err) {
         if (
           generationRef.current !== currentGen ||
           activeJobIdRef.current !== currentJob ||
@@ -2618,13 +2645,61 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         ) {
           return;
         }
+
+        // P1-B: Check security / lifecycle errors instead of swallowing into navigator-local error
+        const parsed = parseApiError(err);
+        if (isJobAccessError(parsed)) {
+          purgeOnAccessError(parsed, currentGen, currentJob);
+          return;
+        }
+
+        if (
+          parsed.code === 'PREVIEWS_NOT_AVAILABLE_FOR_STATUS' ||
+          parsed.code === 'NOT_REVIEWABLE'
+        ) {
+          authoritativeProofRef.current = null;
+          replaceAuthoritativeGate(true, {
+            mode: 'RECONCILIATION_REQUIRED',
+            canPreview: false,
+            canEdit: false,
+            canMaterialize: false,
+            message:
+              'Trạng thái dữ liệu giữa chi tiết job và bản xem trước không nhất quán từ máy chủ.',
+          });
+
+          const attempts = recordPreviewAttempt(
+            currentJob,
+            user?.id ?? null,
+            (explicitDetail ?? jobDetailRef.current)?.job.workspaceRevision ?? 0,
+          );
+
+          if (attempts < MAX_COHERENCE_RECONCILE_ATTEMPTS) {
+            void reconcileRef.current();
+          } else {
+            setFatalError({
+              code: 'STATE_DESYNCHRONIZED',
+              message:
+                'Trạng thái dữ liệu giữa chi tiết job và bản xem trước không nhất quán từ máy chủ. Vui lòng tải lại trang.',
+            });
+            setStatus('error');
+          }
+          return;
+        }
+
         // Amendment #1: Navigator-local failure! Leaves authoritative gate OPEN!
         setPreviewWindow(null);
         setPreviewWindowLoading(false);
         setPreviewWindowError('PREVIEWS_WINDOW_FAILED');
       }
     },
-    [replaceAuthoritativeGate, recordPreviewAttempt, resetPreviewBreaker, user?.id],
+    [
+      replaceAuthoritativeGate,
+      recordPreviewAttempt,
+      resetPreviewBreaker,
+      user?.id,
+      isJobAccessError,
+      purgeOnAccessError,
+    ],
   );
 
   const loadPageSegments = useCallback(
@@ -2634,6 +2709,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       explicitGen?: number,
       explicitDetail?: TranslationJobReviewDetailResponse | null,
     ) => {
+      currentSegmentSubpageRef.current = segmentPage;
       const currentGen = explicitGen ?? generationRef.current;
       const currentJob = activeJobIdRef.current;
       const detail = explicitDetail ?? jobDetailRef.current;
@@ -2735,7 +2811,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
             : null,
         );
         setPageSegmentsLoading(false);
-      } catch (_err) {
+      } catch (err) {
         if (
           generationRef.current !== currentGen ||
           activeJobIdRef.current !== currentJob ||
@@ -2743,13 +2819,38 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         ) {
           return;
         }
+
+        // P1-B: Check security / lifecycle errors instead of swallowing into navigator-local error
+        const parsed = parseApiError(err);
+        if (isJobAccessError(parsed)) {
+          purgeOnAccessError(parsed, currentGen, currentJob);
+          return;
+        }
+
+        if (
+          parsed.code === 'NOT_REVIEWABLE' ||
+          parsed.code === 'STATUS_MISMATCH'
+        ) {
+          authoritativeProofRef.current = null;
+          replaceAuthoritativeGate(true, {
+            mode: 'RECONCILIATION_REQUIRED',
+            canPreview: false,
+            canEdit: false,
+            canMaterialize: false,
+            message:
+              'Trạng thái dữ liệu giữa chi tiết job và phân đoạn không nhất quán từ máy chủ.',
+          });
+          void reconcileRef.current();
+          return;
+        }
+
         setPageSegments([]);
         setPageSegmentsPagination(null);
         setPageSegmentsLoading(false);
         setPageSegmentsError('SEGMENTS_PAGE_FAILED');
       }
     },
-    [replaceAuthoritativeGate],
+    [replaceAuthoritativeGate, isJobAccessError, purgeOnAccessError],
   );
 
   useEffect(() => {
@@ -2772,6 +2873,9 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       setPageSegments([]);
       setPageSegmentsPagination(null);
       setPageSegmentsError(null);
+
+      // Reset segment subpage to 1 for new manga page
+      currentSegmentSubpageRef.current = 1;
 
       // If target is outside current preview window, clear preview window
       const curWin = previewWindow;
@@ -2812,9 +2916,9 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   const retryPageSegments = useCallback(async () => {
     await loadPageSegments(
       currentPageRef.current,
-      pageSegmentsPagination?.page ?? 1,
+      currentSegmentSubpageRef.current,
     );
-  }, [loadPageSegments, pageSegmentsPagination?.page]);
+  }, [loadPageSegments]);
 
   // P2-2: Multi-page segment pagination for current manga page
   const goToPageSegmentsPage = useCallback(

@@ -1030,6 +1030,35 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           authoritativeProofRef.current = null;
         }
 
+        const prevDetail = jobDetailRef.current;
+        const reviewRevisionChanged =
+          prevDetail &&
+          prevDetail.job.reviewRevision !== detail.job.reviewRevision;
+        const materializedRevisionChanged =
+          prevDetail &&
+          prevDetail.job.materializedRevision !== detail.job.materializedRevision;
+        const workspaceRevisionChanged =
+          prevDetail &&
+          prevDetail.job.workspaceRevision !== detail.job.workspaceRevision;
+        const statusChanged =
+          prevDetail && prevDetail.job.status !== detail.job.status;
+
+        if (
+          reviewRevisionChanged ||
+          materializedRevisionChanged ||
+          workspaceRevisionChanged ||
+          statusChanged
+        ) {
+          setPreviews(null);
+          previewWindowSeqRef.current++;
+          pageSegmentsSeqRef.current++;
+          setPreviewWindow(null);
+          setPreviewWindowError(null);
+          setPageSegments([]);
+          setPageSegmentsPagination(null);
+          setPageSegmentsError(null);
+        }
+
         replaceJobDetail(detail);
 
         const modeResult = getMangaStudioWorkspaceMode({
@@ -1454,6 +1483,17 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     setSegmentsSyncStatus('SYNCED');
     setPreviews(null);
     setSelectedSegmentId(null);
+    // RED 1: Invalidate bounded preview window and pageSegments immediately on reconcile start!
+    previewWindowSeqRef.current++;
+    pageSegmentsSeqRef.current++;
+    pageNavSeqRef.current++;
+    setPreviewWindow(null);
+    setPreviewWindowLoading(false);
+    setPreviewWindowError(null);
+    setPageSegments([]);
+    setPageSegmentsPagination(null);
+    setPageSegmentsLoading(false);
+    setPageSegmentsError(null);
     // Implementation Lock 1 & 3:
     // 1. Do NOT wipe user-owned conflictStates or locks on same-job reconcile!
     // 2. Do NOT reopen gate at the start of reconcile! Gate stays closed fail-closed until authoritative finalization.
@@ -1597,17 +1637,18 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           authoritativeProofRef.current = null;
         }
 
+        const prevDetail = jobDetailRef.current ?? jobDetail;
         const reviewRevisionChanged =
-          jobDetail &&
-          jobDetail.job.reviewRevision !== detail.job.reviewRevision;
+          prevDetail &&
+          prevDetail.job.reviewRevision !== detail.job.reviewRevision;
         const materializedRevisionChanged =
-          jobDetail &&
-          jobDetail.job.materializedRevision !== detail.job.materializedRevision;
+          prevDetail &&
+          prevDetail.job.materializedRevision !== detail.job.materializedRevision;
         const workspaceRevisionChanged =
-          jobDetail &&
-          jobDetail.job.workspaceRevision !== detail.job.workspaceRevision;
+          prevDetail &&
+          prevDetail.job.workspaceRevision !== detail.job.workspaceRevision;
         const statusChanged =
-          jobDetail && jobDetail.job.status !== detail.job.status;
+          prevDetail && prevDetail.job.status !== detail.job.status;
 
         if (
           reviewRevisionChanged ||
@@ -1616,6 +1657,13 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           statusChanged
         ) {
           setPreviews(null);
+          previewWindowSeqRef.current++;
+          pageSegmentsSeqRef.current++;
+          setPreviewWindow(null);
+          setPreviewWindowError(null);
+          setPageSegments([]);
+          setPageSegmentsPagination(null);
+          setPageSegmentsError(null);
         }
 
         if (reviewRevisionChanged || workspaceRevisionChanged || statusChanged) {
@@ -2564,6 +2612,13 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       const seq = ++previewWindowSeqRef.current;
       setPreviewWindowLoading(true);
       setPreviewWindowError(null);
+      // Invariant P1-A: If cached previewWindow revision does not match target authoritative revision, invalidate immediately before network
+      setPreviewWindow((currentWin) => {
+        if (currentWin && currentWin.workspaceRevision !== detail.job.workspaceRevision) {
+          return null;
+        }
+        return currentWin;
+      });
 
       try {
         const prevRes = await fetchTranslationJobPreviews(currentJob, {

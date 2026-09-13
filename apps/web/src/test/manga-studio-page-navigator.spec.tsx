@@ -877,7 +877,7 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
     expect(result.current.pageSegments[0].id).toBe('seg-page1-item51');
   });
 
-  it('15a. P1-A: saveSegment authoritative refetchDetail refreshes previewWindow and pageSegments with updated revision and content', async () => {
+  it('15a. P1-A: authoritative revision transition immediately invalidates stale previewWindow & pageSegments before bounded loaders resolve', async () => {
     let currentRev = 10;
     vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockImplementation(async () => ({
       ...mockJobDetail,
@@ -888,7 +888,36 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
       },
     }));
 
+    let resolveBoundedRev11Previews!: (val: any) => void;
+    const boundedRev11PreviewsDeferred = new Promise<any>((resolve) => {
+      resolveBoundedRev11Previews = resolve;
+    });
+
+    let resolveBoundedRev11Segments!: (val: any) => void;
+    const boundedRev11SegmentsDeferred = new Promise<any>((resolve) => {
+      resolveBoundedRev11Segments = resolve;
+    });
+
     vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async (_id, queryOrPage) => {
+      if (typeof queryOrPage === 'object' && queryOrPage?.pageNumber === 1) {
+        if (currentRev === 11) {
+          return boundedRev11SegmentsDeferred;
+        }
+        return {
+          data: [
+            {
+              id: 'seg-page1-item1',
+              pageNumber: 1,
+              version: 1,
+              rawText: 'Original raw text',
+              translatedText: 'Original rev10 text',
+              isHumanVerified: false,
+            } as any,
+          ],
+          pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+          workspaceRevision: 10,
+        };
+      }
       return {
         data: [
           {
@@ -896,7 +925,7 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
             pageNumber: 1,
             version: currentRev === 10 ? 1 : 2,
             rawText: 'Original raw text',
-            translatedText: currentRev === 10 ? 'Original raw text' : 'Bản dịch mới đã lưu',
+            translatedText: currentRev === 10 ? 'Original rev10 text' : 'Bản dịch mới đã lưu',
             isHumanVerified: currentRev !== 10,
           } as any,
         ],
@@ -905,11 +934,23 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
       };
     });
 
-    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async () => ({
-      sourceAssets: [],
-      resultAssets: [],
-      workspaceRevision: currentRev,
-    }));
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async (_id, query) => {
+      if (query && typeof query === 'object' && 'fromPage' in query) {
+        if (currentRev === 11) {
+          return boundedRev11PreviewsDeferred;
+        }
+        return {
+          sourceAssets: [{ pageNumber: 1, url: 'https://cdn.example.com/rev10-src-1.jpg' } as any],
+          resultAssets: [{ pageNumber: 1, url: 'https://cdn.example.com/rev10-res-1.jpg' } as any],
+          workspaceRevision: 10,
+        };
+      }
+      return {
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: currentRev,
+      };
+    });
 
     vi.spyOn(translationApi, 'updateTranslationSegment').mockImplementation(async () => {
       currentRev = 11;
@@ -924,7 +965,9 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
 
     const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
     await waitFor(() => expect(result.current.status).toBe('ready'));
-    expect(result.current.pageSegments[0].translatedText).toBe('Original raw text');
+    expect(result.current.pageSegments[0].translatedText).toBe('Original rev10 text');
+    expect(result.current.previewWindow?.resultAssets[0].url).toBe('https://cdn.example.com/rev10-res-1.jpg');
+    expect(result.current.previewWindow?.workspaceRevision).toBe(10);
 
     let saveOutcome: any;
     await act(async () => {
@@ -934,11 +977,43 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
     expect(saveOutcome.success).toBe(true);
     expect(saveOutcome.outcome).toBe('SAVED_AND_SYNCED');
 
-    // P1-A Invariant: RED 1 pageSegments and previewWindow must be refreshed to rev 11
+    // P1-A Invariant: Authoritative gate is OPEN, but stale rev10 cache MUST NOT be observed!
+    expect(result.current.isGateClosed).toBe(false);
+    expect(result.current.previewWindow).toBeNull(); // Stale rev10 previewWindow invalidated!
+    expect(result.current.previewWindowLoading).toBe(true);
+    expect(result.current.pageSegments).toEqual([]); // Stale rev10 pageSegments invalidated!
+    expect(result.current.pageSegmentsLoading).toBe(true);
+
+    // Resolve deferred bounded rev 11 requests
+    await act(async () => {
+      resolveBoundedRev11Previews({
+        sourceAssets: [{ pageNumber: 1, url: 'https://cdn.example.com/rev11-src-1.jpg' } as any],
+        resultAssets: [{ pageNumber: 1, url: 'https://cdn.example.com/rev11-res-1.jpg' } as any],
+        workspaceRevision: 11,
+      });
+      resolveBoundedRev11Segments({
+        data: [
+          {
+            id: 'seg-page1-item1',
+            pageNumber: 1,
+            version: 2,
+            rawText: 'Original raw text',
+            translatedText: 'Bản dịch mới đã lưu',
+            isHumanVerified: true,
+          } as any,
+        ],
+        pagination: { page: 1, limit: 50, total: 1, totalPages: 1 },
+        workspaceRevision: 11,
+      });
+    });
+
+    // Only rev 11 assets and data appear after bounded loader resolution!
     await waitFor(() => {
+      expect(result.current.previewWindowLoading).toBe(false);
+      expect(result.current.pageSegmentsLoading).toBe(false);
       expect(result.current.pageSegments[0].translatedText).toBe('Bản dịch mới đã lưu');
-      expect(result.current.pageSegments[0].isHumanVerified).toBe(true);
       expect(result.current.previewWindow?.workspaceRevision).toBe(11);
+      expect(result.current.previewWindow?.resultAssets[0].url).toBe('https://cdn.example.com/rev11-res-1.jpg');
     });
   });
 
@@ -1096,6 +1171,108 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
       limit: 50,
       pageNumber: 1,
     });
+  });
+
+  it('15f. P1-A: materialization-only revision update invalidates previewWindow immediately before bounded loader completes', async () => {
+    let matRev = 1;
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockImplementation(async () => ({
+      ...mockJobDetail,
+      job: {
+        ...mockJobDetail.job,
+        workspaceRevision: 10,
+        reviewRevision: 10,
+        materializedRevision: matRev,
+      },
+    }));
+
+    let resolveMatRev2Previews!: (val: any) => void;
+    const matRev2PreviewsDeferred = new Promise<any>((resolve) => {
+      resolveMatRev2Previews = resolve;
+    });
+
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async (_id, query) => {
+      if (query && typeof query === 'object' && 'fromPage' in query) {
+        if (matRev === 2) {
+          return matRev2PreviewsDeferred;
+        }
+        return {
+          sourceAssets: [{ pageNumber: 1, url: 'https://cdn.example.com/src-1.jpg' } as any],
+          resultAssets: [{ pageNumber: 1, url: 'https://cdn.example.com/mat1-res-1.jpg' } as any],
+          workspaceRevision: 10,
+        };
+      }
+      return {
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 10,
+      };
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.previewWindow?.resultAssets[0].url).toBe('https://cdn.example.com/mat1-res-1.jpg');
+
+    // Trigger refetchDetail when materialization completes: workspaceRevision stays 10, materializedRevision becomes 2
+    matRev = 2;
+    let syncOutcome: any;
+    await act(async () => {
+      syncOutcome = await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+    });
+
+    expect(syncOutcome).toBe('SYNCED');
+
+    // P1-A Invariant: workspaceRevision is unchanged (10), but materializedRevision changed (1 -> 2).
+    // Stale result thumbnail MUST be invalidated immediately while bounded preview loader is pending!
+    expect(result.current.previewWindow).toBeNull();
+    expect(result.current.previewWindowLoading).toBe(true);
+
+    // Now resolve bounded preview with matRev 2 result asset
+    await act(async () => {
+      resolveMatRev2Previews({
+        sourceAssets: [{ pageNumber: 1, url: 'https://cdn.example.com/src-1.jpg' } as any],
+        resultAssets: [{ pageNumber: 1, url: 'https://cdn.example.com/mat2-res-1.jpg' } as any],
+        workspaceRevision: 10,
+      });
+    });
+
+    await waitFor(() => {
+      expect(result.current.previewWindowLoading).toBe(false);
+      expect(result.current.previewWindow?.resultAssets[0].url).toBe('https://cdn.example.com/mat2-res-1.jpg');
+    });
+  });
+
+  it('15g. P1-A: reconcileAuthoritativeWorkspace immediately invalidates previewWindow and pageSegments at start of reconciliation', async () => {
+    let resolveReconcileDetail!: (val: any) => void;
+    const reconcileDetailDeferred = new Promise<any>((resolve) => {
+      resolveReconcileDetail = resolve;
+    });
+
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockImplementation(async () => mockJobDetail);
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.previewWindow).not.toBeNull();
+    expect(result.current.pageSegments.length).toBeGreaterThan(0);
+
+    // Mock detail to hang during reconcile
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockImplementation(async () => reconcileDetailDeferred);
+
+    // Start reconcile
+    act(() => {
+      void result.current.reconcileAuthoritativeWorkspace();
+    });
+
+    // P1-A Invariant: Gate is closed, AND both RED 1 read-models are wiped immediately at reconcile start
+    expect(result.current.isGateClosed).toBe(true);
+    expect(result.current.previewWindow).toBeNull();
+    expect(result.current.pageSegments).toEqual([]);
+
+    // Complete reconcile
+    await act(async () => {
+      resolveReconcileDetail(mockJobDetail);
+    });
+
+    await waitFor(() => expect(result.current.status).toBe('ready'));
   });
 });
 

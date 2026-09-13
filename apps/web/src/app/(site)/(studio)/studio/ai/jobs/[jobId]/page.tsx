@@ -13,6 +13,7 @@ import {
 } from '@/lib/studio/manga-page-navigator';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { MangaStudioCanvas } from '@/components/studio/manga-studio-canvas';
 import {
   ChevronLeft,
   RefreshCw,
@@ -47,6 +48,25 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     },
     [pathname, router, studio.currentPage, studio.pageCountInfo.pageCount]
   );
+
+  // Current page source and result assets from preview window (RED 2)
+  const currentSourceAsset = React.useMemo(() => {
+    if (!studio.previewWindow) return null;
+    return (
+      studio.previewWindow.sourceAssets.find(
+        (a) => a.pageNumber === studio.currentPage
+      ) ?? null
+    );
+  }, [studio.previewWindow, studio.currentPage]);
+
+  const currentResultAsset = React.useMemo(() => {
+    if (!studio.previewWindow) return null;
+    return (
+      studio.previewWindow.resultAssets.find(
+        (a) => a.pageNumber === studio.currentPage
+      ) ?? null
+    );
+  }, [studio.previewWindow, studio.currentPage]);
 
   // URL SSoT Synchronization
   React.useEffect(() => {
@@ -599,17 +619,23 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             </span>
           </div>
 
-          {/* Placeholder for canvas / image preview component */}
-          <div className="flex-1 my-6 flex items-center justify-center border border-dashed border-slate-800 rounded-2xl bg-slate-950/40 p-8 text-center">
-            <div className="space-y-2">
-              <p className="text-xs text-slate-400">
-                Không gian hiển thị ảnh gốc vs ảnh đã dịch và OCR bounding boxes (RED 2).
-              </p>
-              <p className="text-[11px] text-slate-600">
-                Segment Count: {studio.segments.length} | Authoritative Page Count:{' '}
-                {studio.pageCountInfo.pageCount ?? 'N/A'}
-              </p>
-            </div>
+          {/* Canvas Studio Preview Area (RED 2) */}
+          <div className="flex-1 my-4 flex flex-col min-h-[520px]">
+            <MangaStudioCanvas
+              currentPage={studio.currentPage}
+              workspaceRevision={
+                studio.previewWindow?.workspaceRevision ??
+                studio.jobDetail?.job.workspaceRevision ??
+                1
+              }
+              sourceAsset={currentSourceAsset}
+              resultAsset={currentResultAsset}
+              segments={studio.pageSegments}
+              selectedSegmentId={studio.selectedSegmentId}
+              onSelectSegment={studio.setSelectedSegmentId}
+              isLoading={studio.previewWindowLoading}
+              error={studio.previewWindowError}
+            />
           </div>
 
           {/* Page Navigator Navigation Bar */}

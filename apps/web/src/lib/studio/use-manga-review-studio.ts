@@ -109,6 +109,7 @@ export interface UseMangaReviewStudioReturn {
   previewWindow: BoundedPreviewWindowState | null;
   previewWindowLoading: boolean;
   previewWindowError: string | null;
+  previewWindowGeneration: number;
   pageSegments: TranslationSegmentDto[];
   pageSegmentsPagination: PageSegmentsPagination | null;
   pageSegmentsLoading: boolean;
@@ -211,6 +212,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
   const [previewWindowLoading, setPreviewWindowLoading] = useState(false);
   const [previewWindowError, setPreviewWindowError] = useState<string | null>(null);
+  const [previewWindowGeneration, setPreviewWindowGeneration] = useState(0);
 
   const [pageSegments, setPageSegments] = useState<TranslationSegmentDto[]>([]);
   const [pageSegmentsPagination, setPageSegmentsPagination] = useState<PageSegmentsPagination | null>(null);
@@ -2701,6 +2703,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           resultAssets: prevRes.resultAssets || [],
           workspaceRevision: prevRes.workspaceRevision,
         });
+        setPreviewWindowGeneration((prev) => prev + 1);
         setPreviewWindowLoading(false);
       } catch (err) {
         if (
@@ -3041,6 +3044,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     previewWindow,
     previewWindowLoading,
     previewWindowError,
+    previewWindowGeneration,
     pageSegments,
     pageSegmentsPagination,
     pageSegmentsLoading,

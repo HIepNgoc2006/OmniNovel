@@ -97,6 +97,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     previewWindow: null,
     previewWindowLoading: false,
     previewWindowError: null,
+    previewWindowGeneration: 0,
     pageSegments: mockDefaultSegments,
     pageSegmentsPagination: null,
     pageSegmentsLoading: false,
@@ -560,11 +561,9 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     it('3. same-URL retry remounts fresh image DOM instance and prevents infinite retry if error persists (#149 P1-2)', async () => {
-      let resolveRetry: () => void = () => {};
-      const retryPromise = new Promise<void>((resolve) => {
-        resolveRetry = resolve;
-      });
-      const retryPreviewWindowSpy = vi.fn().mockImplementation(() => retryPromise);
+      const retryPreviewWindowSpy = vi.fn().mockResolvedValue(undefined);
+
+      const { rerender } = render(<MangaStudioJobPage params={mockParams} />);
 
       vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
         ...defaultMockReturn,
@@ -576,12 +575,11 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
           resultAssets: [],
           workspaceRevision: 1,
         },
+        previewWindowGeneration: 0,
         retryPreviewWindow: retryPreviewWindowSpy,
       });
 
-      await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
-      });
+      rerender(<MangaStudioJobPage params={mockParams} />);
 
       const sourceImg = screen.getByTestId('canvas-source-image');
       expect(sourceImg.getAttribute('data-presentation-epoch')).toBe('0');
@@ -592,12 +590,24 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
       expect(retryPreviewWindowSpy).toHaveBeenCalledTimes(1);
 
-      // Resolve retryPreviewWindow -> simulates successful refresh response with same U1 URL
-      await act(async () => {
-        resolveRetry();
+      // Simulates successful preview refresh response: hook commits previewWindow and increments previewWindowGeneration to 1
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        previewWindow: {
+          fromPage: 1,
+          toPage: 3,
+          size: 3,
+          sourceAssets: [mockSourceAsset],
+          resultAssets: [],
+          workspaceRevision: 1,
+        },
+        previewWindowGeneration: 1,
+        retryPreviewWindow: retryPreviewWindowSpy,
       });
 
-      // P1-2 Invariant: Even though URL is identical, presentationEpoch incremented to 1 and a new <img> DOM instance mounted
+      rerender(<MangaStudioJobPage params={mockParams} />);
+
+      // P1-2 Invariant: Even though URL is identical, previewWindowGeneration incremented to 1 and a new <img> DOM instance mounted
       const remountedImg = await screen.findByTestId('canvas-source-image');
       expect(remountedImg.getAttribute('data-presentation-epoch')).toBe('1');
 
@@ -612,6 +622,8 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     it('3b. after successful reload on same URL, later independent error allows auto-retry again (#149 P1-2)', async () => {
       const retryPreviewWindowSpy = vi.fn().mockResolvedValue(undefined);
 
+      const { rerender } = render(<MangaStudioJobPage params={mockParams} />);
+
       vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
         ...defaultMockReturn,
         previewWindow: {
@@ -622,12 +634,11 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
           resultAssets: [],
           workspaceRevision: 1,
         },
+        previewWindowGeneration: 0,
         retryPreviewWindow: retryPreviewWindowSpy,
       });
 
-      await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
-      });
+      rerender(<MangaStudioJobPage params={mockParams} />);
 
       const sourceImg = screen.getByTestId('canvas-source-image');
 
@@ -637,7 +648,23 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
       expect(retryPreviewWindowSpy).toHaveBeenCalledTimes(1);
 
-      // 2. Remounted img mounts with presentationEpoch=1
+      // 2. Refresh completes, previewWindowGeneration becomes 1
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        previewWindow: {
+          fromPage: 1,
+          toPage: 3,
+          size: 3,
+          sourceAssets: [mockSourceAsset],
+          resultAssets: [],
+          workspaceRevision: 1,
+        },
+        previewWindowGeneration: 1,
+        retryPreviewWindow: retryPreviewWindowSpy,
+      });
+
+      rerender(<MangaStudioJobPage params={mockParams} />);
+
       const remountedImg = await screen.findByTestId('canvas-source-image');
       expect(remountedImg.getAttribute('data-presentation-epoch')).toBe('1');
 
@@ -752,6 +779,83 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       expect(retryPreviewWindowSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it('7. thumbnail RESULT R1 onError triggers exactly 1 preview refresh and remounts thumbnail via generation (#149 P1-2)', async () => {
+      const retryPreviewWindowSpy = vi.fn().mockResolvedValue(undefined);
+      const mockResultR1: ReviewAssetDto = {
+        kind: 'RESULT',
+        pageNumber: 1,
+        url: 'https://cdn.example.com/thumb-res-r1.png',
+        width: 1000,
+        height: 1500,
+      };
+
+      const { rerender } = render(<MangaStudioJobPage params={mockParams} />);
+
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        previewWindow: {
+          fromPage: 1,
+          toPage: 3,
+          size: 3,
+          sourceAssets: [mockSourceAsset],
+          resultAssets: [mockResultR1],
+          workspaceRevision: 1,
+        },
+        previewWindowGeneration: 0,
+        retryPreviewWindow: retryPreviewWindowSpy,
+      });
+
+      rerender(<MangaStudioJobPage params={mockParams} />);
+
+      const thumbImg = screen.getByTestId('thumbnail-image-1');
+      expect(thumbImg).toBeInTheDocument();
+      expect(thumbImg.getAttribute('data-generation')).toBe('0');
+
+      // 1. Thumbnail load error triggers retry
+      await act(async () => {
+        fireEvent.error(thumbImg);
+      });
+      expect(retryPreviewWindowSpy).toHaveBeenCalledTimes(1);
+
+      // 2. Successful preview refresh returns same R1 URL, but previewWindowGeneration increments to 1
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        previewWindow: {
+          fromPage: 1,
+          toPage: 3,
+          size: 3,
+          sourceAssets: [mockSourceAsset],
+          resultAssets: [mockResultR1],
+          workspaceRevision: 1,
+        },
+        previewWindowGeneration: 1,
+        retryPreviewWindow: retryPreviewWindowSpy,
+      });
+
+      rerender(<MangaStudioJobPage params={mockParams} />);
+
+      // Fresh thumbnail <img> DOM instance mounted with data-generation=1
+      const freshThumbImg = screen.getByTestId('thumbnail-image-1');
+      expect(freshThumbImg.getAttribute('data-generation')).toBe('1');
+
+      // 3. Second error before load success does not trigger infinite retry
+      await act(async () => {
+        fireEvent.error(freshThumbImg);
+      });
+      expect(retryPreviewWindowSpy).toHaveBeenCalledTimes(1);
+
+      // 4. Successful load clears dedupe entry
+      await act(async () => {
+        fireEvent.load(freshThumbImg);
+      });
+
+      // 5. Later independent error allows auto-retry again
+      await act(async () => {
+        fireEvent.error(freshThumbImg);
+      });
+      expect(retryPreviewWindowSpy).toHaveBeenCalledTimes(2);
     });
   });
 });

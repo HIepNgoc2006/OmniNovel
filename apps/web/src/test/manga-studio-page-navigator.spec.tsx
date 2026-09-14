@@ -1720,7 +1720,79 @@ describe('Manga Review Studio Route & URL Synchronization (#149 RED 1)', () => {
     expect(previewSpy).toHaveBeenCalledTimes(1);
     expect(previewSpy).toHaveBeenCalledWith(mockJobId, { fromPage: 1, toPage: 5 });
   });
+
+  it('30. Production composition focus recovery (P1-1): Canvas in LOAD_ERROR recovers upon window focus even when Preview API returns same URL', async () => {
+    const previewSpy = vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
+      sourceAssets: [{ kind: 'SOURCE_REVIEW', pageNumber: 1, url: 'https://cdn.example.com/p1-same-url.png', width: 1000, height: 1500 }],
+      resultAssets: [{ kind: 'RESULT', pageNumber: 1, url: 'https://cdn.example.com/res-p1-same-url.png', width: 1000, height: 1500 }],
+      workspaceRevision: 10,
+    });
+
+    render(<MangaStudioJobPage params={mockParams} />);
+    await waitFor(() => {
+      expect(screen.getByText('Trang 1 / 20')).toBeDefined();
+    });
+
+    // 1. Initial image mounted with presentationEpoch=1
+    const initialImg = await screen.findByTestId('canvas-source-image');
+    expect(initialImg.getAttribute('data-presentation-epoch')).toBe('1');
+
+    // 2. Simulate image load failure -> triggers retryPreviewWindow
+    await act(async () => {
+      fireEvent.error(initialImg);
+    });
+
+    // Retry Preview API resolves with same URL, but increments generation to 2
+    await waitFor(() => {
+      const remounted = screen.getByTestId('canvas-source-image');
+      expect(remounted.getAttribute('data-presentation-epoch')).toBe('2');
+    });
+
+    const remountedImg = screen.getByTestId('canvas-source-image');
+
+    // 3. Second failure on same URL: dedupe stops auto-retry loop -> Canvas enters persistent LOAD_ERROR
+    await act(async () => {
+      fireEvent.error(remountedImg);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('canvas-source-error')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('canvas-source-image')).toBeNull();
+
+    previewSpy.mockClear();
+
+    // 4. User refocuses window -> triggers hook focus refresh
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // Exactly 1 Preview API request triggered by window focus
+    expect(previewSpy).toHaveBeenCalledTimes(1);
+
+    // P1-1 INVARIANT: Even though backend returns identical URL, generation increments to 3
+    // Fresh <img> DOM instance mounts, replacing canvas-source-error
+    const recoveredImg = await screen.findByTestId('canvas-source-image');
+    expect(recoveredImg).toBeInTheDocument();
+    expect(recoveredImg.getAttribute('data-presentation-epoch')).toBe('3');
+    expect(screen.queryByTestId('canvas-source-error')).toBeNull();
+
+    // 5. Successful load on the recovered image clears dedupe entry
+    Object.defineProperty(recoveredImg, 'naturalWidth', { value: 1000 });
+    Object.defineProperty(recoveredImg, 'naturalHeight', { value: 1500 });
+    await act(async () => {
+      fireEvent.load(recoveredImg);
+    });
+
+    // 6. Later independent error can auto-retry again
+    previewSpy.mockClear();
+    await act(async () => {
+      fireEvent.error(recoveredImg);
+    });
+    expect(previewSpy).toHaveBeenCalledTimes(1);
+  });
 });
+
 
 
 

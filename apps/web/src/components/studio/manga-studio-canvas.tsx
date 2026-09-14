@@ -26,6 +26,7 @@ export interface MangaStudioCanvasProps {
   onSelectSegment: (segmentId: string) => void;
   isLoading?: boolean;
   error?: string | null;
+  onPreviewAssetError?: (kind: 'SOURCE' | 'RESULT', imageKey: string) => void;
 }
 
 export type CanvasViewMode = 'SOURCE' | 'RESULT' | 'SIDE_BY_SIDE';
@@ -46,6 +47,7 @@ export interface CanvasSourcePaneProps {
   selectedSegmentId: string | null;
   onSelectSegment: (segmentId: string) => void;
   isLoading?: boolean;
+  onPreviewAssetError?: (kind: 'SOURCE', imageKey: string) => void;
 }
 
 /**
@@ -63,6 +65,7 @@ export const CanvasSourcePane: React.FC<CanvasSourcePaneProps> = ({
   selectedSegmentId,
   onSelectSegment,
   isLoading = false,
+  onPreviewAssetError,
 }) => {
   const isSourcePageMismatch = Boolean(sourceAsset && sourceAsset.pageNumber !== currentPage);
 
@@ -110,6 +113,8 @@ export const CanvasSourcePane: React.FC<CanvasSourcePaneProps> = ({
       key: currentSourceImageKey,
       state: 'LOAD_ERROR',
     });
+
+    onPreviewAssetError?.('SOURCE', currentSourceImageKey);
   };
 
   const canRenderOverlay =
@@ -273,6 +278,7 @@ export interface CanvasResultPaneProps {
   workspaceRevision: number;
   resultAsset: ReviewAssetDto | null;
   isLoading?: boolean;
+  onPreviewAssetError?: (kind: 'RESULT', imageKey: string) => void;
 }
 
 /**
@@ -284,6 +290,7 @@ export const CanvasResultPane: React.FC<CanvasResultPaneProps> = ({
   workspaceRevision,
   resultAsset,
   isLoading = false,
+  onPreviewAssetError,
 }) => {
   const isResultPageMismatch = Boolean(resultAsset && resultAsset.pageNumber !== currentPage);
   const currentResultImageKey = resultAsset
@@ -312,6 +319,7 @@ export const CanvasResultPane: React.FC<CanvasResultPaneProps> = ({
   const handleResultImageError = (e: React.SyntheticEvent<HTMLImageElement>) => {
     if (e.currentTarget.getAttribute('data-image-key') !== currentResultImageKey) return;
     setResultStatus({ key: currentResultImageKey, state: 'LOAD_ERROR' });
+    onPreviewAssetError?.('RESULT', currentResultImageKey);
   };
 
   if (isResultPageMismatch) {
@@ -410,6 +418,7 @@ export const MangaStudioCanvas: React.FC<MangaStudioCanvasProps> = ({
   onSelectSegment,
   isLoading = false,
   error = null,
+  onPreviewAssetError,
 }) => {
   const [viewMode, setViewMode] = useState<CanvasViewMode>('SOURCE');
 
@@ -495,6 +504,7 @@ export const MangaStudioCanvas: React.FC<MangaStudioCanvasProps> = ({
                   selectedSegmentId={selectedSegmentId}
                   onSelectSegment={onSelectSegment}
                   isLoading={isLoading}
+                  onPreviewAssetError={onPreviewAssetError}
                 />
               </div>
             )}
@@ -507,6 +517,7 @@ export const MangaStudioCanvas: React.FC<MangaStudioCanvasProps> = ({
                   workspaceRevision={workspaceRevision}
                   resultAsset={resultAsset}
                   isLoading={isLoading}
+                  onPreviewAssetError={onPreviewAssetError}
                 />
               </div>
             )}
@@ -523,6 +534,7 @@ export const MangaStudioCanvas: React.FC<MangaStudioCanvasProps> = ({
                     selectedSegmentId={selectedSegmentId}
                     onSelectSegment={onSelectSegment}
                     isLoading={isLoading}
+                    onPreviewAssetError={onPreviewAssetError}
                   />
                 </div>
                 <div className="relative flex items-center justify-center w-full h-full">
@@ -532,6 +544,7 @@ export const MangaStudioCanvas: React.FC<MangaStudioCanvasProps> = ({
                     workspaceRevision={workspaceRevision}
                     resultAsset={resultAsset}
                     isLoading={isLoading}
+                    onPreviewAssetError={onPreviewAssetError}
                   />
                 </div>
               </div>

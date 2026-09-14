@@ -111,6 +111,82 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [studio.status, studio.workspaceMode?.mode, studio.currentPage, studio.pageCountInfo.pageCount, navigateToPage]);
 
+  // Presigned URL Auto-Refresh on Image Error & Window Focus (#149)
+  const retriedImageKeysRef = React.useRef<Set<string>>(new Set());
+
+  const handlePreviewAssetError = React.useCallback(
+    (kind: 'SOURCE' | 'RESULT', imageKey: string) => {
+      // 1. Guard against non-REVIEWABLE workspace mode
+      if (studio.status !== 'ready' || studio.workspaceMode?.mode !== 'REVIEWABLE') {
+        return;
+      }
+
+      // 2. Guard against stale error event:
+      // Must match currently rendered asset key for current page and workspaceRevision
+      const expectedRevision =
+        studio.previewWindow?.workspaceRevision ??
+        studio.jobDetail?.job.workspaceRevision ??
+        1;
+      const currentActiveSourceKey = currentSourceAsset
+        ? `${expectedRevision}:${studio.currentPage}:${currentSourceAsset.url}`
+        : '';
+      const currentActiveResultKey = currentResultAsset
+        ? `${expectedRevision}:${studio.currentPage}:${currentResultAsset.url}`
+        : '';
+
+      const expectedKey = kind === 'SOURCE' ? currentActiveSourceKey : currentActiveResultKey;
+      if (!imageKey || imageKey !== expectedKey) {
+        // Stale error event from previous image key -> do NOT trigger refresh
+        return;
+      }
+
+      // 3. Retry guard by imageKey/URL to prevent infinite retry loops
+      if (retriedImageKeysRef.current.has(imageKey)) {
+        return;
+      }
+
+      retriedImageKeysRef.current.add(imageKey);
+      void studio.retryPreviewWindow();
+    },
+    [
+      studio.status,
+      studio.workspaceMode?.mode,
+      studio.previewWindow?.workspaceRevision,
+      studio.jobDetail?.job.workspaceRevision,
+      studio.currentPage,
+      studio.retryPreviewWindow,
+      currentSourceAsset,
+      currentResultAsset,
+    ],
+  );
+
+  // Window Focus Auto-Refresh for Presigned URLs (#149)
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleWindowFocus = () => {
+      // REVIEWABLE scope check
+      if (studio.status !== 'ready') return;
+      if (studio.workspaceMode?.mode !== 'REVIEWABLE') return;
+
+      // If current bounded preview exists
+      if (!studio.previewWindow) return;
+
+      // Refresh current bounded window
+      void studio.retryPreviewWindow();
+    };
+
+    window.addEventListener('focus', handleWindowFocus);
+    return () => {
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, [
+    studio.status,
+    studio.workspaceMode?.mode,
+    studio.previewWindow,
+    studio.retryPreviewWindow,
+  ]);
+
 
   // 1. Loading & Initializing state
   if (studio.status === 'initializing' || studio.status === 'loading') {
@@ -635,6 +711,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
               onSelectSegment={studio.setSelectedSegmentId}
               isLoading={studio.previewWindowLoading}
               error={studio.previewWindowError}
+              onPreviewAssetError={handlePreviewAssetError}
             />
           </div>
 

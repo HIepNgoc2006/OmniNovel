@@ -708,5 +708,81 @@ describe('Manga Review Studio Canvas & OCR Bounding Box Geometry (#149 RED 2)', 
       expect(screen.getByTestId('canvas-result-error')).toBeInTheDocument();
       expect(screen.queryByTestId('canvas-result-image')).not.toBeInTheDocument();
     });
+
+    it('C17. Source image onError invokes onPreviewAssetError callback with kind SOURCE and currentSourceImageKey', () => {
+      const onPreviewAssetErrorSpy = vi.fn();
+      render(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={mockSourceAsset}
+          resultAsset={null}
+          segments={[]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+          onPreviewAssetError={onPreviewAssetErrorSpy}
+        />
+      );
+
+      const sourceImg = screen.getByTestId('canvas-source-image');
+      expect(sourceImg).toBeInTheDocument();
+
+      fireEvent.error(sourceImg);
+      expect(onPreviewAssetErrorSpy).toHaveBeenCalledTimes(1);
+      expect(onPreviewAssetErrorSpy).toHaveBeenCalledWith(
+        'SOURCE',
+        `10:1:${mockSourceAsset.url}`
+      );
+    });
+
+    it('C18. Result image onError invokes onPreviewAssetError callback with kind RESULT and currentResultImageKey', () => {
+      const onPreviewAssetErrorSpy = vi.fn();
+      render(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={null}
+          resultAsset={mockResultAsset}
+          segments={[]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+          onPreviewAssetError={onPreviewAssetErrorSpy}
+        />
+      );
+
+      fireEvent.click(screen.getByTestId('view-mode-result-button'));
+      const resultImg = screen.getByTestId('canvas-result-image');
+      expect(resultImg).toBeInTheDocument();
+
+      fireEvent.error(resultImg);
+      expect(onPreviewAssetErrorSpy).toHaveBeenCalledTimes(1);
+      expect(onPreviewAssetErrorSpy).toHaveBeenCalledWith(
+        'RESULT',
+        `10:1:${mockResultAsset.url}`
+      );
+    });
+
+    it('C19. Stale error event with non-matching data-image-key does NOT invoke onPreviewAssetError', () => {
+      const onPreviewAssetErrorSpy = vi.fn();
+      render(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={mockSourceAsset}
+          resultAsset={null}
+          segments={[]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+          onPreviewAssetError={onPreviewAssetErrorSpy}
+        />
+      );
+
+      const sourceImg = screen.getByTestId('canvas-source-image');
+      sourceImg.setAttribute('data-image-key', 'stale:old:key');
+
+      fireEvent.error(sourceImg);
+      expect(onPreviewAssetErrorSpy).not.toHaveBeenCalled();
+    });
   });
 });
+

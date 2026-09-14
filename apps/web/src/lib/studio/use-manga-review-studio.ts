@@ -163,6 +163,11 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   const [status, setStatus] = useState<
     'initializing' | 'auth_required' | 'loading' | 'ready' | 'error'
   >('initializing');
+  const statusRef = useRef(status);
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
   const [jobDetail, setJobDetail] =
     useState<TranslationJobReviewDetailResponse | null>(null);
   const jobDetailRef = useRef<TranslationJobReviewDetailResponse | null>(null);
@@ -199,6 +204,11 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
   // RED 1: Page Navigator states
   const [previewWindow, setPreviewWindow] = useState<BoundedPreviewWindowState | null>(null);
+  const previewWindowRef = useRef<BoundedPreviewWindowState | null>(null);
+  useEffect(() => {
+    previewWindowRef.current = previewWindow;
+  }, [previewWindow]);
+
   const [previewWindowLoading, setPreviewWindowLoading] = useState(false);
   const [previewWindowError, setPreviewWindowError] = useState<string | null>(null);
 
@@ -2915,6 +2925,33 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   useEffect(() => {
     loadPageSegmentsRef.current = loadPageSegments;
   }, [loadPageSegments]);
+
+  // Presigned URL Auto-Refresh on Window Focus (#149)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleWindowFocus = () => {
+      if (statusRef.current !== 'ready') return;
+      const detail = jobDetailRef.current;
+      if (!detail) return;
+
+      const mode = getMangaStudioWorkspaceMode({
+        jobStatus: detail.job.status,
+        mediaFormat: detail.context.story.mediaFormat,
+        resultPageCount: detail.reviewSummary?.resultPageCount,
+      }).mode;
+
+      if (mode !== 'REVIEWABLE') return;
+      if (!previewWindowRef.current) return;
+
+      void loadPreviewWindowRef.current?.(currentPageRef.current);
+    };
+
+    window.addEventListener('focus', handleWindowFocus);
+    return () => {
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, []);
 
   const goToPage = useCallback(
     (targetPage: number) => {

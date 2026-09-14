@@ -1642,6 +1642,61 @@ describe('Manga Review Studio Route & URL Synchronization (#149 RED 1)', () => {
       expect(screen.getByText('Trang 2 / 20')).toBeDefined();
     });
   });
+
+  it('27. Presigned URL auto-refresh on window focus (#149): window focus in REVIEWABLE mode with active previewWindow refreshes current bounded window', async () => {
+    const previewSpy = vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
+      sourceAssets: [{ kind: 'SOURCE_REVIEW', pageNumber: 1, url: 'https://cdn.example.com/p1-v1.png', width: 1000, height: 1500 }],
+      resultAssets: [{ kind: 'RESULT', pageNumber: 1, url: 'https://cdn.example.com/res-p1-v1.png', width: 1000, height: 1500 }],
+      workspaceRevision: 10,
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    await waitFor(() => expect(result.current.previewWindow).not.toBeNull());
+
+    previewSpy.mockClear();
+
+    // Trigger window focus
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // Should have refreshed the preview window via fetchTranslationJobPreviews
+    expect(previewSpy).toHaveBeenCalledTimes(1);
+    expect(previewSpy).toHaveBeenCalledWith(mockJobId, { fromPage: 1, toPage: 5 });
+  });
+
+  it('28. Window focus in non-REVIEWABLE modes (APPLIED, FAILED, CANCELED) makes 0 Preview API calls', async () => {
+    const previewSpy = vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
+      sourceAssets: [],
+      resultAssets: [],
+      workspaceRevision: 10,
+    });
+
+    // Mock job detail as APPLIED
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue({
+      ...mockJobDetail,
+      job: {
+        ...mockJobDetail.job,
+        status: TranslationJobStatus.APPLIED,
+      },
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.workspaceMode?.mode).toBe('APPLIED');
+
+    previewSpy.mockClear();
+
+    // Trigger window focus
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // In APPLIED mode: exactly 0 preview API calls
+    expect(previewSpy).not.toHaveBeenCalled();
+  });
 });
+
 
 

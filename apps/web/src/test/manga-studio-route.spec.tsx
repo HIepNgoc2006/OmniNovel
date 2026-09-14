@@ -117,6 +117,10 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     pendingUnknownMutations: {},
     clearConflict: vi.fn(),
     replaceConflictStates: vi.fn(),
+    drafts: {},
+    setSegmentDraft: vi.fn(),
+    discardSegmentDraft: vi.fn(),
+    savingSegmentIds: {},
     saveSegment: vi.fn().mockResolvedValue({
       success: true,
       outcome: 'SAVED_AND_SYNCED',
@@ -856,6 +860,175 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
         fireEvent.error(freshThumbImg);
       });
       expect(retryPreviewWindowSpy).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('Translation Editor & Draft OCC Integration (#149 RED 3)', () => {
+    it('1. renders placeholder empty state when selectedSegmentId is null', async () => {
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        selectedSegmentId: null,
+      });
+
+      await act(async () => {
+        render(<MangaStudioJobPage params={mockParams} />);
+      });
+
+      expect(screen.getByTestId('segment-editor-empty')).toBeInTheDocument();
+      expect(screen.getByText('Chưa Chọn Ô Thoại')).toBeInTheDocument();
+    });
+
+    it('2. renders MangaSegmentEditor when selectedSegmentId is set, displaying rawText and translated text', async () => {
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        selectedSegmentId: 'seg-1',
+        pageSegments: mockDefaultSegments,
+      });
+
+      await act(async () => {
+        render(<MangaStudioJobPage params={mockParams} />);
+      });
+
+      expect(screen.getByTestId('segment-editor-container')).toBeInTheDocument();
+      expect(screen.getByTestId('segment-raw-text')).toHaveTextContent('ヤッホー');
+      expect(screen.getByTestId('segment-translation-textarea')).toHaveValue('Yoohoo');
+      expect(screen.getByTestId('badge-synced')).toBeInTheDocument();
+    });
+
+    it('3. typing in editor calls studio.setSegmentDraft without mutating canonical segment', async () => {
+      const setSegmentDraftSpy = vi.fn();
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        selectedSegmentId: 'seg-1',
+        pageSegments: mockDefaultSegments,
+        setSegmentDraft: setSegmentDraftSpy,
+      });
+
+      await act(async () => {
+        render(<MangaStudioJobPage params={mockParams} />);
+      });
+
+      const textarea = screen.getByTestId('segment-translation-textarea');
+      await act(async () => {
+        fireEvent.change(textarea, { target: { value: 'Bản dịch mới từ editor' } });
+      });
+
+      expect(setSegmentDraftSpy).toHaveBeenCalledWith('seg-1', 'Bản dịch mới từ editor');
+      expect(mockDefaultSegments[0].translatedText).toBe('Yoohoo');
+    });
+
+    it('4. renders draft text and dirty badge when studio.drafts has entry for selected segment', async () => {
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        selectedSegmentId: 'seg-1',
+        pageSegments: mockDefaultSegments,
+        drafts: {
+          'seg-1': 'Bản dịch nháp trong bộ nhớ',
+        },
+      });
+
+      await act(async () => {
+        render(<MangaStudioJobPage params={mockParams} />);
+      });
+
+      expect(screen.getByTestId('segment-translation-textarea')).toHaveValue(
+        'Bản dịch nháp trong bộ nhớ',
+      );
+      expect(screen.getByTestId('badge-dirty')).toBeInTheDocument();
+      expect(screen.getByText('Bản nháp chưa lưu')).toBeInTheDocument();
+      // Segment list also reflects draft badge
+      expect(screen.getAllByText('Nháp').length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('5. clicking discard draft calls studio.discardSegmentDraft', async () => {
+      const discardSegmentDraftSpy = vi.fn();
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        selectedSegmentId: 'seg-1',
+        pageSegments: mockDefaultSegments,
+        drafts: {
+          'seg-1': 'Bản dịch sắp bị hủy',
+        },
+        discardSegmentDraft: discardSegmentDraftSpy,
+      });
+
+      await act(async () => {
+        render(<MangaStudioJobPage params={mockParams} />);
+      });
+
+      const discardBtn = screen.getByTestId('btn-discard-draft');
+      expect(discardBtn).toBeInTheDocument();
+      await act(async () => {
+        fireEvent.click(discardBtn);
+      });
+
+      expect(discardSegmentDraftSpy).toHaveBeenCalledWith('seg-1');
+    });
+
+    it('6. clicking save calls studio.saveSegment with draft text and canonical baseVersion', async () => {
+      const saveSegmentSpy = vi.fn().mockResolvedValue({
+        success: true,
+        outcome: 'SAVED_AND_SYNCED',
+      });
+
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        selectedSegmentId: 'seg-1',
+        pageSegments: mockDefaultSegments,
+        drafts: {
+          'seg-1': 'Bản dịch chính thức',
+        },
+        saveSegment: saveSegmentSpy,
+      });
+
+      await act(async () => {
+        render(<MangaStudioJobPage params={mockParams} />);
+      });
+
+      const saveBtn = screen.getByTestId('btn-save-segment');
+      expect(saveBtn).not.toBeDisabled();
+
+      await act(async () => {
+        fireEvent.click(saveBtn);
+      });
+
+      expect(saveSegmentSpy).toHaveBeenCalledTimes(1);
+      expect(saveSegmentSpy).toHaveBeenCalledWith('seg-1', 'Bản dịch chính thức', {
+        baseVersion: 1,
+      });
+    });
+
+    it('7. displays OCC conflict banner when conflictStates has VERSION_CONFLICT for segment', async () => {
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        selectedSegmentId: 'seg-1',
+        pageSegments: mockDefaultSegments,
+        drafts: {
+          'seg-1': 'Bản nháp xung đột',
+        },
+        conflictStates: {
+          'seg-1': {
+            kind: 'VERSION_CONFLICT',
+            segmentId: 'seg-1',
+            currentVersion: 3,
+            expectedVersion: 1,
+            retryBlocked: false,
+          },
+        },
+      });
+
+      await act(async () => {
+        render(<MangaStudioJobPage params={mockParams} />);
+      });
+
+      expect(screen.getByTestId('editor-occ-conflict-banner')).toBeInTheDocument();
+      expect(
+        screen.getByText(/Máy chủ đã được cập nhật lên v3 \(bạn đang chỉnh sửa dựa trên v1\)/),
+      ).toBeInTheDocument();
+      // User draft remains intact in textarea
+      expect(screen.getByTestId('segment-translation-textarea')).toHaveValue(
+        'Bản nháp xung đột',
+      );
     });
   });
 });

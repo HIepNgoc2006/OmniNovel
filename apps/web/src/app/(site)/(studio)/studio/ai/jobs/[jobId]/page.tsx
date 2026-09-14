@@ -14,6 +14,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { MangaStudioCanvas } from '@/components/studio/manga-studio-canvas';
+import { MangaSegmentEditor } from '@/components/studio/manga-segment-editor';
 import {
   ChevronLeft,
   RefreshCw,
@@ -67,6 +68,16 @@ export default function MangaStudioJobPage({ params }: PageProps) {
       ) ?? null
     );
   }, [studio.previewWindow, studio.currentPage]);
+
+  // Selected Segment SSoT for Translation Editor (RED 3)
+  const selectedSegment = React.useMemo(() => {
+    if (!studio.selectedSegmentId) return null;
+    return (
+      studio.pageSegments.find((s) => s.id === studio.selectedSegmentId) ??
+      studio.segments.find((s) => s.id === studio.selectedSegmentId) ??
+      null
+    );
+  }, [studio.selectedSegmentId, studio.pageSegments, studio.segments]);
 
   // URL SSoT Synchronization
   React.useEffect(() => {
@@ -847,16 +858,38 @@ export default function MangaStudioJobPage({ params }: PageProps) {
           </div>
         </div>
 
-        {/* Right Panel: Segments List & Translation Editor (Col 4) */}
-        <div className="lg:col-span-4 bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 flex flex-col">
-          <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-            <h3 className="text-sm font-bold text-white">
-              Danh Sách Ô Thoại (Segments)
-            </h3>
-            {studio.pageSegmentsLoading && (
-              <RefreshCw className="w-3.5 h-3.5 text-slate-400 animate-spin" />
-            )}
-          </div>
+        {/* Right Panel: Translation Editor & Segments List (Col 4) */}
+        <div className="lg:col-span-4 space-y-4 flex flex-col">
+          {/* Active Translation Editor Panel (RED 3) */}
+          <MangaSegmentEditor
+            segment={selectedSegment}
+            draftText={selectedSegment ? studio.drafts[selectedSegment.id] : undefined}
+            canEdit={studio.workspaceMode?.canEdit ?? false}
+            isGateClosed={studio.isGateClosed}
+            isSaving={selectedSegment ? Boolean(studio.savingSegmentIds[selectedSegment.id]) : false}
+            hasPendingMutation={selectedSegment ? Boolean(studio.pendingUnknownMutations[selectedSegment.id]) : false}
+            conflictState={selectedSegment ? studio.conflictStates[selectedSegment.id] ?? null : null}
+            saveError={selectedSegment ? (studio.operationError ?? null) : null}
+            onDraftChange={studio.setSegmentDraft}
+            onDiscardDraft={studio.discardSegmentDraft}
+            onSave={async (segmentId, text) => {
+              await studio.saveSegment(segmentId, text, {
+                baseVersion: selectedSegment?.version,
+              });
+            }}
+            onClearConflict={studio.clearConflict}
+          />
+
+          {/* Segments List for Current Page */}
+          <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4 flex flex-col">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <h3 className="text-sm font-bold text-white">
+                Danh Sách Ô Thoại (Segments)
+              </h3>
+              {studio.pageSegmentsLoading && (
+                <RefreshCw className="w-3.5 h-3.5 text-slate-400 animate-spin" />
+              )}
+            </div>
 
           {/* Page Segments Error Banner */}
           {studio.pageSegmentsError && (
@@ -902,6 +935,13 @@ export default function MangaStudioJobPage({ params }: PageProps) {
               {studio.pageSegments.map((seg) => {
                 const hasPending = Boolean(studio.pendingUnknownMutations[seg.id]);
                 const segConflict = studio.conflictStates[seg.id];
+                const segDraft = studio.drafts[seg.id];
+                const isSegDirty =
+                  segDraft !== undefined &&
+                  segDraft.trim() !== (seg.translatedText ?? '').trim();
+                const displaySegText =
+                  segDraft !== undefined ? segDraft : seg.translatedText;
+
                 return (
                   <div
                     key={seg.id}
@@ -920,6 +960,14 @@ export default function MangaStudioJobPage({ params }: PageProps) {
                         • Thứ tự #{seg.sortOrder}
                       </span>
                       <div className="flex items-center gap-1">
+                        {isSegDirty && (
+                          <Badge
+                            variant="warning"
+                            className="text-[10px] bg-amber-500/20 text-amber-300 border-amber-500/40"
+                          >
+                            Nháp
+                          </Badge>
+                        )}
                         {hasPending && (
                           <Badge variant="warning" className="animate-pulse">
                             Chờ xác nhận
@@ -945,7 +993,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
                       {seg.rawText}
                     </p>
                     <p className="text-xs text-white line-clamp-2">
-                      {seg.translatedText || (
+                      {displaySegText || (
                         <span className="text-slate-600 italic">Chưa có bản dịch</span>
                       )}
                     </p>
@@ -987,6 +1035,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
               </Button>
             </div>
           )}
+          </div>
         </div>
       </div>
     </div>

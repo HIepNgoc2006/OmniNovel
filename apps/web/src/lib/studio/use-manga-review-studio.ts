@@ -51,6 +51,7 @@ export type {
   SaveSegmentOutcome,
 } from './studio-types';
 export { buildSaveSegmentResult } from './studio-types';
+export type { ParsedApiError } from '../api/translation';
 
 export interface SaveSegmentOptions {
   isHumanVerified?: boolean;
@@ -129,6 +130,11 @@ export interface UseMangaReviewStudioReturn {
       | Record<string, ConflictState>
       | ((prev: Record<string, ConflictState>) => Record<string, ConflictState>),
   ) => void;
+  // RED 3 Editor & Draft Management
+  drafts: Record<string, string>;
+  setSegmentDraft: (segmentId: string, text: string) => void;
+  discardSegmentDraft: (segmentId: string) => void;
+  savingSegmentIds: Record<string, boolean>;
   saveSegment: (
     segmentId: string,
     text: string,
@@ -230,6 +236,23 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     ((targetPage: number, segmentPage?: number, explicitGen?: number, explicitDetail?: TranslationJobReviewDetailResponse | null) => Promise<void>) | null
   >(null);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
+
+  // RED 3: User-owned Drafts & Per-segment Saving Indicators
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [savingSegmentIds, setSavingSegmentIds] = useState<Record<string, boolean>>({});
+
+  const setSegmentDraft = useCallback((segmentId: string, text: string) => {
+    setDrafts((prev) => ({ ...prev, [segmentId]: text }));
+  }, []);
+
+  const discardSegmentDraft = useCallback((segmentId: string) => {
+    setDrafts((prev) => {
+      if (!prev[segmentId]) return prev;
+      const next = { ...prev };
+      delete next[segmentId];
+      return next;
+    });
+  }, []);
 
   // Synchronous State / Ref Mirrors
   const [conflictStates, setConflictStates] = useState<Record<string, ConflictState>>({});
@@ -615,6 +638,8 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       setPreviews(null);
       setSelectedSegmentId(null);
       if (!preserveDrafts) {
+        setDrafts({});
+        setSavingSegmentIds({});
         pendingVersionConflictReconciliationRef.current = {};
         replaceConflictStates({});
         replacePendingUnknownMutations({});
@@ -675,6 +700,8 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       setSegmentsSyncStatus('SYNCED');
       setSelectedSegmentId(null);
       if (!preserveDrafts) {
+        setDrafts({});
+        setSavingSegmentIds({});
         replaceConflictStates({});
         replacePendingUnknownMutations({});
         resetPreviewBreaker();
@@ -2162,6 +2189,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       const isCurrent = () =>
         segmentMutationSeqRef.current[segmentId] === mutationSeq;
 
+      setSavingSegmentIds((prev) => ({ ...prev, [segmentId]: true }));
       try {
         const updated = await updateTranslationSegment(
           targetJob,
@@ -2200,6 +2228,14 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
         // Clear conflict state if this is still the latest operation
         replaceConflictStates((prev) => {
+          if (!prev[segmentId]) return prev;
+          const next = { ...prev };
+          delete next[segmentId];
+          return next;
+        });
+
+        // RED 3: On committed save, clear the local user draft for this segment
+        setDrafts((prev) => {
           if (!prev[segmentId]) return prev;
           const next = { ...prev };
           delete next[segmentId];
@@ -2449,6 +2485,13 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         return buildSaveSegmentResult('UNKNOWN', 'RECONCILIATION_REQUIRED', {
           reason: 'NETWORK',
           error: parsed,
+        });
+      } finally {
+        setSavingSegmentIds((prev) => {
+          if (!prev[segmentId]) return prev;
+          const next = { ...prev };
+          delete next[segmentId];
+          return next;
         });
       }
     },
@@ -3060,6 +3103,11 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     pendingUnknownMutations,
     clearConflict,
     replaceConflictStates,
+    // RED 3 Editor & Draft Management
+    drafts,
+    setSegmentDraft,
+    discardSegmentDraft,
+    savingSegmentIds,
     saveSegment,
     triggerMaterialization,
     materializationStatus: activeMaterializationStatus,

@@ -1642,6 +1642,157 @@ describe('Manga Review Studio Route & URL Synchronization (#149 RED 1)', () => {
       expect(screen.getByText('Trang 2 / 20')).toBeDefined();
     });
   });
+
+  it('27. Presigned URL auto-refresh on window focus (#149): window focus in REVIEWABLE mode with active previewWindow refreshes current bounded window', async () => {
+    const previewSpy = vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
+      sourceAssets: [{ kind: 'SOURCE_REVIEW', pageNumber: 1, url: 'https://cdn.example.com/p1-v1.png', width: 1000, height: 1500 }],
+      resultAssets: [{ kind: 'RESULT', pageNumber: 1, url: 'https://cdn.example.com/res-p1-v1.png', width: 1000, height: 1500 }],
+      workspaceRevision: 10,
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    await waitFor(() => expect(result.current.previewWindow).not.toBeNull());
+
+    previewSpy.mockClear();
+
+    // Trigger window focus
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // Should have refreshed the preview window via fetchTranslationJobPreviews
+    expect(previewSpy).toHaveBeenCalledTimes(1);
+    expect(previewSpy).toHaveBeenCalledWith(mockJobId, { fromPage: 1, toPage: 5 });
+  });
+
+  it('28. Window focus in non-REVIEWABLE modes (APPLIED, FAILED, CANCELED) makes 0 Preview API calls', async () => {
+    const previewSpy = vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
+      sourceAssets: [],
+      resultAssets: [],
+      workspaceRevision: 10,
+    });
+
+    // Mock job detail as APPLIED
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue({
+      ...mockJobDetail,
+      job: {
+        ...mockJobDetail.job,
+        status: TranslationJobStatus.APPLIED,
+      },
+    });
+
+    const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+    await waitFor(() => expect(result.current.status).toBe('ready'));
+    expect(result.current.workspaceMode?.mode).toBe('APPLIED');
+
+    previewSpy.mockClear();
+
+    // Trigger window focus
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // In APPLIED mode: exactly 0 preview API calls
+    expect(previewSpy).not.toHaveBeenCalled();
+  });
+
+  it('29. Production composition single focus owner (P1-1): mounting MangaStudioJobPage with real useMangaReviewStudio on window focus makes EXACTLY 1 Preview API call', async () => {
+    const previewSpy = vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
+      sourceAssets: [{ kind: 'SOURCE_REVIEW', pageNumber: 1, url: 'https://cdn.example.com/p1-v1.png', width: 1000, height: 1500 }],
+      resultAssets: [{ kind: 'RESULT', pageNumber: 1, url: 'https://cdn.example.com/res-p1-v1.png', width: 1000, height: 1500 }],
+      workspaceRevision: 10,
+    });
+
+    render(<MangaStudioJobPage params={mockParams} />);
+    await waitFor(() => {
+      expect(screen.getByText('Trang 1 / 20')).toBeDefined();
+    });
+
+    previewSpy.mockClear();
+
+    // Trigger window focus on production-composed page (page + hook)
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // CRITICAL P1-1 INVARIANT: exactly 1 preview request (no duplicate listener from route)
+    expect(previewSpy).toHaveBeenCalledTimes(1);
+    expect(previewSpy).toHaveBeenCalledWith(mockJobId, { fromPage: 1, toPage: 5 });
+  });
+
+  it('30. Production composition focus recovery (P1-1): Canvas in LOAD_ERROR recovers upon window focus even when Preview API returns same URL', async () => {
+    const previewSpy = vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
+      sourceAssets: [{ kind: 'SOURCE_REVIEW', pageNumber: 1, url: 'https://cdn.example.com/p1-same-url.png', width: 1000, height: 1500 }],
+      resultAssets: [{ kind: 'RESULT', pageNumber: 1, url: 'https://cdn.example.com/res-p1-same-url.png', width: 1000, height: 1500 }],
+      workspaceRevision: 10,
+    });
+
+    render(<MangaStudioJobPage params={mockParams} />);
+    await waitFor(() => {
+      expect(screen.getByText('Trang 1 / 20')).toBeDefined();
+    });
+
+    // 1. Initial image mounted with presentationEpoch=1
+    const initialImg = await screen.findByTestId('canvas-source-image');
+    expect(initialImg.getAttribute('data-presentation-epoch')).toBe('1');
+
+    // 2. Simulate image load failure -> triggers retryPreviewWindow
+    await act(async () => {
+      fireEvent.error(initialImg);
+    });
+
+    // Retry Preview API resolves with same URL, but increments generation to 2
+    await waitFor(() => {
+      const remounted = screen.getByTestId('canvas-source-image');
+      expect(remounted.getAttribute('data-presentation-epoch')).toBe('2');
+    });
+
+    const remountedImg = screen.getByTestId('canvas-source-image');
+
+    // 3. Second failure on same URL: dedupe stops auto-retry loop -> Canvas enters persistent LOAD_ERROR
+    await act(async () => {
+      fireEvent.error(remountedImg);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('canvas-source-error')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('canvas-source-image')).toBeNull();
+
+    previewSpy.mockClear();
+
+    // 4. User refocuses window -> triggers hook focus refresh
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // Exactly 1 Preview API request triggered by window focus
+    expect(previewSpy).toHaveBeenCalledTimes(1);
+
+    // P1-1 INVARIANT: Even though backend returns identical URL, generation increments to 3
+    // Fresh <img> DOM instance mounts, replacing canvas-source-error
+    const recoveredImg = await screen.findByTestId('canvas-source-image');
+    expect(recoveredImg).toBeInTheDocument();
+    expect(recoveredImg.getAttribute('data-presentation-epoch')).toBe('3');
+    expect(screen.queryByTestId('canvas-source-error')).toBeNull();
+
+    // 5. Successful load on the recovered image clears dedupe entry
+    Object.defineProperty(recoveredImg, 'naturalWidth', { value: 1000 });
+    Object.defineProperty(recoveredImg, 'naturalHeight', { value: 1500 });
+    await act(async () => {
+      fireEvent.load(recoveredImg);
+    });
+
+    // 6. Later independent error can auto-retry again
+    previewSpy.mockClear();
+    await act(async () => {
+      fireEvent.error(recoveredImg);
+    });
+    expect(previewSpy).toHaveBeenCalledTimes(1);
+  });
 });
+
+
 
 

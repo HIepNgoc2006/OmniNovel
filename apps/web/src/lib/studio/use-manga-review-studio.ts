@@ -109,6 +109,7 @@ export interface UseMangaReviewStudioReturn {
   previewWindow: BoundedPreviewWindowState | null;
   previewWindowLoading: boolean;
   previewWindowError: string | null;
+  previewWindowGeneration: number;
   pageSegments: TranslationSegmentDto[];
   pageSegmentsPagination: PageSegmentsPagination | null;
   pageSegmentsLoading: boolean;
@@ -163,6 +164,11 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   const [status, setStatus] = useState<
     'initializing' | 'auth_required' | 'loading' | 'ready' | 'error'
   >('initializing');
+  const statusRef = useRef(status);
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
   const [jobDetail, setJobDetail] =
     useState<TranslationJobReviewDetailResponse | null>(null);
   const jobDetailRef = useRef<TranslationJobReviewDetailResponse | null>(null);
@@ -199,8 +205,14 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
   // RED 1: Page Navigator states
   const [previewWindow, setPreviewWindow] = useState<BoundedPreviewWindowState | null>(null);
+  const previewWindowRef = useRef<BoundedPreviewWindowState | null>(null);
+  useEffect(() => {
+    previewWindowRef.current = previewWindow;
+  }, [previewWindow]);
+
   const [previewWindowLoading, setPreviewWindowLoading] = useState(false);
   const [previewWindowError, setPreviewWindowError] = useState<string | null>(null);
+  const [previewWindowGeneration, setPreviewWindowGeneration] = useState(0);
 
   const [pageSegments, setPageSegments] = useState<TranslationSegmentDto[]>([]);
   const [pageSegmentsPagination, setPageSegmentsPagination] = useState<PageSegmentsPagination | null>(null);
@@ -2691,6 +2703,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           resultAssets: prevRes.resultAssets || [],
           workspaceRevision: prevRes.workspaceRevision,
         });
+        setPreviewWindowGeneration((prev) => prev + 1);
         setPreviewWindowLoading(false);
       } catch (err) {
         if (
@@ -2916,6 +2929,33 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     loadPageSegmentsRef.current = loadPageSegments;
   }, [loadPageSegments]);
 
+  // Presigned URL Auto-Refresh on Window Focus (#149)
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+
+    const handleWindowFocus = () => {
+      if (statusRef.current !== 'ready') return;
+      const detail = jobDetailRef.current;
+      if (!detail) return;
+
+      const mode = getMangaStudioWorkspaceMode({
+        jobStatus: detail.job.status,
+        mediaFormat: detail.context.story.mediaFormat,
+        resultPageCount: detail.reviewSummary?.resultPageCount,
+      }).mode;
+
+      if (mode !== 'REVIEWABLE') return;
+      if (!previewWindowRef.current) return;
+
+      void loadPreviewWindowRef.current?.(currentPageRef.current);
+    };
+
+    window.addEventListener('focus', handleWindowFocus);
+    return () => {
+      window.removeEventListener('focus', handleWindowFocus);
+    };
+  }, []);
+
   const goToPage = useCallback(
     (targetPage: number) => {
       const maxPage = jobDetailRef.current
@@ -3004,6 +3044,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     previewWindow,
     previewWindowLoading,
     previewWindowError,
+    previewWindowGeneration,
     pageSegments,
     pageSegmentsPagination,
     pageSegmentsLoading,

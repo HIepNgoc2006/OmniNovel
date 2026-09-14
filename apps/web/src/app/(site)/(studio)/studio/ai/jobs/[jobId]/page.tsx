@@ -13,6 +13,7 @@ import {
 } from '@/lib/studio/manga-page-navigator';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { MangaStudioCanvas } from '@/components/studio/manga-studio-canvas';
 import {
   ChevronLeft,
   RefreshCw,
@@ -47,6 +48,25 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     },
     [pathname, router, studio.currentPage, studio.pageCountInfo.pageCount]
   );
+
+  // Current page source and result assets from preview window (RED 2)
+  const currentSourceAsset = React.useMemo(() => {
+    if (!studio.previewWindow) return null;
+    return (
+      studio.previewWindow.sourceAssets.find(
+        (a) => a.pageNumber === studio.currentPage
+      ) ?? null
+    );
+  }, [studio.previewWindow, studio.currentPage]);
+
+  const currentResultAsset = React.useMemo(() => {
+    if (!studio.previewWindow) return null;
+    return (
+      studio.previewWindow.resultAssets.find(
+        (a) => a.pageNumber === studio.currentPage
+      ) ?? null
+    );
+  }, [studio.previewWindow, studio.currentPage]);
 
   // URL SSoT Synchronization
   React.useEffect(() => {
@@ -90,6 +110,97 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [studio.status, studio.workspaceMode?.mode, studio.currentPage, studio.pageCountInfo.pageCount, navigateToPage]);
+
+  // Presigned URL Auto-Refresh on Image & Thumbnail Error (#149)
+  const retriedImageKeysRef = React.useRef<Set<string>>(new Set());
+
+  const handlePreviewAssetLoaded = React.useCallback(
+    (kind: 'SOURCE' | 'RESULT', imageKey: string) => {
+      // Clear dedupe entry when asset actually loads successfully so future independent errors can auto-recover
+      retriedImageKeysRef.current.delete(`${kind}:${imageKey}`);
+    },
+    [],
+  );
+
+  const handlePreviewAssetError = React.useCallback(
+    (kind: 'SOURCE' | 'RESULT', imageKey: string) => {
+      // 1. Guard against non-REVIEWABLE workspace mode
+      if (studio.status !== 'ready' || studio.workspaceMode?.mode !== 'REVIEWABLE') {
+        return;
+      }
+
+      // 2. Guard against stale error event:
+      // Must match currently rendered asset key for current page and workspaceRevision
+      const expectedRevision =
+        studio.previewWindow?.workspaceRevision ??
+        studio.jobDetail?.job.workspaceRevision ??
+        1;
+      const currentActiveSourceKey = currentSourceAsset
+        ? `${expectedRevision}:${studio.currentPage}:${currentSourceAsset.url}`
+        : '';
+      const currentActiveResultKey = currentResultAsset
+        ? `${expectedRevision}:${studio.currentPage}:${currentResultAsset.url}`
+        : '';
+
+      const expectedKey = kind === 'SOURCE' ? currentActiveSourceKey : currentActiveResultKey;
+      if (!imageKey || imageKey !== expectedKey) {
+        // Stale error event from previous image key -> do NOT trigger refresh
+        return;
+      }
+
+      // 3. Retry guard by logical key (kind:revision:page:url) to prevent infinite retry loops
+      const dedupKey = `${kind}:${imageKey}`;
+      if (retriedImageKeysRef.current.has(dedupKey)) {
+        return;
+      }
+
+      retriedImageKeysRef.current.add(dedupKey);
+      void studio.retryPreviewWindow();
+    },
+    [
+      studio.status,
+      studio.workspaceMode?.mode,
+      studio.previewWindow?.workspaceRevision,
+      studio.jobDetail?.job.workspaceRevision,
+      studio.currentPage,
+      studio.retryPreviewWindow,
+      currentSourceAsset,
+      currentResultAsset,
+    ],
+  );
+
+  const handleThumbnailAssetError = React.useCallback(
+    (kind: 'SOURCE' | 'RESULT', imageKey: string, pageNumber: number, url: string) => {
+      if (studio.status !== 'ready' || studio.workspaceMode?.mode !== 'REVIEWABLE') {
+        return;
+      }
+
+      const win = studio.previewWindow;
+      if (!win) return;
+      const currentThumb =
+        kind === 'RESULT'
+          ? win.resultAssets.find((a) => a.pageNumber === pageNumber)
+          : win.sourceAssets.find((a) => a.pageNumber === pageNumber);
+      if (!currentThumb || currentThumb.url !== url) {
+        // Stale thumbnail error event -> ignore
+        return;
+      }
+
+      const dedupKey = `${kind}:${imageKey}`;
+      if (retriedImageKeysRef.current.has(dedupKey)) {
+        return;
+      }
+
+      retriedImageKeysRef.current.add(dedupKey);
+      void studio.retryPreviewWindow();
+    },
+    [
+      studio.status,
+      studio.workspaceMode?.mode,
+      studio.previewWindow,
+      studio.retryPreviewWindow,
+    ],
+  );
 
 
   // 1. Loading & Initializing state
@@ -599,17 +710,26 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             </span>
           </div>
 
-          {/* Placeholder for canvas / image preview component */}
-          <div className="flex-1 my-6 flex items-center justify-center border border-dashed border-slate-800 rounded-2xl bg-slate-950/40 p-8 text-center">
-            <div className="space-y-2">
-              <p className="text-xs text-slate-400">
-                Không gian hiển thị ảnh gốc vs ảnh đã dịch và OCR bounding boxes (RED 2).
-              </p>
-              <p className="text-[11px] text-slate-600">
-                Segment Count: {studio.segments.length} | Authoritative Page Count:{' '}
-                {studio.pageCountInfo.pageCount ?? 'N/A'}
-              </p>
-            </div>
+          {/* Canvas Studio Preview Area (RED 2) */}
+          <div className="flex-1 my-4 flex flex-col min-h-[520px]">
+            <MangaStudioCanvas
+              currentPage={studio.currentPage}
+              workspaceRevision={
+                studio.previewWindow?.workspaceRevision ??
+                studio.jobDetail?.job.workspaceRevision ??
+                1
+              }
+              sourceAsset={currentSourceAsset}
+              resultAsset={currentResultAsset}
+              segments={studio.pageSegments}
+              selectedSegmentId={studio.selectedSegmentId}
+              onSelectSegment={studio.setSelectedSegmentId}
+              isLoading={studio.previewWindowLoading}
+              error={studio.previewWindowError}
+              onPreviewAssetError={handlePreviewAssetError}
+              onPreviewAssetLoaded={handlePreviewAssetLoaded}
+              presentationEpoch={studio.previewWindowGeneration}
+            />
           </div>
 
           {/* Page Navigator Navigation Bar */}
@@ -627,7 +747,9 @@ export default function MangaStudioJobPage({ params }: PageProps) {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => studio.retryPreviewWindow()}
+                  onClick={() => {
+                    void studio.retryPreviewWindow();
+                  }}
                   className="h-7 px-2.5 text-xs text-rose-200 hover:text-white hover:bg-rose-500/20"
                 >
                   <RefreshCw className="w-3 h-3 mr-1" />
@@ -636,7 +758,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
               </div>
             )}
 
-            {/* Bounded Thumbnail Strip (<= 5 thumbnails) */}
+            {/* Bounded Thumbnail Strip (<= 5 thumbnails) (#149 P1-2) */}
             {studio.previewWindow && (
               <div
                 data-testid="thumbnail-strip"
@@ -649,11 +771,20 @@ export default function MangaStudioJobPage({ params }: PageProps) {
                   const isActive = p === studio.currentPage;
                   const resultThumb = studio.previewWindow?.resultAssets.find((a) => a.pageNumber === p);
                   const sourceThumb = studio.previewWindow?.sourceAssets.find((a) => a.pageNumber === p);
-                  const thumbUrl = resultThumb?.url || sourceThumb?.url;
+                  const thumbAsset = resultThumb || sourceThumb;
+                  const thumbUrl = thumbAsset?.url;
+                  const thumbKind: 'RESULT' | 'SOURCE' = resultThumb ? 'RESULT' : 'SOURCE';
+                  const expectedRevision =
+                    studio.previewWindow?.workspaceRevision ??
+                    studio.jobDetail?.job.workspaceRevision ??
+                    1;
+                  const thumbKey = thumbAsset
+                    ? `${expectedRevision}:${p}:${thumbUrl}`
+                    : '';
 
                   return (
                     <button
-                      key={p}
+                      key={`${p}:${studio.previewWindowGeneration}`}
                       type="button"
                       data-testid={`thumbnail-item-${p}`}
                       onClick={() => navigateToPage(p)}
@@ -665,8 +796,14 @@ export default function MangaStudioJobPage({ params }: PageProps) {
                     >
                       {thumbUrl ? (
                         <img
+                          key={`${thumbKey}:${studio.previewWindowGeneration}`}
+                          data-testid={`thumbnail-image-${p}`}
+                          data-thumb-key={`${thumbKind}:${thumbKey}`}
+                          data-generation={studio.previewWindowGeneration}
                           src={thumbUrl}
                           alt={`Trang ${p}`}
+                          onLoad={() => handlePreviewAssetLoaded(thumbKind, thumbKey)}
+                          onError={() => handleThumbnailAssetError(thumbKind, thumbKey, p, thumbUrl)}
                           className="w-full h-full object-cover"
                         />
                       ) : (

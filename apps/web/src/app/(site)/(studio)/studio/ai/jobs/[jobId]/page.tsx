@@ -111,8 +111,17 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [studio.status, studio.workspaceMode?.mode, studio.currentPage, studio.pageCountInfo.pageCount, navigateToPage]);
 
-  // Presigned URL Auto-Refresh on Image Error & Window Focus (#149)
+  // Presigned URL Auto-Refresh on Image Error (#149)
   const retriedImageKeysRef = React.useRef<Set<string>>(new Set());
+  const [presentationEpoch, setPresentationEpoch] = React.useState(0);
+
+  const handlePreviewAssetLoaded = React.useCallback(
+    (kind: 'SOURCE' | 'RESULT', imageKey: string) => {
+      // P1-2: Clear dedupe entry when asset actually loads successfully so future independent errors can auto-recover
+      retriedImageKeysRef.current.delete(imageKey);
+    },
+    [],
+  );
 
   const handlePreviewAssetError = React.useCallback(
     (kind: 'SOURCE' | 'RESULT', imageKey: string) => {
@@ -140,13 +149,17 @@ export default function MangaStudioJobPage({ params }: PageProps) {
         return;
       }
 
-      // 3. Retry guard by imageKey/URL to prevent infinite retry loops
+      // 3. Retry guard by logical imageKey to prevent infinite retry loops
       if (retriedImageKeysRef.current.has(imageKey)) {
         return;
       }
 
       retriedImageKeysRef.current.add(imageKey);
-      void studio.retryPreviewWindow();
+      void studio.retryPreviewWindow().then(() => {
+        // P1-2: Increment presentationEpoch to mount fresh image DOM instance
+        // even when backend returns the exact same presigned URL
+        setPresentationEpoch((prev) => prev + 1);
+      });
     },
     [
       studio.status,
@@ -159,33 +172,6 @@ export default function MangaStudioJobPage({ params }: PageProps) {
       currentResultAsset,
     ],
   );
-
-  // Window Focus Auto-Refresh for Presigned URLs (#149)
-  React.useEffect(() => {
-    if (typeof window === 'undefined') return;
-
-    const handleWindowFocus = () => {
-      // REVIEWABLE scope check
-      if (studio.status !== 'ready') return;
-      if (studio.workspaceMode?.mode !== 'REVIEWABLE') return;
-
-      // If current bounded preview exists
-      if (!studio.previewWindow) return;
-
-      // Refresh current bounded window
-      void studio.retryPreviewWindow();
-    };
-
-    window.addEventListener('focus', handleWindowFocus);
-    return () => {
-      window.removeEventListener('focus', handleWindowFocus);
-    };
-  }, [
-    studio.status,
-    studio.workspaceMode?.mode,
-    studio.previewWindow,
-    studio.retryPreviewWindow,
-  ]);
 
 
   // 1. Loading & Initializing state
@@ -712,6 +698,8 @@ export default function MangaStudioJobPage({ params }: PageProps) {
               isLoading={studio.previewWindowLoading}
               error={studio.previewWindowError}
               onPreviewAssetError={handlePreviewAssetError}
+              onPreviewAssetLoaded={handlePreviewAssetLoaded}
+              presentationEpoch={presentationEpoch}
             />
           </div>
 
@@ -730,7 +718,11 @@ export default function MangaStudioJobPage({ params }: PageProps) {
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => studio.retryPreviewWindow()}
+                  onClick={() => {
+                    void studio.retryPreviewWindow().then(() => {
+                      setPresentationEpoch((prev) => prev + 1);
+                    });
+                  }}
                   className="h-7 px-2.5 text-xs text-rose-200 hover:text-white hover:bg-rose-500/20"
                 >
                   <RefreshCw className="w-3 h-3 mr-1" />

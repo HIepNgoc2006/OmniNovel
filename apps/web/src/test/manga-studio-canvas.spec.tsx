@@ -783,6 +783,103 @@ describe('Manga Review Studio Canvas & OCR Bounding Box Geometry (#149 RED 2)', 
       fireEvent.error(sourceImg);
       expect(onPreviewAssetErrorSpy).not.toHaveBeenCalled();
     });
+
+    it('C20. Changing presentationEpoch remounts image and resets LOAD_ERROR to fresh image load attempt even if URL is identical (#149 P1-2)', () => {
+      const { rerender } = render(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={mockSourceAsset}
+          resultAsset={null}
+          segments={[]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+          presentationEpoch={0}
+        />
+      );
+
+      const firstImg = screen.getByTestId('canvas-source-image');
+      expect(firstImg).toBeInTheDocument();
+      expect(firstImg.getAttribute('data-presentation-epoch')).toBe('0');
+
+      // Fail image decode -> transitions to LOAD_ERROR
+      fireEvent.error(firstImg);
+      expect(screen.getByTestId('canvas-source-error')).toBeInTheDocument();
+      expect(screen.queryByTestId('canvas-source-image')).not.toBeInTheDocument();
+
+      // Rerender with incremented presentationEpoch (same sourceAsset.url!)
+      rerender(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={mockSourceAsset}
+          resultAsset={null}
+          segments={[]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+          presentationEpoch={1}
+        />
+      );
+
+      // Error placeholder must be dismissed, and a fresh <img> DOM instance with presentationEpoch=1 must be mounted
+      expect(screen.queryByTestId('canvas-source-error')).not.toBeInTheDocument();
+      const freshImg = screen.getByTestId('canvas-source-image');
+      expect(freshImg).toBeInTheDocument();
+      expect(freshImg.getAttribute('data-presentation-epoch')).toBe('1');
+    });
+
+    it('C21. Successful source image integrity verification triggers onPreviewAssetLoaded callback with kind SOURCE and imageKey', () => {
+      const onPreviewAssetLoadedSpy = vi.fn();
+      render(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={mockSourceAsset}
+          resultAsset={null}
+          segments={[]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+          onPreviewAssetLoaded={onPreviewAssetLoadedSpy}
+        />
+      );
+
+      const sourceImg = screen.getByTestId('canvas-source-image');
+      Object.defineProperty(sourceImg, 'naturalWidth', { value: 1000 });
+      Object.defineProperty(sourceImg, 'naturalHeight', { value: 1500 });
+      fireEvent.load(sourceImg);
+
+      expect(onPreviewAssetLoadedSpy).toHaveBeenCalledTimes(1);
+      expect(onPreviewAssetLoadedSpy).toHaveBeenCalledWith(
+        'SOURCE',
+        `10:1:${mockSourceAsset.url}`
+      );
+    });
+
+    it('C22. Successful result image load triggers onPreviewAssetLoaded callback with kind RESULT and imageKey', () => {
+      const onPreviewAssetLoadedSpy = vi.fn();
+      render(
+        <MangaStudioCanvas
+          currentPage={1}
+          workspaceRevision={10}
+          sourceAsset={null}
+          resultAsset={mockResultAsset}
+          segments={[]}
+          selectedSegmentId={null}
+          onSelectSegment={vi.fn()}
+          onPreviewAssetLoaded={onPreviewAssetLoadedSpy}
+        />
+      );
+
+      fireEvent.click(screen.getByTestId('view-mode-result-button'));
+      const resultImg = screen.getByTestId('canvas-result-image');
+      fireEvent.load(resultImg);
+
+      expect(onPreviewAssetLoadedSpy).toHaveBeenCalledTimes(1);
+      expect(onPreviewAssetLoadedSpy).toHaveBeenCalledWith(
+        'RESULT',
+        `10:1:${mockResultAsset.url}`
+      );
+    });
   });
 });
 

@@ -27,6 +27,8 @@ export interface MangaStudioCanvasProps {
   isLoading?: boolean;
   error?: string | null;
   onPreviewAssetError?: (kind: 'SOURCE' | 'RESULT', imageKey: string) => void;
+  onPreviewAssetLoaded?: (kind: 'SOURCE' | 'RESULT', imageKey: string) => void;
+  presentationEpoch?: number;
 }
 
 export type CanvasViewMode = 'SOURCE' | 'RESULT' | 'SIDE_BY_SIDE';
@@ -48,14 +50,13 @@ export interface CanvasSourcePaneProps {
   onSelectSegment: (segmentId: string) => void;
   isLoading?: boolean;
   onPreviewAssetError?: (kind: 'SOURCE', imageKey: string) => void;
+  onPreviewAssetLoaded?: (kind: 'SOURCE', imageKey: string) => void;
+  presentationEpoch?: number;
 }
 
 /**
- * Isolated Source Pane Component (P1 Option A)
- * Local ImageIntegrityState is tied directly to this component instance's lifecycle.
- * Unmounting and remounting (e.g. view mode toggling SOURCE -> RESULT -> SIDE_BY_SIDE)
- * resets state to 'LOADING', preventing stale 'VERIFIED' state from being reused
- * before the newly mounted DOM image instance finishes decoding and verification.
+ * Isolated Source Pane Component (P1)
+ * Owns local image loading, decoding, integrity verification and OCR overlay lifecycle.
  */
 export const CanvasSourcePane: React.FC<CanvasSourcePaneProps> = ({
   currentPage,
@@ -66,9 +67,10 @@ export const CanvasSourcePane: React.FC<CanvasSourcePaneProps> = ({
   onSelectSegment,
   isLoading = false,
   onPreviewAssetError,
+  onPreviewAssetLoaded,
+  presentationEpoch = 0,
 }) => {
   const isSourcePageMismatch = Boolean(sourceAsset && sourceAsset.pageNumber !== currentPage);
-
   const currentSourceImageKey = sourceAsset
     ? `${workspaceRevision}:${currentPage}:${sourceAsset.url}`
     : '';
@@ -82,6 +84,13 @@ export const CanvasSourcePane: React.FC<CanvasSourcePaneProps> = ({
   const [prevKey, setPrevKey] = useState(currentSourceImageKey);
   if (prevKey !== currentSourceImageKey) {
     setPrevKey(currentSourceImageKey);
+    setImageStatus({ key: currentSourceImageKey, state: 'LOADING' });
+  }
+
+  // P1-2: If presentationEpoch changes (e.g. error retry with same URL), reset state to mount a fresh image
+  const [prevEpoch, setPrevEpoch] = useState(presentationEpoch);
+  if (prevEpoch !== presentationEpoch) {
+    setPrevEpoch(presentationEpoch);
     setImageStatus({ key: currentSourceImageKey, state: 'LOADING' });
   }
 
@@ -102,6 +111,10 @@ export const CanvasSourcePane: React.FC<CanvasSourcePaneProps> = ({
       key: currentSourceImageKey,
       state: isIntegrityValid ? 'VERIFIED' : 'DIMENSION_MISMATCH',
     });
+
+    if (isIntegrityValid) {
+      onPreviewAssetLoaded?.('SOURCE', currentSourceImageKey);
+    }
   };
 
   const handleSourceImageError = (e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -214,9 +227,10 @@ export const CanvasSourcePane: React.FC<CanvasSourcePaneProps> = ({
       className="relative inline-block max-w-full max-h-full select-none shadow-2xl rounded-lg overflow-hidden border border-slate-800"
     >
       <img
-        key={currentSourceImageKey}
+        key={`${currentSourceImageKey}:${presentationEpoch}`}
         data-testid="canvas-source-image"
         data-image-key={currentSourceImageKey}
+        data-presentation-epoch={presentationEpoch}
         src={sourceAsset.url}
         alt={`Trang gốc ${currentPage}`}
         onLoad={handleSourceImageLoad}
@@ -279,6 +293,8 @@ export interface CanvasResultPaneProps {
   resultAsset: ReviewAssetDto | null;
   isLoading?: boolean;
   onPreviewAssetError?: (kind: 'RESULT', imageKey: string) => void;
+  onPreviewAssetLoaded?: (kind: 'RESULT', imageKey: string) => void;
+  presentationEpoch?: number;
 }
 
 /**
@@ -291,6 +307,8 @@ export const CanvasResultPane: React.FC<CanvasResultPaneProps> = ({
   resultAsset,
   isLoading = false,
   onPreviewAssetError,
+  onPreviewAssetLoaded,
+  presentationEpoch = 0,
 }) => {
   const isResultPageMismatch = Boolean(resultAsset && resultAsset.pageNumber !== currentPage);
   const currentResultImageKey = resultAsset
@@ -308,12 +326,20 @@ export const CanvasResultPane: React.FC<CanvasResultPaneProps> = ({
     setResultStatus({ key: currentResultImageKey, state: 'LOADING' });
   }
 
+  // P1-2: If presentationEpoch changes, reset state to mount a fresh result image
+  const [prevResultEpoch, setPrevResultEpoch] = useState(presentationEpoch);
+  if (prevResultEpoch !== presentationEpoch) {
+    setPrevResultEpoch(presentationEpoch);
+    setResultStatus({ key: currentResultImageKey, state: 'LOADING' });
+  }
+
   const effectiveResultStatus: ResultImageState =
     resultStatus.key === currentResultImageKey ? resultStatus.state : 'LOADING';
 
   const handleResultImageLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
     if (e.currentTarget.getAttribute('data-image-key') !== currentResultImageKey) return;
     setResultStatus({ key: currentResultImageKey, state: 'READY' });
+    onPreviewAssetLoaded?.('RESULT', currentResultImageKey);
   };
 
   const handleResultImageError = (e: React.SyntheticEvent<HTMLImageElement>) => {
@@ -394,9 +420,10 @@ export const CanvasResultPane: React.FC<CanvasResultPaneProps> = ({
       className="relative inline-block max-w-full max-h-full select-none shadow-2xl rounded-lg overflow-hidden border border-slate-800"
     >
       <img
-        key={currentResultImageKey}
+        key={`${currentResultImageKey}:${presentationEpoch}`}
         data-testid="canvas-result-image"
         data-image-key={currentResultImageKey}
+        data-presentation-epoch={presentationEpoch}
         src={resultAsset.url}
         alt={`Trang đã dịch ${currentPage}`}
         onLoad={handleResultImageLoad}
@@ -419,6 +446,8 @@ export const MangaStudioCanvas: React.FC<MangaStudioCanvasProps> = ({
   isLoading = false,
   error = null,
   onPreviewAssetError,
+  onPreviewAssetLoaded,
+  presentationEpoch = 0,
 }) => {
   const [viewMode, setViewMode] = useState<CanvasViewMode>('SOURCE');
 
@@ -496,7 +525,7 @@ export const MangaStudioCanvas: React.FC<MangaStudioCanvasProps> = ({
             {viewMode === 'SOURCE' && (
               <div className="relative flex items-center justify-center w-full h-full">
                 <CanvasSourcePane
-                  key={`source:${workspaceRevision}:${currentPage}:${sourceAsset?.url ?? 'none'}`}
+                  key={`source:${workspaceRevision}:${currentPage}:${sourceAsset?.url ?? 'none'}:${presentationEpoch}`}
                   currentPage={currentPage}
                   workspaceRevision={workspaceRevision}
                   sourceAsset={sourceAsset}
@@ -505,6 +534,8 @@ export const MangaStudioCanvas: React.FC<MangaStudioCanvasProps> = ({
                   onSelectSegment={onSelectSegment}
                   isLoading={isLoading}
                   onPreviewAssetError={onPreviewAssetError}
+                  onPreviewAssetLoaded={onPreviewAssetLoaded}
+                  presentationEpoch={presentationEpoch}
                 />
               </div>
             )}
@@ -512,12 +543,14 @@ export const MangaStudioCanvas: React.FC<MangaStudioCanvasProps> = ({
             {viewMode === 'RESULT' && (
               <div className="relative flex items-center justify-center w-full h-full">
                 <CanvasResultPane
-                  key={`result:${workspaceRevision}:${currentPage}:${resultAsset?.url ?? 'none'}`}
+                  key={`result:${workspaceRevision}:${currentPage}:${resultAsset?.url ?? 'none'}:${presentationEpoch}`}
                   currentPage={currentPage}
                   workspaceRevision={workspaceRevision}
                   resultAsset={resultAsset}
                   isLoading={isLoading}
                   onPreviewAssetError={onPreviewAssetError}
+                  onPreviewAssetLoaded={onPreviewAssetLoaded}
+                  presentationEpoch={presentationEpoch}
                 />
               </div>
             )}
@@ -526,7 +559,7 @@ export const MangaStudioCanvas: React.FC<MangaStudioCanvasProps> = ({
               <div className="w-full h-full grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="relative flex items-center justify-center w-full h-full">
                   <CanvasSourcePane
-                    key={`split-source:${workspaceRevision}:${currentPage}:${sourceAsset?.url ?? 'none'}`}
+                    key={`split-source:${workspaceRevision}:${currentPage}:${sourceAsset?.url ?? 'none'}:${presentationEpoch}`}
                     currentPage={currentPage}
                     workspaceRevision={workspaceRevision}
                     sourceAsset={sourceAsset}
@@ -535,16 +568,20 @@ export const MangaStudioCanvas: React.FC<MangaStudioCanvasProps> = ({
                     onSelectSegment={onSelectSegment}
                     isLoading={isLoading}
                     onPreviewAssetError={onPreviewAssetError}
+                    onPreviewAssetLoaded={onPreviewAssetLoaded}
+                    presentationEpoch={presentationEpoch}
                   />
                 </div>
                 <div className="relative flex items-center justify-center w-full h-full">
                   <CanvasResultPane
-                    key={`split-result:${workspaceRevision}:${currentPage}:${resultAsset?.url ?? 'none'}`}
+                    key={`split-result:${workspaceRevision}:${currentPage}:${resultAsset?.url ?? 'none'}:${presentationEpoch}`}
                     currentPage={currentPage}
                     workspaceRevision={workspaceRevision}
                     resultAsset={resultAsset}
                     isLoading={isLoading}
                     onPreviewAssetError={onPreviewAssetError}
+                    onPreviewAssetLoaded={onPreviewAssetLoaded}
+                    presentationEpoch={presentationEpoch}
                   />
                 </div>
               </div>

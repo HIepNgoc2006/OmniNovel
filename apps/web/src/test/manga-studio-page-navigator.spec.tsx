@@ -1696,6 +1696,30 @@ describe('Manga Review Studio Route & URL Synchronization (#149 RED 1)', () => {
     // In APPLIED mode: exactly 0 preview API calls
     expect(previewSpy).not.toHaveBeenCalled();
   });
+
+  it('29. Production composition single focus owner (P1-1): mounting MangaStudioJobPage with real useMangaReviewStudio on window focus makes EXACTLY 1 Preview API call', async () => {
+    const previewSpy = vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
+      sourceAssets: [{ kind: 'SOURCE_REVIEW', pageNumber: 1, url: 'https://cdn.example.com/p1-v1.png', width: 1000, height: 1500 }],
+      resultAssets: [{ kind: 'RESULT', pageNumber: 1, url: 'https://cdn.example.com/res-p1-v1.png', width: 1000, height: 1500 }],
+      workspaceRevision: 10,
+    });
+
+    render(<MangaStudioJobPage params={mockParams} />);
+    await waitFor(() => {
+      expect(screen.getByText('Trang 1 / 20')).toBeDefined();
+    });
+
+    previewSpy.mockClear();
+
+    // Trigger window focus on production-composed page (page + hook)
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+
+    // CRITICAL P1-1 INVARIANT: exactly 1 preview request (no duplicate listener from route)
+    expect(previewSpy).toHaveBeenCalledTimes(1);
+    expect(previewSpy).toHaveBeenCalledWith(mockJobId, { fromPage: 1, toPage: 5 });
+  });
 });
 
 

@@ -869,7 +869,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             isSaving={selectedSegment ? Boolean(studio.savingSegmentIds[selectedSegment.id]) : false}
             hasPendingMutation={selectedSegment ? Boolean(studio.pendingUnknownMutations[selectedSegment.id]) : false}
             conflictState={selectedSegment ? studio.conflictStates[selectedSegment.id] ?? null : null}
-            saveError={selectedSegment ? (studio.operationError ?? null) : null}
+            saveError={selectedSegment ? (studio.segmentSaveErrors[selectedSegment.id] ?? null) : null}
             onDraftChange={studio.setSegmentDraft}
             onDiscardDraft={studio.discardSegmentDraft}
             onSave={async (segmentId, text) => {
@@ -878,6 +878,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
               });
             }}
             onClearConflict={studio.clearConflict}
+            onLoadServerVersion={studio.loadServerVersion}
           />
 
           {/* Segments List for Current Page */}
@@ -945,6 +946,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
                 return (
                   <div
                     key={seg.id}
+                    data-testid={`segment-item-${seg.id}`}
                     onClick={() => studio.setSelectedSegmentId(seg.id)}
                     className={`p-3 rounded-2xl border transition-all cursor-pointer ${
                       studio.selectedSegmentId === seg.id

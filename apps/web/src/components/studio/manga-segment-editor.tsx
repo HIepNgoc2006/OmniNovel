@@ -35,6 +35,7 @@ export interface MangaSegmentEditorProps {
   onDiscardDraft: (segmentId: string) => void;
   onSave: (segmentId: string, text: string) => Promise<unknown> | unknown;
   onClearConflict?: (segmentId: string) => void;
+  onLoadServerVersion?: (segmentId: string) => Promise<boolean | void> | void;
 }
 
 export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
@@ -50,8 +51,10 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
   onDiscardDraft,
   onSave,
   onClearConflict,
+  onLoadServerVersion,
 }) => {
   const [copied, setCopied] = useState(false);
+  const [isLoadingServerVersion, setIsLoadingServerVersion] = useState(false);
 
   // If draftText is explicitly provided, use it; otherwise fallback to canonical segment.translatedText
   const currentText = draftText !== undefined ? draftText : (segment?.translatedText ?? '');
@@ -92,6 +95,21 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
     },
     [segment, canSave, isSaving, onSave, currentText],
   );
+
+  const handleLoadServerVersion = useCallback(async () => {
+    if (!segment) return;
+    if (onLoadServerVersion) {
+      setIsLoadingServerVersion(true);
+      try {
+        await onLoadServerVersion(segment.id);
+      } finally {
+        setIsLoadingServerVersion(false);
+      }
+    } else {
+      onDiscardDraft(segment.id);
+      onClearConflict?.(segment.id);
+    }
+  }, [segment, onLoadServerVersion, onDiscardDraft, onClearConflict]);
 
   if (!segment) {
     return (
@@ -242,13 +260,18 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
               variant="secondary"
               size="sm"
               data-testid="btn-load-server-version"
-              onClick={() => {
-                onDiscardDraft(segment.id);
-                onClearConflict?.(segment.id);
-              }}
+              disabled={isLoadingServerVersion}
+              onClick={handleLoadServerVersion}
               className="h-7 text-xs bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 border border-amber-500/30"
             >
-              Nạp bản mới từ máy chủ
+              {isLoadingServerVersion ? (
+                <>
+                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                  Đang nạp...
+                </>
+              ) : (
+                'Nạp bản mới từ máy chủ'
+              )}
             </Button>
             <Button
               variant="ghost"

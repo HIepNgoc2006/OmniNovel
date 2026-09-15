@@ -360,11 +360,53 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
         'Bản dịch do user gõ',
       );
 
-      // Action: Accept server version -> discards draft & clears conflict
+      // Action: Accept server version -> discards draft & clears conflict (fallback)
       const loadServerBtn = screen.getByTestId('btn-load-server-version');
       fireEvent.click(loadServerBtn);
       expect(onDiscardDraftSpy).toHaveBeenCalledWith('seg-101');
       expect(onClearConflictSpy).toHaveBeenCalledWith('seg-101');
+    });
+
+    it('btn-load-server-version calls onLoadServerVersion and displays loading spinner while syncing', async () => {
+      let resolveSync: () => void;
+      const syncPromise = new Promise<void>((resolve) => {
+        resolveSync = resolve;
+      });
+      const onLoadServerVersionSpy = vi.fn().mockReturnValue(syncPromise);
+
+      const conflict: ConflictState = {
+        kind: 'VERSION_CONFLICT',
+        segmentId: 'seg-101',
+        currentVersion: 3,
+        expectedVersion: 2,
+        retryBlocked: false,
+      };
+
+      render(
+        <MangaSegmentEditor
+          segment={mockSegment}
+          draftText="Bản dịch do user gõ"
+          conflictState={conflict}
+          onDraftChange={vi.fn()}
+          onDiscardDraft={vi.fn()}
+          onSave={vi.fn()}
+          onLoadServerVersion={onLoadServerVersionSpy}
+        />,
+      );
+
+      const loadServerBtn = screen.getByTestId('btn-load-server-version');
+      fireEvent.click(loadServerBtn);
+
+      expect(onLoadServerVersionSpy).toHaveBeenCalledWith('seg-101');
+      expect(screen.getByText('Đang nạp...')).toBeInTheDocument();
+      expect(loadServerBtn).toBeDisabled();
+
+      await act(async () => {
+        resolveSync!();
+        await syncPromise;
+      });
+
+      expect(screen.queryByText('Đang nạp...')).not.toBeInTheDocument();
     });
 
     it('action keep draft clears conflict notification without discarding user draft', () => {
@@ -550,11 +592,16 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
       expect(result.current.drafts['seg-101']).toBe('Bản nháp người dùng');
     });
 
-    it('successful saveSegment commits update and clears draft from memory', async () => {
+    it('successful saveSegment commits update and clears draft from memory when authoritative sync is coherent', async () => {
       vi.mocked(translationApi.updateTranslationSegment).mockResolvedValue({
         ...mockSegment,
         translatedText: 'Bản dịch hoàn tất',
         version: 3,
+      });
+      vi.mocked(translationApi.fetchTranslationJobSegments).mockResolvedValue({
+        data: [{ ...mockSegment, translatedText: 'Bản dịch hoàn tất', version: 3 }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 1,
       });
 
       const { result } = renderHook(() => useMangaReviewStudio('job-1'));
@@ -572,8 +619,333 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
         expect(saveRes.outcome).toBe('SAVED_AND_SYNCED');
       });
 
-      // Draft is discarded on committed save
+      // Draft is discarded on coherent authoritative save
       expect(result.current.drafts['seg-101']).toBeUndefined();
+    });
+
+    it('P1-1: PATCH 200 + authoritative refetch FAILED preserves user draft', async () => {
+      vi.mocked(translationApi.updateTranslationSegment).mockResolvedValue({
+        ...mockSegment,
+        translatedText: 'Bản dịch mới của user',
+        version: 3,
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio('job-1'));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      act(() => {
+        result.current.setSegmentDraft('seg-101', 'Bản dịch mới của user');
+      });
+
+      // Subsequent refetchDetail fails
+      vi.mocked(translationApi.fetchTranslationJobDetail).mockRejectedValueOnce(
+        new Error('Network timeout during refetch'),
+      );
+
+      let saveRes: any;
+      await act(async () => {
+        saveRes = await result.current.saveSegment('seg-101', 'Bản dịch mới của user', {
+          baseVersion: 2,
+        });
+      });
+
+      expect(saveRes.commitState).toBe('COMMITTED');
+      expect(saveRes.workspaceState).toBe('RECONCILIATION_REQUIRED');
+      // Invariant P1-1: User draft MUST NOT be cleared on reconcile failure!
+      expect(result.current.drafts['seg-101']).toBe('Bản dịch mới của user');
+    });
+
+    it('P1-1: PATCH 200 + STATE_CHANGED preserves user draft in reviewable workspace', async () => {
+      vi.mocked(translationApi.updateTranslationSegment).mockResolvedValue({
+        ...mockSegment,
+        translatedText: 'Bản dịch user',
+        version: 3,
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio('job-1'));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      act(() => {
+        result.current.setSegmentDraft('seg-101', 'Bản dịch user');
+      });
+
+      // Server returns updated detail with revision mismatch (transient STATE_CHANGED)
+      vi.mocked(translationApi.fetchTranslationJobDetail).mockResolvedValueOnce({
+        ...mockDetail,
+        job: {
+          ...mockDetail.job,
+          workspaceRevision: 99,
+          reviewRevision: 99,
+        },
+      });
+      // Segments has old revision, triggering coherence mismatch -> STATE_CHANGED
+      vi.mocked(translationApi.fetchTranslationJobSegments).mockResolvedValueOnce({
+        data: [{ ...mockSegment }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 50, // Mismatches detail workspaceRevision 99
+      });
+
+      let saveRes: any;
+      await act(async () => {
+        saveRes = await result.current.saveSegment('seg-101', 'Bản dịch user', {
+          baseVersion: 2,
+        });
+      });
+
+      expect(saveRes.commitState).toBe('COMMITTED');
+      // Invariant: Draft is preserved!
+      expect(result.current.drafts['seg-101']).toBe('Bản dịch user');
+    });
+
+    it('P1-1: Current-scope 401/403 purges drafts via access security lifecycle', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio('job-1'));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      act(() => {
+        result.current.setSegmentDraft('seg-101', 'Nháp bảo mật');
+      });
+      expect(result.current.drafts['seg-101']).toBe('Nháp bảo mật');
+
+      // Attempt save which receives 401 Unauthorized
+      const authErr: any = new Error('Unauthorized');
+      authErr.isAxiosError = true;
+      authErr.response = {
+        status: 401,
+        data: { error: { code: 'UNAUTHORIZED', message: 'Phiên đăng nhập hết hạn' } },
+      };
+      vi.mocked(translationApi.updateTranslationSegment).mockRejectedValueOnce(authErr);
+
+      await act(async () => {
+        await result.current.saveSegment('seg-101', 'Nháp bảo mật', { baseVersion: 2 });
+      });
+
+      // Security invariant: 401 triggers purgeOnAccessError, which wipes all drafts
+      expect(result.current.drafts['seg-101']).toBeUndefined();
+    });
+
+    it('P1-1: Post-PATCH refetch discovers terminal state (APPLIED) and purges drafts', async () => {
+      vi.mocked(translationApi.updateTranslationSegment).mockResolvedValue({
+        ...mockSegment,
+        translatedText: 'Nháp trước khi apply',
+        version: 3,
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio('job-1'));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      act(() => {
+        result.current.setSegmentDraft('seg-101', 'Nháp trước khi apply');
+      });
+
+      // Refetch returns job transitioned to APPLIED
+      vi.mocked(translationApi.fetchTranslationJobDetail).mockResolvedValueOnce({
+        ...mockDetail,
+        job: {
+          ...mockDetail.job,
+          status: TranslationJobStatus.APPLIED,
+          workspaceRevision: 2,
+          reviewRevision: 2,
+        },
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-101', 'Nháp trước khi apply', { baseVersion: 2 });
+      });
+
+      // Invariant: Terminal/applied state purges drafts
+      expect(result.current.drafts['seg-101']).toBeUndefined();
+    });
+
+    it('P1-2: Empty-string draft can be discarded and clears back to canonical text', async () => {
+      const { result } = renderHook(() => useMangaReviewStudio('job-1'));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // User clears the entire textarea: draft is ""
+      act(() => {
+        result.current.setSegmentDraft('seg-101', '');
+      });
+      expect(result.current.drafts['seg-101']).toBe('');
+
+      // User clicks "Hủy thay đổi" (discardSegmentDraft)
+      act(() => {
+        result.current.discardSegmentDraft('seg-101');
+      });
+
+      // Invariant P1-2: hasOwnProperty check ensures "" draft is deleted
+      expect(result.current.drafts['seg-101']).toBeUndefined();
+      expect(resolveDisplayDraft(mockSegment.translatedText, result.current.drafts, 'seg-101')).toBe(
+        mockSegment.translatedText,
+      );
+    });
+
+    it('P1-2: Empty-string draft is successfully deleted from drafts upon coherent save', async () => {
+      vi.mocked(translationApi.updateTranslationSegment).mockResolvedValue({
+        ...mockSegment,
+        translatedText: '',
+        version: 3,
+      });
+      vi.mocked(translationApi.fetchTranslationJobSegments).mockResolvedValue({
+        data: [{ ...mockSegment, translatedText: '', version: 3 }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 1,
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio('job-1'));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      act(() => {
+        result.current.setSegmentDraft('seg-101', '');
+      });
+      expect(result.current.drafts['seg-101']).toBe('');
+
+      await act(async () => {
+        const saveRes = await result.current.saveSegment('seg-101', '', { baseVersion: 2 });
+        expect(saveRes.outcome).toBe('SAVED_AND_SYNCED');
+      });
+
+      // Invariant P1-2: Draft key is deleted, not stuck as ""
+      expect(Object.prototype.hasOwnProperty.call(result.current.drafts, 'seg-101')).toBe(false);
+    });
+
+    it('P2-1: savingSegmentIds sequence guard prevents premature clearance on race A/B', async () => {
+      let resolveSaveA: (val: any) => void;
+      const saveAPromise = new Promise((resolve) => {
+        resolveSaveA = resolve;
+      });
+      let resolveSaveB: (val: any) => void;
+      const saveBPromise = new Promise((resolve) => {
+        resolveSaveB = resolve;
+      });
+
+      vi.mocked(translationApi.updateTranslationSegment)
+        .mockReturnValueOnce(saveAPromise as any)
+        .mockReturnValueOnce(saveBPromise as any);
+
+      const { result } = renderHook(() => useMangaReviewStudio('job-1'));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      let pA: Promise<any>;
+      let pB: Promise<any>;
+
+      // Save A starts (mutationSeq 1)
+      act(() => {
+        pA = result.current.saveSegment('seg-101', 'Text A', { baseVersion: 2 });
+      });
+      expect(result.current.savingSegmentIds['seg-101']).toBe(true);
+
+      // Save B starts quickly after (mutationSeq 2)
+      act(() => {
+        pB = result.current.saveSegment('seg-101', 'Text B', { baseVersion: 2 });
+      });
+      expect(result.current.savingSegmentIds['seg-101']).toBe(true);
+
+      // Save A completes first
+      await act(async () => {
+        resolveSaveA!({ ...mockSegment, translatedText: 'Text A', version: 3 });
+        await pA;
+      });
+
+      // Invariant P2-1: Save A's finally MUST NOT delete saving flag while Save B is still in-flight!
+      expect(result.current.savingSegmentIds['seg-101']).toBe(true);
+
+      // Save B completes
+      await act(async () => {
+        resolveSaveB!({ ...mockSegment, translatedText: 'Text B', version: 4 });
+        await pB;
+      });
+
+      // Now saving flag is safely cleared
+      expect(result.current.savingSegmentIds['seg-101']).toBeFalsy();
+    });
+
+    it('P2: segmentSaveErrors provides scoped error isolation per segment', async () => {
+      const serverErr: any = new Error('Server 500');
+      serverErr.isAxiosError = true;
+      serverErr.response = {
+        status: 500,
+        data: { error: { code: 'INTERNAL_SERVER_ERROR', message: 'Lỗi máy chủ lưu seg-101' } },
+      };
+      vi.mocked(translationApi.updateTranslationSegment).mockRejectedValueOnce(serverErr);
+
+      const { result } = renderHook(() => useMangaReviewStudio('job-1'));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      await act(async () => {
+        await result.current.saveSegment('seg-101', 'Failed text', { baseVersion: 2 });
+      });
+
+      // Error is isolated to seg-101
+      expect(result.current.segmentSaveErrors['seg-101']).toBeDefined();
+      expect(result.current.segmentSaveErrors['seg-101']?.code).toBe('INTERNAL_SERVER_ERROR');
+      // Other segment does NOT inherit the error
+      expect(result.current.segmentSaveErrors['seg-other']).toBeUndefined();
+    });
+
+    it('P2-Conflict: loadServerVersion safely reconciles without premature draft discard', async () => {
+      const conflictErr: any = new Error('Version conflict');
+      conflictErr.isAxiosError = true;
+      conflictErr.response = {
+        status: 409,
+        data: {
+          error: {
+            code: 'VERSION_CONFLICT',
+            message: 'Conflict',
+            meta: { currentVersion: 3, expectedVersion: 2 },
+          },
+        },
+      };
+      vi.mocked(translationApi.updateTranslationSegment).mockRejectedValue(conflictErr);
+
+      const { result } = renderHook(() => useMangaReviewStudio('job-1'));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      act(() => {
+        result.current.setSegmentDraft('seg-101', 'Bản nháp của tôi');
+      });
+
+      await act(async () => {
+        await result.current.saveSegment('seg-101', 'Bản nháp của tôi', { baseVersion: 2 });
+      });
+      expect(result.current.conflictStates['seg-101']?.kind).toBe('VERSION_CONFLICT');
+
+      // Scenario A: Server sync fails or returns stale version -> loadServerVersion returns false, preserves draft & conflict
+      vi.mocked(translationApi.fetchTranslationJobDetail).mockRejectedValueOnce(new Error('Sync failed'));
+
+      let loadOk = false;
+      await act(async () => {
+        loadOk = await result.current.loadServerVersion('seg-101');
+      });
+      expect(loadOk).toBe(false);
+      expect(result.current.drafts['seg-101']).toBe('Bản nháp của tôi');
+      expect(result.current.conflictStates['seg-101']).toBeDefined();
+
+      // Scenario B: Server sync succeeds with version >= 3 -> loadServerVersion returns true, discards draft & clears conflict
+      vi.mocked(translationApi.fetchTranslationJobDetail).mockResolvedValue({
+        ...mockDetail,
+        job: {
+          ...mockDetail.job,
+          workspaceRevision: 2,
+          reviewRevision: 2,
+        },
+      });
+      vi.mocked(translationApi.fetchTranslationJobSegments).mockResolvedValue({
+        data: [{ ...mockSegment, version: 3, translatedText: 'Text mới từ máy chủ' }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+      vi.mocked(translationApi.fetchTranslationJobPreviews).mockResolvedValue({
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 2,
+      });
+
+      await act(async () => {
+        loadOk = await result.current.loadServerVersion('seg-101');
+      });
+      expect(loadOk).toBe(true);
+      // Now draft is safely discarded and conflict cleared
+      expect(result.current.drafts['seg-101']).toBeUndefined();
+      expect(result.current.conflictStates['seg-101']).toBeUndefined();
     });
 
     it('409 VERSION_CONFLICT preserves user draft and sets conflict metadata', async () => {

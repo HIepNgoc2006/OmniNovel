@@ -127,6 +127,8 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       commitState: 'COMMITTED',
       workspaceState: 'SYNCED',
     }),
+    loadServerVersion: vi.fn().mockResolvedValue(true),
+    segmentSaveErrors: {},
     triggerMaterialization: vi.fn(),
     materializationStatus: null,
     isMaterializing: false,

@@ -88,28 +88,23 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
-        if (segment && canSave && !isSaving) {
+        if (segment && canSave && !isSaving && !isLoadingServerVersion) {
           void onSave(segment.id, currentText);
         }
       }
     },
-    [segment, canSave, isSaving, onSave, currentText],
+    [segment, canSave, isSaving, isLoadingServerVersion, onSave, currentText],
   );
 
   const handleLoadServerVersion = useCallback(async () => {
-    if (!segment) return;
-    if (onLoadServerVersion) {
-      setIsLoadingServerVersion(true);
-      try {
-        await onLoadServerVersion(segment.id);
-      } finally {
-        setIsLoadingServerVersion(false);
-      }
-    } else {
-      onDiscardDraft(segment.id);
-      onClearConflict?.(segment.id);
+    if (!segment || !onLoadServerVersion) return;
+    setIsLoadingServerVersion(true);
+    try {
+      await onLoadServerVersion(segment.id);
+    } finally {
+      setIsLoadingServerVersion(false);
     }
-  }, [segment, onLoadServerVersion, onDiscardDraft, onClearConflict]);
+  }, [segment, onLoadServerVersion]);
 
   if (!segment) {
     return (
@@ -226,7 +221,7 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
           id={`editor-textarea-${segment.id}`}
           data-testid="segment-translation-textarea"
           value={currentText}
-          disabled={!canEdit || isSaving}
+          disabled={!canEdit || isSaving || isLoadingServerVersion}
           onChange={(e) => onDraftChange(segment.id, e.target.value)}
           onKeyDown={handleKeyDown}
           placeholder="Nhập bản dịch tiếng Việt cho ô thoại này..."
@@ -256,27 +251,30 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
             </div>
           </div>
           <div className="flex items-center gap-2 pt-1">
-            <Button
-              variant="secondary"
-              size="sm"
-              data-testid="btn-load-server-version"
-              disabled={isLoadingServerVersion}
-              onClick={handleLoadServerVersion}
-              className="h-7 text-xs bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 border border-amber-500/30"
-            >
-              {isLoadingServerVersion ? (
-                <>
-                  <Loader2 className="w-3 h-3 mr-1 animate-spin" />
-                  Đang nạp...
-                </>
-              ) : (
-                'Nạp bản mới từ máy chủ'
-              )}
-            </Button>
+            {onLoadServerVersion && (
+              <Button
+                variant="secondary"
+                size="sm"
+                data-testid="btn-load-server-version"
+                disabled={isLoadingServerVersion}
+                onClick={handleLoadServerVersion}
+                className="h-7 text-xs bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 border border-amber-500/30"
+              >
+                {isLoadingServerVersion ? (
+                  <>
+                    <Loader2 className="w-3 h-3 mr-1 animate-spin" />
+                    Đang nạp...
+                  </>
+                ) : (
+                  'Nạp bản mới từ máy chủ'
+                )}
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
               data-testid="btn-keep-draft"
+              disabled={isLoadingServerVersion}
               onClick={() => onClearConflict?.(segment.id)}
               className="h-7 text-xs text-amber-300 hover:text-white"
             >
@@ -341,7 +339,7 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
               variant="ghost"
               size="sm"
               data-testid="btn-discard-draft"
-              disabled={isSaving}
+              disabled={isSaving || isLoadingServerVersion}
               onClick={() => onDiscardDraft(segment.id)}
               className="h-8 text-xs text-slate-400 hover:text-white hover:bg-slate-900"
             >
@@ -355,7 +353,7 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
             variant="primary"
             size="sm"
             data-testid="btn-save-segment"
-            disabled={!canSave || isSaving}
+            disabled={!canSave || isSaving || isLoadingServerVersion}
             onClick={() => onSave(segment.id, currentText)}
             className="h-8 text-xs font-semibold px-4"
           >

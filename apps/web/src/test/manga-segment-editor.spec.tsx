@@ -360,19 +360,19 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
         'Bản dịch do user gõ',
       );
 
-      // Action: Accept server version -> discards draft & clears conflict (fallback)
-      const loadServerBtn = screen.getByTestId('btn-load-server-version');
-      fireEvent.click(loadServerBtn);
-      expect(onDiscardDraftSpy).toHaveBeenCalledWith('seg-101');
-      expect(onClearConflictSpy).toHaveBeenCalledWith('seg-101');
+      // Invariant P2: If onLoadServerVersion is not provided, destructive fallback is completely prevented
+      expect(screen.queryByTestId('btn-load-server-version')).not.toBeInTheDocument();
+      expect(onDiscardDraftSpy).not.toHaveBeenCalled();
+      expect(onClearConflictSpy).not.toHaveBeenCalled();
     });
 
-    it('btn-load-server-version calls onLoadServerVersion and displays loading spinner while syncing', async () => {
+    it('btn-load-server-version calls onLoadServerVersion, disables inputs/actions, and displays loading spinner while syncing', async () => {
       let resolveSync: () => void;
       const syncPromise = new Promise<void>((resolve) => {
         resolveSync = resolve;
       });
       const onLoadServerVersionSpy = vi.fn().mockReturnValue(syncPromise);
+      const onDiscardDraftSpy = vi.fn();
 
       const conflict: ConflictState = {
         kind: 'VERSION_CONFLICT',
@@ -388,18 +388,31 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
           draftText="Bản dịch do user gõ"
           conflictState={conflict}
           onDraftChange={vi.fn()}
-          onDiscardDraft={vi.fn()}
+          onDiscardDraft={onDiscardDraftSpy}
           onSave={vi.fn()}
           onLoadServerVersion={onLoadServerVersionSpy}
         />,
       );
 
       const loadServerBtn = screen.getByTestId('btn-load-server-version');
+      const textarea = screen.getByTestId('segment-translation-textarea');
+      const keepDraftBtn = screen.getByTestId('btn-keep-draft');
+      const discardBtn = screen.getByTestId('btn-discard-draft');
+
+      expect(loadServerBtn).toBeEnabled();
+      expect(textarea).toBeEnabled();
+
       fireEvent.click(loadServerBtn);
 
       expect(onLoadServerVersionSpy).toHaveBeenCalledWith('seg-101');
       expect(screen.getByText('Đang nạp...')).toBeInTheDocument();
       expect(loadServerBtn).toBeDisabled();
+      // Invariant P1-2: Textarea, keep-draft, and discard are disabled during sync
+      expect(textarea).toBeDisabled();
+      expect(keepDraftBtn).toBeDisabled();
+      expect(discardBtn).toBeDisabled();
+      // Invariant P2: Component NEVER executes destructive discard on its own
+      expect(onDiscardDraftSpy).not.toHaveBeenCalled();
 
       await act(async () => {
         resolveSync!();
@@ -407,6 +420,7 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
       });
 
       expect(screen.queryByText('Đang nạp...')).not.toBeInTheDocument();
+      expect(textarea).toBeEnabled();
     });
 
     it('action keep draft clears conflict notification without discarding user draft', () => {
@@ -946,6 +960,134 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
       // Now draft is safely discarded and conflict cleared
       expect(result.current.drafts['seg-101']).toBeUndefined();
       expect(result.current.conflictStates['seg-101']).toBeUndefined();
+    });
+
+    it('P1-1: Mutation-level coherence mismatch (A/v3 committed but authoritative GET returns B/v4) preserves draft and returns RECONCILIATION_REQUIRED', async () => {
+      // Writer A commits Text A with version 3
+      vi.mocked(translationApi.updateTranslationSegment).mockResolvedValue({
+        ...mockSegment,
+        translatedText: 'Text A',
+        version: 3,
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio('job-1'));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      act(() => {
+        result.current.setSegmentDraft('seg-101', 'Text A');
+      });
+
+      // While post-save refetch runs, another writer commits Text B with version 4
+      // Authoritative workspace is coherent at rev 2, but authSeg has Text B / v4
+      vi.mocked(translationApi.fetchTranslationJobDetail).mockResolvedValue({
+        ...mockDetail,
+        job: {
+          ...mockDetail.job,
+          workspaceRevision: 2,
+          reviewRevision: 2,
+        },
+      });
+      vi.mocked(translationApi.fetchTranslationJobSegments).mockResolvedValue({
+        data: [{ ...mockSegment, translatedText: 'Text B', version: 4 }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+      vi.mocked(translationApi.fetchTranslationJobPreviews).mockResolvedValue({
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 2,
+      });
+
+      let saveRes: any;
+      await act(async () => {
+        saveRes = await result.current.saveSegment('seg-101', 'Text A', { baseVersion: 2 });
+      });
+
+      // Invariant P1-1:
+      // Authoritative workspace refetch was SYNCED, but mutation-level coherence failed (Text A != Text B).
+      // Draft A MUST be preserved, workspaceState = RECONCILIATION_REQUIRED, outcome != SAVED_AND_SYNCED
+      expect(result.current.drafts['seg-101']).toBe('Text A');
+      expect(saveRes.commitState).toBe('COMMITTED');
+      expect(saveRes.workspaceState).toBe('RECONCILIATION_REQUIRED');
+      expect(saveRes.success).toBe(false);
+      expect(saveRes.outcome).not.toBe('SAVED_AND_SYNCED');
+      expect(saveRes.outcome).toBe('SAVED_SYNC_FAILED');
+    });
+
+    it('P1-2: loadServerVersion with in-flight draft edit preserves new draft D2 and returns false', async () => {
+      const conflictErr: any = new Error('Version conflict');
+      conflictErr.isAxiosError = true;
+      conflictErr.response = {
+        status: 409,
+        data: {
+          error: {
+            code: 'VERSION_CONFLICT',
+            message: 'Conflict',
+            meta: { currentVersion: 3, expectedVersion: 2 },
+          },
+        },
+      };
+      vi.mocked(translationApi.updateTranslationSegment).mockRejectedValue(conflictErr);
+
+      const { result } = renderHook(() => useMangaReviewStudio('job-1'));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // 1. Initial draft D1 and conflict state
+      act(() => {
+        result.current.setSegmentDraft('seg-101', 'Draft D1');
+      });
+      await act(async () => {
+        await result.current.saveSegment('seg-101', 'Draft D1', { baseVersion: 2 });
+      });
+      expect(result.current.conflictStates['seg-101']?.kind).toBe('VERSION_CONFLICT');
+
+      // 2. User clicks "Nạp bản mới từ máy chủ" -> loadServerVersion begins with deferred refetch
+      let resolveDetail: (val: any) => void;
+      const deferredDetail = new Promise((resolve) => {
+        resolveDetail = resolve;
+      });
+      vi.mocked(translationApi.fetchTranslationJobDetail).mockReturnValueOnce(deferredDetail as any);
+
+      let loadPromise: Promise<boolean>;
+      act(() => {
+        loadPromise = result.current.loadServerVersion('seg-101');
+      });
+
+      // 3. While sync is pending in-flight, user edits draft to D2
+      act(() => {
+        result.current.setSegmentDraft('seg-101', 'Draft D2');
+      });
+      expect(result.current.drafts['seg-101']).toBe('Draft D2');
+
+      // 4. Server sync completes successfully with version 3
+      vi.mocked(translationApi.fetchTranslationJobSegments).mockResolvedValue({
+        data: [{ ...mockSegment, version: 3, translatedText: 'Text v3 từ server' }],
+        pagination: { total: 1, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 2,
+      });
+      vi.mocked(translationApi.fetchTranslationJobPreviews).mockResolvedValue({
+        sourceAssets: [],
+        resultAssets: [],
+        workspaceRevision: 2,
+      });
+
+      let loadOk: boolean = true;
+      await act(async () => {
+        resolveDetail!({
+          ...mockDetail,
+          job: {
+            ...mockDetail.job,
+            workspaceRevision: 2,
+            reviewRevision: 2,
+          },
+        });
+        loadOk = await loadPromise;
+      });
+
+      // Invariant P1-2:
+      // Token mismatch detected! loadServerVersion must return false and NOT discard Draft D2!
+      expect(loadOk).toBe(false);
+      expect(result.current.drafts['seg-101']).toBe('Draft D2');
     });
 
     it('409 VERSION_CONFLICT preserves user draft and sets conflict metadata', async () => {

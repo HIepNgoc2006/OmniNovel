@@ -241,6 +241,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
   // RED 3: User-owned Drafts & Per-segment Saving Indicators
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const draftRevisionRef = useRef<Record<string, number>>({});
   const [savingSegmentSeqs, setSavingSegmentSeqs] = useState<Record<string, number>>({});
   const savingSegmentIds = useMemo(() => {
     const result: Record<string, boolean> = {};
@@ -251,10 +252,12 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   }, [savingSegmentSeqs]);
 
   const setSegmentDraft = useCallback((segmentId: string, text: string) => {
+    draftRevisionRef.current[segmentId] = (draftRevisionRef.current[segmentId] || 0) + 1;
     setDrafts((prev) => ({ ...prev, [segmentId]: text }));
   }, []);
 
   const discardSegmentDraft = useCallback((segmentId: string) => {
+    draftRevisionRef.current[segmentId] = (draftRevisionRef.current[segmentId] || 0) + 1;
     setDrafts((prev) => {
       if (!Object.prototype.hasOwnProperty.call(prev, segmentId)) return prev;
       const next = { ...prev };
@@ -683,6 +686,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       setSelectedSegmentId(null);
       if (!preserveDrafts) {
         setDrafts({});
+        draftRevisionRef.current = {};
         setSavingSegmentSeqs({});
         pendingVersionConflictReconciliationRef.current = {};
         replaceConflictStates({});
@@ -745,6 +749,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       setSelectedSegmentId(null);
       if (!preserveDrafts) {
         setDrafts({});
+        draftRevisionRef.current = {};
         setSavingSegmentSeqs({});
         replaceConflictStates({});
         replacePendingUnknownMutations({});
@@ -2308,15 +2313,25 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
             authSeg!.translatedText === updated.translatedText &&
             (typeof updated.version !== 'number' || authSeg!.version >= updated.version);
 
-          if (isCoherent && isCurrent()) {
-            setDrafts((prev) => {
-              if (!Object.prototype.hasOwnProperty.call(prev, segmentId)) return prev;
-              const next = { ...prev };
-              delete next[segmentId];
-              return next;
-            });
-            clearSegmentSaveError(segmentId);
+          if (!isCurrent()) {
+            return buildSaveSegmentResult('COMMITTED', 'STATE_CHANGED');
           }
+
+          if (!isCoherent) {
+            return buildSaveSegmentResult(
+              'COMMITTED',
+              'RECONCILIATION_REQUIRED',
+            );
+          }
+
+          setDrafts((prev) => {
+            if (!Object.prototype.hasOwnProperty.call(prev, segmentId)) return prev;
+            const next = { ...prev };
+            delete next[segmentId];
+            return next;
+          });
+          draftRevisionRef.current[segmentId] = (draftRevisionRef.current[segmentId] || 0) + 1;
+          clearSegmentSaveError(segmentId);
 
           return buildSaveSegmentResult('COMMITTED', 'SYNCED');
         }
@@ -2570,6 +2585,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     async (segmentId: string): Promise<boolean> => {
       const targetConflict = conflictStatesRef.current[segmentId];
       const requiredVersion = targetConflict?.currentVersion ?? 0;
+      const startingDraftRevision = draftRevisionRef.current[segmentId] || 0;
 
       const outcome = await refetchDetail({
         requirement: 'AUTHORITATIVE_REQUIRED',
@@ -2584,6 +2600,11 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
       const authSeg = segmentsRef.current.find((s) => s.id === segmentId);
       if (!authSeg || (requiredVersion > 0 && authSeg.version < requiredVersion)) {
+        return false;
+      }
+
+      // Invariant P1-2: Monotonic draft token guard — if user edited draft while sync was pending, do not discard!
+      if ((draftRevisionRef.current[segmentId] || 0) !== startingDraftRevision) {
         return false;
       }
 

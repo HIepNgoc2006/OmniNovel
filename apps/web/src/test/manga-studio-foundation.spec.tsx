@@ -1030,6 +1030,11 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         translatedText: 'Seg 2 saved',
         version: 2,
       });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValueOnce({
+        data: [{ ...mockSegments[0], version: 2 }, { ...seg2, translatedText: 'Seg 2 saved', version: 2 }],
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: 1,
+      } as any);
 
       act(() => {
         result.current.setSelectedSegmentId('seg-2');
@@ -1135,6 +1140,16 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
           id: segId,
           translatedText: payload.translatedText ?? null,
           version: 2,
+        };
+      });
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async () => {
+        return {
+          data: [
+            { ...mockSegments[0], translatedText: 'Text 1', version: 2 },
+            { ...mockSegments[1], translatedText: 'Text 2', version: 2 },
+          ],
+          pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+          workspaceRevision: 1,
         };
       });
 

@@ -395,7 +395,7 @@ export function getMaterializationCtaProps({
     };
   }
 
-  if (freshness.status === 'INVARIANT_VIOLATION' || lifecycleState.phase === 'ERROR') {
+  if (freshness.status === 'INVARIANT_VIOLATION') {
     return {
       label: 'Phiên Bản Không Hợp Lệ',
       disabled: true,
@@ -403,7 +403,7 @@ export function getMaterializationCtaProps({
       actionType: 'NONE',
       variant: 'outline',
       icon: 'ALERT',
-      helperMessage: lifecycleState.lastError?.message || freshness.message,
+      helperMessage: freshness.message,
     };
   }
 
@@ -477,6 +477,31 @@ export function getMaterializationCtaProps({
         actionType: 'NONE',
         variant: 'outline',
         icon: 'CHECK',
+      };
+    case 'ERROR':
+      if (freshness.status === 'FRESH' && lifecycleState.targetRevision !== null) {
+        return {
+          label: 'Tải lại tài nguyên kết xuất',
+          disabled: false,
+          isLoading: false,
+          actionType: 'RECHECK',
+          variant: 'secondary',
+          icon: 'REFRESH',
+          helperMessage:
+            lifecycleState.lastError?.message ||
+            'Không thể đồng bộ tài nguyên kết xuất mới từ máy chủ. Bấm để thử lại.',
+        };
+      }
+      return {
+        label: 'Thử kết xuất lại',
+        disabled: false,
+        isLoading: false,
+        actionType: 'TRIGGER',
+        variant: 'primary',
+        icon: 'SPARKLES',
+        helperMessage:
+          lifecycleState.lastError?.message ||
+          'Có lỗi xảy ra khi kết xuất hoặc đồng bộ tài nguyên. Bấm để thử lại.',
       };
     case 'IDLE':
     default:

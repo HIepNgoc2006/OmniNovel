@@ -151,31 +151,37 @@ describe('Manga Review Studio Materialization Lifecycle (#149 RED 5, #157)', () 
     });
 
     vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(mockStaleJobDetail);
-    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
-      data: mockSegments,
-      pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
-      workspaceRevision: 2,
+    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockImplementation(async () => {
+      const currentDetail = await translationApi.fetchTranslationJobDetail(mockJobId);
+      return {
+        data: mockSegments,
+        pagination: { total: 2, page: 1, limit: 50, totalPages: 1 },
+        workspaceRevision: currentDetail.job.workspaceRevision,
+      };
     });
-    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
-      sourceAssets: [
-        {
-          kind: 'SOURCE_REVIEW',
-          pageNumber: 1,
-          width: 800,
-          height: 1200,
-          url: 'https://cdn.example.com/source-1.png',
-        },
-      ],
-      resultAssets: [
-        {
-          kind: 'RESULT',
-          pageNumber: 1,
-          width: 800,
-          height: 1200,
-          url: 'https://cdn.example.com/result-v1-1.png',
-        },
-      ],
-      workspaceRevision: 2,
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockImplementation(async () => {
+      const currentDetail = await translationApi.fetchTranslationJobDetail(mockJobId);
+      return {
+        sourceAssets: [
+          {
+            kind: 'SOURCE_REVIEW',
+            pageNumber: 1,
+            width: 800,
+            height: 1200,
+            url: 'https://cdn.example.com/source-1.png',
+          },
+        ],
+        resultAssets: [
+          {
+            kind: 'RESULT',
+            pageNumber: 1,
+            width: 800,
+            height: 1200,
+            url: `https://cdn.example.com/result-v${currentDetail.job.workspaceRevision}-1.png`,
+          },
+        ],
+        workspaceRevision: currentDetail.job.workspaceRevision,
+      };
     });
   });
 
@@ -592,6 +598,150 @@ describe('Manga Review Studio Materialization Lifecycle (#149 RED 5, #157)', () 
       // Invariant: In-flight mutation does NOT cancel tracking immediately
       expect(result.current.materializationLifecycle.phase).toBe('TRACKING');
       expect(result.current.isMaterializing).toBe(true);
+    });
+
+    it('Poll completion proof transitions to ERROR and does NOT transition to FRESH when preview reconciliation fails (Lock D failure guard)', async () => {
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce(mockStaleJobDetail);
+
+      vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValue({
+        status: 'ENQUEUED',
+        targetRevision: 2,
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+
+      await act(async () => {
+        await result.current.triggerMaterialization();
+      });
+
+      expect(result.current.materializationLifecycle.phase).toBe('TRACKING');
+
+      // Server detail proves completion (revisions match)
+      const completedJobDetail: TranslationJobReviewDetailResponse = {
+        ...mockStaleJobDetail,
+        job: {
+          ...mockStaleJobDetail.job,
+          materializedRevision: 2,
+          reviewRevision: 2,
+          workspaceRevision: 3,
+        },
+      };
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(completedJobDetail);
+
+      // But preview fetch fails or is rejected during refetchDetail!
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockRejectedValue(
+        new Error('Network failure while fetching preview assets'),
+      );
+
+      // Advance timer to trigger poll step
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MATERIALIZATION_POLL_BACKOFF_MS[0] + 50);
+      });
+
+      // Crucial: Must transition to ERROR, NEVER to FRESH when Lock D fails!
+      expect(result.current.materializationLifecycle.phase).toBe('ERROR');
+      expect(result.current.materializationLifecycle.phase).not.toBe('FRESH');
+      expect(result.current.isMaterializing).toBe(false);
+      expect(result.current.materializationLifecycle.lastError).toBeDefined();
+    });
+
+    it('ALREADY_FRESH transitions to ERROR and does NOT transition to FRESH when authoritative reconciliation fails', async () => {
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce(mockStaleJobDetail);
+
+      const completedJobDetail: TranslationJobReviewDetailResponse = {
+        ...mockStaleJobDetail,
+        job: {
+          ...mockStaleJobDetail.job,
+          materializedRevision: 2,
+          reviewRevision: 2,
+          workspaceRevision: 3,
+        },
+      };
+
+      vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValue({
+        status: 'ALREADY_FRESH',
+        targetRevision: 2,
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(completedJobDetail);
+      // Preview reconciliation fails
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockRejectedValue(
+        new Error('Preview API 500 error'),
+      );
+
+      await act(async () => {
+        await result.current.triggerMaterialization();
+      });
+
+      // Must be ERROR, not FRESH
+      expect(result.current.materializationLifecycle.phase).toBe('ERROR');
+      expect(result.current.materializationLifecycle.phase).not.toBe('FRESH');
+      expect(result.current.isMaterializing).toBe(false);
+      expect(result.current.materializationLifecycle.lastError).toBeDefined();
+    });
+
+    it('recheckMaterialization transitions to ERROR when preview reconciliation fails', async () => {
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce(mockStaleJobDetail);
+
+      vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValue({
+        status: 'ENQUEUED',
+        targetRevision: 2,
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+
+      await act(async () => {
+        await result.current.triggerMaterialization();
+      });
+
+      // Exhaust polling budget to enter UNCONFIRMED
+      for (let i = 0; i < MAX_MATERIALIZATION_POLL_ATTEMPTS; i++) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(MATERIALIZATION_POLL_BACKOFF_MS[i] + 50);
+        });
+      }
+
+      expect(result.current.materializationLifecycle.phase).toBe('UNCONFIRMED');
+
+      const completedJobDetail: TranslationJobReviewDetailResponse = {
+        ...mockStaleJobDetail,
+        job: {
+          ...mockStaleJobDetail.job,
+          materializedRevision: 2,
+          reviewRevision: 2,
+          workspaceRevision: 3,
+        },
+      };
+
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(completedJobDetail);
+      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockRejectedValue(
+        new Error('Previews unavailable'),
+      );
+
+      let recheckSuccess = true;
+      await act(async () => {
+        recheckSuccess = await result.current.recheckMaterialization();
+      });
+
+      expect(recheckSuccess).toBe(false);
+      expect(result.current.materializationLifecycle.phase).toBe('ERROR');
+      expect(result.current.materializationLifecycle.phase).not.toBe('FRESH');
+      expect(result.current.isMaterializing).toBe(false);
     });
   });
 });

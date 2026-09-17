@@ -219,6 +219,17 @@ test.describe('Manga Review Studio Materialization Lifecycle E2E (Phase 4D RED 5
 
     // Verify initial stale badge & trigger button
     await expect(page.getByText('Cần Kết Xuất Lại')).toBeVisible();
+
+    // Verify initial RESULT preview is V1 before materialization
+    await page.getByTestId('view-mode-result-button').click();
+    const initialResultImage = page.getByTestId('canvas-result-image');
+    await expect(initialResultImage).toBeVisible();
+    await expect(initialResultImage).toHaveAttribute('src', svgDataUrlV1);
+
+    // Switch back to SOURCE view
+    await page.getByTestId('view-mode-source-button').click();
+    await expect(page.getByTestId('canvas-source-wrapper')).toBeVisible();
+
     const triggerBtn = page.getByTestId('btn-trigger-materialize');
     await expect(triggerBtn).toBeVisible();
     await expect(triggerBtn).toBeEnabled();
@@ -238,9 +249,11 @@ test.describe('Manga Review Studio Materialization Lifecycle E2E (Phase 4D RED 5
     await expect(page.getByRole('button', { name: 'Đã Đồng Bộ Kết Xuất' })).toBeVisible({ timeout: 10000 });
     await expect(page.getByTestId('btn-materializing')).not.toBeVisible();
 
-    // Verify canvas rendered result image has updated to V2 preview without F5!
-    const canvas = page.getByTestId('canvas-source-wrapper');
-    await expect(canvas).toBeVisible();
+    // Verify Lock D: canvas rendered result image has updated to V2 preview without F5!
+    await page.getByTestId('view-mode-result-button').click();
+    const updatedResultImage = page.getByTestId('canvas-result-image');
+    await expect(updatedResultImage).toBeVisible();
+    await expect(updatedResultImage).toHaveAttribute('src', svgDataUrlV2);
   });
 
   test('Flow 2: Superseding edit while render in-flight -> CTA enables for new revision (Lock C)', async ({

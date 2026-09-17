@@ -2917,7 +2917,9 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           }));
 
           // Amendment 4: Canonical authoritative refetch triggers existing workspaceRevisionChanged invalidation
-          await refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+          const syncOutcome = await refetchDetail({
+            requirement: 'AUTHORITATIVE_REQUIRED',
+          });
           if (
             !isRequestCurrent(targetGen, targetJob) ||
             matSeq < materializationSeqRef.current
@@ -2925,13 +2927,40 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
             return;
           }
 
-          materializationInFlightRef.current = false;
-          setMaterializationLifecycle((prev) => ({
-            ...prev,
-            phase: 'FRESH',
-            targetRevision,
-            pollAttempts: attempt,
-          }));
+          if (
+            syncOutcome === 'SYNCED' ||
+            syncOutcome === 'SUPERSEDED_BY_SUCCESSFUL_SYNC'
+          ) {
+            materializationInFlightRef.current = false;
+            setMaterializationLifecycle((prev) => ({
+              ...prev,
+              phase: 'FRESH',
+              targetRevision,
+              pollAttempts: attempt,
+              lastError: null,
+            }));
+          } else if (
+            syncOutcome === 'ACCESS_REVOKED' ||
+            syncOutcome === 'SCOPE_INVALIDATED'
+          ) {
+            materializationInFlightRef.current = false;
+            return;
+          } else {
+            // Lock D reconciliation failed locally (e.g. preview sync failed or incoherent)
+            // Absolute invariant: Never mark FRESH when client-side artifact sync failed!
+            materializationInFlightRef.current = false;
+            setMaterializationLifecycle((prev) => ({
+              ...prev,
+              phase: 'ERROR',
+              targetRevision,
+              pollAttempts: attempt,
+              lastError: {
+                code: 'RECONCILIATION_FAILED',
+                message: 'Không thể đồng bộ ảnh và tài nguyên kết xuất mới từ máy chủ.',
+                status: 500,
+              },
+            }));
+          }
           return;
         }
 
@@ -3022,8 +3051,12 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     const targetJob = activeJobIdRef.current;
     const state = materializationLifecycleRef.current;
 
-    // Amendment 2: Only UNCONFIRMED with valid targetRevision can be rechecked
-    if (state.phase !== 'UNCONFIRMED' || state.targetRevision === null || !targetJob) {
+    // Amendment 2: UNCONFIRMED or ERROR (from failed client reconciliation) with valid targetRevision can be rechecked
+    if (
+      (state.phase !== 'UNCONFIRMED' && state.phase !== 'ERROR') ||
+      state.targetRevision === null ||
+      !targetJob
+    ) {
       return false;
     }
 
@@ -3067,21 +3100,52 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           targetRevision,
           pollAttempts: 0,
         }));
-        await refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+        const syncOutcome = await refetchDetail({
+          requirement: 'AUTHORITATIVE_REQUIRED',
+        });
         if (
           !isRequestCurrent(currentGen, targetJob) ||
           matSeq < materializationSeqRef.current
         ) {
           return false;
         }
-        materializationInFlightRef.current = false;
-        setMaterializationLifecycle((prev) => ({
-          ...prev,
-          phase: 'FRESH',
-          targetRevision,
-          pollAttempts: 0,
-        }));
-        return true;
+
+        if (
+          syncOutcome === 'SYNCED' ||
+          syncOutcome === 'SUPERSEDED_BY_SUCCESSFUL_SYNC'
+        ) {
+          materializationInFlightRef.current = false;
+          setMaterializationLifecycle((prev) => ({
+            ...prev,
+            phase: 'FRESH',
+            targetRevision,
+            pollAttempts: 0,
+            lastError: null,
+          }));
+          return true;
+        } else if (
+          syncOutcome === 'ACCESS_REVOKED' ||
+          syncOutcome === 'SCOPE_INVALIDATED'
+        ) {
+          materializationInFlightRef.current = false;
+          return false;
+        } else {
+          // Lock D reconciliation failed locally (e.g. preview sync failed or incoherent)
+          // Absolute invariant: Never mark FRESH when client-side artifact sync failed!
+          materializationInFlightRef.current = false;
+          setMaterializationLifecycle((prev) => ({
+            ...prev,
+            phase: 'ERROR',
+            targetRevision,
+            pollAttempts: 0,
+            lastError: {
+              code: 'RECONCILIATION_FAILED',
+              message: 'Không thể đồng bộ ảnh và tài nguyên kết xuất mới từ máy chủ.',
+              status: 500,
+            },
+          }));
+          return false;
+        }
       }
 
       if (outcome.phase === 'SUPERSEDED') {
@@ -3221,22 +3285,53 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
             pollAttempts: 0,
             lastError: null,
           });
-          await refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+          const syncOutcome = await refetchDetail({
+            requirement: 'AUTHORITATIVE_REQUIRED',
+          });
           if (
             !isRequestCurrent(currentGen, targetJob) ||
             matSeq < materializationSeqRef.current
           ) {
             return null;
           }
-          materializationInFlightRef.current = false;
-          setMaterializationLifecycle({
-            phase: 'FRESH',
-            targetRevision: res.targetRevision,
-            requestStatus: res.status,
-            pollAttempts: 0,
-            lastError: null,
-          });
-          return res;
+
+          if (
+            syncOutcome === 'SYNCED' ||
+            syncOutcome === 'SUPERSEDED_BY_SUCCESSFUL_SYNC'
+          ) {
+            materializationInFlightRef.current = false;
+            setMaterializationLifecycle({
+              phase: 'FRESH',
+              targetRevision: res.targetRevision,
+              requestStatus: res.status,
+              pollAttempts: 0,
+              lastError: null,
+            });
+            return res;
+          } else if (
+            syncOutcome === 'ACCESS_REVOKED' ||
+            syncOutcome === 'SCOPE_INVALIDATED'
+          ) {
+            materializationInFlightRef.current = false;
+            return null;
+          } else {
+            // Lock D reconciliation failed locally (e.g. preview sync failed or incoherent)
+            // Absolute invariant: Never mark FRESH when client-side artifact sync failed!
+            materializationInFlightRef.current = false;
+            setMaterializationLifecycle({
+              phase: 'ERROR',
+              targetRevision: res.targetRevision,
+              requestStatus: res.status,
+              pollAttempts: 0,
+              lastError: {
+                code: 'RECONCILIATION_FAILED',
+                message:
+                  'Không thể đồng bộ ảnh và tài nguyên kết xuất mới từ máy chủ.',
+                status: 500,
+              },
+            });
+            return null;
+          }
         }
 
         // Lock A: ENQUEUED !== COMPLETED (also applies to ALREADY_ENQUEUED)

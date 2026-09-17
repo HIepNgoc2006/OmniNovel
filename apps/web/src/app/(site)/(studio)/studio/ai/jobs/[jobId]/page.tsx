@@ -754,6 +754,39 @@ export default function MangaStudioJobPage({ params }: PageProps) {
         </div>
       )}
 
+      {/* Materialization Error Banner (RED 5) */}
+      {studio.materializationLifecycle.phase === 'ERROR' && (
+        <div
+          data-testid="banner-materialization-error"
+          className="p-3 bg-rose-950/40 border border-rose-500/50 rounded-2xl flex items-center justify-between gap-3 text-xs text-rose-200"
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>
+              {studio.materializationLifecycle.lastError?.message ||
+                'Có lỗi xảy ra trong quá trình kết xuất hoặc đồng bộ tài nguyên.'}
+            </span>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              if (
+                studio.freshness.status === 'FRESH' &&
+                studio.materializationLifecycle.targetRevision !== null
+              ) {
+                void studio.recheckMaterialization();
+              } else {
+                void studio.triggerMaterialization();
+              }
+            }}
+            className="shrink-0 h-7 text-xs bg-rose-700 hover:bg-rose-600 text-white font-semibold"
+          >
+            {studio.freshness.status === 'FRESH' ? 'Đồng bộ lại' : 'Thử lại'}
+          </Button>
+        </div>
+      )}
+
       {/* Invariant Violation Alert Banner */}
       {studio.freshness.status === 'INVARIANT_VIOLATION' && (
         <div className="p-4 bg-rose-950/40 border border-rose-500/50 rounded-2xl flex items-center gap-3">

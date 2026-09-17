@@ -276,22 +276,22 @@ export function findPrevSegmentIndex(currentIndex: number, totalSegments: number
 
 /**
  * Strictly bounded forward search for next unverified segment:
- * Scans only forward from currentIndex + 1 to length - 1.
- * ABSOLUTELY NO AUTO-WRAP! Clamps to currentIndex if no unverified item ahead.
+ * Scans only forward from currentIndex + 1 (or index 0 if currentIndex < 0) to length - 1.
+ * ABSOLUTELY NO AUTO-WRAP! Clamps to bounded index if no unverified item ahead.
  */
 export function findNextUnverifiedIndex(
   currentIndex: number,
   segments: { isHumanVerified?: boolean }[],
 ): number {
   if (segments.length === 0) return 0;
-  const start = Math.max(0, currentIndex);
+  const start = currentIndex < 0 ? 0 : currentIndex + 1;
 
-  // Search forward from next item ONLY. NO AUTO-WRAP!
-  for (let i = start + 1; i < segments.length; i++) {
+  // Search forward from start item ONLY. NO AUTO-WRAP!
+  for (let i = start; i < segments.length; i++) {
     if (!segments[i].isHumanVerified) {
       return i;
     }
   }
 
-  return start;
+  return Math.max(0, Math.min(currentIndex < 0 ? 0 : currentIndex, segments.length - 1));
 }

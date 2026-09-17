@@ -1165,7 +1165,7 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
 
   describe('4. RED 4: Verification Interactions, Action Matrix & Bounded Traversal', () => {
     describe('Policy Rules', () => {
-      it('canToggleVerification enforces Lock 2: dirty drafts CANNOT be verified', () => {
+      it('canToggleVerification confirms dirty drafts remain verification-eligible via atomic mutation', () => {
         const baseParams = {
           isDirty: false,
           canEdit: true,
@@ -1231,6 +1231,8 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
           { isHumanVerified: false },
           { isHumanVerified: true },
         ];
+        // When currentIndex < 0: scans from 0 and finds first unverified
+        expect(findNextUnverifiedIndex(-1, segments)).toBe(2);
         expect(findNextUnverifiedIndex(0, segments)).toBe(2);
         expect(findNextUnverifiedIndex(1, segments)).toBe(2);
         // When already at or past index 2: does NOT wrap around, clamps to current index

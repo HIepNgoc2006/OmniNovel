@@ -743,5 +743,70 @@ describe('Manga Review Studio Materialization Lifecycle (#149 RED 5, #157)', () 
       expect(result.current.materializationLifecycle.phase).not.toBe('FRESH');
       expect(result.current.isMaterializing).toBe(false);
     });
+
+    it('Race guard: Poll proves revision 2 complete but reconciliation receives revision 3 -> lifecycle becomes SUPERSEDED, never FRESH (Lock C)', async () => {
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce(mockStaleJobDetail);
+
+      vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValue({
+        status: 'ENQUEUED',
+        targetRevision: 2,
+      });
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await act(async () => {
+        await vi.runAllTimersAsync();
+      });
+
+      await act(async () => {
+        await result.current.triggerMaterialization();
+      });
+
+      expect(result.current.materializationLifecycle.phase).toBe('TRACKING');
+      expect(result.current.materializationLifecycle.targetRevision).toBe(2);
+
+      // Poll fetch returns revision 2 complete (triggers REFRESHING phase)
+      const pollCompletedDetail: TranslationJobReviewDetailResponse = {
+        ...mockStaleJobDetail,
+        job: {
+          ...mockStaleJobDetail.job,
+          materializedRevision: 2,
+          reviewRevision: 2,
+          workspaceRevision: 3,
+        },
+      };
+
+      // During refetchDetail (e.g. concurrent edit or server commit),
+      // the server authoritative detail advances reviewRevision to 3!
+      const supersededDetail: TranslationJobReviewDetailResponse = {
+        ...mockStaleJobDetail,
+        job: {
+          ...mockStaleJobDetail.job,
+          materializedRevision: 2,
+          reviewRevision: 3, // Advanced!
+          workspaceRevision: 4,
+        },
+      };
+
+      // 1st call during poll returns pollCompletedDetail (phase -> REFRESHING)
+      // Subsequent calls during refetchDetail return supersededDetail
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail')
+        .mockResolvedValueOnce(pollCompletedDetail)
+        .mockResolvedValue(supersededDetail);
+
+      // Advance timer for poll step
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(MATERIALIZATION_POLL_BACKOFF_MS[0] + 50);
+      });
+
+      // Crucial assertion: Even though refetchDetail succeeded (SYNCED),
+      // post-reconciliation re-verification detects reviewRevision (3) > targetRevision (2),
+      // so lifecycle MUST be SUPERSEDED, and ABSOLUTELY NEVER FRESH!
+      expect(result.current.materializationLifecycle.phase).toBe('SUPERSEDED');
+      expect(result.current.materializationLifecycle.phase).not.toBe('FRESH');
+      expect(result.current.isMaterializing).toBe(false);
+      expect(result.current.materializationLifecycle.targetRevision).toBe(2);
+      expect(result.current.jobDetail?.job.reviewRevision).toBe(3);
+    });
   });
 });

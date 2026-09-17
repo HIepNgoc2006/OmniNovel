@@ -1858,10 +1858,9 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       );
     });
 
-    it('should only send isHumanVerified: true when explicitly requested via options', async () => {
+    it('should only send isHumanVerified: true when explicitly requested via toggleSegmentVerification', async () => {
       const updatedSegment: TranslationSegmentDto = {
-        ...mockSegments[0],
-        translatedText: 'Bản dịch đã duyệt',
+        ...mockSegments[1],
         isHumanVerified: true,
         version: 2,
       };
@@ -1874,12 +1873,12 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        await result.current.saveSegment('seg-1', 'Bản dịch đã duyệt', { isHumanVerified: true });
+        await result.current.toggleSegmentVerification('seg-2');
       });
 
       expect(updateSpy).toHaveBeenCalledWith(
         mockJobId,
-        'seg-1',
+        'seg-2',
         expect.objectContaining({ isHumanVerified: true }),
       );
     });
@@ -3806,7 +3805,6 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       await act(async () => {
         await result.current.saveSegment('seg-1', 'Matching Text', {
           baseVersion: 5,
-          isHumanVerified: true,
         });
       });
 

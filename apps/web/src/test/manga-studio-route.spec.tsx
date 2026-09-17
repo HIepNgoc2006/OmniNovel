@@ -121,6 +121,17 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     setSegmentDraft: vi.fn(),
     discardSegmentDraft: vi.fn(),
     savingSegmentIds: {},
+    verifyingSegmentIds: {},
+    reviewSummary: { segmentCount: 1, verifiedCount: 0, pageCount: 1, resultPageCount: 3, blockCount: null },
+    toggleSegmentVerification: vi.fn().mockResolvedValue({
+      success: true,
+      outcome: 'SAVED_AND_SYNCED',
+      commitState: 'COMMITTED',
+      workspaceState: 'SYNCED',
+    }),
+    selectNextSegment: vi.fn(),
+    selectPrevSegment: vi.fn(),
+    selectNextUnverifiedSegment: vi.fn(),
     saveSegment: vi.fn().mockResolvedValue({
       success: true,
       outcome: 'SAVED_AND_SYNCED',
@@ -1031,6 +1042,104 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       expect(screen.getByTestId('segment-translation-textarea')).toHaveValue(
         'Bản nháp xung đột',
       );
+    });
+  });
+
+  describe('Verification & Bounded Traversal Integration (#149 RED 4)', () => {
+    it('1. renders authoritative review summary badge in header', async () => {
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        reviewSummary: {
+          segmentCount: 10,
+          verifiedCount: 4,
+          pageCount: 1,
+          resultPageCount: 3,
+          blockCount: null,
+        },
+      });
+
+      await act(async () => {
+        render(<MangaStudioJobPage params={mockParams} />);
+      });
+
+      const badge = screen.getByTestId('review-summary-badge');
+      expect(badge).toBeInTheDocument();
+      expect(badge).toHaveTextContent('Đã duyệt:4/10 (40%)');
+    });
+
+    it('2. clicking verify button in editor invokes studio.toggleSegmentVerification', async () => {
+      const toggleSpy = vi.fn().mockResolvedValue({
+        success: true,
+        outcome: 'SAVED_AND_SYNCED',
+      });
+
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        selectedSegmentId: 'seg-1',
+        pageSegments: mockDefaultSegments,
+        segments: mockDefaultSegments,
+        toggleSegmentVerification: toggleSpy,
+      });
+
+      await act(async () => {
+        render(<MangaStudioJobPage params={mockParams} />);
+      });
+
+      const verifyBtn = screen.getByTestId('btn-toggle-verify');
+      expect(verifyBtn).toBeInTheDocument();
+      expect(verifyBtn).toHaveTextContent('Xác minh');
+
+      await act(async () => {
+        fireEvent.click(verifyBtn);
+      });
+
+      expect(toggleSpy).toHaveBeenCalledWith('seg-1');
+    });
+
+    it('3. clicking traversal buttons invokes corresponding studio methods', async () => {
+      const nextSpy = vi.fn();
+      const prevSpy = vi.fn();
+      const nextUnverifiedSpy = vi.fn();
+
+      const twoSegments: TranslationSegmentDto[] = [
+        mockDefaultSegments[0],
+        {
+          ...mockDefaultSegments[0],
+          id: 'seg-2',
+          sortOrder: 2,
+          isHumanVerified: false,
+        },
+      ];
+
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        selectedSegmentId: 'seg-1',
+        pageSegments: twoSegments,
+        segments: twoSegments,
+        selectNextSegment: nextSpy,
+        selectPrevSegment: prevSpy,
+        selectNextUnverifiedSegment: nextUnverifiedSpy,
+      });
+
+      await act(async () => {
+        render(<MangaStudioJobPage params={mockParams} />);
+      });
+
+      const nextBtn = screen.getByTestId('btn-next-segment');
+      const nextUnverifiedBtn = screen.getByTestId('btn-next-unverified');
+
+      expect(nextBtn).not.toBeDisabled();
+      expect(nextUnverifiedBtn).not.toBeDisabled();
+
+      await act(async () => {
+        fireEvent.click(nextBtn);
+      });
+      expect(nextSpy).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        fireEvent.click(nextUnverifiedBtn);
+      });
+      expect(nextUnverifiedSpy).toHaveBeenCalledTimes(1);
     });
   });
 });

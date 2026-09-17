@@ -12,6 +12,14 @@ import {
   resolveDisplayDraft,
   canSaveSegment,
   formatOcrConfidence,
+  canToggleVerification,
+  resolveActionMatrixState,
+  isImeComposing,
+  isEditableTarget,
+  shouldHandleStudioVerificationHotkey,
+  findNextSegmentIndex,
+  findPrevSegmentIndex,
+  findNextUnverifiedIndex,
 } from '../lib/studio/manga-segment-editor-policy';
 import {
   MangaSegmentEditor,
@@ -1152,6 +1160,288 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
 
       // Completed: savingSegmentIds['seg-101'] is false / undefined
       expect(result.current.savingSegmentIds['seg-101']).toBeFalsy();
+    });
+  });
+
+  describe('4. RED 4: Verification Interactions, Action Matrix & Bounded Traversal', () => {
+    describe('Policy Rules', () => {
+      it('canToggleVerification enforces Lock 2: dirty drafts CANNOT be verified', () => {
+        const baseParams = {
+          isDirty: false,
+          canEdit: true,
+          isGateClosed: false,
+          isSaving: false,
+          isVerifying: false,
+          hasPendingMutation: false,
+          isRetryBlocked: false,
+          hasConflict: false,
+        };
+
+        expect(canToggleVerification(baseParams)).toBe(true);
+        // Lock 2: dirty draft cannot be verified directly
+        expect(canToggleVerification({ ...baseParams, isDirty: true })).toBe(false);
+        // Locked if saving or verifying
+        expect(canToggleVerification({ ...baseParams, isSaving: true })).toBe(false);
+        expect(canToggleVerification({ ...baseParams, isVerifying: true })).toBe(false);
+        // Locked if gate closed or canEdit false
+        expect(canToggleVerification({ ...baseParams, canEdit: false })).toBe(false);
+        expect(canToggleVerification({ ...baseParams, isGateClosed: true })).toBe(false);
+        // Locked if conflict or pending mutation
+        expect(canToggleVerification({ ...baseParams, hasConflict: true })).toBe(false);
+        expect(canToggleVerification({ ...baseParams, hasPendingMutation: true })).toBe(false);
+      });
+
+      it('resolveActionMatrixState resolves 4 distinct states correctly', () => {
+        const base = {
+          isDirty: false,
+          isHumanVerified: false,
+          canEdit: true,
+          isGateClosed: false,
+          isSaving: false,
+          isVerifying: false,
+          hasPendingMutation: false,
+          isRetryBlocked: false,
+          hasConflict: false,
+        };
+
+        expect(resolveActionMatrixState(base)).toBe('UNVERIFIED_CLEAN');
+        expect(resolveActionMatrixState({ ...base, isHumanVerified: true })).toBe('VERIFIED_CLEAN');
+        expect(resolveActionMatrixState({ ...base, isDirty: true })).toBe('DRAFT_DIRTY');
+        expect(resolveActionMatrixState({ ...base, canEdit: false })).toBe('MUTATION_BLOCKED');
+        expect(resolveActionMatrixState({ ...base, isSaving: true })).toBe('MUTATION_BLOCKED');
+        expect(resolveActionMatrixState({ ...base, isVerifying: true })).toBe('MUTATION_BLOCKED');
+        expect(resolveActionMatrixState({ ...base, hasConflict: true })).toBe('MUTATION_BLOCKED');
+      });
+
+      it('bounded traversal helpers clamp correctly to bounds', () => {
+        // Next: clamped to totalSegments - 1
+        expect(findNextSegmentIndex(0, 5)).toBe(1);
+        expect(findNextSegmentIndex(4, 5)).toBe(4);
+        expect(findNextSegmentIndex(-1, 5)).toBe(0);
+
+        // Prev: clamped to 0
+        expect(findPrevSegmentIndex(4, 5)).toBe(3);
+        expect(findPrevSegmentIndex(0, 5)).toBe(0);
+
+        // Next unverified: finds next index with isHumanVerified === false
+        const segments = [
+          { isHumanVerified: true },
+          { isHumanVerified: true },
+          { isHumanVerified: false },
+          { isHumanVerified: true },
+        ];
+        expect(findNextUnverifiedIndex(0, segments)).toBe(2);
+        expect(findNextUnverifiedIndex(1, segments)).toBe(2);
+        // When already at or past index 2: loops around if not found ahead
+        expect(findNextUnverifiedIndex(2, segments)).toBe(2);
+      });
+
+      it('IME composition and editable target guards work as expected', () => {
+        expect(isImeComposing({ isComposing: true } as any)).toBe(true);
+        expect(isImeComposing({ isComposing: false, keyCode: 229 } as any)).toBe(true);
+        expect(isImeComposing({ isComposing: false, keyCode: 86 } as any)).toBe(false);
+
+        // Verification hotkey evaluator
+        expect(
+          shouldHandleStudioVerificationHotkey({
+            key: 'v',
+            altKey: true,
+            ctrlKey: false,
+            metaKey: false,
+            shiftKey: false,
+            isComposing: false,
+          } as any),
+        ).toBe(true);
+
+        // Single 'v' inside editable target is suppressed
+        const inputEl = document.createElement('input');
+        expect(isEditableTarget(inputEl)).toBe(true);
+        expect(
+          shouldHandleStudioVerificationHotkey({
+            key: 'v',
+            altKey: false,
+            ctrlKey: false,
+            metaKey: false,
+            shiftKey: false,
+            isComposing: false,
+            target: inputEl,
+          } as any),
+        ).toBe(false);
+      });
+    });
+
+    describe('UI Controls & Interactions', () => {
+      it('renders badge-unverified when segment is not verified, and badge-verified when verified', () => {
+        const { rerender } = render(
+          <MangaSegmentEditor
+            segment={{ ...mockSegment, isHumanVerified: false }}
+            onDraftChange={vi.fn()}
+            onDiscardDraft={vi.fn()}
+            onSave={vi.fn()}
+          />,
+        );
+
+        expect(screen.getByTestId('badge-unverified')).toBeInTheDocument();
+        expect(screen.getByText('Chưa xác minh')).toBeInTheDocument();
+        expect(screen.getByTestId('btn-toggle-verify')).toHaveTextContent('Xác minh');
+
+        rerender(
+          <MangaSegmentEditor
+            segment={{ ...mockSegment, isHumanVerified: true }}
+            onDraftChange={vi.fn()}
+            onDiscardDraft={vi.fn()}
+            onSave={vi.fn()}
+          />,
+        );
+
+        expect(screen.getByTestId('badge-verified')).toBeInTheDocument();
+        expect(screen.getByText('Đã xác minh')).toBeInTheDocument();
+        expect(screen.getByTestId('btn-toggle-verify')).toHaveTextContent('Bỏ xác minh');
+      });
+
+      it('disables btn-toggle-verify when draft is dirty (Lock 2 enforcement in UI)', () => {
+        render(
+          <MangaSegmentEditor
+            segment={mockSegment}
+            draftText="Bản nháp chưa lưu"
+            onDraftChange={vi.fn()}
+            onDiscardDraft={vi.fn()}
+            onSave={vi.fn()}
+          />,
+        );
+
+        const verifyBtn = screen.getByTestId('btn-toggle-verify');
+        expect(verifyBtn).toBeDisabled();
+      });
+
+      it('calls onToggleVerification when clicking btn-toggle-verify on clean segment', () => {
+        const toggleSpy = vi.fn();
+        render(
+          <MangaSegmentEditor
+            segment={mockSegment}
+            onDraftChange={vi.fn()}
+            onDiscardDraft={vi.fn()}
+            onSave={vi.fn()}
+            onToggleVerification={toggleSpy}
+          />,
+        );
+
+        const verifyBtn = screen.getByTestId('btn-toggle-verify');
+        expect(verifyBtn).not.toBeDisabled();
+        fireEvent.click(verifyBtn);
+        expect(toggleSpy).toHaveBeenCalledWith('seg-101');
+      });
+
+      it('traversal buttons render and trigger traversal callbacks', () => {
+        const onPrevSpy = vi.fn();
+        const onNextSpy = vi.fn();
+        const onNextUnverifiedSpy = vi.fn();
+
+        render(
+          <MangaSegmentEditor
+            segment={mockSegment}
+            hasPrevSegment={true}
+            hasNextSegment={true}
+            hasNextUnverified={true}
+            onDraftChange={vi.fn()}
+            onDiscardDraft={vi.fn()}
+            onSave={vi.fn()}
+            onPrevSegment={onPrevSpy}
+            onNextSegment={onNextSpy}
+            onNextUnverified={onNextUnverifiedSpy}
+          />,
+        );
+
+        const prevBtn = screen.getByTestId('btn-prev-segment');
+        const nextBtn = screen.getByTestId('btn-next-segment');
+        const nextUnverifiedBtn = screen.getByTestId('btn-next-unverified');
+
+        expect(prevBtn).not.toBeDisabled();
+        expect(nextBtn).not.toBeDisabled();
+        expect(nextUnverifiedBtn).not.toBeDisabled();
+
+        fireEvent.click(prevBtn);
+        expect(onPrevSpy).toHaveBeenCalledTimes(1);
+
+        fireEvent.click(nextBtn);
+        expect(onNextSpy).toHaveBeenCalledTimes(1);
+
+        fireEvent.click(nextUnverifiedBtn);
+        expect(onNextUnverifiedSpy).toHaveBeenCalledTimes(1);
+      });
+
+      it('disables traversal buttons when flags are false', () => {
+        render(
+          <MangaSegmentEditor
+            segment={mockSegment}
+            hasPrevSegment={false}
+            hasNextSegment={false}
+            hasNextUnverified={false}
+            onDraftChange={vi.fn()}
+            onDiscardDraft={vi.fn()}
+            onSave={vi.fn()}
+          />,
+        );
+
+        expect(screen.getByTestId('btn-prev-segment')).toBeDisabled();
+        expect(screen.getByTestId('btn-next-segment')).toBeDisabled();
+        expect(screen.getByTestId('btn-next-unverified')).toBeDisabled();
+      });
+
+      it('global hotkeys (J, K, U, Alt+V) trigger corresponding callbacks', () => {
+        const onToggleSpy = vi.fn();
+        const onPrevSpy = vi.fn();
+        const onNextSpy = vi.fn();
+        const onNextUnverifiedSpy = vi.fn();
+
+        render(
+          <MangaSegmentEditor
+            segment={mockSegment}
+            hasPrevSegment={true}
+            hasNextSegment={true}
+            hasNextUnverified={true}
+            onDraftChange={vi.fn()}
+            onDiscardDraft={vi.fn()}
+            onSave={vi.fn()}
+            onToggleVerification={onToggleSpy}
+            onPrevSegment={onPrevSpy}
+            onNextSegment={onNextSpy}
+            onNextUnverified={onNextUnverifiedSpy}
+          />,
+        );
+
+        // Alt+V for verify
+        fireEvent.keyDown(window, { key: 'v', altKey: true });
+        expect(onToggleSpy).toHaveBeenCalledWith('seg-101');
+
+        // J for next
+        fireEvent.keyDown(window, { key: 'j' });
+        expect(onNextSpy).toHaveBeenCalledTimes(1);
+
+        // K for prev
+        fireEvent.keyDown(window, { key: 'k' });
+        expect(onPrevSpy).toHaveBeenCalledTimes(1);
+
+        // U for next unverified
+        fireEvent.keyDown(window, { key: 'u' });
+        expect(onNextUnverifiedSpy).toHaveBeenCalledTimes(1);
+      });
+
+      it('suppresses hotkeys when IME is composing', () => {
+        const onToggleSpy = vi.fn();
+        render(
+          <MangaSegmentEditor
+            segment={mockSegment}
+            onDraftChange={vi.fn()}
+            onDiscardDraft={vi.fn()}
+            onSave={vi.fn()}
+            onToggleVerification={onToggleSpy}
+          />,
+        );
+
+        fireEvent.keyDown(window, { key: 'v', altKey: true, isComposing: true });
+        expect(onToggleSpy).not.toHaveBeenCalled();
+      });
     });
   });
 });

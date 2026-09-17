@@ -22,7 +22,8 @@ export type SaveSegmentReason =
   | 'PENDING_UNKNOWN_MUTATION'
   | 'INVALID_VERSION_ORDER'
   | 'SEGMENT_REMOVED'
-  | 'SUPERSEDED_BY_NEWER_MUTATION';
+  | 'SUPERSEDED_BY_NEWER_MUTATION'
+  | 'DRAFT_DIRTY';
 
 export type DraftConflictKind =
   | 'VERSION_CONFLICT'

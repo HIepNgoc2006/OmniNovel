@@ -6,6 +6,11 @@ import type { ConflictState, ParsedApiError } from '../../lib/studio/use-manga-r
 import {
   isDraftDirty,
   canSaveSegment,
+  canToggleVerification,
+  resolveActionMatrixState,
+  isImeComposing,
+  shouldHandleStudioVerificationHotkey,
+  isEditableTarget,
   formatOcrConfidence,
 } from '../../lib/studio/manga-segment-editor-policy';
 import { Button } from '@/components/ui/button';
@@ -15,11 +20,14 @@ import {
   Undo2,
   Copy,
   Check,
+  CheckCircle2,
   AlertTriangle,
   Loader2,
   Sparkles,
   Layers,
   ShieldAlert,
+  ChevronUp,
+  ChevronDown,
 } from 'lucide-react';
 
 export interface MangaSegmentEditorProps {
@@ -28,12 +36,20 @@ export interface MangaSegmentEditorProps {
   canEdit?: boolean;
   isGateClosed?: boolean;
   isSaving?: boolean;
+  isVerifying?: boolean;
   hasPendingMutation?: boolean;
   conflictState?: ConflictState | null;
   saveError?: ParsedApiError | null;
+  hasPrevSegment?: boolean;
+  hasNextSegment?: boolean;
+  hasNextUnverified?: boolean;
   onDraftChange: (segmentId: string, text: string) => void;
   onDiscardDraft: (segmentId: string) => void;
   onSave: (segmentId: string, text: string) => Promise<unknown> | unknown;
+  onToggleVerification?: (segmentId: string) => Promise<unknown> | unknown;
+  onPrevSegment?: () => void;
+  onNextSegment?: () => void;
+  onNextUnverified?: () => void;
   onClearConflict?: (segmentId: string) => void;
   onLoadServerVersion?: (segmentId: string) => Promise<boolean | void> | void;
 }
@@ -44,12 +60,20 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
   canEdit = true,
   isGateClosed = false,
   isSaving = false,
+  isVerifying = false,
   hasPendingMutation = false,
   conflictState = null,
   saveError = null,
+  hasPrevSegment = false,
+  hasNextSegment = false,
+  hasNextUnverified = false,
   onDraftChange,
   onDiscardDraft,
   onSave,
+  onToggleVerification,
+  onPrevSegment,
+  onNextSegment,
+  onNextUnverified,
   onClearConflict,
   onLoadServerVersion,
 }) => {
@@ -67,9 +91,23 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
         isDirty: dirty,
         canEdit,
         isGateClosed,
-        isSaving,
+        isSaving: isSaving || isVerifying,
         hasPendingMutation,
         isRetryBlocked,
+      }),
+  );
+
+  const canVerify = Boolean(
+    segment &&
+      canToggleVerification({
+        isDirty: dirty,
+        canEdit,
+        isGateClosed,
+        isSaving,
+        isVerifying,
+        hasPendingMutation,
+        isRetryBlocked,
+        hasConflict: Boolean(conflictState),
       }),
   );
 
@@ -86,15 +124,76 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+      if (isImeComposing(e)) return;
+
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
-        if (segment && canSave && !isSaving && !isLoadingServerVersion) {
+        if (segment && canSave && !isSaving && !isVerifying && !isLoadingServerVersion) {
           void onSave(segment.id, currentText);
         }
+        return;
+      }
+
+      if (shouldHandleStudioVerificationHotkey(e)) {
+        e.preventDefault();
+        if (segment && canVerify && !isSaving && !isVerifying && !isLoadingServerVersion) {
+          void onToggleVerification?.(segment.id);
+        }
+        return;
       }
     },
-    [segment, canSave, isSaving, isLoadingServerVersion, onSave, currentText],
+    [
+      segment,
+      canSave,
+      canVerify,
+      isSaving,
+      isVerifying,
+      isLoadingServerVersion,
+      onSave,
+      onToggleVerification,
+      currentText,
+    ],
   );
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if (isImeComposing(e)) return;
+
+      if (shouldHandleStudioVerificationHotkey(e)) {
+        if (segment && canVerify && !isSaving && !isVerifying && !isLoadingServerVersion) {
+          e.preventDefault();
+          void onToggleVerification?.(segment.id);
+        }
+        return;
+      }
+
+      if (isEditableTarget(e.target)) return;
+
+      if (e.key === 'j' || e.key === 'J') {
+        e.preventDefault();
+        onNextSegment?.();
+      } else if (e.key === 'k' || e.key === 'K') {
+        e.preventDefault();
+        onPrevSegment?.();
+      } else if (e.key === 'u' || e.key === 'U') {
+        e.preventDefault();
+        onNextUnverified?.();
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeyDown);
+    return () => window.removeEventListener('keydown', handleGlobalKeyDown);
+  }, [
+    segment,
+    canVerify,
+    isSaving,
+    isVerifying,
+    isLoadingServerVersion,
+    onToggleVerification,
+    onNextSegment,
+    onPrevSegment,
+    onNextUnverified,
+  ]);
 
   const handleLoadServerVersion = useCallback(async () => {
     if (!segment || !onLoadServerVersion) return;
@@ -150,9 +249,67 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
               OCR: {confidenceFormatted}
             </Badge>
           )}
+
+          {/* Bounded Traversal Navigation Controls */}
+          <div className="flex items-center gap-0.5 ml-1 pl-2 border-l border-slate-800">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              data-testid="btn-prev-segment"
+              disabled={!hasPrevSegment}
+              onClick={onPrevSegment}
+              title="Ô trước (K)"
+              className="h-6 w-6 p-0 text-slate-400 hover:text-white disabled:opacity-30"
+            >
+              <ChevronUp className="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              data-testid="btn-next-segment"
+              disabled={!hasNextSegment}
+              onClick={onNextSegment}
+              title="Ô tiếp theo (J)"
+              className="h-6 w-6 p-0 text-slate-400 hover:text-white disabled:opacity-30"
+            >
+              <ChevronDown className="w-3.5 h-3.5" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              data-testid="btn-next-unverified"
+              disabled={!hasNextUnverified}
+              onClick={onNextUnverified}
+              title="Ô chưa duyệt kế tiếp (U)"
+              className="h-6 px-1.5 text-[10px] text-slate-400 hover:text-white disabled:opacity-30 flex items-center gap-1"
+            >
+              Chưa duyệt
+            </Button>
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
+          {segment.isHumanVerified ? (
+            <Badge
+              variant="success"
+              data-testid="badge-verified"
+              className="text-[10px] bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
+            >
+              Đã xác minh
+            </Badge>
+          ) : (
+            <Badge
+              variant="outline"
+              data-testid="badge-unverified"
+              className="text-[10px] text-slate-400 border-slate-700 bg-slate-900/40"
+            >
+              Chưa xác minh
+            </Badge>
+          )}
+
           {dirty ? (
             <Badge
               variant="warning"
@@ -329,7 +486,7 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
       {/* Editor Footer: Actions & Shortcut Hints */}
       <div className="flex items-center justify-between pt-2 border-t border-slate-800/80">
         <span className="text-[11px] text-slate-500 hidden sm:inline">
-          Phím tắt: <kbd className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">Ctrl+Enter</kbd> để lưu
+          Phím tắt: <kbd className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">Ctrl+Enter</kbd> lưu • <kbd className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">Alt+V</kbd> xác minh • <kbd className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">J/K</kbd> tới/lui • <kbd className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">U</kbd> chưa duyệt
         </span>
 
         <div className="flex items-center gap-2 ml-auto">
@@ -339,7 +496,7 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
               variant="ghost"
               size="sm"
               data-testid="btn-discard-draft"
-              disabled={isSaving || isLoadingServerVersion}
+              disabled={isSaving || isVerifying || isLoadingServerVersion}
               onClick={() => onDiscardDraft(segment.id)}
               className="h-8 text-xs text-slate-400 hover:text-white hover:bg-slate-900"
             >
@@ -350,10 +507,37 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
 
           <Button
             type="button"
+            variant="secondary"
+            size="sm"
+            data-testid="btn-toggle-verify"
+            disabled={!canVerify || isSaving || isVerifying || isLoadingServerVersion}
+            onClick={() => onToggleVerification?.(segment.id)}
+            className="h-8 text-xs font-semibold px-3 border border-slate-700 bg-slate-900 hover:bg-slate-800 text-slate-200"
+          >
+            {isVerifying ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                Đang xử lý...
+              </>
+            ) : segment.isHumanVerified ? (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 mr-1.5 text-emerald-400" />
+                Bỏ xác minh
+              </>
+            ) : (
+              <>
+                <CheckCircle2 className="w-3.5 h-3.5 mr-1.5 text-slate-400" />
+                Xác minh
+              </>
+            )}
+          </Button>
+
+          <Button
+            type="button"
             variant="primary"
             size="sm"
             data-testid="btn-save-segment"
-            disabled={!canSave || isSaving || isLoadingServerVersion}
+            disabled={!canSave || isSaving || isVerifying || isLoadingServerVersion}
             onClick={() => onSave(segment.id, currentText)}
             className="h-8 text-xs font-semibold px-4"
           >

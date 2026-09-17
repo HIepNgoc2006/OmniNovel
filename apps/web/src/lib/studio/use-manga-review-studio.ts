@@ -28,6 +28,12 @@ import {
   isValidWorkspaceRevision,
   WorkspaceModeResult,
   MaterializationFreshnessResult,
+  MaterializationLifecyclePhase,
+  MaterializationLifecycleState,
+  INITIAL_MATERIALIZATION_LIFECYCLE_STATE,
+  MATERIALIZATION_POLL_BACKOFF_MS,
+  MAX_MATERIALIZATION_POLL_ATTEMPTS,
+  evaluateMaterializationPollOutcome,
 } from './manga-studio-policy';
 import {
   isDraftDirty,
@@ -168,6 +174,8 @@ export interface UseMangaReviewStudioReturn {
   triggerMaterialization: () => Promise<MaterializationRequestResponse | null>;
   materializationStatus: MaterializationRequestStatus | null;
   isMaterializing: boolean;
+  materializationLifecycle: MaterializationLifecycleState;
+  recheckMaterialization: () => Promise<boolean>;
   error: ParsedApiError | null;
   fatalError: ParsedApiError | null;
   operationError: ParsedApiError | null;
@@ -326,11 +334,14 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   >({});
   const pendingUnknownMutationsRef = useRef<Record<string, PendingUnknownMutation>>({});
 
-  const [materializationState, setMaterializationState] = useState<{
-    status: MaterializationRequestStatus;
-    targetRevision: number;
-  } | null>(null);
-  const [isMaterializing, setIsMaterializing] = useState<boolean>(false);
+  // RED 5: Materialization Lifecycle SSoT (#149, #157)
+  const [materializationLifecycle, setMaterializationLifecycle] =
+    useState<MaterializationLifecycleState>(INITIAL_MATERIALIZATION_LIFECYCLE_STATE);
+  const materializationLifecycleRef = useRef<MaterializationLifecycleState>(
+    INITIAL_MATERIALIZATION_LIFECYCLE_STATE,
+  );
+  materializationLifecycleRef.current = materializationLifecycle;
+  const materializationPollTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [fatalError, setFatalError] = useState<ParsedApiError | null>(null);
   const [operationError, setOperationError] = useState<ParsedApiError | null>(null);
   const [overrideWorkspaceMode, setOverrideWorkspaceMode] =
@@ -738,9 +749,13 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         pageSegmentsCoherenceBreakerRef.current = { revision: -1, attempts: 0 };
         currentSegmentSubpageRef.current = 1;
       }
-      setMaterializationState(null);
+      if (materializationPollTimerRef.current) {
+        clearTimeout(materializationPollTimerRef.current);
+        materializationPollTimerRef.current = null;
+      }
+      materializationSeqRef.current++;
       materializationInFlightRef.current = false;
-      setIsMaterializing(false);
+      setMaterializationLifecycle(INITIAL_MATERIALIZATION_LIFECYCLE_STATE);
       setFatalError(null);
       clearAllErrors();
       authoritativeProofRef.current = null;
@@ -784,7 +799,6 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       pageSegmentsSeqRef.current++;
       pageNavSeqRef.current++;
       materializationInFlightRef.current = false;
-      setIsMaterializing(false);
       setPreviews(null);
       replaceSegments([]);
       setSegmentsSyncStatus('SYNCED');
@@ -798,7 +812,11 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         resetPreviewBreaker();
         replaceSegmentErrors({});
       }
-      setMaterializationState(null);
+      if (materializationPollTimerRef.current) {
+        clearTimeout(materializationPollTimerRef.current);
+        materializationPollTimerRef.current = null;
+      }
+      setMaterializationLifecycle(INITIAL_MATERIALIZATION_LIFECYCLE_STATE);
       // RED 1: currentPage is UI-owned and preserved on same-scope reset
       setPreviewWindow(null);
       setPreviewWindowLoading(false);
@@ -1339,6 +1357,38 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
                   outcome: 'REVIEW_SYNCED',
                 };
 
+                // Lock B & C: Check in-flight materialization lifecycle against latest authoritative detail
+                const currentLifecycle = materializationLifecycleRef.current;
+                if (
+                  currentLifecycle.phase === 'TRACKING' &&
+                  currentLifecycle.targetRevision !== null
+                ) {
+                  if (detail.job.reviewRevision > currentLifecycle.targetRevision) {
+                    if (materializationPollTimerRef.current) {
+                      clearTimeout(materializationPollTimerRef.current);
+                      materializationPollTimerRef.current = null;
+                    }
+                    materializationInFlightRef.current = false;
+                    setMaterializationLifecycle((prev) => ({
+                      ...prev,
+                      phase: 'SUPERSEDED',
+                    }));
+                  } else if (
+                    detail.job.materializedRevision === currentLifecycle.targetRevision &&
+                    detail.job.reviewRevision === currentLifecycle.targetRevision
+                  ) {
+                    if (materializationPollTimerRef.current) {
+                      clearTimeout(materializationPollTimerRef.current);
+                      materializationPollTimerRef.current = null;
+                    }
+                    materializationInFlightRef.current = false;
+                    setMaterializationLifecycle((prev) => ({
+                      ...prev,
+                      phase: 'FRESH',
+                    }));
+                  }
+                }
+
                 // RED 1: Load real bounded preview window and page segments for currentPage
                 const curPage = currentPageRef.current;
                 const curSubpage = currentSegmentSubpageRef.current;
@@ -1646,8 +1696,13 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     authoritativeProofRef.current = null;
     setFatalError(null);
     clearOperationError();
-    setMaterializationState(null);
-    setIsMaterializing(false);
+    if (materializationPollTimerRef.current) {
+      clearTimeout(materializationPollTimerRef.current);
+      materializationPollTimerRef.current = null;
+    }
+    materializationSeqRef.current++;
+    materializationInFlightRef.current = false;
+    setMaterializationLifecycle(INITIAL_MATERIALIZATION_LIFECYCLE_STATE);
     // RED 1: currentPage is UI-owned and preserved on reconcile
 
     await loadJobData(newGen, currentJob);
@@ -2783,6 +2838,306 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     [refetchDetail, discardSegmentDraft, clearConflict],
   );
 
+  const runMaterializationPollStepRef = useRef<
+    (
+      targetGen: number,
+      targetJob: string,
+      matSeq: number,
+      targetRevision: number,
+      attempt: number,
+    ) => Promise<void>
+  >(null as any);
+
+  const schedulePollStep = useCallback(
+    (
+      targetGen: number,
+      targetJob: string,
+      matSeq: number,
+      targetRevision: number,
+      attemptIndex: number,
+    ) => {
+      if (materializationPollTimerRef.current) {
+        clearTimeout(materializationPollTimerRef.current);
+        materializationPollTimerRef.current = null;
+      }
+      const delay = MATERIALIZATION_POLL_BACKOFF_MS[attemptIndex] ?? 5000;
+      materializationPollTimerRef.current = setTimeout(() => {
+        void runMaterializationPollStepRef.current?.(
+          targetGen,
+          targetJob,
+          matSeq,
+          targetRevision,
+          attemptIndex + 1,
+        );
+      }, delay);
+    },
+    [],
+  );
+
+  const runMaterializationPollStep = useCallback(
+    async (
+      targetGen: number,
+      targetJob: string,
+      matSeq: number,
+      targetRevision: number,
+      attempt: number,
+    ) => {
+      if (
+        !isRequestCurrent(targetGen, targetJob) ||
+        matSeq < materializationSeqRef.current
+      ) {
+        return;
+      }
+
+      try {
+        // Amendment 3: Lightweight polling fetch directly from job detail endpoint
+        const detail = await fetchTranslationJobDetail(targetJob);
+        if (
+          !isRequestCurrent(targetGen, targetJob) ||
+          matSeq < materializationSeqRef.current
+        ) {
+          return;
+        }
+
+        const outcome = evaluateMaterializationPollOutcome({
+          jobStatus: detail.job.status,
+          reviewRevision: detail.job.reviewRevision,
+          materializedRevision: detail.job.materializedRevision,
+          targetRevision,
+          pollAttempts: attempt,
+        });
+
+        if (outcome.phase === 'REFRESHING') {
+          // Lock B: Proved completion!
+          setMaterializationLifecycle((prev) => ({
+            ...prev,
+            phase: 'REFRESHING',
+            targetRevision,
+            pollAttempts: attempt,
+          }));
+
+          // Amendment 4: Canonical authoritative refetch triggers existing workspaceRevisionChanged invalidation
+          await refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+          if (
+            !isRequestCurrent(targetGen, targetJob) ||
+            matSeq < materializationSeqRef.current
+          ) {
+            return;
+          }
+
+          materializationInFlightRef.current = false;
+          setMaterializationLifecycle((prev) => ({
+            ...prev,
+            phase: 'FRESH',
+            targetRevision,
+            pollAttempts: attempt,
+          }));
+          return;
+        }
+
+        if (outcome.phase === 'SUPERSEDED') {
+          materializationInFlightRef.current = false;
+          setMaterializationLifecycle((prev) => ({
+            ...prev,
+            phase: 'SUPERSEDED',
+            targetRevision,
+            pollAttempts: attempt,
+          }));
+          return;
+        }
+
+        if (outcome.phase === 'UNCONFIRMED') {
+          materializationInFlightRef.current = false;
+          setMaterializationLifecycle((prev) => ({
+            ...prev,
+            phase: 'UNCONFIRMED',
+            targetRevision,
+            pollAttempts: attempt,
+          }));
+          return;
+        }
+
+        if (outcome.phase === 'STOPPED' || outcome.phase === 'ERROR') {
+          materializationInFlightRef.current = false;
+          setMaterializationLifecycle((prev) => ({
+            ...prev,
+            phase: outcome.phase,
+            targetRevision,
+            pollAttempts: attempt,
+          }));
+          return;
+        }
+
+        // Still TRACKING: update attempt count and schedule next poll
+        setMaterializationLifecycle((prev) => ({
+          ...prev,
+          phase: 'TRACKING',
+          targetRevision,
+          pollAttempts: attempt,
+        }));
+        schedulePollStep(targetGen, targetJob, matSeq, targetRevision, attempt);
+      } catch (err) {
+        if (
+          !isRequestCurrent(targetGen, targetJob) ||
+          matSeq < materializationSeqRef.current
+        ) {
+          return;
+        }
+        const parsed = parseApiError(err);
+        if (isJobAccessError(parsed)) {
+          purgeOnAccessError(parsed, targetGen, targetJob);
+          return;
+        }
+
+        if (attempt >= MAX_MATERIALIZATION_POLL_ATTEMPTS) {
+          materializationInFlightRef.current = false;
+          setMaterializationLifecycle((prev) => ({
+            ...prev,
+            phase: 'UNCONFIRMED',
+            targetRevision,
+            pollAttempts: attempt,
+            lastError: parsed,
+          }));
+        } else {
+          // Retry on next backoff interval
+          schedulePollStep(targetGen, targetJob, matSeq, targetRevision, attempt);
+        }
+      }
+    },
+    [
+      isRequestCurrent,
+      refetchDetail,
+      isJobAccessError,
+      purgeOnAccessError,
+      schedulePollStep,
+    ],
+  );
+
+  useEffect(() => {
+    runMaterializationPollStepRef.current = runMaterializationPollStep;
+  }, [runMaterializationPollStep]);
+
+  const recheckMaterialization = useCallback(async (): Promise<boolean> => {
+    const currentGen = generationRef.current;
+    const targetJob = activeJobIdRef.current;
+    const state = materializationLifecycleRef.current;
+
+    // Amendment 2: Only UNCONFIRMED with valid targetRevision can be rechecked
+    if (state.phase !== 'UNCONFIRMED' || state.targetRevision === null || !targetJob) {
+      return false;
+    }
+
+    const targetRevision = state.targetRevision;
+    const matSeq = ++materializationSeqRef.current;
+    if (materializationPollTimerRef.current) {
+      clearTimeout(materializationPollTimerRef.current);
+      materializationPollTimerRef.current = null;
+    }
+
+    materializationInFlightRef.current = true;
+    setMaterializationLifecycle((prev) => ({
+      ...prev,
+      phase: 'TRACKING',
+      pollAttempts: 0,
+      lastError: null,
+    }));
+
+    try {
+      // Lightweight check of authoritative detail
+      const detail = await fetchTranslationJobDetail(targetJob);
+      if (
+        !isRequestCurrent(currentGen, targetJob) ||
+        matSeq < materializationSeqRef.current
+      ) {
+        return false;
+      }
+
+      const outcome = evaluateMaterializationPollOutcome({
+        jobStatus: detail.job.status,
+        reviewRevision: detail.job.reviewRevision,
+        materializedRevision: detail.job.materializedRevision,
+        targetRevision,
+        pollAttempts: 0,
+      });
+
+      if (outcome.phase === 'REFRESHING') {
+        setMaterializationLifecycle((prev) => ({
+          ...prev,
+          phase: 'REFRESHING',
+          targetRevision,
+          pollAttempts: 0,
+        }));
+        await refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+        if (
+          !isRequestCurrent(currentGen, targetJob) ||
+          matSeq < materializationSeqRef.current
+        ) {
+          return false;
+        }
+        materializationInFlightRef.current = false;
+        setMaterializationLifecycle((prev) => ({
+          ...prev,
+          phase: 'FRESH',
+          targetRevision,
+          pollAttempts: 0,
+        }));
+        return true;
+      }
+
+      if (outcome.phase === 'SUPERSEDED') {
+        materializationInFlightRef.current = false;
+        setMaterializationLifecycle((prev) => ({
+          ...prev,
+          phase: 'SUPERSEDED',
+          targetRevision,
+          pollAttempts: 0,
+        }));
+        return false;
+      }
+
+      if (outcome.phase === 'STOPPED' || outcome.phase === 'ERROR') {
+        materializationInFlightRef.current = false;
+        setMaterializationLifecycle((prev) => ({
+          ...prev,
+          phase: outcome.phase,
+          targetRevision,
+          pollAttempts: 0,
+        }));
+        return false;
+      }
+
+      // Resume bounded polling with fresh attempts budget for the same immutable targetRevision
+      schedulePollStep(currentGen, targetJob, matSeq, targetRevision, 0);
+      return true;
+    } catch (err) {
+      if (
+        !isRequestCurrent(currentGen, targetJob) ||
+        matSeq < materializationSeqRef.current
+      ) {
+        return false;
+      }
+      const parsed = parseApiError(err);
+      if (isJobAccessError(parsed)) {
+        purgeOnAccessError(parsed, currentGen, targetJob);
+        return false;
+      }
+      materializationInFlightRef.current = false;
+      setMaterializationLifecycle((prev) => ({
+        ...prev,
+        phase: 'UNCONFIRMED',
+        targetRevision,
+        lastError: parsed,
+      }));
+      return false;
+    }
+  }, [
+    isRequestCurrent,
+    isJobAccessError,
+    purgeOnAccessError,
+    refetchDetail,
+    schedulePollStep,
+  ]);
+
   const triggerMaterialization =
     useCallback(async (): Promise<MaterializationRequestResponse | null> => {
       const currentGen = generationRef.current;
@@ -2794,11 +3149,17 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
       const currentDetail = jobDetailRef.current;
 
-      // Ref-based Fail-closed gate: Materialization is ONLY allowed when workspace is REVIEWABLE AND freshness is STALE!
+      // Fail-closed gate: Materialization is ONLY allowed when workspace is REVIEWABLE AND freshness is STALE!
+      const currentLifecycle = materializationLifecycleRef.current;
       if (
         materializationInFlightRef.current ||
+        currentLifecycle.phase === 'SUBMITTING' ||
+        currentLifecycle.phase === 'TRACKING' ||
+        currentLifecycle.phase === 'REFRESHING' ||
+        currentLifecycle.phase === 'UNCONFIRMED' ||
         isGateClosed ||
-        !currentDetail
+        !currentDetail ||
+        !targetJob
       ) {
         return null;
       }
@@ -2824,9 +3185,23 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         return null;
       }
 
+      if (materializationPollTimerRef.current) {
+        clearTimeout(materializationPollTimerRef.current);
+        materializationPollTimerRef.current = null;
+      }
+
+      const targetRevision = currentDetail.job.reviewRevision;
       materializationInFlightRef.current = true;
-      setIsMaterializing(true);
       const matSeq = ++materializationSeqRef.current;
+
+      setMaterializationLifecycle({
+        phase: 'SUBMITTING',
+        targetRevision,
+        requestStatus: null,
+        pollAttempts: 0,
+        lastError: null,
+      });
+      clearMaterializationError();
 
       try {
         const res = await requestJobMaterialization(targetJob);
@@ -2838,16 +3213,43 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           return null;
         }
 
-        setMaterializationState({
-          status: res.status,
-          targetRevision: res.targetRevision,
-        });
-        clearMaterializationError();
-
         if (res.status === 'ALREADY_FRESH') {
+          setMaterializationLifecycle({
+            phase: 'REFRESHING',
+            targetRevision: res.targetRevision,
+            requestStatus: res.status,
+            pollAttempts: 0,
+            lastError: null,
+          });
           await refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+          if (
+            !isRequestCurrent(currentGen, targetJob) ||
+            matSeq < materializationSeqRef.current
+          ) {
+            return null;
+          }
+          materializationInFlightRef.current = false;
+          setMaterializationLifecycle({
+            phase: 'FRESH',
+            targetRevision: res.targetRevision,
+            requestStatus: res.status,
+            pollAttempts: 0,
+            lastError: null,
+          });
+          return res;
         }
 
+        // Lock A: ENQUEUED !== COMPLETED (also applies to ALREADY_ENQUEUED)
+        setMaterializationLifecycle({
+          phase: 'TRACKING',
+          targetRevision: res.targetRevision,
+          requestStatus: res.status,
+          pollAttempts: 0,
+          lastError: null,
+        });
+
+        // Start bounded polling loop
+        schedulePollStep(currentGen, targetJob, matSeq, res.targetRevision, 0);
         return res;
       } catch (err) {
         if (
@@ -2857,6 +3259,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           return null;
         }
 
+        materializationInFlightRef.current = false;
         const parsed = parseApiError(err);
         if (isJobAccessError(parsed)) {
           purgeOnAccessError(parsed, currentGen, targetJob);
@@ -2874,16 +3277,14 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         }
 
         setMaterializationError(parsed);
+        setMaterializationLifecycle({
+          phase: 'ERROR',
+          targetRevision,
+          requestStatus: null,
+          pollAttempts: 0,
+          lastError: parsed,
+        });
         return null;
-      } finally {
-        if (
-          generationRef.current === currentGen &&
-          activeJobIdRef.current === targetJob &&
-          materializationSeqRef.current === matSeq
-        ) {
-          materializationInFlightRef.current = false;
-          setIsMaterializing(false);
-        }
       }
     }, [
       isRequestCurrent,
@@ -2893,13 +3294,20 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       reconcileAuthoritativeWorkspace,
       clearMaterializationError,
       setMaterializationError,
+      schedulePollStep,
     ]);
 
+  // Derived SSoT states (Amendment 1)
+  const isMaterializing =
+    materializationLifecycle.phase === 'SUBMITTING' ||
+    materializationLifecycle.phase === 'TRACKING' ||
+    materializationLifecycle.phase === 'REFRESHING';
+
   const activeMaterializationStatus: MaterializationRequestStatus | null =
-    materializationState &&
+    materializationLifecycle.targetRevision !== null &&
     jobDetail &&
-    materializationState.targetRevision === jobDetail.job.reviewRevision
-      ? materializationState.status
+    materializationLifecycle.targetRevision === jobDetail.job.reviewRevision
+      ? materializationLifecycle.requestStatus
       : null;
 
   const loadPreviewWindow = useCallback(
@@ -3270,6 +3678,17 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     };
   }, []);
 
+  // Cleanup materialization polling on unmount
+  useEffect(() => {
+    return () => {
+      if (materializationPollTimerRef.current) {
+        clearTimeout(materializationPollTimerRef.current);
+        materializationPollTimerRef.current = null;
+      }
+      materializationSeqRef.current++;
+    };
+  }, []);
+
   const goToPage = useCallback(
     (targetPage: number) => {
       const maxPage = jobDetailRef.current
@@ -3392,6 +3811,8 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     triggerMaterialization,
     materializationStatus: activeMaterializationStatus,
     isMaterializing,
+    materializationLifecycle,
+    recheckMaterialization,
     error: fatalError,
     fatalError,
     operationError,

@@ -1633,15 +1633,23 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         targetRevision: 2,
       });
 
+      const { result: result2 } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result2.current.status).toBe('ready');
+      });
+
       let res2: any;
       await act(async () => {
-        res2 = await result.current.triggerMaterialization();
+        res2 = await result2.current.triggerMaterialization();
       });
 
       expect(res2?.status).toBe('ALREADY_ENQUEUED');
-      expect(result.current.materializationStatus).toBe('ALREADY_ENQUEUED');
+      expect(result2.current.materializationStatus).toBe('ALREADY_ENQUEUED');
 
       // 6c: ALREADY_FRESH
+      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValueOnce(mockStaleComicJobDetail);
+
       const freshJobDetail: TranslationJobReviewDetailResponse = {
         ...mockComicJobDetail,
         job: {
@@ -1651,30 +1659,37 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         },
       };
 
+      vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValueOnce({
+        status: 'ALREADY_FRESH',
+        targetRevision: 2,
+      });
+
+      const { result: result3 } = renderHook(() => useMangaReviewStudio(mockJobId));
+
+      await waitFor(() => {
+        expect(result3.current.status).toBe('ready');
+        expect(result3.current.freshness.status).toBe('STALE');
+      });
+
       const refetchSpy = vi
         .spyOn(translationApi, 'fetchTranslationJobDetail')
         .mockResolvedValue(freshJobDetail);
 
       const callsBefore = refetchSpy.mock.calls.length;
 
-      vi.spyOn(translationApi, 'requestJobMaterialization').mockResolvedValueOnce({
-        status: 'ALREADY_FRESH',
-        targetRevision: 2,
-      });
-
       let res3: any;
       await act(async () => {
-        res3 = await result.current.triggerMaterialization();
+        res3 = await result3.current.triggerMaterialization();
       });
 
       expect(res3?.status).toBe('ALREADY_FRESH');
-      expect(result.current.materializationStatus).toBe('ALREADY_FRESH');
+      expect(result3.current.materializationStatus).toBe('ALREADY_FRESH');
       // Invariant: Assert causal call count increment
       expect(refetchSpy.mock.calls.length).toBe(callsBefore + 1);
       // Invariant: Assert authoritative outcome
-      expect(result.current.jobDetail?.job.materializedRevision).toBe(2);
-      expect(result.current.freshness.status).toBe('FRESH');
-      expect(result.current.freshness.isFresh).toBe(true);
+      expect(result3.current.jobDetail?.job.materializedRevision).toBe(2);
+      expect(result3.current.freshness.status).toBe('FRESH');
+      expect(result3.current.freshness.isFresh).toBe(true);
     });
   });
 
@@ -2425,7 +2440,7 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       // Invariant: Settling Job A must NOT set Job B isMaterializing to false!
       expect(result.current.isMaterializing).toBe(true);
 
-      // Now settle Job B materialization
+      // Now settle Job B materialization HTTP response
       await act(async () => {
         resolveMatB!({
           status: 'ENQUEUED',
@@ -2433,7 +2448,9 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
         });
         await triggerPromiseB!;
       });
-      expect(result.current.isMaterializing).toBe(false);
+      // RED 5 Lock A: Job B remains in TRACKING, isMaterializing is true
+      expect(result.current.isMaterializing).toBe(true);
+      expect(result.current.materializationLifecycle.phase).toBe('TRACKING');
     });
 
     it('5. should NOT repopulate materializationStatus if old materialization settles after transitioning to APPLIED', async () => {

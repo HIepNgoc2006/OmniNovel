@@ -3,8 +3,9 @@ import {
   MediaFormat,
   ReviewSummaryDto,
   StandardErrorMeta,
+  MaterializationRequestStatus,
 } from '@omninovel/shared';
-import { parseApiError } from '../api/translation';
+import { parseApiError, ParsedApiError } from '../api/translation';
 
 export type WorkspaceMode =
   | 'UNSUPPORTED_FORMAT'
@@ -232,6 +233,307 @@ export function computeMaterializationFreshness(
     status: 'FRESH',
     message: 'Bản kết xuất đã đồng bộ với bản chỉnh sửa mới nhất.',
   };
+}
+
+// ==========================================
+// RED 5: Materialization Lifecycle State Machine (#149, #157)
+// ==========================================
+
+export type MaterializationLifecyclePhase =
+  | 'IDLE'
+  | 'SUBMITTING'
+  | 'TRACKING'
+  | 'REFRESHING'
+  | 'FRESH'
+  | 'SUPERSEDED'
+  | 'UNCONFIRMED'
+  | 'STOPPED'
+  | 'ERROR';
+
+export interface MaterializationLifecycleState {
+  phase: MaterializationLifecyclePhase;
+  targetRevision: number | null;
+  requestStatus: MaterializationRequestStatus | null;
+  pollAttempts: number;
+  lastError: ParsedApiError | null;
+}
+
+export const INITIAL_MATERIALIZATION_LIFECYCLE_STATE: MaterializationLifecycleState = {
+  phase: 'IDLE',
+  targetRevision: null,
+  requestStatus: null,
+  pollAttempts: 0,
+  lastError: null,
+};
+
+export const MATERIALIZATION_POLL_BACKOFF_MS = [
+  1000, 1500, 2000, 2500, 3000, 4000, 5000, 5000, 5000, 5000,
+] as const;
+
+export const MAX_MATERIALIZATION_POLL_ATTEMPTS = MATERIALIZATION_POLL_BACKOFF_MS.length;
+
+export interface EvaluateMaterializationPollParams {
+  jobStatus: TranslationJobStatus;
+  reviewRevision: number | null | undefined;
+  materializedRevision: number | null | undefined;
+  targetRevision: number;
+  pollAttempts: number;
+}
+
+export interface EvaluateMaterializationPollResult {
+  phase: MaterializationLifecyclePhase;
+  isComplete: boolean;
+  isSuperseded: boolean;
+  isExhausted: boolean;
+  message?: string;
+}
+
+/**
+ * Pure evaluator for materialization polling outcomes (Lock B, Lock C)
+ */
+export function evaluateMaterializationPollOutcome({
+  jobStatus,
+  reviewRevision,
+  materializedRevision,
+  targetRevision,
+  pollAttempts,
+}: EvaluateMaterializationPollParams): EvaluateMaterializationPollResult {
+  const freshness = computeMaterializationFreshness(reviewRevision, materializedRevision);
+  if (freshness.status === 'INVARIANT_VIOLATION') {
+    return {
+      phase: 'ERROR',
+      isComplete: false,
+      isSuperseded: false,
+      isExhausted: false,
+      message: freshness.message,
+    };
+  }
+
+  if (jobStatus !== TranslationJobStatus.READY_FOR_REVIEW) {
+    return {
+      phase: 'STOPPED',
+      isComplete: false,
+      isSuperseded: false,
+      isExhausted: false,
+      message: 'Job không còn ở trạng thái sẵn sàng duyệt.',
+    };
+  }
+
+  const currentRev = typeof reviewRevision === 'number' ? reviewRevision : -1;
+  const currentMat = typeof materializedRevision === 'number' ? materializedRevision : -1;
+
+  // Lock C: Target revision immutable - if user created a newer revision, old session is superseded
+  if (currentRev > targetRevision) {
+    return {
+      phase: 'SUPERSEDED',
+      isComplete: false,
+      isSuperseded: true,
+      isExhausted: false,
+      message: `Bản dịch đã có chỉnh sửa mới (v${currentRev}) trong khi đang kết xuất (v${targetRevision}).`,
+    };
+  }
+
+  // Lock B: Authoritative completion proof
+  if (currentMat === targetRevision && currentRev === targetRevision) {
+    return {
+      phase: 'REFRESHING',
+      isComplete: true,
+      isSuperseded: false,
+      isExhausted: false,
+    };
+  }
+
+  // Budget exhaustion check
+  if (pollAttempts >= MAX_MATERIALIZATION_POLL_ATTEMPTS) {
+    return {
+      phase: 'UNCONFIRMED',
+      isComplete: false,
+      isSuperseded: false,
+      isExhausted: true,
+      message: 'Đã hết thời gian chờ xác nhận kết xuất từ máy chủ.',
+    };
+  }
+
+  return {
+    phase: 'TRACKING',
+    isComplete: false,
+    isSuperseded: false,
+    isExhausted: false,
+  };
+}
+
+export interface MaterializationCtaProps {
+  label: string;
+  disabled: boolean;
+  isLoading: boolean;
+  actionType: 'TRIGGER' | 'RECHECK' | 'NONE';
+  variant: 'primary' | 'secondary' | 'outline';
+  icon: 'SPARKLES' | 'SPINNER' | 'CHECK' | 'REFRESH' | 'ALERT';
+  helperMessage?: string;
+}
+
+/**
+ * Pure evaluator for Materialization CTA button presentation & behavior
+ */
+export function getMaterializationCtaProps({
+  lifecycleState,
+  freshness,
+  canMaterialize = true,
+}: {
+  lifecycleState: MaterializationLifecycleState;
+  freshness: MaterializationFreshnessResult;
+  canMaterialize?: boolean;
+}): MaterializationCtaProps {
+  if (!canMaterialize) {
+    return {
+      label: 'Không Thể Kết Xuất',
+      disabled: true,
+      isLoading: false,
+      actionType: 'NONE',
+      variant: 'outline',
+      icon: 'ALERT',
+    };
+  }
+
+  if (freshness.status === 'INVARIANT_VIOLATION') {
+    return {
+      label: 'Phiên Bản Không Hợp Lệ',
+      disabled: true,
+      isLoading: false,
+      actionType: 'NONE',
+      variant: 'outline',
+      icon: 'ALERT',
+      helperMessage: freshness.message,
+    };
+  }
+
+  switch (lifecycleState.phase) {
+    case 'SUBMITTING':
+      return {
+        label: 'Đang gửi yêu cầu...',
+        disabled: true,
+        isLoading: true,
+        actionType: 'NONE',
+        variant: 'primary',
+        icon: 'SPINNER',
+      };
+    case 'TRACKING':
+      return {
+        label:
+          lifecycleState.targetRevision !== null
+            ? `Đang kết xuất revision ${lifecycleState.targetRevision}...`
+            : 'Đang kết xuất...',
+        disabled: true,
+        isLoading: true,
+        actionType: 'NONE',
+        variant: 'primary',
+        icon: 'SPINNER',
+      };
+    case 'REFRESHING':
+      return {
+        label: 'Đang làm mới ảnh kết quả...',
+        disabled: true,
+        isLoading: true,
+        actionType: 'NONE',
+        variant: 'primary',
+        icon: 'SPINNER',
+      };
+    case 'SUPERSEDED':
+      return {
+        label: 'Có chỉnh sửa mới — Kết xuất lại',
+        disabled: false,
+        isLoading: false,
+        actionType: 'TRIGGER',
+        variant: 'primary',
+        icon: 'SPARKLES',
+        helperMessage:
+          'Bản dịch đã được cập nhật thêm trong khi đang kết xuất. Vui lòng bấm để kết xuất phiên bản mới nhất.',
+      };
+    case 'UNCONFIRMED':
+      return {
+        label: 'Kiểm tra lại trạng thái kết xuất',
+        disabled: false,
+        isLoading: false,
+        actionType: 'RECHECK',
+        variant: 'secondary',
+        icon: 'REFRESH',
+        helperMessage:
+          'Chưa thể xác nhận kết xuất từ máy chủ sau thời gian chờ. Bấm để kiểm tra lại.',
+      };
+    case 'STOPPED':
+      return {
+        label: 'Job Đã Dừng',
+        disabled: true,
+        isLoading: false,
+        actionType: 'NONE',
+        variant: 'outline',
+        icon: 'ALERT',
+      };
+    case 'FRESH':
+      return {
+        label: 'Đã Đồng Bộ Kết Xuất',
+        disabled: true,
+        isLoading: false,
+        actionType: 'NONE',
+        variant: 'outline',
+        icon: 'CHECK',
+      };
+    case 'ERROR':
+      if (freshness.status === 'FRESH' && lifecycleState.targetRevision !== null) {
+        return {
+          label: 'Tải lại tài nguyên kết xuất',
+          disabled: false,
+          isLoading: false,
+          actionType: 'RECHECK',
+          variant: 'secondary',
+          icon: 'REFRESH',
+          helperMessage:
+            lifecycleState.lastError?.message ||
+            'Không thể đồng bộ tài nguyên kết xuất mới từ máy chủ. Bấm để thử lại.',
+        };
+      }
+      return {
+        label: 'Thử kết xuất lại',
+        disabled: false,
+        isLoading: false,
+        actionType: 'TRIGGER',
+        variant: 'primary',
+        icon: 'SPARKLES',
+        helperMessage:
+          lifecycleState.lastError?.message ||
+          'Có lỗi xảy ra khi kết xuất hoặc đồng bộ tài nguyên. Bấm để thử lại.',
+      };
+    case 'IDLE':
+    default:
+      if (freshness.status === 'FRESH') {
+        return {
+          label: 'Đã Đồng Bộ Kết Xuất',
+          disabled: true,
+          isLoading: false,
+          actionType: 'NONE',
+          variant: 'outline',
+          icon: 'CHECK',
+        };
+      }
+      if (freshness.status === 'UNKNOWN') {
+        return {
+          label: 'Chưa Xác Định Phiên Bản',
+          disabled: true,
+          isLoading: false,
+          actionType: 'NONE',
+          variant: 'outline',
+          icon: 'ALERT',
+        };
+      }
+      return {
+        label: 'Kết xuất lại ảnh',
+        disabled: false,
+        isLoading: false,
+        actionType: 'TRIGGER',
+        variant: 'primary',
+        icon: 'SPARKLES',
+      };
+  }
 }
 
 export type ConflictClassification =

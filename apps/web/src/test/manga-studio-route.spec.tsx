@@ -143,6 +143,14 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     triggerMaterialization: vi.fn(),
     materializationStatus: null,
     isMaterializing: false,
+    materializationLifecycle: {
+      phase: 'IDLE',
+      targetRevision: null,
+      requestStatus: null,
+      pollAttempts: 0,
+      lastError: null,
+    },
+    recheckMaterialization: vi.fn().mockResolvedValue(true),
     error: null,
     fatalError: null,
     operationError: null,
@@ -418,13 +426,20 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       ...defaultMockReturn,
       freshness: { isFresh: false, needsMaterialize: true, status: 'STALE' },
       isMaterializing: true,
+      materializationLifecycle: {
+        phase: 'TRACKING',
+        targetRevision: 2,
+        requestStatus: 'ENQUEUED',
+        pollAttempts: 1,
+        lastError: null,
+      },
     });
 
     await act(async () => {
       render(<MangaStudioJobPage params={mockParams} />);
     });
 
-    const btn = await screen.findByText('Đang Kết Xuất...');
+    const btn = await screen.findByTestId('btn-materializing');
     expect(btn).toBeDefined();
     expect(btn.closest('button')?.disabled).toBe(true);
   });

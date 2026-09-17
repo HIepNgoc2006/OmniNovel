@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button';
 import { MangaStudioCanvas } from '@/components/studio/manga-studio-canvas';
 import { MangaSegmentEditor } from '@/components/studio/manga-segment-editor';
 import { sortSegmentsDeterministic } from '@/lib/studio/manga-segment-editor-policy';
+import { getMaterializationCtaProps } from '@/lib/studio/manga-studio-policy';
 import {
   ChevronLeft,
   RefreshCw,
@@ -99,6 +100,14 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     }
     return false;
   }, [currentSegmentIndex, activeSegments]);
+
+  const ctaProps = React.useMemo(() => {
+    return getMaterializationCtaProps({
+      lifecycleState: studio.materializationLifecycle,
+      freshness: studio.freshness,
+      canMaterialize: studio.workspaceMode?.canMaterialize ?? false,
+    });
+  }, [studio.materializationLifecycle, studio.freshness, studio.workspaceMode]);
 
   // URL SSoT Synchronization
   React.useEffect(() => {
@@ -660,41 +669,123 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             </span>
           </div>
 
-          {studio.freshness.status === 'STALE' && (
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={!studio.workspaceMode?.canMaterialize || studio.isMaterializing}
-              onClick={() => studio.triggerMaterialization()}
-            >
-              <Sparkles className={`w-3.5 h-3.5 mr-1 ${studio.isMaterializing ? 'animate-spin' : ''}`} />
-              {studio.isMaterializing ? 'Đang Kết Xuất...' : 'Tạo Kết Xuất (Re-render)'}
-            </Button>
-          )}
-          {studio.freshness.status === 'FRESH' && (
-            <Button variant="outline" size="sm" disabled>
-              <CheckCircle2 className="w-3.5 h-3.5 mr-1 text-emerald-400" />
-              Đã Đồng Bộ Kết Xuất
-            </Button>
-          )}
-          {studio.freshness.status === 'UNKNOWN' && (
-            <Button variant="outline" size="sm" disabled>
-              Chưa Xác Định Phiên Bản
-            </Button>
-          )}
-          {studio.freshness.status === 'INVARIANT_VIOLATION' && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled
-              className="text-rose-400 border-rose-800"
-            >
-              <AlertTriangle className="w-3.5 h-3.5 mr-1 text-rose-400" />
-              Phiên Bản Không Hợp Lệ
-            </Button>
-          )}
+          <Button
+            variant={ctaProps.variant}
+            size="sm"
+            disabled={ctaProps.disabled}
+            onClick={() => {
+              if (ctaProps.actionType === 'TRIGGER') {
+                void studio.triggerMaterialization();
+              } else if (ctaProps.actionType === 'RECHECK') {
+                void studio.recheckMaterialization();
+              }
+            }}
+            data-testid={
+              ctaProps.actionType === 'RECHECK'
+                ? 'btn-recheck-materialize'
+                : ctaProps.isLoading
+                ? 'btn-materializing'
+                : 'btn-trigger-materialize'
+            }
+          >
+            {ctaProps.icon === 'SPINNER' && (
+              <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+            )}
+            {ctaProps.icon === 'SPARKLES' && (
+              <Sparkles className="w-3.5 h-3.5 mr-1.5" />
+            )}
+            {ctaProps.icon === 'CHECK' && (
+              <CheckCircle2 className="w-3.5 h-3.5 mr-1.5 text-emerald-400" />
+            )}
+            {ctaProps.icon === 'REFRESH' && (
+              <RefreshCw className="w-3.5 h-3.5 mr-1.5" />
+            )}
+            {ctaProps.icon === 'ALERT' && (
+              <AlertTriangle className="w-3.5 h-3.5 mr-1.5 text-rose-400" />
+            )}
+            {ctaProps.label}
+          </Button>
         </div>
       </div>
+
+      {/* Materialization Superseded Banner (RED 5) */}
+      {studio.materializationLifecycle.phase === 'SUPERSEDED' && (
+        <div
+          data-testid="banner-materialization-superseded"
+          className="p-3 bg-indigo-950/40 border border-indigo-500/50 rounded-2xl flex items-center justify-between gap-3 text-xs text-indigo-200"
+        >
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-4 h-4 text-indigo-400 shrink-0" />
+            <span>
+              Bản dịch đã có chỉnh sửa mới (v{studio.jobDetail?.job.reviewRevision}) trong khi đang kết xuất (v{studio.materializationLifecycle.targetRevision}). Bấm để kết xuất lại phiên bản mới nhất.
+            </span>
+          </div>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => studio.triggerMaterialization()}
+            className="shrink-0 h-7 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-semibold"
+          >
+            Kết xuất lại
+          </Button>
+        </div>
+      )}
+
+      {/* Materialization Unconfirmed Banner (RED 5) */}
+      {studio.materializationLifecycle.phase === 'UNCONFIRMED' && (
+        <div
+          data-testid="banner-materialization-unconfirmed"
+          className="p-3 bg-amber-950/40 border border-amber-500/50 rounded-2xl flex items-center justify-between gap-3 text-xs text-amber-200"
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
+            <span>
+              Chưa thể xác nhận kết xuất từ máy chủ sau thời gian chờ. Bấm "Kiểm tra lại trạng thái kết xuất" để tiếp tục kiểm tra.
+            </span>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => studio.recheckMaterialization()}
+            className="shrink-0 h-7 text-xs border-amber-500/50 text-amber-300 hover:text-white hover:bg-amber-500/20 font-semibold"
+          >
+            Kiểm tra lại
+          </Button>
+        </div>
+      )}
+
+      {/* Materialization Error Banner (RED 5) */}
+      {studio.materializationLifecycle.phase === 'ERROR' && (
+        <div
+          data-testid="banner-materialization-error"
+          className="p-3 bg-rose-950/40 border border-rose-500/50 rounded-2xl flex items-center justify-between gap-3 text-xs text-rose-200"
+        >
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+            <span>
+              {studio.materializationLifecycle.lastError?.message ||
+                'Có lỗi xảy ra trong quá trình kết xuất hoặc đồng bộ tài nguyên.'}
+            </span>
+          </div>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              if (
+                studio.freshness.status === 'FRESH' &&
+                studio.materializationLifecycle.targetRevision !== null
+              ) {
+                void studio.recheckMaterialization();
+              } else {
+                void studio.triggerMaterialization();
+              }
+            }}
+            className="shrink-0 h-7 text-xs bg-rose-700 hover:bg-rose-600 text-white font-semibold"
+          >
+            {studio.freshness.status === 'FRESH' ? 'Đồng bộ lại' : 'Thử lại'}
+          </Button>
+        </div>
+      )}
 
       {/* Invariant Violation Alert Banner */}
       {studio.freshness.status === 'INVARIANT_VIOLATION' && (

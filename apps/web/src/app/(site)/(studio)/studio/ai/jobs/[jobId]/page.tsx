@@ -15,6 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { MangaStudioCanvas } from '@/components/studio/manga-studio-canvas';
 import { MangaSegmentEditor } from '@/components/studio/manga-segment-editor';
+import { sortSegmentsDeterministic } from '@/lib/studio/manga-segment-editor-policy';
 import {
   ChevronLeft,
   RefreshCw,
@@ -69,33 +70,35 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     );
   }, [studio.previewWindow, studio.currentPage]);
 
+  // Active segments slice for Translation Editor & Traversal (Consistent SSoT with hook)
+  const activeSegments = React.useMemo(() => {
+    const raw = studio.pageSegments.length > 0 ? studio.pageSegments : studio.segments;
+    return sortSegmentsDeterministic(raw);
+  }, [studio.pageSegments, studio.segments]);
+
   // Selected Segment SSoT for Translation Editor (RED 3 & RED 4)
   const selectedSegment = React.useMemo(() => {
     if (!studio.selectedSegmentId) return null;
-    return (
-      studio.pageSegments.find((s) => s.id === studio.selectedSegmentId) ??
-      studio.segments.find((s) => s.id === studio.selectedSegmentId) ??
-      null
-    );
-  }, [studio.selectedSegmentId, studio.pageSegments, studio.segments]);
+    return activeSegments.find((s) => s.id === studio.selectedSegmentId) ?? null;
+  }, [studio.selectedSegmentId, activeSegments]);
 
   const currentSegmentIndex = React.useMemo(() => {
     if (!selectedSegment) return -1;
-    return studio.segments.findIndex((s) => s.id === selectedSegment.id);
-  }, [selectedSegment, studio.segments]);
+    return activeSegments.findIndex((s) => s.id === selectedSegment.id);
+  }, [selectedSegment, activeSegments]);
 
   const hasPrevSegment = currentSegmentIndex > 0;
   const hasNextSegment =
-    currentSegmentIndex >= 0 && currentSegmentIndex < studio.segments.length - 1;
+    currentSegmentIndex >= 0 && currentSegmentIndex < activeSegments.length - 1;
   const hasNextUnverified = React.useMemo(() => {
     if (currentSegmentIndex < 0) {
-      return studio.segments.some((s) => !s.isHumanVerified);
+      return activeSegments.some((s) => !s.isHumanVerified);
     }
-    for (let i = currentSegmentIndex + 1; i < studio.segments.length; i++) {
-      if (!studio.segments[i].isHumanVerified) return true;
+    for (let i = currentSegmentIndex + 1; i < activeSegments.length; i++) {
+      if (!activeSegments[i].isHumanVerified) return true;
     }
     return false;
-  }, [currentSegmentIndex, studio.segments]);
+  }, [currentSegmentIndex, activeSegments]);
 
   // URL SSoT Synchronization
   React.useEffect(() => {

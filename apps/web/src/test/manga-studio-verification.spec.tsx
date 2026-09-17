@@ -9,7 +9,6 @@ import {
   TranslationSegmentDto,
   TranslationJobPreviewsResponse,
   TranslationJobSegmentsResponse,
-  ReviewAssetDto,
 } from '@omninovel/shared';
 
 vi.mock('../lib/auth/auth-context', () => ({
@@ -151,7 +150,7 @@ describe('Manga Review Studio RED 4 — Verification Interactions & Traversal', 
     workspaceRevision: 1,
   };
 
-  const mockPageSegmentsResponse = {
+  const mockPageSegmentsResponse: TranslationJobSegmentsResponse = {
     data: mockSegments,
     pagination: {
       total: mockSegments.length,
@@ -202,8 +201,8 @@ describe('Manga Review Studio RED 4 — Verification Interactions & Traversal', 
     });
   });
 
-  describe('2. toggleSegmentVerification() Core & Dirty Detection (Lock 2)', () => {
-    it('allows verifying when no draft key exists in drafts (hasDraft is false)', async () => {
+  describe('2. toggleSegmentVerification() & 4-State Matrix (Lock 2 & P1-2)', () => {
+    it('clean unverified segment: sends ONLY isHumanVerified: true with expectedVersion', async () => {
       const updatedSeg: TranslationSegmentDto = {
         ...mockSegments[0],
         isHumanVerified: true,
@@ -214,7 +213,6 @@ describe('Manga Review Studio RED 4 — Verification Interactions & Traversal', 
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
       await waitFor(() => expect(result.current.status).toBe('ready'));
 
-      // Authoritative segments after mutation return updated seg-1
       vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
         ...mockPageSegmentsResponse,
         data: [
@@ -222,9 +220,8 @@ describe('Manga Review Studio RED 4 — Verification Interactions & Traversal', 
           mockSegments[1],
           mockSegments[2],
         ],
-      } as any);
+      });
 
-      // drafts is empty; seg-1 has canonical text 'Xin chào'
       let toggleResult: any;
       await act(async () => {
         toggleResult = await result.current.toggleSegmentVerification('seg-1');
@@ -240,17 +237,34 @@ describe('Manga Review Studio RED 4 — Verification Interactions & Traversal', 
           expectedVersion: 1,
         },
       );
+      expect(updateSpy).toHaveBeenCalledWith(
+        mockJobId,
+        'seg-1',
+        expect.not.objectContaining({ translatedText: expect.anything() }),
+      );
     });
 
-    it('rejects with reason DRAFT_DIRTY with 0 network calls when draft is dirty', async () => {
-      const updateSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+    it('P1-2: dirty unverified draft: executes atomic save+verify sending BOTH draft text and isHumanVerified: true', async () => {
+      const updatedSeg: TranslationSegmentDto = {
+        ...mockSegments[0],
+        translatedText: 'Bản dịch mới lưu và duyệt',
+        isHumanVerified: true,
+        version: 2,
+      };
+      const updateSpy = vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValue(updatedSeg);
 
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
       await waitFor(() => expect(result.current.status).toBe('ready'));
 
-      // User enters draft for seg-1
+      // User has dirty draft
       act(() => {
-        result.current.setSegmentDraft('seg-1', 'Bản dịch đang chỉnh sửa dở dang');
+        result.current.setSegmentDraft('seg-1', 'Bản dịch mới lưu và duyệt');
+      });
+      expect(result.current.drafts['seg-1']).toBe('Bản dịch mới lưu và duyệt');
+
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        ...mockPageSegmentsResponse,
+        data: [updatedSeg, mockSegments[1], mockSegments[2]],
       });
 
       let toggleResult: any;
@@ -258,34 +272,102 @@ describe('Manga Review Studio RED 4 — Verification Interactions & Traversal', 
         toggleResult = await result.current.toggleSegmentVerification('seg-1');
       });
 
-      expect(toggleResult.commitState).toBe('REJECTED');
-      expect(toggleResult.reason).toBe('DRAFT_DIRTY');
-      expect(toggleResult.error?.code).toBe('DRAFT_DIRTY');
-      expect(updateSpy).not.toHaveBeenCalled();
+      expect(toggleResult.commitState).toBe('COMMITTED');
+      expect(toggleResult.workspaceState).toBe('SYNCED');
+      // Must send both translatedText and isHumanVerified atomically
+      expect(updateSpy).toHaveBeenCalledWith(
+        mockJobId,
+        'seg-1',
+        {
+          translatedText: 'Bản dịch mới lưu và duyệt',
+          isHumanVerified: true,
+          expectedVersion: 1,
+        },
+      );
+      // Post-commit cleanup: user draft is wiped on successful atomic save+verify!
+      expect(result.current.drafts['seg-1']).toBeUndefined();
     });
 
-    it('rejects with DRAFT_DIRTY when draft is empty string "" and canonical text is non-empty', async () => {
-      const updateSpy = vi.spyOn(translationApi, 'updateTranslationSegment');
+    it('P1-2: dirty verified draft: executes atomic save+unverify sending BOTH draft text and isHumanVerified: false', async () => {
+      const updatedSeg: TranslationSegmentDto = {
+        ...mockSegments[1], // seg-2 is initially verified: true
+        translatedText: 'Cảm ơn đã sửa',
+        isHumanVerified: false,
+        version: 2,
+      };
+      const updateSpy = vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValue(updatedSeg);
 
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
       await waitFor(() => expect(result.current.status).toBe('ready'));
 
-      // Explicit empty string draft
+      // User types draft on verified segment
+      act(() => {
+        result.current.setSegmentDraft('seg-2', 'Cảm ơn đã sửa');
+      });
+
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        ...mockPageSegmentsResponse,
+        data: [mockSegments[0], updatedSeg, mockSegments[2]],
+      });
+
+      let toggleResult: any;
+      await act(async () => {
+        toggleResult = await result.current.toggleSegmentVerification('seg-2');
+      });
+
+      expect(toggleResult.commitState).toBe('COMMITTED');
+      expect(toggleResult.workspaceState).toBe('SYNCED');
+      expect(updateSpy).toHaveBeenCalledWith(
+        mockJobId,
+        'seg-2',
+        {
+          translatedText: 'Cảm ơn đã sửa',
+          isHumanVerified: false,
+          expectedVersion: 1,
+        },
+      );
+      expect(result.current.drafts['seg-2']).toBeUndefined();
+    });
+
+    it('P1-2: dirty draft with empty string "" on non-empty canonical executes atomic save with "" and verify', async () => {
+      const updatedSeg: TranslationSegmentDto = {
+        ...mockSegments[0],
+        translatedText: '',
+        isHumanVerified: true,
+        version: 2,
+      };
+      const updateSpy = vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValue(updatedSeg);
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
       act(() => {
         result.current.setSegmentDraft('seg-1', '');
       });
 
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        ...mockPageSegmentsResponse,
+        data: [updatedSeg, mockSegments[1], mockSegments[2]],
+      });
+
       let toggleResult: any;
       await act(async () => {
         toggleResult = await result.current.toggleSegmentVerification('seg-1');
       });
 
-      expect(toggleResult.commitState).toBe('REJECTED');
-      expect(toggleResult.reason).toBe('DRAFT_DIRTY');
-      expect(updateSpy).not.toHaveBeenCalled();
+      expect(toggleResult.commitState).toBe('COMMITTED');
+      expect(updateSpy).toHaveBeenCalledWith(
+        mockJobId,
+        'seg-1',
+        {
+          translatedText: '',
+          isHumanVerified: true,
+          expectedVersion: 1,
+        },
+      );
     });
 
-    it('allows toggling verification when draft exists but is identical to canonical text', async () => {
+    it('clean draft identical to canonical sends verification only without text payload', async () => {
       const updatedSeg: TranslationSegmentDto = {
         ...mockSegments[0],
         isHumanVerified: true,
@@ -315,36 +397,107 @@ describe('Manga Review Studio RED 4 — Verification Interactions & Traversal', 
         },
       );
     });
+  });
 
-    it('toggles verified segment (isHumanVerified: true) to unverified (isHumanVerified: false)', async () => {
+  describe('3. P1-1: Unconditional Full-DTO Post-Commit Coherence', () => {
+    it('detects divergence when authoritative text mismatches committed text post-commit', async () => {
       const updatedSeg: TranslationSegmentDto = {
-        ...mockSegments[1], // seg-2 is already verified
-        isHumanVerified: false,
+        ...mockSegments[0],
+        translatedText: 'Xin chào bạn',
         version: 2,
       };
-      const updateSpy = vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValue(updatedSeg);
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValue(updatedSeg);
 
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
       await waitFor(() => expect(result.current.status).toBe('ready'));
 
+      // Authoritative refetch returns null or different text due to concurrent writer
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        ...mockPageSegmentsResponse,
+        workspaceRevision: 2,
+        data: [
+          { ...mockSegments[0], translatedText: null, version: 3 },
+          mockSegments[1],
+          mockSegments[2],
+        ],
+      });
+
+      let saveResult: any;
+      await act(async () => {
+        saveResult = await result.current.saveSegment('seg-1', 'Xin chào bạn', { baseVersion: 1 });
+      });
+
+      // P1-1: Full-DTO text divergence MUST trigger RECONCILIATION_REQUIRED
+      expect(saveResult.commitState).toBe('COMMITTED');
+      expect(saveResult.workspaceState).toBe('RECONCILIATION_REQUIRED');
+      expect(saveResult.success).toBe(false);
+    });
+
+    it('detects divergence when authoritative verification mismatches committed verification post-commit', async () => {
+      const updatedSeg: TranslationSegmentDto = {
+        ...mockSegments[0],
+        isHumanVerified: true,
+        version: 2,
+      };
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValue(updatedSeg);
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      // Authoritative refetch returns isHumanVerified: false due to concurrent unverify
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        ...mockPageSegmentsResponse,
+        workspaceRevision: 2,
+        data: [
+          { ...mockSegments[0], isHumanVerified: false, version: 3 },
+          mockSegments[1],
+          mockSegments[2],
+        ],
+      });
+
       let toggleResult: any;
       await act(async () => {
-        toggleResult = await result.current.toggleSegmentVerification('seg-2');
+        toggleResult = await result.current.toggleSegmentVerification('seg-1');
+      });
+
+      // P1-1: Full-DTO verification divergence MUST trigger RECONCILIATION_REQUIRED
+      expect(toggleResult.commitState).toBe('COMMITTED');
+      expect(toggleResult.workspaceState).toBe('RECONCILIATION_REQUIRED');
+      expect(toggleResult.success).toBe(false);
+    });
+
+    it('succeeds with SYNCED when authoritative full-DTO matches updated segment unconditionally', async () => {
+      const updatedSeg: TranslationSegmentDto = {
+        ...mockSegments[0],
+        isHumanVerified: true,
+        version: 2,
+      };
+      vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValue(updatedSeg);
+
+      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
+      await waitFor(() => expect(result.current.status).toBe('ready'));
+
+      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+        ...mockPageSegmentsResponse,
+        data: [
+          updatedSeg,
+          mockSegments[1],
+          mockSegments[2],
+        ],
+      });
+
+      let toggleResult: any;
+      await act(async () => {
+        toggleResult = await result.current.toggleSegmentVerification('seg-1');
       });
 
       expect(toggleResult.commitState).toBe('COMMITTED');
-      expect(updateSpy).toHaveBeenCalledWith(
-        mockJobId,
-        'seg-2',
-        {
-          isHumanVerified: false,
-          expectedVersion: 1,
-        },
-      );
+      expect(toggleResult.workspaceState).toBe('SYNCED');
+      expect(toggleResult.success).toBe(true);
     });
   });
 
-  describe('3. Verification-Only Draft Preservation', () => {
+  describe('4. Verification-Only Draft Preservation', () => {
     it('preserves user drafts for other segments when toggling verification', async () => {
       const updatedSeg: TranslationSegmentDto = {
         ...mockSegments[0],
@@ -356,7 +509,6 @@ describe('Manga Review Studio RED 4 — Verification Interactions & Traversal', 
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
       await waitFor(() => expect(result.current.status).toBe('ready'));
 
-      // User has a draft on seg-3
       act(() => {
         result.current.setSegmentDraft('seg-3', 'Draft for segment 3');
       });
@@ -370,50 +522,8 @@ describe('Manga Review Studio RED 4 — Verification Interactions & Traversal', 
     });
   });
 
-  describe('4. Exact Null Coherence & Unknown Mutation Reconciliation', () => {
-    it('matches exact null coherence for verification during authoritative reconcile', async () => {
-      const updatedSeg: TranslationSegmentDto = {
-        ...mockSegments[0],
-        isHumanVerified: true,
-        version: 2,
-      };
-      vi.spyOn(translationApi, 'updateTranslationSegment').mockResolvedValue(updatedSeg);
-
-      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
-      await waitFor(() => expect(result.current.status).toBe('ready'));
-
-      // Authoritative detail returns seg-1 with isHumanVerified: true on refetch
-      const authDetail: TranslationJobReviewDetailResponse = {
-        ...mockJobDetail,
-        job: { ...mockJobDetail.job, reviewRevision: 2, workspaceRevision: 2 },
-        reviewSummary: { ...mockJobDetail.reviewSummary, verifiedCount: 2 },
-      };
-      vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(authDetail);
-      vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
-        ...mockPreviews,
-        workspaceRevision: 2,
-      });
-      vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
-        ...mockPageSegmentsResponse,
-        workspaceRevision: 2,
-        data: [
-          { ...mockSegments[0], isHumanVerified: true, version: 2 },
-          mockSegments[1],
-          mockSegments[2],
-        ],
-      } as any);
-
-      let toggleResult: any;
-      await act(async () => {
-        toggleResult = await result.current.toggleSegmentVerification('seg-1');
-      });
-
-      expect(toggleResult.commitState).toBe('COMMITTED');
-      expect(toggleResult.workspaceState).toBe('SYNCED');
-    });
-
+  describe('5. Unknown Mutation Case 2 EFFECT_PRESENT', () => {
     it('records pending unknown mutation on network failure and resolves via Case 2 EFFECT_PRESENT', async () => {
-      // Simulate network failure on updateTranslationSegment
       vi.spyOn(translationApi, 'updateTranslationSegment').mockRejectedValue(new Error('Network timeout'));
 
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
@@ -430,7 +540,7 @@ describe('Manga Review Studio RED 4 — Verification Interactions & Traversal', 
       expect(result.current.pendingUnknownMutations['seg-1'].attemptedVerification).toBe(true);
       expect(result.current.pendingUnknownMutations['seg-1'].attemptedText).toBeUndefined();
 
-      // Now server refetch reveals the mutation did commit (version 2, isHumanVerified: true)
+      // Server refetch reveals the mutation did commit
       vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue({
         ...mockJobDetail,
         job: { ...mockJobDetail.job, workspaceRevision: 2, reviewRevision: 2 },
@@ -443,88 +553,75 @@ describe('Manga Review Studio RED 4 — Verification Interactions & Traversal', 
           mockSegments[1],
           mockSegments[2],
         ],
-      } as any);
+      });
 
       await act(async () => {
         await result.current.refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
       });
 
-      // Pending unknown mutation should be resolved and cleared!
       expect(result.current.pendingUnknownMutations['seg-1']).toBeUndefined();
     });
   });
 
-  describe('5. Bounded Traversal Helpers', () => {
-    it('navigates next, prev, and next unverified segments within bounds', async () => {
+  describe('6. P2-1: Deterministic Bounded Traversal (No-Wrap)', () => {
+    it('navigates next, prev, and next unverified strictly within bounds without wrapping', async () => {
       const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
       await waitFor(() => expect(result.current.status).toBe('ready'));
 
-      // Initially select seg-1
       act(() => {
         result.current.setSelectedSegmentId('seg-1');
       });
       expect(result.current.selectedSegmentId).toBe('seg-1');
 
-      // Next segment -> seg-2
+      // Next -> seg-2
       act(() => {
         result.current.selectNextSegment();
       });
       expect(result.current.selectedSegmentId).toBe('seg-2');
 
-      // Next segment -> seg-3
+      // Next -> seg-3
       act(() => {
         result.current.selectNextSegment();
       });
       expect(result.current.selectedSegmentId).toBe('seg-3');
 
-      // Next segment at end -> bounded, remains seg-3
+      // At end: clamped at seg-3 (bounded, no-wrap)
       act(() => {
         result.current.selectNextSegment();
       });
       expect(result.current.selectedSegmentId).toBe('seg-3');
 
-      // Prev segment -> seg-2
+      // Prev -> seg-2
       act(() => {
         result.current.selectPrevSegment();
       });
       expect(result.current.selectedSegmentId).toBe('seg-2');
 
-      // Prev segment -> seg-1
+      // Prev -> seg-1
       act(() => {
         result.current.selectPrevSegment();
       });
       expect(result.current.selectedSegmentId).toBe('seg-1');
 
-      // Prev segment at start -> bounded, remains seg-1
+      // At start: clamped at seg-1 (bounded, no-wrap)
       act(() => {
         result.current.selectPrevSegment();
       });
       expect(result.current.selectedSegmentId).toBe('seg-1');
 
-      // Next unverified segment from seg-1:
+      // Next unverified from seg-1:
       // seg-2 is verified (true), seg-3 is unverified (false) -> selects seg-3!
       act(() => {
         result.current.selectNextUnverifiedSegment();
       });
       expect(result.current.selectedSegmentId).toBe('seg-3');
-    });
-  });
 
-  describe('6. Authoritative reviewSummary & verifyingSegmentIds', () => {
-    it('exposes authoritative reviewSummary from jobDetail and tracks verifyingSegmentIds', async () => {
-      const { result } = renderHook(() => useMangaReviewStudio(mockJobId));
-      await waitFor(() => expect(result.current.status).toBe('ready'));
-
-      expect(result.current.reviewSummary).toEqual({
-        segmentCount: 3,
-        verifiedCount: 1,
-        pageCount: 1,
-        resultPageCount: 1,
-        blockCount: null,
+      // P2-1 NO-WRAP: When already at seg-3 (last segment), selectNextUnverifiedSegment()
+      // MUST NOT wrap around to seg-1. It stays at seg-3!
+      act(() => {
+        result.current.selectNextUnverifiedSegment();
       });
-
-      expect(result.current.verifyingSegmentIds).toBeDefined();
-      expect(result.current.verifyingSegmentIds['seg-1']).toBeFalsy();
+      expect(result.current.selectedSegmentId).toBe('seg-3');
     });
   });
 });

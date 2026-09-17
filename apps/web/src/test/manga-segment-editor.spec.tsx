@@ -1178,8 +1178,8 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
         };
 
         expect(canToggleVerification(baseParams)).toBe(true);
-        // Lock 2: dirty draft cannot be verified directly
-        expect(canToggleVerification({ ...baseParams, isDirty: true })).toBe(false);
+        // Dirty draft can still be verified (atomic save & verify)
+        expect(canToggleVerification({ ...baseParams, isDirty: true })).toBe(true);
         // Locked if saving or verifying
         expect(canToggleVerification({ ...baseParams, isSaving: true })).toBe(false);
         expect(canToggleVerification({ ...baseParams, isVerifying: true })).toBe(false);
@@ -1206,14 +1206,15 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
 
         expect(resolveActionMatrixState(base)).toBe('UNVERIFIED_CLEAN');
         expect(resolveActionMatrixState({ ...base, isHumanVerified: true })).toBe('VERIFIED_CLEAN');
-        expect(resolveActionMatrixState({ ...base, isDirty: true })).toBe('DRAFT_DIRTY');
+        expect(resolveActionMatrixState({ ...base, isDirty: true })).toBe('UNVERIFIED_DIRTY');
+        expect(resolveActionMatrixState({ ...base, isDirty: true, isHumanVerified: true })).toBe('VERIFIED_DIRTY');
         expect(resolveActionMatrixState({ ...base, canEdit: false })).toBe('MUTATION_BLOCKED');
         expect(resolveActionMatrixState({ ...base, isSaving: true })).toBe('MUTATION_BLOCKED');
         expect(resolveActionMatrixState({ ...base, isVerifying: true })).toBe('MUTATION_BLOCKED');
         expect(resolveActionMatrixState({ ...base, hasConflict: true })).toBe('MUTATION_BLOCKED');
       });
 
-      it('bounded traversal helpers clamp correctly to bounds', () => {
+      it('bounded traversal helpers clamp correctly to bounds without auto-wrap', () => {
         // Next: clamped to totalSegments - 1
         expect(findNextSegmentIndex(0, 5)).toBe(1);
         expect(findNextSegmentIndex(4, 5)).toBe(4);
@@ -1232,8 +1233,9 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
         ];
         expect(findNextUnverifiedIndex(0, segments)).toBe(2);
         expect(findNextUnverifiedIndex(1, segments)).toBe(2);
-        // When already at or past index 2: loops around if not found ahead
+        // When already at or past index 2: does NOT wrap around, clamps to current index
         expect(findNextUnverifiedIndex(2, segments)).toBe(2);
+        expect(findNextUnverifiedIndex(3, segments)).toBe(3);
       });
 
       it('IME composition and editable target guards work as expected', () => {
@@ -1283,7 +1285,7 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
 
         expect(screen.getByTestId('badge-unverified')).toBeInTheDocument();
         expect(screen.getByText('Chưa xác minh')).toBeInTheDocument();
-        expect(screen.getByTestId('btn-toggle-verify')).toHaveTextContent('Xác minh');
+        expect(screen.getByTestId('btn-toggle-verify')).toHaveTextContent('Duyệt');
 
         rerender(
           <MangaSegmentEditor
@@ -1296,10 +1298,11 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
 
         expect(screen.getByTestId('badge-verified')).toBeInTheDocument();
         expect(screen.getByText('Đã xác minh')).toBeInTheDocument();
-        expect(screen.getByTestId('btn-toggle-verify')).toHaveTextContent('Bỏ xác minh');
+        expect(screen.getByTestId('btn-toggle-verify')).toHaveTextContent('Bỏ duyệt');
       });
 
-      it('disables btn-toggle-verify when draft is dirty (Lock 2 enforcement in UI)', () => {
+      it('renders "Lưu & Duyệt" and enables btn-toggle-verify when draft is dirty on unverified segment', () => {
+        const toggleSpy = vi.fn();
         render(
           <MangaSegmentEditor
             segment={mockSegment}
@@ -1307,11 +1310,31 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
             onDraftChange={vi.fn()}
             onDiscardDraft={vi.fn()}
             onSave={vi.fn()}
+            onToggleVerification={toggleSpy}
           />,
         );
 
         const verifyBtn = screen.getByTestId('btn-toggle-verify');
-        expect(verifyBtn).toBeDisabled();
+        expect(verifyBtn).not.toBeDisabled();
+        expect(verifyBtn).toHaveTextContent('Lưu & Duyệt');
+        fireEvent.click(verifyBtn);
+        expect(toggleSpy).toHaveBeenCalledWith('seg-101');
+      });
+
+      it('renders "Lưu & Bỏ duyệt" when draft is dirty on verified segment', () => {
+        render(
+          <MangaSegmentEditor
+            segment={{ ...mockSegment, isHumanVerified: true }}
+            draftText="Bản nháp đã sửa"
+            onDraftChange={vi.fn()}
+            onDiscardDraft={vi.fn()}
+            onSave={vi.fn()}
+          />,
+        );
+
+        const verifyBtn = screen.getByTestId('btn-toggle-verify');
+        expect(verifyBtn).not.toBeDisabled();
+        expect(verifyBtn).toHaveTextContent('Lưu & Bỏ duyệt');
       });
 
       it('calls onToggleVerification when clicking btn-toggle-verify on clean segment', () => {
@@ -1328,6 +1351,7 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
 
         const verifyBtn = screen.getByTestId('btn-toggle-verify');
         expect(verifyBtn).not.toBeDisabled();
+        expect(verifyBtn).toHaveTextContent('Duyệt');
         fireEvent.click(verifyBtn);
         expect(toggleSpy).toHaveBeenCalledWith('seg-101');
       });
@@ -1441,6 +1465,36 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
 
         fireEvent.keyDown(window, { key: 'v', altKey: true, isComposing: true });
         expect(onToggleSpy).not.toHaveBeenCalled();
+      });
+
+      it('enforces hotkey precedence in textarea: Ctrl+Shift+Enter triggers verify, Ctrl+Enter triggers save', () => {
+        const onSaveSpy = vi.fn();
+        const onToggleSpy = vi.fn();
+
+        render(
+          <MangaSegmentEditor
+            segment={mockSegment}
+            draftText="Đoạn văn dịch nháp"
+            onDraftChange={vi.fn()}
+            onDiscardDraft={vi.fn()}
+            onSave={onSaveSpy}
+            onToggleVerification={onToggleSpy}
+          />,
+        );
+
+        const textarea = screen.getByTestId('segment-translation-textarea');
+
+        // Ctrl+Shift+Enter => verify takes precedence, ordinary save must NOT fire
+        fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true, shiftKey: true });
+        expect(onToggleSpy).toHaveBeenCalledTimes(1);
+        expect(onToggleSpy).toHaveBeenCalledWith('seg-101');
+        expect(onSaveSpy).not.toHaveBeenCalled();
+
+        // Ctrl+Enter (without shift) => ordinary save fires, verify must NOT fire
+        fireEvent.keyDown(textarea, { key: 'Enter', ctrlKey: true, shiftKey: false });
+        expect(onSaveSpy).toHaveBeenCalledTimes(1);
+        expect(onSaveSpy).toHaveBeenCalledWith('seg-101', 'Đoạn văn dịch nháp');
+        expect(onToggleSpy).toHaveBeenCalledTimes(1); // still 1
       });
     });
   });

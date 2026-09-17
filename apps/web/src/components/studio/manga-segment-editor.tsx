@@ -8,6 +8,7 @@ import {
   canSaveSegment,
   canToggleVerification,
   resolveActionMatrixState,
+  getVerificationButtonLabel,
   isImeComposing,
   shouldHandleStudioVerificationHotkey,
   isEditableTarget,
@@ -100,7 +101,6 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
   const canVerify = Boolean(
     segment &&
       canToggleVerification({
-        isDirty: dirty,
         canEdit,
         isGateClosed,
         isSaving,
@@ -110,6 +110,18 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
         hasConflict: Boolean(conflictState),
       }),
   );
+
+  const actionMatrixState = resolveActionMatrixState({
+    isDirty: dirty,
+    isHumanVerified: segment?.isHumanVerified,
+    canEdit,
+    isGateClosed,
+    isSaving,
+    isVerifying,
+    hasPendingMutation,
+    isRetryBlocked,
+    hasConflict: Boolean(conflictState),
+  });
 
   const handleCopyRaw = useCallback(async () => {
     if (!segment?.rawText) return;
@@ -126,16 +138,31 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
     (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (isImeComposing(e)) return;
 
-      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+      // Approved Hotkey Precedence (P2-2):
+      // 1. Ctrl/Cmd + Shift + Enter: Verification path (or atomic Save & Verify if dirty)
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Enter') {
         e.preventDefault();
+        e.stopPropagation();
+        if (segment && canVerify && !isSaving && !isVerifying && !isLoadingServerVersion) {
+          void onToggleVerification?.(segment.id);
+        }
+        return;
+      }
+
+      // 2. Ctrl/Cmd + Enter: Ordinary text save ONLY (requires !e.shiftKey)
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.key === 'Enter') {
+        e.preventDefault();
+        e.stopPropagation();
         if (segment && canSave && !isSaving && !isVerifying && !isLoadingServerVersion) {
           void onSave(segment.id, currentText);
         }
         return;
       }
 
-      if (shouldHandleStudioVerificationHotkey(e)) {
+      // 3. Alt+V in textarea
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'v') {
         e.preventDefault();
+        e.stopPropagation();
         if (segment && canVerify && !isSaving && !isVerifying && !isLoadingServerVersion) {
           void onToggleVerification?.(segment.id);
         }
@@ -486,7 +513,7 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
       {/* Editor Footer: Actions & Shortcut Hints */}
       <div className="flex items-center justify-between pt-2 border-t border-slate-800/80">
         <span className="text-[11px] text-slate-500 hidden sm:inline">
-          Phím tắt: <kbd className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">Ctrl+Enter</kbd> lưu • <kbd className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">Alt+V</kbd> xác minh • <kbd className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">J/K</kbd> tới/lui • <kbd className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">U</kbd> chưa duyệt
+          Phím tắt: <kbd className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">Ctrl+Enter</kbd> lưu • <kbd className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">Ctrl+Shift+Enter</kbd> duyệt • <kbd className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">J/K</kbd> tới/lui • <kbd className="font-mono bg-slate-900 px-1.5 py-0.5 rounded border border-slate-800">U</kbd> chưa duyệt
         </span>
 
         <div className="flex items-center gap-2 ml-auto">
@@ -519,15 +546,14 @@ export const MangaSegmentEditor: React.FC<MangaSegmentEditorProps> = ({
                 <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
                 Đang xử lý...
               </>
-            ) : segment.isHumanVerified ? (
-              <>
-                <CheckCircle2 className="w-3.5 h-3.5 mr-1.5 text-emerald-400" />
-                Bỏ xác minh
-              </>
             ) : (
               <>
-                <CheckCircle2 className="w-3.5 h-3.5 mr-1.5 text-slate-400" />
-                Xác minh
+                <CheckCircle2
+                  className={`w-3.5 h-3.5 mr-1.5 ${
+                    segment.isHumanVerified ? 'text-emerald-400' : 'text-slate-400'
+                  }`}
+                />
+                {getVerificationButtonLabel(actionMatrixState)}
               </>
             )}
           </Button>

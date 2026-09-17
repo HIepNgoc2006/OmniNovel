@@ -1087,7 +1087,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
 
       const verifyBtn = screen.getByTestId('btn-toggle-verify');
       expect(verifyBtn).toBeInTheDocument();
-      expect(verifyBtn).toHaveTextContent('Xác minh');
+      expect(verifyBtn).toHaveTextContent('Duyệt');
 
       await act(async () => {
         fireEvent.click(verifyBtn);

@@ -87,13 +87,14 @@ export function formatOcrConfidence(
 // ==========================================
 
 export type SegmentVerificationState =
+  | 'MUTATION_BLOCKED'
   | 'UNVERIFIED_CLEAN'
+  | 'UNVERIFIED_DIRTY'
   | 'VERIFIED_CLEAN'
-  | 'DRAFT_DIRTY'
-  | 'MUTATION_BLOCKED';
+  | 'VERIFIED_DIRTY';
 
 export interface CanToggleVerificationParams {
-  isDirty: boolean;
+  isDirty?: boolean;
   canEdit: boolean;
   isGateClosed: boolean;
   isSaving: boolean;
@@ -105,18 +106,17 @@ export interface CanToggleVerificationParams {
 
 /**
  * Pure verification toggle evaluator:
- * Verification can be toggled ONLY if:
- * 1. User has NO unsaved dirty draft (Lock 2: cannot verify dirty draft!)
- * 2. Workspace permits editing (canEdit === true)
- * 3. Authoritative sync gate is open (!isGateClosed)
- * 4. Not currently saving (!isSaving)
- * 5. Not currently verifying (!isVerifying)
- * 6. No pending unknown mutation (!hasPendingMutation)
- * 7. Not retry-blocked / orphan (!isRetryBlocked)
- * 8. No unresolved conflict state (!hasConflict)
+ * Verification can be toggled if:
+ * 1. Workspace permits editing (canEdit === true)
+ * 2. Authoritative sync gate is open (!isGateClosed)
+ * 3. Not currently saving (!isSaving)
+ * 4. Not currently verifying (!isVerifying)
+ * 5. No pending unknown mutation (!hasPendingMutation)
+ * 6. Not retry-blocked / orphan (!isRetryBlocked)
+ * 7. No unresolved conflict state (!hasConflict)
+ * Note: Dirty drafts ARE permitted and execute atomic save+verify/unverify!
  */
 export function canToggleVerification({
-  isDirty,
   canEdit,
   isGateClosed,
   isSaving,
@@ -125,7 +125,6 @@ export function canToggleVerification({
   isRetryBlocked,
   hasConflict = false,
 }: CanToggleVerificationParams): boolean {
-  if (isDirty) return false;
   if (!canEdit) return false;
   if (isGateClosed) return false;
   if (isSaving) return false;
@@ -139,9 +138,10 @@ export function canToggleVerification({
 /**
  * Resolves 4-state action matrix for segment editor:
  * - 'MUTATION_BLOCKED': Editing/verification disabled by policy/gate/lock/conflict/in-flight
- * - 'DRAFT_DIRTY': User has unsaved changes -> Save enabled, Verify disabled
- * - 'VERIFIED_CLEAN': Segment is verified -> Unverify enabled, Save disabled
- * - 'UNVERIFIED_CLEAN': Segment is unverified -> Verify enabled, Save disabled
+ * - 'UNVERIFIED_CLEAN': Segment is unverified & clean -> "Duyệt"
+ * - 'UNVERIFIED_DIRTY': Segment is unverified & dirty -> "Lưu & Duyệt"
+ * - 'VERIFIED_CLEAN': Segment is verified & clean -> "Bỏ duyệt"
+ * - 'VERIFIED_DIRTY': Segment is verified & dirty -> "Lưu & Bỏ duyệt"
  */
 export function resolveActionMatrixState({
   isDirty,
@@ -153,7 +153,7 @@ export function resolveActionMatrixState({
   hasPendingMutation,
   isRetryBlocked,
   hasConflict = false,
-}: CanToggleVerificationParams & { isHumanVerified?: boolean }): SegmentVerificationState {
+}: CanToggleVerificationParams & { isDirty: boolean; isHumanVerified?: boolean }): SegmentVerificationState {
   if (
     !canEdit ||
     isGateClosed ||
@@ -167,10 +167,29 @@ export function resolveActionMatrixState({
   }
 
   if (isDirty) {
-    return 'DRAFT_DIRTY';
+    return isHumanVerified ? 'VERIFIED_DIRTY' : 'UNVERIFIED_DIRTY';
   }
 
   return isHumanVerified ? 'VERIFIED_CLEAN' : 'UNVERIFIED_CLEAN';
+}
+
+/**
+ * Action button labels conforming to approved RED 4 4-state matrix:
+ */
+export function getVerificationButtonLabel(state: SegmentVerificationState): string {
+  switch (state) {
+    case 'UNVERIFIED_CLEAN':
+      return 'Duyệt';
+    case 'UNVERIFIED_DIRTY':
+      return 'Lưu & Duyệt';
+    case 'VERIFIED_CLEAN':
+      return 'Bỏ duyệt';
+    case 'VERIFIED_DIRTY':
+      return 'Lưu & Bỏ duyệt';
+    case 'MUTATION_BLOCKED':
+    default:
+      return 'Duyệt';
+  }
 }
 
 // ==========================================
@@ -200,26 +219,25 @@ export function isEditableTarget(target: EventTarget | null): boolean {
 }
 
 /**
- * Pure evaluator for studio verification hotkey (Alt+V, Ctrl+Shift+V, or V outside editor)
+ * Pure evaluator for studio verification hotkey (Ctrl/Cmd+Shift+Enter, Alt+V, or V outside editor)
  */
 export function shouldHandleStudioVerificationHotkey(
   e: KeyboardEvent | React.KeyboardEvent,
 ): boolean {
   if (isImeComposing(e)) return false;
 
-  const keyLower = e.key.toLowerCase();
-  if (keyLower !== 'v') return false;
-
-  // Modifier combo: Alt+V or Ctrl+Shift+V or Cmd+Shift+V
-  if (e.altKey && !e.ctrlKey && !e.metaKey) {
+  // Ctrl/Cmd + Shift + Enter
+  if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'Enter') {
     return true;
   }
-  if ((e.ctrlKey || e.metaKey) && e.shiftKey) {
+
+  // Modifier combo: Alt+V
+  if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'v') {
     return true;
   }
 
   // Single key 'v' only when NOT focused on an editable element
-  if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+  if (!e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'v') {
     return !isEditableTarget(e.target);
   }
 
@@ -229,6 +247,20 @@ export function shouldHandleStudioVerificationHotkey(
 // ==========================================
 // RED 4: Bounded Traversal Helpers
 // ==========================================
+
+/**
+ * Deterministically sorts segments by (sortOrder, id) ascending.
+ */
+export function sortSegmentsDeterministic<T extends { sortOrder: number; id: string }>(
+  segments: T[],
+): T[] {
+  return [...segments].sort((a, b) => {
+    if (a.sortOrder !== b.sortOrder) {
+      return a.sortOrder - b.sortOrder;
+    }
+    return a.id.localeCompare(b.id);
+  });
+}
 
 export function findNextSegmentIndex(currentIndex: number, totalSegments: number): number {
   if (totalSegments <= 0) return 0;
@@ -242,6 +274,11 @@ export function findPrevSegmentIndex(currentIndex: number, totalSegments: number
   return Math.max(0, currentIndex - 1);
 }
 
+/**
+ * Strictly bounded forward search for next unverified segment:
+ * Scans only forward from currentIndex + 1 to length - 1.
+ * ABSOLUTELY NO AUTO-WRAP! Clamps to currentIndex if no unverified item ahead.
+ */
 export function findNextUnverifiedIndex(
   currentIndex: number,
   segments: { isHumanVerified?: boolean }[],
@@ -249,16 +286,9 @@ export function findNextUnverifiedIndex(
   if (segments.length === 0) return 0;
   const start = Math.max(0, currentIndex);
 
-  // Search forward from next item
+  // Search forward from next item ONLY. NO AUTO-WRAP!
   for (let i = start + 1; i < segments.length; i++) {
     if (!segments[i].isHumanVerified) {
-      return i;
-    }
-  }
-
-  // Wrap around from beginning to current
-  for (let i = 0; i <= start && i < segments.length; i++) {
-    if (!segments[i].isHumanVerified && i !== currentIndex) {
       return i;
     }
   }

@@ -15,7 +15,7 @@
     - TanStack Query v5 quản lý Server State & SWR Caching.
     - WebSocket Gateway (`/ws/ai`) xác thực qua `socket.handshake.auth.token` và tự động reconnect khi token xoay vòng.
     - Gamification: Tiêu thụ endpoint chuẩn `/gamification/progression` và `UserProgressionResponse` từ `@omninovel/shared`.
-- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core + #162 Manga Clean Bases + #166 WebSocket Security + #159 Manga Previews + #157 Manga Re-render + #155 Preview API + #178 Result Page Count HOÀN TẤT; Phase 4D.5 Manga Studio #149 RED 0 Foundation MERGED tại main@153b3d1; RED 1 Page Navigator MERGED tại main@2a0d7ae; RED 2 Canvas Geometry MERGED tại main@1efd4a0; RED 3 Translation Editor / Draft / OCC ACCEPTED & MERGED tại PR #185; RED 4 Verification Interactions & Traversal ACCEPTED & MERGED tại main@d03fc8c; RED 5 Materialization Lifecycle / UX ACCEPTED & MERGED tại main@147d2ea, PR #187 - Chuẩn bị triển khai RED 6)
+- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core + #162 Manga Clean Bases + #166 WebSocket Security + #159 Manga Previews + #157 Manga Re-render + #155 Preview API + #178 Result Page Count HOÀN TẤT; Phase 4D.5 Manga Studio #149 RED 0 Foundation MERGED tại main@153b3d1; RED 1 Page Navigator MERGED tại main@2a0d7ae; RED 2 Canvas Geometry MERGED tại main@1efd4a0; RED 3 Translation Editor / Draft / OCC ACCEPTED & MERGED tại PR #185; RED 4 Verification Interactions & Traversal ACCEPTED & MERGED tại main@d03fc8c; RED 5 Materialization Lifecycle / UX ACCEPTED & MERGED tại main@147d2ea, PR #187 - RED 6 đang triển khai)
 
 ---
 

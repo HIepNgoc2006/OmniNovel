@@ -27,6 +27,7 @@ import {
   Sparkles,
   BookOpen,
   ShieldAlert,
+  XCircle,
 } from 'lucide-react';
 
 interface PageProps {
@@ -376,6 +377,31 @@ export default function MangaStudioJobPage({ params }: PageProps) {
           </p>
         </div>
         <div className="pt-2 flex justify-center gap-3">
+          {studio.canCancel && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={studio.isCanceling}
+              onClick={async () => {
+                if (
+                  window.confirm(
+                    'Bạn có chắc chắn muốn hủy job dịch này không? Thao tác này không thể hoàn tác.',
+                  )
+                ) {
+                  await studio.cancelJob();
+                }
+              }}
+              className="text-rose-400 border-rose-500/30 hover:bg-rose-950/40"
+              data-testid="btn-cancel-job-count-unavailable"
+            >
+              {studio.isCanceling ? (
+                <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+              ) : (
+                <XCircle className="w-3.5 h-3.5 mr-1.5" />
+              )}
+              {studio.isCanceling ? 'Đang hủy...' : 'Hủy Job'}
+            </Button>
+          )}
           <Button
             variant="secondary"
             size="sm"
@@ -477,7 +503,37 @@ export default function MangaStudioJobPage({ params }: PageProps) {
               Tiến Trình Dịch Tự Động Đang Xử Lý
             </h2>
           </div>
-          <Badge variant="warning">{job?.status}</Badge>
+          <div className="flex items-center gap-2">
+            {studio.subscriptionState === 'subscribed' ? (
+              <Badge
+                variant="outline"
+                className="text-emerald-400 border-emerald-500/40 bg-emerald-950/30 font-mono text-[11px] flex items-center gap-1.5"
+                data-testid="badge-ws-status-pipeline"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                WebSocket Subscribed
+              </Badge>
+            ) : studio.isSocketConnected ? (
+              <Badge
+                variant="outline"
+                className="text-amber-400 border-amber-500/40 bg-amber-950/30 font-mono text-[11px] flex items-center gap-1.5"
+                data-testid="badge-ws-status-pipeline"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                WebSocket Connected
+              </Badge>
+            ) : (
+              <Badge
+                variant="outline"
+                className="text-slate-400 border-slate-700 bg-slate-800/50 font-mono text-[11px] flex items-center gap-1.5"
+                data-testid="badge-ws-status-pipeline"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+                WebSocket Offline
+              </Badge>
+            )}
+            <Badge variant="warning">{job?.status}</Badge>
+          </div>
         </div>
 
         <div className="space-y-2">
@@ -504,14 +560,41 @@ export default function MangaStudioJobPage({ params }: PageProps) {
               Bảng Điều Khiển
             </Button>
           </Link>
-          <Button
-            variant="secondary"
-            size="sm"
-            onClick={() => studio.refetchDetail()}
-          >
-            <RefreshCw className="w-3.5 h-3.5 mr-1" />
-            Làm Mới Trạng Thái
-          </Button>
+          <div className="flex items-center gap-2">
+            {studio.canCancel && (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={studio.isCanceling}
+                onClick={async () => {
+                  if (
+                    window.confirm(
+                      'Bạn có chắc chắn muốn hủy job dịch này không? Thao tác này không thể hoàn tác.',
+                    )
+                  ) {
+                    await studio.cancelJob();
+                  }
+                }}
+                className="text-rose-400 border-rose-500/30 hover:bg-rose-950/40 hover:text-rose-300"
+                data-testid="btn-cancel-job-pipeline"
+              >
+                {studio.isCanceling ? (
+                  <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+                ) : (
+                  <XCircle className="w-3.5 h-3.5 mr-1.5" />
+                )}
+                {studio.isCanceling ? 'Đang hủy...' : 'Hủy Job'}
+              </Button>
+            )}
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => studio.refetchDetail()}
+            >
+              <RefreshCw className="w-3.5 h-3.5 mr-1" />
+              Làm Mới Trạng Thái
+            </Button>
+          </div>
         </div>
       </div>
     );
@@ -597,6 +680,34 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             </Link>
             <Badge variant="primary">Manga Review Studio</Badge>
             <Badge variant="success">READY_FOR_REVIEW</Badge>
+            {studio.subscriptionState === 'subscribed' ? (
+              <Badge
+                variant="outline"
+                className="text-emerald-400 border-emerald-500/40 bg-emerald-950/30 font-mono text-[11px] flex items-center gap-1.5"
+                data-testid="badge-ws-status"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                WebSocket Subscribed
+              </Badge>
+            ) : studio.isSocketConnected ? (
+              <Badge
+                variant="outline"
+                className="text-amber-400 border-amber-500/40 bg-amber-950/30 font-mono text-[11px] flex items-center gap-1.5"
+                data-testid="badge-ws-status"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400" />
+                WebSocket Connected
+              </Badge>
+            ) : (
+              <Badge
+                variant="outline"
+                className="text-slate-400 border-slate-700 bg-slate-800/50 font-mono text-[11px] flex items-center gap-1.5"
+                data-testid="badge-ws-status"
+              >
+                <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+                WebSocket Offline
+              </Badge>
+            )}
             {studio.freshness.status === 'FRESH' && (
               <Badge variant="success">Đã Đồng Bộ Kết Xuất</Badge>
             )}
@@ -636,6 +747,13 @@ export default function MangaStudioJobPage({ params }: PageProps) {
           </div>
         )}
 
+        {/* Cancel Error Banner if any */}
+        {studio.cancelError && (
+          <div className="w-full p-3 bg-rose-500/10 border border-rose-500/30 rounded-2xl flex items-center justify-between text-xs text-rose-300">
+            <span>{studio.cancelError.message || 'Không thể hủy job dịch.'}</span>
+          </div>
+        )}
+
         {/* Action controls & Authoritative PageCount */}
         <div className="flex items-center gap-3">
           {/* Authoritative Review Summary Badge (RED 4) */}
@@ -668,6 +786,32 @@ export default function MangaStudioJobPage({ params }: PageProps) {
                 : 'Không xác định'}
             </span>
           </div>
+
+          {studio.canCancel && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={studio.isCanceling}
+              onClick={async () => {
+                if (
+                  window.confirm(
+                    'Bạn có chắc chắn muốn hủy job dịch này không? Thao tác này không thể hoàn tác.',
+                  )
+                ) {
+                  await studio.cancelJob();
+                }
+              }}
+              className="text-rose-400 border-rose-500/30 hover:bg-rose-950/40 hover:text-rose-300"
+              data-testid="btn-cancel-job"
+            >
+              {studio.isCanceling ? (
+                <RefreshCw className="w-3.5 h-3.5 mr-1.5 animate-spin" />
+              ) : (
+                <XCircle className="w-3.5 h-3.5 mr-1.5" />
+              )}
+              {studio.isCanceling ? 'Đang hủy...' : 'Hủy Job'}
+            </Button>
+          )}
 
           <Button
             variant={ctaProps.variant}

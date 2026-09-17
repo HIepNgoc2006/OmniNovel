@@ -24,6 +24,27 @@ export function isValidWorkspaceRevision(value: unknown): value is number {
   );
 }
 
+export const SYSTEM_TERMINAL_STATES: readonly TranslationJobStatus[] = [
+  TranslationJobStatus.APPLIED,
+  TranslationJobStatus.CANCELED,
+  TranslationJobStatus.FAILED,
+  TranslationJobStatus.EXPIRED,
+] as const;
+
+export function isSystemTerminalStatus(
+  status: TranslationJobStatus | string | null | undefined,
+): boolean {
+  if (!status) return false;
+  return (SYSTEM_TERMINAL_STATES as readonly string[]).includes(status);
+}
+
+export function canCancelJob(
+  status: TranslationJobStatus | string | null | undefined,
+): boolean {
+  if (!status) return false;
+  return !isSystemTerminalStatus(status);
+}
+
 export interface WorkspaceModeResult {
   mode: WorkspaceMode;
   canPreview: boolean;

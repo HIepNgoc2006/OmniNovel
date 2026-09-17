@@ -5,6 +5,7 @@ import {
   fetchTranslationJobPreviews,
   updateTranslationSegment,
   requestJobMaterialization,
+  cancelTranslationJob,
   parseApiError,
 } from '../lib/api/translation';
 import { apiClient } from '../lib/api/client';
@@ -68,6 +69,15 @@ describe('Translation API Client & Error Parsing (#149 RED 0)', () => {
       } as any);
       await requestJobMaterialization('job-1');
       expect(spy).toHaveBeenCalledWith('/ai/jobs/job-1/materializations', {});
+    });
+
+    it('cancelTranslationJob calls POST /ai/jobs/:id/cancel (#149 RED 6)', async () => {
+      const spy = vi.spyOn(apiClient, 'post').mockResolvedValue({
+        data: { id: 'job-1', status: 'CANCELED' },
+      } as any);
+      const res = await cancelTranslationJob('job-1');
+      expect(spy).toHaveBeenCalledWith('/ai/jobs/job-1/cancel', {});
+      expect(res).toEqual({ id: 'job-1', status: 'CANCELED' });
     });
   });
 

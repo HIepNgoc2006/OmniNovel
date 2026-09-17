@@ -8,6 +8,7 @@ import {
   MaterializationRequestStatus,
   UpdateTranslationSegmentRequest,
   ReviewAssetDto,
+  ReviewSummaryDto,
   PaginatedResponse,
 } from '@omninovel/shared';
 import {
@@ -28,6 +29,13 @@ import {
   WorkspaceModeResult,
   MaterializationFreshnessResult,
 } from './manga-studio-policy';
+import {
+  isDraftDirty,
+  sortSegmentsDeterministic,
+  findNextSegmentIndex,
+  findPrevSegmentIndex,
+  findNextUnverifiedIndex,
+} from './manga-segment-editor-policy';
 import {
   computeBoundedPreviewWindow,
   clampPageNumber,
@@ -54,6 +62,11 @@ export { buildSaveSegmentResult } from './studio-types';
 export type { ParsedApiError } from '../api/translation';
 
 export interface SaveSegmentOptions {
+  baseVersion?: number;
+}
+
+export interface SegmentMutationPayload {
+  translatedText?: string;
   isHumanVerified?: boolean;
   baseVersion?: number;
 }
@@ -142,6 +155,16 @@ export interface UseMangaReviewStudioReturn {
   ) => Promise<SaveSegmentResult>;
   loadServerVersion: (segmentId: string) => Promise<boolean>;
   segmentSaveErrors: Record<string, ParsedApiError>;
+  // RED 4 Verification Interactions & Traversal
+  reviewSummary: ReviewSummaryDto | null;
+  verifyingSegmentIds: Record<string, boolean>;
+  toggleSegmentVerification: (
+    segmentId: string,
+    targetVerified?: boolean,
+  ) => Promise<SaveSegmentResult>;
+  selectNextSegment: () => void;
+  selectPrevSegment: () => void;
+  selectNextUnverifiedSegment: () => void;
   triggerMaterialization: () => Promise<MaterializationRequestResponse | null>;
   materializationStatus: MaterializationRequestStatus | null;
   isMaterializing: boolean;
@@ -223,8 +246,14 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   const [previewWindowGeneration, setPreviewWindowGeneration] = useState(0);
 
   const [pageSegments, setPageSegments] = useState<TranslationSegmentDto[]>([]);
+  const pageSegmentsRef = useRef<TranslationSegmentDto[]>([]);
+  useEffect(() => {
+    pageSegmentsRef.current = pageSegments;
+  }, [pageSegments]);
   const [pageSegmentsPagination, setPageSegmentsPagination] = useState<PageSegmentsPagination | null>(null);
-  const [pageSegmentsLoading, setPageSegmentsLoading] = useState(false);
+  const pageSegmentsLoadingState = useState(false);
+  const pageSegmentsLoading = pageSegmentsLoadingState[0];
+  const setPageSegmentsLoading = pageSegmentsLoadingState[1];
   const [pageSegmentsError, setPageSegmentsError] = useState<string | null>(null);
 
   const pageNavSeqRef = useRef(0);
@@ -241,6 +270,8 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
 
   // RED 3: User-owned Drafts & Per-segment Saving Indicators
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const draftsRef = useRef<Record<string, string>>({});
+  draftsRef.current = drafts;
   const draftRevisionRef = useRef<Record<string, number>>({});
   const [savingSegmentSeqs, setSavingSegmentSeqs] = useState<Record<string, number>>({});
   const savingSegmentIds = useMemo(() => {
@@ -250,6 +281,16 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     }
     return result;
   }, [savingSegmentSeqs]);
+
+  // RED 4: Per-segment Verification Indicators
+  const [verifyingSegmentSeqs, setVerifyingSegmentSeqs] = useState<Record<string, number>>({});
+  const verifyingSegmentIds = useMemo(() => {
+    const result: Record<string, boolean> = {};
+    for (const segId of Object.keys(verifyingSegmentSeqs)) {
+      result[segId] = true;
+    }
+    return result;
+  }, [verifyingSegmentSeqs]);
 
   const setSegmentDraft = useCallback((segmentId: string, text: string) => {
     draftRevisionRef.current[segmentId] = (draftRevisionRef.current[segmentId] || 0) + 1;
@@ -688,6 +729,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         setDrafts({});
         draftRevisionRef.current = {};
         setSavingSegmentSeqs({});
+        setVerifyingSegmentSeqs({});
         pendingVersionConflictReconciliationRef.current = {};
         replaceConflictStates({});
         replacePendingUnknownMutations({});
@@ -888,13 +930,20 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         }
 
         // Case 2: EFFECT_PRESENT (Mutation committed on server, desired effect present)
+        const textEffectPresent =
+          pending.attemptedText === undefined ||
+          serverSeg.translatedText === pending.attemptedText;
+
+        const verificationEffectPresent =
+          pending.attemptedVerification === undefined ||
+          (serverSeg.isHumanVerified ?? null) === (pending.attemptedVerification ?? null);
+
         const isEffectPresent =
           typeof serverSeg.version === 'number' &&
           typeof pending.expectedVersion === 'number' &&
           serverSeg.version > pending.expectedVersion &&
-          serverSeg.translatedText === pending.attemptedText &&
-          (typeof pending.attemptedVerification !== 'boolean' ||
-            serverSeg.isHumanVerified === pending.attemptedVerification);
+          textEffectPresent &&
+          verificationEffectPresent;
 
         if (isEffectPresent) {
           replacePendingUnknownMutations((prev) => {
@@ -2136,11 +2185,10 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     ],
   );
 
-  const saveSegment = useCallback(
+  const commitSegmentMutation = useCallback(
     async (
       segmentId: string,
-      text: string,
-      options?: SaveSegmentOptions,
+      mutation: SegmentMutationPayload,
     ): Promise<SaveSegmentResult> => {
       const currentGen = generationRef.current;
       const targetJob = activeJobIdRef.current;
@@ -2223,14 +2271,17 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         });
       }
 
-      const expectedVersion = options?.baseVersion ?? canonicalSegment.version;
+      const expectedVersion = mutation.baseVersion ?? canonicalSegment.version;
       const payload: UpdateTranslationSegmentRequest = {
-        translatedText: text,
         expectedVersion,
       };
 
-      if (typeof options?.isHumanVerified === 'boolean') {
-        payload.isHumanVerified = options.isHumanVerified;
+      if (mutation.translatedText !== undefined) {
+        payload.translatedText = mutation.translatedText;
+      }
+
+      if (mutation.isHumanVerified !== undefined) {
+        payload.isHumanVerified = mutation.isHumanVerified;
       }
 
       // Generate monotonic per-segment operationId
@@ -2239,7 +2290,13 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       const isCurrent = () =>
         segmentMutationSeqRef.current[segmentId] === mutationSeq;
 
-      setSavingSegmentSeqs((prev) => ({ ...prev, [segmentId]: mutationSeq }));
+      if (mutation.translatedText !== undefined) {
+        setSavingSegmentSeqs((prev) => ({ ...prev, [segmentId]: mutationSeq }));
+      }
+      if (mutation.isHumanVerified !== undefined) {
+        setVerifyingSegmentSeqs((prev) => ({ ...prev, [segmentId]: mutationSeq }));
+      }
+
       try {
         const updated = await updateTranslationSegment(
           targetJob,
@@ -2306,11 +2363,12 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           syncOutcome === 'SYNCED' ||
           syncOutcome === 'SUPERSEDED_BY_SUCCESSFUL_SYNC'
         ) {
-          // Exact match check: Authoritative segment must exist and match committed text and version
+          // Exact match check: Authoritative segment must exist and match committed full-DTO unconditionally (P1-1)
           const authSeg = segmentsRef.current.find((s) => s.id === segmentId);
           const isCoherent =
             Boolean(authSeg) &&
             authSeg!.translatedText === updated.translatedText &&
+            authSeg!.isHumanVerified === updated.isHumanVerified &&
             (typeof updated.version !== 'number' || authSeg!.version >= updated.version);
 
           if (!isCurrent()) {
@@ -2324,13 +2382,16 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
             );
           }
 
-          setDrafts((prev) => {
-            if (!Object.prototype.hasOwnProperty.call(prev, segmentId)) return prev;
-            const next = { ...prev };
-            delete next[segmentId];
-            return next;
-          });
-          draftRevisionRef.current[segmentId] = (draftRevisionRef.current[segmentId] || 0) + 1;
+          // Verification-only draft preservation: Only wipe draft if text was mutated!
+          if (mutation.translatedText !== undefined) {
+            setDrafts((prev) => {
+              if (!Object.prototype.hasOwnProperty.call(prev, segmentId)) return prev;
+              const next = { ...prev };
+              delete next[segmentId];
+              return next;
+            });
+            draftRevisionRef.current[segmentId] = (draftRevisionRef.current[segmentId] || 0) + 1;
+          }
           clearSegmentSaveError(segmentId);
 
           return buildSaveSegmentResult('COMMITTED', 'SYNCED');
@@ -2360,8 +2421,8 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
             });
           }
 
-          const provisionalDraftText = text;
-          const provisionalDraftVerification = options?.isHumanVerified;
+          const provisionalDraftText = mutation.translatedText;
+          const provisionalDraftVerification = mutation.isHumanVerified;
           setSegmentSaveError(segmentId, parsed);
           // Selection remains intact during ambiguous verification (P2 Transient 404)
 
@@ -2470,8 +2531,8 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
             segmentId,
             currentVersion: conflict.currentVersion,
             expectedVersion, // Canonical outbound attemptedExpectedVersion
-            draftText: text,
-            draftVerification: options?.isHumanVerified,
+            draftText: mutation.translatedText,
+            draftVerification: mutation.isHumanVerified,
             retryBlocked: false,
           };
           replaceConflictStates((prev) => ({
@@ -2543,8 +2604,8 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
             [segmentId]: {
               segmentId,
               operationId: mutationSeq,
-              attemptedText: text,
-              attemptedVerification: options?.isHumanVerified,
+              attemptedText: mutation.translatedText,
+              attemptedVerification: mutation.isHumanVerified,
               expectedVersion,
             },
           }));
@@ -2556,17 +2617,26 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           error: parsed,
         });
       } finally {
-        setSavingSegmentSeqs((prev) => {
-          if (prev[segmentId] !== mutationSeq) return prev;
-          const next = { ...prev };
-          delete next[segmentId];
-          return next;
-        });
+        if (mutation.translatedText !== undefined) {
+          setSavingSegmentSeqs((prev) => {
+            if (prev[segmentId] !== mutationSeq) return prev;
+            const next = { ...prev };
+            delete next[segmentId];
+            return next;
+          });
+        }
+        if (mutation.isHumanVerified !== undefined) {
+          setVerifyingSegmentSeqs((prev) => {
+            if (prev[segmentId] !== mutationSeq) return prev;
+            const next = { ...prev };
+            delete next[segmentId];
+            return next;
+          });
+        }
       }
     },
     [
       workspaceMode,
-      selectedSegmentId,
       isRequestCurrent,
       isAuthOrPermissionError,
       refetchDetail,
@@ -2578,8 +2648,106 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       replaceConflictStates,
       replacePendingUnknownMutations,
       replaceAuthoritativeGate,
+      setSelectedSegmentId,
     ],
   );
+
+  const saveSegment = useCallback(
+    async (
+      segmentId: string,
+      text: string,
+      options?: SaveSegmentOptions,
+    ): Promise<SaveSegmentResult> => {
+      return commitSegmentMutation(segmentId, {
+        translatedText: text,
+        baseVersion: options?.baseVersion,
+      });
+    },
+    [commitSegmentMutation],
+  );
+
+  const toggleSegmentVerification = useCallback(
+    async (
+      segmentId: string,
+      targetVerified?: boolean,
+    ): Promise<SaveSegmentResult> => {
+      const canonicalSegment = segmentsRef.current.find((s) => s.id === segmentId);
+      if (!canonicalSegment) {
+        return buildSaveSegmentResult('REJECTED', 'SYNCED', {
+          reason: 'NOT_FOUND',
+        });
+      }
+
+      // Lock 2: Dirty detection in toggleSegmentVerification() inspects draft presence first!
+      const hasDraft = Object.prototype.hasOwnProperty.call(draftsRef.current, segmentId);
+      const draftText = hasDraft ? draftsRef.current[segmentId] : undefined;
+      const isDirty = hasDraft && isDraftDirty(canonicalSegment.translatedText, draftText);
+
+      const desired =
+        typeof targetVerified === 'boolean'
+          ? targetVerified
+          : !canonicalSegment.isHumanVerified;
+
+      // P1-2: 4-State action matrix atomic dirty text + verification path
+      if (isDirty) {
+        return commitSegmentMutation(segmentId, {
+          translatedText: draftText!,
+          isHumanVerified: desired,
+          baseVersion: canonicalSegment.version,
+        });
+      }
+
+      if (canonicalSegment.isHumanVerified === desired) {
+        return buildSaveSegmentResult('COMMITTED', 'SYNCED');
+      }
+
+      return commitSegmentMutation(segmentId, {
+        isHumanVerified: desired,
+        baseVersion: canonicalSegment.version,
+      });
+    },
+    [commitSegmentMutation],
+  );
+
+  const getActiveSegmentsSlice = useCallback(() => {
+    const raw = pageSegmentsRef.current.length > 0 ? pageSegmentsRef.current : segmentsRef.current;
+    return sortSegmentsDeterministic(raw);
+  }, []);
+
+  const selectNextSegment = useCallback(() => {
+    const list = getActiveSegmentsSlice();
+    if (list.length === 0) return;
+    const currentId = selectedSegmentIdRef.current;
+    const currentIndex = list.findIndex((s) => s.id === currentId);
+    if (currentIndex === -1) {
+      setSelectedSegmentId(list[0].id);
+      return;
+    }
+    const nextIndex = findNextSegmentIndex(currentIndex, list.length);
+    setSelectedSegmentId(list[nextIndex].id);
+  }, [getActiveSegmentsSlice, setSelectedSegmentId]);
+
+  const selectPrevSegment = useCallback(() => {
+    const list = getActiveSegmentsSlice();
+    if (list.length === 0) return;
+    const currentId = selectedSegmentIdRef.current;
+    const currentIndex = list.findIndex((s) => s.id === currentId);
+    if (currentIndex === -1) {
+      setSelectedSegmentId(list[0].id);
+      return;
+    }
+    const prevIndex = findPrevSegmentIndex(currentIndex, list.length);
+    setSelectedSegmentId(list[prevIndex].id);
+  }, [getActiveSegmentsSlice, setSelectedSegmentId]);
+
+  const selectNextUnverifiedSegment = useCallback(() => {
+    const list = getActiveSegmentsSlice();
+    if (list.length === 0) return;
+    const currentId = selectedSegmentIdRef.current;
+    const currentIndex = list.findIndex((s) => s.id === currentId);
+    const nextUnverifiedIndex = findNextUnverifiedIndex(currentIndex, list);
+    setSelectedSegmentId(list[nextUnverifiedIndex].id);
+  }, [getActiveSegmentsSlice, setSelectedSegmentId]);
 
   const loadServerVersion = useCallback(
     async (segmentId: string): Promise<boolean> => {
@@ -3214,6 +3382,13 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     saveSegment,
     loadServerVersion,
     segmentSaveErrors,
+    // RED 4 Verification Interactions & Traversal
+    reviewSummary: jobDetail?.reviewSummary ?? null,
+    verifyingSegmentIds,
+    toggleSegmentVerification,
+    selectNextSegment,
+    selectPrevSegment,
+    selectNextUnverifiedSegment,
     triggerMaterialization,
     materializationStatus: activeMaterializationStatus,
     isMaterializing,

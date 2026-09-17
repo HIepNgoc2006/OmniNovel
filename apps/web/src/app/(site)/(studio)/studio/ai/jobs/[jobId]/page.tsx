@@ -15,6 +15,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { MangaStudioCanvas } from '@/components/studio/manga-studio-canvas';
 import { MangaSegmentEditor } from '@/components/studio/manga-segment-editor';
+import { sortSegmentsDeterministic } from '@/lib/studio/manga-segment-editor-policy';
 import {
   ChevronLeft,
   RefreshCw,
@@ -69,15 +70,35 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     );
   }, [studio.previewWindow, studio.currentPage]);
 
-  // Selected Segment SSoT for Translation Editor (RED 3)
+  // Active segments slice for Translation Editor & Traversal (Consistent SSoT with hook)
+  const activeSegments = React.useMemo(() => {
+    const raw = studio.pageSegments.length > 0 ? studio.pageSegments : studio.segments;
+    return sortSegmentsDeterministic(raw);
+  }, [studio.pageSegments, studio.segments]);
+
+  // Selected Segment SSoT for Translation Editor (RED 3 & RED 4)
   const selectedSegment = React.useMemo(() => {
     if (!studio.selectedSegmentId) return null;
-    return (
-      studio.pageSegments.find((s) => s.id === studio.selectedSegmentId) ??
-      studio.segments.find((s) => s.id === studio.selectedSegmentId) ??
-      null
-    );
-  }, [studio.selectedSegmentId, studio.pageSegments, studio.segments]);
+    return activeSegments.find((s) => s.id === studio.selectedSegmentId) ?? null;
+  }, [studio.selectedSegmentId, activeSegments]);
+
+  const currentSegmentIndex = React.useMemo(() => {
+    if (!selectedSegment) return -1;
+    return activeSegments.findIndex((s) => s.id === selectedSegment.id);
+  }, [selectedSegment, activeSegments]);
+
+  const hasPrevSegment = currentSegmentIndex > 0;
+  const hasNextSegment =
+    currentSegmentIndex >= 0 && currentSegmentIndex < activeSegments.length - 1;
+  const hasNextUnverified = React.useMemo(() => {
+    if (currentSegmentIndex < 0) {
+      return activeSegments.some((s) => !s.isHumanVerified);
+    }
+    for (let i = currentSegmentIndex + 1; i < activeSegments.length; i++) {
+      if (!activeSegments[i].isHumanVerified) return true;
+    }
+    return false;
+  }, [currentSegmentIndex, activeSegments]);
 
   // URL SSoT Synchronization
   React.useEffect(() => {
@@ -608,6 +629,28 @@ export default function MangaStudioJobPage({ params }: PageProps) {
 
         {/* Action controls & Authoritative PageCount */}
         <div className="flex items-center gap-3">
+          {/* Authoritative Review Summary Badge (RED 4) */}
+          {studio.reviewSummary && (
+            <div
+              data-testid="review-summary-badge"
+              className="px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-semibold flex items-center gap-1.5"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+              <span className="text-slate-400">Đã duyệt:</span>
+              <span className="text-white font-mono">
+                {studio.reviewSummary.verifiedCount}/{studio.reviewSummary.segmentCount} (
+                {studio.reviewSummary.segmentCount > 0
+                  ? Math.round(
+                      (studio.reviewSummary.verifiedCount /
+                        studio.reviewSummary.segmentCount) *
+                        100,
+                    )
+                  : 0}
+                %)
+              </span>
+            </div>
+          )}
+
           <div className="px-3 py-1.5 bg-slate-900 border border-slate-800 rounded-xl text-xs font-semibold">
             <span className="text-slate-400">Trang: </span>
             <span className="text-white">
@@ -860,16 +903,20 @@ export default function MangaStudioJobPage({ params }: PageProps) {
 
         {/* Right Panel: Translation Editor & Segments List (Col 4) */}
         <div className="lg:col-span-4 space-y-4 flex flex-col">
-          {/* Active Translation Editor Panel (RED 3) */}
+          {/* Active Translation Editor Panel (RED 3 & RED 4) */}
           <MangaSegmentEditor
             segment={selectedSegment}
             draftText={selectedSegment ? studio.drafts[selectedSegment.id] : undefined}
             canEdit={studio.workspaceMode?.canEdit ?? false}
             isGateClosed={studio.isGateClosed}
             isSaving={selectedSegment ? Boolean(studio.savingSegmentIds[selectedSegment.id]) : false}
+            isVerifying={selectedSegment ? Boolean(studio.verifyingSegmentIds[selectedSegment.id]) : false}
             hasPendingMutation={selectedSegment ? Boolean(studio.pendingUnknownMutations[selectedSegment.id]) : false}
             conflictState={selectedSegment ? studio.conflictStates[selectedSegment.id] ?? null : null}
             saveError={selectedSegment ? (studio.segmentSaveErrors[selectedSegment.id] ?? null) : null}
+            hasPrevSegment={hasPrevSegment}
+            hasNextSegment={hasNextSegment}
+            hasNextUnverified={hasNextUnverified}
             onDraftChange={studio.setSegmentDraft}
             onDiscardDraft={studio.discardSegmentDraft}
             onSave={async (segmentId, text) => {
@@ -877,6 +924,10 @@ export default function MangaStudioJobPage({ params }: PageProps) {
                 baseVersion: selectedSegment?.version,
               });
             }}
+            onToggleVerification={studio.toggleSegmentVerification}
+            onPrevSegment={studio.selectPrevSegment}
+            onNextSegment={studio.selectNextSegment}
+            onNextUnverified={studio.selectNextUnverifiedSegment}
             onClearConflict={studio.clearConflict}
             onLoadServerVersion={studio.loadServerVersion}
           />

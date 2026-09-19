@@ -9,6 +9,7 @@ import {
   MaterializationRequestResponse,
   StandardErrorResponse,
   StandardErrorMeta,
+  TranslationJobStatus,
 } from '@omninovel/shared';
 import { AxiosError } from 'axios';
 
@@ -155,3 +156,18 @@ export async function requestJobMaterialization(
   );
   return response.data;
 }
+
+/**
+ * Cancel an active TranslationJob
+ * POST /api/v1/ai/jobs/:jobId/cancel
+ */
+export async function cancelTranslationJob(
+  jobId: string,
+): Promise<{ id: string; status: TranslationJobStatus }> {
+  const response = await apiClient.post<{ id: string; status: TranslationJobStatus }>(
+    `/ai/jobs/${jobId}/cancel`,
+    {},
+  );
+  return response.data;
+}
+

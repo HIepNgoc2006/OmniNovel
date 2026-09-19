@@ -10,6 +10,7 @@ import {
   ReviewAssetDto,
   ReviewSummaryDto,
   PaginatedResponse,
+  TranslationJobStatus,
 } from '@omninovel/shared';
 import {
   fetchTranslationJobDetail,
@@ -17,9 +18,18 @@ import {
   fetchTranslationJobPreviews,
   updateTranslationSegment,
   requestJobMaterialization,
+  cancelTranslationJob,
   parseApiError,
   ParsedApiError,
 } from '../api/translation';
+import {
+  useTranslationSocket,
+  TranslationSocketSubscriptionState,
+  JobProgressEvent,
+  JobReadyEvent,
+  JobFailedEvent,
+  JobCanceledEvent,
+} from '../websocket/use-translation-socket';
 import {
   getMangaStudioWorkspaceMode,
   computeAuthoritativePageCount,
@@ -34,6 +44,9 @@ import {
   MATERIALIZATION_POLL_BACKOFF_MS,
   MAX_MATERIALIZATION_POLL_ATTEMPTS,
   evaluateMaterializationPollOutcome,
+  canCancelJob,
+  isSystemTerminalStatus,
+  SYSTEM_TERMINAL_STATES,
 } from './manga-studio-policy';
 import {
   isDraftDirty,
@@ -193,6 +206,13 @@ export interface UseMangaReviewStudioReturn {
   }) => Promise<ReconciliationOutcome>;
   reconcileAuthoritativeWorkspace: () => Promise<void>;
   retry: () => Promise<void>;
+  // RED 6 Realtime & Cancel Protocol
+  isSocketConnected: boolean;
+  subscriptionState: TranslationSocketSubscriptionState;
+  cancelJob: () => Promise<boolean>;
+  isCanceling: boolean;
+  cancelError: ParsedApiError | null;
+  canCancel: boolean;
 }
 
 const MAX_COHERENCE_RECONCILE_ATTEMPTS = 2;
@@ -351,6 +371,11 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     useState<boolean>(false);
   const authoritativeSyncErrorRef = useRef<boolean>(false);
   const authoritativeProofRef = useRef<AuthoritativeSyncProof | null>(null);
+
+  // RED 6: Realtime Coalesced In-Flight Guard (Lock E & P1-3)
+  const reconciliationInFlightRef = useRef<boolean>(false);
+  const reconciliationQueuedRef = useRef<boolean>(false);
+  const triggerCoalescedRealtimeReconciliationRef = useRef<(() => Promise<void>) | null>(null);
 
   const replaceAuthoritativeGate = useCallback(
     (error: boolean, mode: WorkspaceModeResult | null) => {
@@ -1747,6 +1772,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       const currentJob = activeJobIdRef.current;
       const detailSeq = ++latestStartedDetailSeqRef.current;
 
+      reconciliationInFlightRef.current = true;
       try {
         const detail = await fetchTranslationJobDetail(currentJob);
 
@@ -2218,6 +2244,12 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
           console.warn('Failed to refetch job detail:', err);
         }
         return 'FAILED';
+      } finally {
+        reconciliationInFlightRef.current = false;
+        if (reconciliationQueuedRef.current) {
+          reconciliationQueuedRef.current = false;
+          void triggerCoalescedRealtimeReconciliationRef.current?.();
+        }
       }
     },
     [
@@ -3816,7 +3848,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     };
   }, []);
 
-  // Cleanup materialization polling on unmount
+  // Cleanup materialization polling, timers & sequence counters on unmount
   useEffect(() => {
     return () => {
       if (materializationPollTimerRef.current) {
@@ -3824,6 +3856,10 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
         materializationPollTimerRef.current = null;
       }
       materializationSeqRef.current++;
+      dataLoadSeqRef.current++;
+      pageNavSeqRef.current++;
+      previewWindowSeqRef.current++;
+      pageSegmentsSeqRef.current++;
     };
   }, []);
 
@@ -3898,6 +3934,163 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     authoritativeSyncError ||
     overrideWorkspaceMode?.mode === 'RECONCILIATION_REQUIRED';
 
+  // --- RED 6: Realtime Coalesced In-Flight Guard (Lock E & P1-3) ---
+  const triggerCoalescedRealtimeReconciliation = useCallback(async () => {
+    if (reconciliationInFlightRef.current) {
+      reconciliationQueuedRef.current = true;
+      return;
+    }
+
+    try {
+      // P1-3: Realtime path strictly invokes AUTHORITATIVE_REQUIRED refetchDetail!
+      // This preserves active RED 5 materialization targetRevision and TRACKING phase.
+      await refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+    } catch {
+      // Best-effort error handling
+    }
+  }, [refetchDetail]);
+  triggerCoalescedRealtimeReconciliationRef.current = triggerCoalescedRealtimeReconciliation;
+
+  // Lock B & C: Socket Event Handlers with Identity and Terminal Fencing
+  const handleSocketProgress = useCallback(
+    (event: JobProgressEvent) => {
+      // Lock B: Scope Identity Guard
+      if (event.jobId !== activeJobIdRef.current) return;
+
+      // Lock C: Terminal State Fence
+      const currentDetail = jobDetailRef.current;
+      if (currentDetail && isSystemTerminalStatus(currentDetail.job.status)) {
+        return;
+      }
+
+      // If status changed, reconcile; if only progress changed in monitor mode, update transient display
+      if (currentDetail && currentDetail.job.status !== event.status) {
+        void triggerCoalescedRealtimeReconciliation();
+      } else if (
+        currentDetail &&
+        typeof event.progress === 'number' &&
+        currentDetail.job.progressPercentage !== event.progress
+      ) {
+        replaceJobDetail({
+          ...currentDetail,
+          job: {
+            ...currentDetail.job,
+            progressPercentage: event.progress,
+          },
+        });
+      }
+    },
+    [triggerCoalescedRealtimeReconciliation, replaceJobDetail],
+  );
+
+  const handleSocketReady = useCallback(
+    (event: JobReadyEvent) => {
+      if (event.jobId !== activeJobIdRef.current) return;
+      const currentDetail = jobDetailRef.current;
+      if (currentDetail && isSystemTerminalStatus(currentDetail.job.status)) {
+        return;
+      }
+      void triggerCoalescedRealtimeReconciliation();
+    },
+    [triggerCoalescedRealtimeReconciliation],
+  );
+
+  const handleSocketFailed = useCallback(
+    (event: JobFailedEvent) => {
+      if (event.jobId !== activeJobIdRef.current) return;
+      void triggerCoalescedRealtimeReconciliation();
+    },
+    [triggerCoalescedRealtimeReconciliation],
+  );
+
+  const handleSocketCanceled = useCallback(
+    (event: JobCanceledEvent) => {
+      if (event.jobId !== activeJobIdRef.current) return;
+      void triggerCoalescedRealtimeReconciliation();
+    },
+    [triggerCoalescedRealtimeReconciliation],
+  );
+
+  const { isConnected: isSocketConnected, subscriptionState } =
+    useTranslationSocket({
+      jobId: authLoading || !isAuthenticated ? undefined : jobId,
+      onProgress: handleSocketProgress,
+      onReady: handleSocketReady,
+      onFailed: handleSocketFailed,
+      onCanceled: handleSocketCanceled,
+    });
+
+  // --- RED 6: Job Cancellation Protocol (Lock D & P2-6/P2-7) ---
+  const [isCanceling, setIsCanceling] = useState(false);
+  const [cancelError, setCancelError] = useState<ParsedApiError | null>(null);
+
+  const canCancel = useMemo(() => {
+    return canCancelJob(jobDetail?.job.status);
+  }, [jobDetail?.job.status]);
+
+  const cancelJob = useCallback(async (): Promise<boolean> => {
+    const currentJob = activeJobIdRef.current;
+    if (!currentJob) return false;
+
+    // Lock C: If already confirmed terminal, return whether it was CANCELED
+    const currentDetail = jobDetailRef.current;
+    if (currentDetail && isSystemTerminalStatus(currentDetail.job.status)) {
+      return currentDetail.job.status === TranslationJobStatus.CANCELED;
+    }
+
+    setIsCanceling(true);
+    setCancelError(null);
+
+    let requestErr: ParsedApiError | null = null;
+    try {
+      await cancelTranslationJob(currentJob);
+    } catch (err: unknown) {
+      const parsed = parseApiError(err);
+      // Backend returns 400 for ANY terminal status (APPLIED, CANCELED, FAILED, EXPIRED).
+      // Do not fail immediately on 400; verify authoritative state first!
+      if (parsed.status !== 400) {
+        requestErr = parsed;
+        setCancelError(parsed);
+      }
+    }
+
+    try {
+      await refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      const freshDetail = jobDetailRef.current;
+      if (freshDetail?.job.status === TranslationJobStatus.CANCELED) {
+        // Cleanly halt active materialization polling if running
+        if (materializationPollTimerRef.current) {
+          clearTimeout(materializationPollTimerRef.current);
+          materializationPollTimerRef.current = null;
+        }
+        materializationSeqRef.current++;
+        materializationInFlightRef.current = false;
+        setMaterializationLifecycle((prev) =>
+          prev.phase === 'IDLE' ? prev : { ...prev, phase: 'STOPPED' },
+        );
+        return true;
+      }
+
+      // If terminal but not CANCELED (e.g. APPLIED, FAILED, EXPIRED)
+      if (freshDetail && isSystemTerminalStatus(freshDetail.job.status)) {
+        return false;
+      }
+
+      // Still non-terminal: cancel request truly failed
+      if (requestErr) {
+        setCancelError(requestErr);
+      } else {
+        setCancelError({
+          code: 'CANCEL_FAILED',
+          message: 'Không thể hủy job dịch. Vui lòng thử lại.',
+        });
+      }
+      return false;
+    } finally {
+      setIsCanceling(false);
+    }
+  }, [refetchDetail]);
+
   return {
     status,
     jobDetail,
@@ -3958,5 +4151,12 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     refetchDetail,
     reconcileAuthoritativeWorkspace,
     retry,
+    // RED 6 Realtime & Cancel Protocol
+    isSocketConnected,
+    subscriptionState,
+    cancelJob,
+    isCanceling,
+    cancelError,
+    canCancel,
   };
 }

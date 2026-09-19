@@ -158,6 +158,13 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     refetchDetail: vi.fn(),
     reconcileAuthoritativeWorkspace: vi.fn(),
     retry: vi.fn(),
+    // RED 6 Realtime & Cancel Protocol
+    isSocketConnected: true,
+    subscriptionState: 'subscribed',
+    cancelJob: vi.fn().mockResolvedValue(true),
+    isCanceling: false,
+    cancelError: null,
+    canCancel: true,
   };
 
   beforeEach(() => {

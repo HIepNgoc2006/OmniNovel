@@ -276,7 +276,7 @@ git commit -m "feat(api): add migration 0014 apply_mode, idempotency conflict gu
   - `ApplyLifecycleState`: `'IDLE' | 'SUBMITTING' | 'SUBMISSION_OUTCOME_UNKNOWN' | 'RECONCILING' | 'SUCCEEDED' | 'COMMITTED_RECONCILIATION_REQUIRED' | 'FAILED'`
   - `ApplyJobResult`: discriminated union (`SUCCEEDED`, `COMMITTED_RECONCILIATION_REQUIRED`, `SUBMISSION_OUTCOME_UNKNOWN`, `FAILED`)
 
-- [ ] **Step 1: Write failing policy tests in `apps/web/src/test/studio-apply-policy.spec.ts`**
+- [x] **Step 1: Write failing policy tests in `apps/web/src/test/studio-apply-policy.spec.ts`**
 
 Test scenarios:
 - `canApplyJob` returns false if `jobStatus !== READY_FOR_REVIEW`.
@@ -290,21 +290,21 @@ Test scenarios:
 - HTTP 5xx classification hardening: HTTP 5xx errors from POST apply are classified as ambiguous (`isAmbiguous: true`, mapping to `SUBMISSION_OUTCOME_UNKNOWN`), retaining frozen `{ idempotencyKey, mode }` for retry since transaction might have committed prior to 5xx response.
 - Network timeout classifier detects timeout/network error and flags ambiguity (`isAmbiguous: true`).
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npm --prefix apps/web test -- src/test/studio-apply-policy.spec.ts`
 Expected: FAIL (module not found).
 
-- [ ] **Step 3: Implement `apps/web/src/lib/studio/studio-apply-policy.ts`**
+- [x] **Step 3: Implement `apps/web/src/lib/studio/studio-apply-policy.ts`**
 
 Implement all pure policy functions without external DOM or React dependencies.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npm --prefix apps/web test -- src/test/studio-apply-policy.spec.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 
 ```bash
 git add apps/web/src/lib/studio/studio-apply-policy.ts apps/web/src/test/studio-apply-policy.spec.ts

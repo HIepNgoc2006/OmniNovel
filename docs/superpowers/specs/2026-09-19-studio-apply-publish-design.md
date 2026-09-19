@@ -123,7 +123,7 @@ export interface TranslationJobReviewDetailResponse {
   ```typescript
   refreshedDetail.job.status === TranslationJobStatus.APPLIED &&
   refreshedDetail.context.targetVersion?.id === response.targetVersionId &&
-  refreshedDetail.job.workspaceRevision >= previousWorkspaceRevision
+  refreshedDetail.job.workspaceRevision > previousWorkspaceRevision
   ```
 
 ### Lock 4: Reader Deep-link Invariant

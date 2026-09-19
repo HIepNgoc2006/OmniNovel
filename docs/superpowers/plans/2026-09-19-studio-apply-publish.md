@@ -362,7 +362,7 @@ Expected: FAIL.
 Run: `npm --prefix apps/web test -- src/test/manga-studio-apply-hook.spec.tsx`
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 4**
+- [x] **Step 5: Commit Task 4**
 
 ```bash
 git add apps/web/src/lib/api/translation.ts \
@@ -410,7 +410,7 @@ Implement the modal presentation following OmniNovel design standards, using Luc
 Run: `npm --prefix apps/web test -- src/test/apply-translation-modal.spec.tsx`
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 5**
+- [x] **Step 5: Commit Task 5**
 
 ```bash
 git add apps/web/src/components/studio/apply-translation-modal.tsx apps/web/src/test/apply-translation-modal.spec.tsx
@@ -470,12 +470,12 @@ git commit -m "feat(web): integrate Apply CTA and modal into Manga Review Studio
 - Flow 1: Alternate version happy path (`CREATE_ALTERNATE_VERSION`) -> modal opens -> user selects alternate -> submits -> verifies Reader deep link contains `?versionId=`.
 - Flow 2: Overwrite version happy path (`OVERWRITE_ACTIVE_VERSION`) -> warning shown -> confirmed -> job transitions to `APPLIED`.
 
-- [ ] **Step 2: Run Playwright E2E tests**
+- [x] **Step 2: Run Playwright E2E tests**
 
 Run: `npm --prefix apps/web run test:e2e -- manga-studio-apply.spec.ts`
 Expected: PASS.
 
-- [ ] **Step 3: Full Monorepo Quality Gate Verification (Mirror CI)**
+- [x] **Step 3: Full Monorepo Quality Gate Verification (Mirror CI)**
 
 Run:
 1. `npm --prefix packages/shared run build`
@@ -489,7 +489,7 @@ Run:
 9. `npm --prefix apps/web run test:e2e` (Playwright smoke suite)
 Expected: All suites green, 0 errors.
 
-- [ ] **Step 4: Commit Task 7 & Update Roadmap Tracking**
+- [x] **Step 4: Commit Task 7 & Update Roadmap Tracking**
 
 ```bash
 git add apps/web/e2e/manga-studio-apply.spec.ts plans/phases/phase_04_web_client.md plans/README.md

@@ -6,9 +6,13 @@ import {
   updateTranslationSegment,
   requestJobMaterialization,
   cancelTranslationJob,
+  fetchManagedStories,
+  fetchTranslationProjects,
+  fetchTranslationJobs,
   parseApiError,
 } from '../lib/api/translation';
 import { apiClient } from '../lib/api/client';
+import { TranslationJobStatus } from '@omninovel/shared';
 
 describe('Translation API Client & Error Parsing (#149 RED 0)', () => {
   beforeEach(() => {
@@ -16,6 +20,49 @@ describe('Translation API Client & Error Parsing (#149 RED 0)', () => {
   });
 
   describe('Endpoint paths and parameters', () => {
+    it('fetchManagedStories calls canonical GET /studio/stories', async () => {
+      const spy = vi.spyOn(apiClient, 'get').mockResolvedValue({
+        data: { data: [], pagination: { total: 0, page: 1, limit: 20, totalPages: 0 } },
+      } as any);
+      await fetchManagedStories({ page: 1, limit: 20, search: 'One Piece' });
+      expect(spy).toHaveBeenCalledWith('/studio/stories', {
+        params: { page: 1, limit: 20, search: 'One Piece' },
+      });
+    });
+
+    it('fetchTranslationProjects calls GET /ai/projects with story hierarchy filter', async () => {
+      const spy = vi.spyOn(apiClient, 'get').mockResolvedValue({
+        data: { data: [], pagination: { total: 0, page: 1, limit: 20, totalPages: 0 } },
+      } as any);
+      await fetchTranslationProjects({ storyId: 'story-1', page: 1, limit: 20 });
+      expect(spy).toHaveBeenCalledWith('/ai/projects', {
+        params: { storyId: 'story-1', page: 1, limit: 20 },
+      });
+    });
+
+    it('fetchTranslationJobs serializes multi-status filter canonically', async () => {
+      const spy = vi.spyOn(apiClient, 'get').mockResolvedValue({
+        data: { data: [], pagination: { total: 0, page: 1, limit: 20, totalPages: 0 } },
+      } as any);
+      await fetchTranslationJobs({
+        statuses: [
+          TranslationJobStatus.QUEUED,
+          TranslationJobStatus.TRANSLATING,
+        ],
+        search: 'chapter 100',
+        page: 2,
+        limit: 10,
+      });
+      expect(spy).toHaveBeenCalledWith('/ai/jobs', {
+        params: {
+          statuses: 'QUEUED,TRANSLATING',
+          search: 'chapter 100',
+          page: 2,
+          limit: 10,
+        },
+      });
+    });
+
     it('fetchTranslationJobDetail calls GET /ai/jobs/:id (without duplicating /api/v1)', async () => {
       const spy = vi.spyOn(apiClient, 'get').mockResolvedValue({ data: { job: { id: 'job-1' } } } as any);
       await fetchTranslationJobDetail('job-1');

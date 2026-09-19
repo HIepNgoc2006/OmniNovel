@@ -197,6 +197,7 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
               modelName: 'gpt-4o-mini',
               createdAt: new Date(),
               startedAt: new Date(),
+              heartbeatAt: new Date('2026-09-01T00:05:00Z'),
               completedAt: null,
               project: {
                 sourceLanguage: 'ja',
@@ -204,7 +205,12 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
                 storyEdition: {
                   id: 'edition-1',
                   editionName: 'Bản Dịch Chuẩn',
-                  story: { id: 'story-1', title: 'One Piece' },
+                  story: {
+                    id: 'story-1',
+                    title: 'One Piece',
+                    slug: 'one-piece',
+                    mediaFormat: MediaFormat.COMIC,
+                  },
                 },
               },
               sourceVersion: {
@@ -232,11 +238,59 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
       expect(qbMock.addOrderBy).toHaveBeenCalledWith('job.id', 'DESC');
       expect(result.data.length).toBe(1);
       expect(result.data[0].storyTitle).toBe('One Piece');
+      expect(result.data[0].storySlug).toBe('one-piece');
+      expect(result.data[0].mediaFormat).toBe(MediaFormat.COMIC);
       expect(result.data[0].storyEditionId).toBe('edition-1');
       expect(result.data[0].editionName).toBe('Bản Dịch Chuẩn');
       expect(result.data[0].chapterNumber).toBe('100.00');
       expect(typeof result.data[0].createdAt).toBe('string');
+      expect(result.data[0].heartbeatAt).toBe('2026-09-01T00:05:00.000Z');
       expect(result.pagination.total).toBe(1);
+    });
+
+    it('should prefer multi-status filtering and apply server-side search before pagination', async () => {
+      const qbMock: any = {
+        innerJoinAndSelect: jest.fn().mockReturnThis(),
+        leftJoinAndSelect: jest.fn().mockReturnThis(),
+        andWhere: jest.fn().mockReturnThis(),
+        orderBy: jest.fn().mockReturnThis(),
+        addOrderBy: jest.fn().mockReturnThis(),
+        skip: jest.fn().mockReturnThis(),
+        take: jest.fn().mockReturnThis(),
+        getManyAndCount: jest.fn().mockResolvedValue([[], 0]),
+      };
+      jobRepo.createQueryBuilder.mockReturnValue(qbMock);
+
+      await service.getJobs(adminUser, {
+        statuses: [
+          TranslationJobStatus.QUEUED,
+          TranslationJobStatus.TRANSLATING,
+        ],
+        status: TranslationJobStatus.FAILED,
+        search: '  chapter 100  ',
+        page: 2,
+        limit: 10,
+      });
+
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        'job.status IN (:...statuses)',
+        {
+          statuses: [
+            TranslationJobStatus.QUEUED,
+            TranslationJobStatus.TRANSLATING,
+          ],
+        },
+      );
+      expect(qbMock.andWhere).not.toHaveBeenCalledWith(
+        'job.status = :status',
+        expect.anything(),
+      );
+      expect(qbMock.andWhere).toHaveBeenCalledWith(
+        expect.stringContaining('story.title ILIKE :search'),
+        { search: '%chapter 100%' },
+      );
+      expect(qbMock.skip).toHaveBeenCalledWith(10);
+      expect(qbMock.take).toHaveBeenCalledWith(10);
     });
   });
 

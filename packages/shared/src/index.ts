@@ -72,6 +72,30 @@ export enum TranslationJobStatus {
   EXPIRED = 'EXPIRED',
 }
 
+export const JOB_STATUS_GROUPS = {
+  ALL: Object.values(TranslationJobStatus) as readonly TranslationJobStatus[],
+  ACTIVE: [
+    TranslationJobStatus.CREATED,
+    TranslationJobStatus.VALIDATING,
+    TranslationJobStatus.QUEUED,
+    TranslationJobStatus.PREPROCESSING,
+    TranslationJobStatus.OCR,
+    TranslationJobStatus.TRANSLATING,
+    TranslationJobStatus.INPAINTING,
+    TranslationJobStatus.TYPESETTING,
+    TranslationJobStatus.QUALITY_CHECK,
+  ],
+  REVIEW: [TranslationJobStatus.READY_FOR_REVIEW],
+  APPLIED: [TranslationJobStatus.APPLIED],
+  PROBLEM: [
+    TranslationJobStatus.FAILED,
+    TranslationJobStatus.CANCELED,
+    TranslationJobStatus.EXPIRED,
+  ],
+} as const;
+
+export type JobStatusGroup = keyof typeof JOB_STATUS_GROUPS;
+
 export enum RewardType {
   EXP = 'EXP',
   OMNICOIN = 'OMNICOIN',
@@ -325,6 +349,8 @@ export interface TranslationJobSummaryDto {
   projectId: string;
   storyId: string;
   storyTitle: string;
+  storySlug: string;
+  mediaFormat: MediaFormat;
   storyEditionId: string;
   editionName: string;
   chapterId: string;
@@ -338,6 +364,7 @@ export interface TranslationJobSummaryDto {
   modelName: string;
   createdAt: IsoDateString;
   startedAt: IsoDateString | null;
+  heartbeatAt: IsoDateString | null;
   completedAt: IsoDateString | null;
 }
 

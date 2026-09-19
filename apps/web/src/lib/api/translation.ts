@@ -24,6 +24,65 @@ export interface ParsedApiError {
   details?: Array<{ field: string; issue: string }>;
 }
 
+
+export interface FetchManagedStoriesQuery {
+  page?: number;
+  limit?: number;
+  search?: string;
+}
+
+export interface FetchTranslationProjectsQuery {
+  page?: number;
+  limit?: number;
+  storyId?: string;
+}
+
+export interface FetchTranslationJobsQuery {
+  page?: number;
+  limit?: number;
+  storyId?: string;
+  projectId?: string;
+  status?: TranslationJobStatus;
+  statuses?: TranslationJobStatus[];
+  search?: string;
+}
+
+export async function fetchManagedStories(
+  query: FetchManagedStoriesQuery = {},
+): Promise<PaginatedResponse<ManagedStorySummaryDto>> {
+  const response = await apiClient.get<PaginatedResponse<ManagedStorySummaryDto>>(
+    '/studio/stories',
+    { params: query },
+  );
+  return response.data;
+}
+
+export async function fetchTranslationProjects(
+  query: FetchTranslationProjectsQuery = {},
+): Promise<PaginatedResponse<TranslationProjectSummaryDto>> {
+  const response = await apiClient.get<
+    PaginatedResponse<TranslationProjectSummaryDto>
+  >('/ai/projects', { params: query });
+  return response.data;
+}
+
+export async function fetchTranslationJobs(
+  query: FetchTranslationJobsQuery = {},
+): Promise<PaginatedResponse<TranslationJobSummaryDto>> {
+  const params = {
+    ...query,
+    ...(query.statuses && query.statuses.length > 0
+      ? { statuses: query.statuses.join(',') }
+      : {}),
+  };
+
+  const response = await apiClient.get<PaginatedResponse<TranslationJobSummaryDto>>(
+    '/ai/jobs',
+    { params },
+  );
+  return response.data;
+}
+
 export function parseApiError(error: unknown): ParsedApiError {
   if (error && typeof error === 'object' && 'isAxiosError' in error) {
     const axiosErr = error as AxiosError<StandardErrorResponse>;

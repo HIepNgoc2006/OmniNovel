@@ -554,8 +554,23 @@ export class TranslationService {
       qb.andWhere('job.projectId = :projectId', { projectId: query.projectId });
     }
 
-    if (query.status) {
+    if (query.statuses && query.statuses.length > 0) {
+      qb.andWhere('job.status IN (:...statuses)', {
+        statuses: query.statuses,
+      });
+    } else if (query.status) {
       qb.andWhere('job.status = :status', { status: query.status });
+    }
+
+    if (query.search && query.search.trim()) {
+      qb.andWhere(
+        `(
+          story.title ILIKE :search OR
+          CAST(chapter.chapterNumber AS TEXT) ILIKE :search OR
+          COALESCE(chapter.title, '') ILIKE :search
+        )`,
+        { search: `%${query.search.trim()}%` },
+      );
     }
 
     qb.orderBy('job.createdAt', 'DESC')
@@ -570,6 +585,8 @@ export class TranslationService {
       projectId: job.projectId,
       storyId: job.project?.storyEdition?.story?.id,
       storyTitle: job.project?.storyEdition?.story?.title,
+      storySlug: job.project?.storyEdition?.story?.slug,
+      mediaFormat: job.project?.storyEdition?.story?.mediaFormat,
       storyEditionId: job.project?.storyEdition?.id,
       editionName: job.project?.storyEdition?.editionName,
       chapterId: job.sourceVersion?.chapter?.id,
@@ -585,6 +602,7 @@ export class TranslationService {
       modelName: job.modelName,
       createdAt: job.createdAt.toISOString(),
       startedAt: job.startedAt ? job.startedAt.toISOString() : null,
+      heartbeatAt: job.heartbeatAt ? job.heartbeatAt.toISOString() : null,
       completedAt: job.completedAt ? job.completedAt.toISOString() : null,
     }));
 

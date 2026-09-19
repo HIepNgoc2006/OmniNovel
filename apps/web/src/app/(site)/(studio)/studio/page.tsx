@@ -1,143 +1,224 @@
 'use client';
 
-import React, { useState } from 'react';
-import { useTranslationSocket } from '@/lib/websocket/use-translation-socket';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import {
-  Sliders,
-  Radio,
-  Sparkles,
-  Activity,
-  Layers,
-  Cpu,
-  CheckCircle2,
-  AlertCircle,
-} from 'lucide-react';
-import { TranslationJobStatus } from '@omninovel/shared';
+import React from 'react';
+import Link from 'next/link';
+import { useStudioDashboard } from '@/lib/studio/use-studio-dashboard';
+import { StudioMetricsCards } from '@/components/studio/dashboard/studio-metrics-cards';
+import { StudioStorySelector } from '@/components/studio/dashboard/studio-story-selector';
+import { StudioJobFilterBar } from '@/components/studio/dashboard/studio-job-filter-bar';
+import { StudioJobCard } from '@/components/studio/dashboard/studio-job-card';
+import { Radio, Sparkles, Plus, AlertTriangle, RefreshCw } from 'lucide-react';
 
 export default function StudioPage() {
-  const [testJobId, setTestJobId] = useState('');
-  const [activeJobId, setActiveJobId] = useState<string | undefined>(undefined);
-
-  const { isConnected, lastProgress, error } = useTranslationSocket({
-    jobId: activeJobId,
-    onProgress: (evt) => {
-      console.log('Socket progress received:', evt);
-    },
-  });
-
-  const handleSubscribe = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (testJobId.trim()) {
-      setActiveJobId(testJobId.trim());
-    }
-  };
+  const {
+    stories,
+    projects,
+    jobs,
+    pagination,
+    filterGroup,
+    searchKeyword,
+    selectedStoryId,
+    selectedProjectId,
+    page,
+    isInitialLoading,
+    isJobsLoading,
+    isLoadingProjects,
+    error,
+    socketStatus,
+    setFilterGroup,
+    setSearchKeyword,
+    setSelectedStoryId,
+    setSelectedProjectId,
+    setPage,
+    refetchJobs,
+  } = useStudioDashboard();
 
   return (
-    <div className="max-w-6xl mx-auto px-4 py-10 space-y-8">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-6">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      {/* Top Header */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 pb-6 border-b border-slate-800">
         <div>
-          <div className="flex items-center gap-2 text-red-400 text-xs font-semibold uppercase tracking-wider mb-1">
-            <Sliders className="w-4 h-4" />
-            <span>AI Translation Studio</span>
+          <div className="flex items-center gap-2 text-indigo-400 text-xs font-bold uppercase tracking-wider mb-1.5">
+            <Sparkles className="w-4 h-4" />
+            <span>AI Translation Studio Hub</span>
           </div>
-          <h1 className="text-2xl sm:text-3xl font-black text-white">Bảng Điều Khiển Dịch Thuật</h1>
-        </div>
-
-        {/* Live WebSocket Status Pill */}
-        <div className="flex items-center gap-2 bg-slate-900 border border-slate-800 px-3 py-1.5 rounded-full text-xs font-semibold">
-          <Radio
-            className={`w-3.5 h-3.5 ${
-              isConnected ? 'text-emerald-400 animate-pulse' : 'text-slate-500'
-            }`}
-          />
-          <span className="text-slate-400">WebSocket /ws/ai:</span>
-          <span className={isConnected ? 'text-emerald-400' : 'text-slate-400'}>
-            {isConnected ? 'Đã Kết Nối' : 'Chưa Kết Nối'}
-          </span>
-        </div>
-      </div>
-
-      {/* Grid Overview */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {/* Card 1: Pipeline Status */}
-        <div className="bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4">
-          <div className="flex items-center justify-between">
-            <h3 className="text-sm font-bold text-white flex items-center gap-2">
-              <Cpu className="w-4 h-4 text-red-500" />
-              <span>AI Worker Cluster</span>
-            </h3>
-            <Badge variant="success">Active</Badge>
-          </div>
-          <p className="text-xs text-slate-400 leading-relaxed">
-            Dịch vụ AI Worker đang hoạt động trên FastAPI Python với Japanese Manga-OCR, Inpainting Telea, và Novel Canonical Rebuilder V2.
+          <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight">
+            Bảng Điều Khiển Dịch Thuật
+          </h1>
+          <p className="text-xs sm:text-sm text-slate-400 mt-1">
+            Quản lý tiến trình dịch thuật AI đa phương thức (Webtoon & Light Novel), theo dõi thời gian thực và phê duyệt bản dịch.
           </p>
-          <div className="pt-2 text-[11px] text-slate-500 space-y-1">
-            <p>• BullMQ Single Queue: 14 States Enforced</p>
-            <p>• Protected Inline Anchors: Strict</p>
-            <p>• Model: Manga-OCR + gpt-4o-mini / local</p>
-          </div>
         </div>
 
-        {/* Card 2: Live Job Monitor (WS Tester) */}
-        <div className="md:col-span-2 bg-slate-900 border border-slate-800 rounded-3xl p-6 space-y-4">
-          <h3 className="text-sm font-bold text-white flex items-center gap-2">
-            <Activity className="w-4 h-4 text-amber-400" />
-            <span>Theo Dõi Tiến Trình Job Thời Gian Thực</span>
-          </h3>
-
-          <form onSubmit={handleSubscribe} className="flex gap-2">
-            <input
-              type="text"
-              value={testJobId}
-              onChange={(e) => setTestJobId(e.target.value)}
-              placeholder="Nhập Translation Job UUID để theo dõi qua /ws/ai..."
-              className="flex-1 bg-slate-950 border border-slate-800 focus:border-red-500 rounded-xl px-4 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-red-500"
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Realtime WebSocket Status Badge */}
+          <div className="flex items-center gap-2 bg-slate-900/80 border border-slate-800 px-3.5 py-2 rounded-xl text-xs font-semibold backdrop-blur-sm">
+            <Radio
+              className={`w-3.5 h-3.5 ${
+                socketStatus.isConnected
+                  ? 'text-emerald-400 animate-pulse'
+                  : 'text-slate-500'
+              }`}
             />
-            <Button type="submit" variant="primary" size="sm">
-              Lắng Nghe
-            </Button>
-          </form>
+            <span className="text-slate-400 font-normal">Realtime:</span>
+            <span
+              className={
+                socketStatus.isConnected ? 'text-emerald-400 font-medium' : 'text-slate-500'
+              }
+            >
+              {socketStatus.isConnected ? 'Đang kết nối' : 'Mất kết nối'}
+            </span>
+          </div>
 
-          {/* Monitor Display */}
-          {activeJobId ? (
-            <div className="bg-slate-950 p-4 rounded-2xl border border-slate-800 space-y-3">
-              <div className="flex items-center justify-between text-xs">
-                <span className="text-slate-400">Job ID: <span className="font-mono text-white">{activeJobId}</span></span>
-                {lastProgress && <Badge variant="primary">{lastProgress.status}</Badge>}
-              </div>
-
-              {lastProgress ? (
-                <div className="space-y-2">
-                  <div className="flex justify-between text-xs text-slate-400">
-                    <span>Tiến độ ({lastProgress.status})</span>
-                    <span className="font-bold text-red-400">{lastProgress.progress}%</span>
-                  </div>
-                  <div className="w-full h-2.5 bg-slate-900 rounded-full overflow-hidden border border-slate-800">
-                    <div
-                      className="h-full bg-red-600 transition-all duration-300"
-                      style={{ width: `${Math.min(100, Math.max(0, lastProgress.progress))}%` }}
-                    />
-                  </div>
-                  <p className="text-[10px] text-slate-500 text-right">
-                    Cập nhật lúc: {new Date(lastProgress.timestamp).toLocaleTimeString('vi-VN')}
-                  </p>
-                </div>
-              ) : (
-                <p className="text-xs text-slate-500 italic">
-                  Đang chờ sự kiện cập nhật tiến trình từ AI Worker qua WebSocket...
-                </p>
-              )}
-            </div>
-          ) : (
-            <div className="bg-slate-950/60 p-4 rounded-2xl border border-dashed border-slate-800 text-center text-xs text-slate-500">
-              Nhập Job UUID hoặc tạo bản dịch mới từ Studio để quan sát tiến trình 14 trạng thái.
-            </div>
-          )}
+          {/* Action: Create New Translation */}
+          <Link
+            href="/studio/manga"
+            className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all shadow-lg shadow-indigo-600/20"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Tạo Bản Dịch Mới</span>
+          </Link>
         </div>
       </div>
+
+      {/* Error Banner */}
+      {error && (
+        <div className="flex items-center justify-between p-4 rounded-2xl bg-rose-950/50 border border-rose-800/80 text-rose-300 text-sm">
+          <div className="flex items-center gap-3">
+            <AlertTriangle className="w-5 h-5 text-rose-400 flex-shrink-0" />
+            <span>{error}</span>
+          </div>
+          <button
+            type="button"
+            data-testid="dashboard-retry-btn"
+            onClick={() => refetchJobs()}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold bg-rose-900/80 hover:bg-rose-800 text-rose-100 transition-all cursor-pointer"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Thử lại</span>
+          </button>
+        </div>
+      )}
+
+      {/* Metrics Quick Overview */}
+      <StudioMetricsCards
+        jobs={jobs}
+        currentGroup={filterGroup}
+        onSelectGroup={setFilterGroup}
+      />
+
+      {/* Filter and Search Bar Section */}
+      <div className="space-y-4">
+        {/* Story and Edition Selector */}
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <StudioStorySelector
+            stories={stories}
+            selectedStoryId={selectedStoryId}
+            onSelectStory={setSelectedStoryId}
+            projects={projects}
+            selectedProjectId={selectedProjectId}
+            onSelectProject={setSelectedProjectId}
+            isLoadingProjects={isLoadingProjects}
+          />
+        </div>
+
+        {/* Status Group Tabs and Search */}
+        <StudioJobFilterBar
+          currentGroup={filterGroup}
+          searchKeyword={searchKeyword}
+          onSelectGroup={setFilterGroup}
+          onSearchChange={setSearchKeyword}
+          onRefresh={() => refetchJobs()}
+          isRefreshing={isJobsLoading}
+        />
+      </div>
+
+      {/* Job Cards List */}
+      <div className="space-y-3 relative min-h-[200px]">
+        {isInitialLoading ? (
+          <div
+            data-testid="dashboard-loading-skeleton"
+            className="space-y-3 animate-pulse"
+          >
+            {[1, 2, 3].map((i) => (
+              <div
+                key={i}
+                className="h-28 rounded-2xl bg-slate-900/60 border border-slate-800/80 p-4"
+              />
+            ))}
+          </div>
+        ) : jobs.length === 0 ? (
+          <div className="flex flex-col items-center justify-center p-12 rounded-3xl bg-slate-900/40 border border-dashed border-slate-800 text-center space-y-3">
+            <div className="w-12 h-12 rounded-2xl bg-slate-800/80 flex items-center justify-center text-xl text-slate-400">
+              📂
+            </div>
+            <h3 className="text-base font-bold text-white">
+              Không tìm thấy tiến trình dịch thuật nào
+            </h3>
+            <p className="text-xs text-slate-400 max-w-sm">
+              Không có tiến trình nào khớp với bộ lọc hiện tại hoặc tác phẩm chưa có bản dịch.
+            </p>
+            <Link
+              href="/studio/manga"
+              className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-indigo-300 bg-indigo-950/60 hover:bg-indigo-900/60 border border-indigo-800/80 transition-all mt-2"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Bắt đầu tiến trình dịch</span>
+            </Link>
+          </div>
+        ) : (
+          <>
+            {isJobsLoading && (
+              <div className="absolute inset-0 bg-slate-950/40 backdrop-blur-[1px] flex items-center justify-center z-10 rounded-2xl">
+                <div className="px-4 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs font-medium text-slate-300 shadow-xl flex items-center gap-2">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                  <span>Đang tải...</span>
+                </div>
+              </div>
+            )}
+            <div className="space-y-3">
+              {jobs.map((job) => (
+                <StudioJobCard key={job.id} job={job} />
+              ))}
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Pagination Controls */}
+      {pagination.totalPages > 1 && (
+        <div className="flex items-center justify-between pt-4 border-t border-slate-800 text-xs text-slate-400">
+          <span>
+            Tổng cộng: <strong className="text-slate-200">{pagination.total}</strong> tiến trình
+          </span>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="pagination-prev-btn"
+              onClick={() => setPage(Math.max(1, page - 1))}
+              disabled={page <= 1 || isJobsLoading}
+              className="px-3 py-1.5 rounded-xl border border-slate-700 bg-slate-900/80 hover:bg-slate-800 text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              Trước
+            </button>
+
+            <span className="px-2 font-medium text-slate-300">
+              Trang {page} / {pagination.totalPages}
+            </span>
+
+            <button
+              type="button"
+              data-testid="pagination-next-btn"
+              onClick={() => setPage(Math.min(pagination.totalPages, page + 1))}
+              disabled={page >= pagination.totalPages || isJobsLoading}
+              className="px-3 py-1.5 rounded-xl border border-slate-700 bg-slate-900/80 hover:bg-slate-800 text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed transition-all"
+            >
+              Sau
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

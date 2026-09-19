@@ -195,15 +195,15 @@ git commit -m "feat(web): create modular Studio Dashboard UI sub-components (#14
 - Integrates `useStudioDashboard`, `StudioMetricsCards`, `StudioStorySelector`, `StudioJobFilterBar`, `StudioJobCard`.
 - Supports auth state check, empty state, pagination, and header CTA "Tạo Bản Dịch Mới".
 
-- [ ] **Step 1: Write failing route integration tests in `studio-dashboard-page.spec.tsx`**
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 1: Write failing route integration tests in `studio-dashboard-page.spec.tsx`**
+- [x] **Step 2: Run test to verify it fails**
 Run: `npm --prefix apps/web test -- src/test/studio-dashboard-page.spec.tsx`
 Expected: FAIL.
-- [ ] **Step 3: Implement complete Studio Dashboard page in `page.tsx`**
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 3: Implement complete Studio Dashboard page in `page.tsx`**
+- [x] **Step 4: Run test to verify it passes**
 Run: `npm --prefix apps/web test -- src/test/studio-dashboard-page.spec.tsx`
 Expected: PASS.
-- [ ] **Step 5: Commit Task 5**
+- [x] **Step 5: Commit Task 5**
 ```bash
 git add "apps/web/src/app/(site)/(studio)/studio/page.tsx" apps/web/src/test/studio-dashboard-page.spec.tsx
 git commit -m "feat(web): integrate production Studio Dashboard into /studio route (#145)"

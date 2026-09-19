@@ -426,6 +426,30 @@ export default function MangaStudioJobPage({ params }: PageProps) {
     );
   }
 
+  const renderApplyModal = () => (
+    <ApplyTranslationModal
+      isOpen={isApplyModalOpen}
+      onClose={() => setIsApplyModalOpen(false)}
+      storySlug={studio.jobDetail?.context.story.slug || ''}
+      reviewSummary={studio.reviewSummary}
+      applyLifecycle={studio.applyLifecycle}
+      applyResponse={studio.applyResponse}
+      applyError={studio.applyError}
+      onApply={async (mode) => {
+        await studio.applyJob(mode);
+      }}
+      onRetry={async () => {
+        await studio.retryApplyAction();
+      }}
+      onReconcile={async () => {
+        await studio.reconcileAfterCommitted();
+      }}
+      onReset={() => {
+        studio.resetApplyAction();
+      }}
+    />
+  );
+
   // 5.5. Reconciliation Required state (Desynchronized / Coherence breaker triggered)
   if (studio.workspaceMode?.mode === 'RECONCILIATION_REQUIRED') {
     return (
@@ -464,6 +488,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             </Button>
           </Link>
         </div>
+        {renderApplyModal()}
       </div>
     );
   }
@@ -646,6 +671,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             </Button>
           </Link>
         </div>
+        {renderApplyModal()}
       </div>
     );
   }
@@ -1365,27 +1391,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
       </div>
 
       {/* Apply Translation Modal (RED 7 / Task 6) */}
-      <ApplyTranslationModal
-        isOpen={isApplyModalOpen}
-        onClose={() => setIsApplyModalOpen(false)}
-        storySlug={studio.jobDetail?.context.story.slug || ''}
-        reviewSummary={studio.reviewSummary}
-        applyLifecycle={studio.applyLifecycle}
-        applyResponse={studio.applyResponse}
-        applyError={studio.applyError}
-        onApply={async (mode) => {
-          await studio.applyJob(mode);
-        }}
-        onRetry={async () => {
-          await studio.retryApplyAction();
-        }}
-        onReconcile={async () => {
-          await studio.reconcileAfterCommitted();
-        }}
-        onReset={() => {
-          studio.resetApplyAction();
-        }}
-      />
+      {renderApplyModal()}
     </div>
   );
 }

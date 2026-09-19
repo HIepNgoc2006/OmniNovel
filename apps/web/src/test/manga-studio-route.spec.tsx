@@ -1214,6 +1214,44 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       // Modal dialog should now be visible
       expect(screen.getByText('Chọn phương thức xuất bản:')).toBeDefined();
     });
+
+    it('3. ApplyTranslationModal is mounted in APPLIED state so post-apply success screen is preserved', async () => {
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        workspaceMode: {
+          mode: 'APPLIED',
+          canPreview: false,
+          canEdit: false,
+          canMaterialize: false,
+          status: TranslationJobStatus.APPLIED,
+          message: 'Job này đã được xuất bản.',
+        },
+        jobDetail: {
+          ...defaultMockReturn.jobDetail!,
+          job: {
+            ...defaultMockReturn.jobDetail!.job,
+            status: TranslationJobStatus.APPLIED,
+          },
+        },
+        applyLifecycle: 'SUCCEEDED',
+        applyResponse: {
+          chapterId: 'c1',
+          activeVersionId: 'v2',
+          targetVersionId: 'v2',
+          versionNumber: 2,
+          versionType: 'AI_TRANSLATED' as any,
+          isAlreadyApplied: false,
+        },
+      });
+
+      await act(async () => {
+        render(<MangaStudioJobPage params={mockParams} />);
+      });
+
+      // APPLIED header badge should be rendered
+      expect(screen.getByText('APPLIED')).toBeDefined();
+      expect(screen.getByText('Chỉ Đọc (Read-only)')).toBeDefined();
+    });
   });
 });
 

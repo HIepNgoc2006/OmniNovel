@@ -451,7 +451,7 @@ Expected: FAIL.
 Run: `npm --prefix apps/web test -- src/test/manga-studio-route.spec.tsx`
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 6**
+- [x] **Step 5: Commit Task 6**
 
 ```bash
 git add apps/web/src/app/\(site\)/\(studio\)/studio/ai/jobs/\[jobId\]/page.tsx apps/web/src/test/manga-studio-route.spec.tsx
@@ -465,7 +465,7 @@ git commit -m "feat(web): integrate Apply CTA and modal into Manga Review Studio
 **Files:**
 - Create: `apps/web/e2e/manga-studio-apply.spec.ts`
 
-- [ ] **Step 1: Write Playwright E2E spec covering both flows**
+- [x] **Step 1: Write Playwright E2E spec covering both flows**
 
 - Flow 1: Alternate version happy path (`CREATE_ALTERNATE_VERSION`) -> modal opens -> user selects alternate -> submits -> verifies Reader deep link contains `?versionId=`.
 - Flow 2: Overwrite version happy path (`OVERWRITE_ACTIVE_VERSION`) -> warning shown -> confirmed -> job transitions to `APPLIED`.

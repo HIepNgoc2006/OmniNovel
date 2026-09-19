@@ -10,6 +10,9 @@ import {
   StandardErrorResponse,
   StandardErrorMeta,
   TranslationJobStatus,
+  TranslationJobSummaryDto,
+  TranslationProjectSummaryDto,
+  ManagedStorySummaryDto,
   ApplyTranslationJobRequest,
   ApplyTranslationJobResponse,
 } from '@omninovel/shared';

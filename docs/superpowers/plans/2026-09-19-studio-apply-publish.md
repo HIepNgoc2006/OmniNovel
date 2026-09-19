@@ -383,7 +383,7 @@ git commit -m "feat(web): orchestrate apply lifecycle SSoT and authoritative rec
 - Consumes: `Modal`, `ApplyTranslationMode`, `ApplyJobResult`, `ApplyLifecycleState`.
 - Produces: `ApplyTranslationModal` component.
 
-- [ ] **Step 1: Write failing component tests in `apps/web/src/test/apply-translation-modal.spec.tsx`**
+- [x] **Step 1: Write failing component tests in `apps/web/src/test/apply-translation-modal.spec.tsx`**
 
 Test scenarios:
 - Renders verification summary (< 100% warning: *"Còn {unverifiedCount} phân đoạn chưa được đánh dấu đã duyệt thủ công. Bạn vẫn muốn xuất bản?"*).
@@ -396,16 +396,16 @@ Test scenarios:
 - `SUBMISSION_OUTCOME_UNKNOWN` displays ambiguity notice ("Mất kết nối trong lúc gửi yêu cầu...") and "Thử lại (Retry same action)" button.
 - Error state displays classified error and "Thử lại (Retry)" button.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npm --prefix apps/web test -- src/test/apply-translation-modal.spec.tsx`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement `apps/web/src/components/studio/apply-translation-modal.tsx`**
+- [x] **Step 3: Implement `apps/web/src/components/studio/apply-translation-modal.tsx`**
 
 Implement the modal presentation following OmniNovel design standards, using Lucide icons (`Sparkles`, `CheckCircle2`, `AlertTriangle`, `Send`, `RefreshCw`, `BookOpen`, `ExternalLink`).
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npm --prefix apps/web test -- src/test/apply-translation-modal.spec.tsx`
 Expected: PASS.

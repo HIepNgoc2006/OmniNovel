@@ -431,7 +431,7 @@ git commit -m "feat(web): implement reusable ApplyTranslationModal component (#1
   - Header button: `btn-open-apply-modal` ("Xuất Bản").
   - Modal container rendering.
 
-- [ ] **Step 1: Write failing route test in `apps/web/src/test/manga-studio-route.spec.tsx`**
+- [x] **Step 1: Write failing route test in `apps/web/src/test/manga-studio-route.spec.tsx`**
 
 Test scenarios:
 - Nút "Xuất Bản" renders in header next to "Kết Xuất".
@@ -439,16 +439,14 @@ Test scenarios:
 - Enabled when `canApply === true`. Clicking opens `ApplyTranslationModal`.
 - Closing modal updates state.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npm --prefix apps/web test -- src/test/manga-studio-route.spec.tsx`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement Header Action Button & Modal Rendering in `page.tsx`**
+- [x] **Step 3: Implement route header button & modal binding in `page.tsx`**
 
-Update `page.tsx` with `isApplyModalOpen` state and render `ApplyTranslationModal`.
-
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npm --prefix apps/web test -- src/test/manga-studio-route.spec.tsx`
 Expected: PASS.

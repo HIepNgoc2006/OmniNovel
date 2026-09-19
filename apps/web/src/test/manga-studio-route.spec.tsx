@@ -1176,6 +1176,45 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       expect(nextUnverifiedSpy).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('Apply & Publish Route Integration (#152 Task 6)', () => {
+    it('1. btn-open-apply-modal renders in header and is disabled when canApply is false', async () => {
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        canApply: false,
+      });
+
+      await act(async () => {
+        render(<MangaStudioJobPage params={mockParams} />);
+      });
+
+      const applyBtn = screen.getByTestId('btn-open-apply-modal');
+      expect(applyBtn).toBeDefined();
+      expect(applyBtn).toBeDisabled();
+    });
+
+    it('2. btn-open-apply-modal is enabled when canApply is true; clicking opens ApplyTranslationModal', async () => {
+      vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
+        ...defaultMockReturn,
+        canApply: true,
+      });
+
+      await act(async () => {
+        render(<MangaStudioJobPage params={mockParams} />);
+      });
+
+      const applyBtn = screen.getByTestId('btn-open-apply-modal');
+      expect(applyBtn).not.toBeDisabled();
+
+      // Click button to open modal
+      await act(async () => {
+        fireEvent.click(applyBtn);
+      });
+
+      // Modal dialog should now be visible
+      expect(screen.getByText('Chọn phương thức xuất bản:')).toBeDefined();
+    });
+  });
 });
 
 

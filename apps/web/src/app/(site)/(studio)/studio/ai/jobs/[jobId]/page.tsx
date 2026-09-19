@@ -28,7 +28,11 @@ import {
   BookOpen,
   ShieldAlert,
   XCircle,
+  Send,
 } from 'lucide-react';
+import { TranslationJobStatus } from '@omninovel/shared';
+import { ApplyTranslationModal } from '@/components/studio/apply-translation-modal';
+import { resolveApplyBlockReason } from '@/lib/studio/studio-apply-policy';
 
 interface PageProps {
   params: Promise<{ jobId: string }>;
@@ -40,6 +44,7 @@ export default function MangaStudioJobPage({ params }: PageProps) {
   const searchParams = useSearchParams();
   const router = useRouter();
   const pathname = usePathname();
+  const [isApplyModalOpen, setIsApplyModalOpen] = React.useState(false);
 
   // Navigation handler: URL is SSoT, UI only pushes router!
   const navigateToPage = React.useCallback(
@@ -849,6 +854,38 @@ export default function MangaStudioJobPage({ params }: PageProps) {
             )}
             {ctaProps.label}
           </Button>
+
+          {/* Apply / Publish Translation Action Button (RED 7 / Task 6) */}
+          <Button
+            variant="primary"
+            size="sm"
+            disabled={!studio.canApply}
+            onClick={() => setIsApplyModalOpen(true)}
+            data-testid="btn-open-apply-modal"
+            title={
+              !studio.canApply
+                ? resolveApplyBlockReason({
+                    jobStatus: studio.jobDetail?.job.status as TranslationJobStatus,
+                    canApplyPermission:
+                      studio.jobDetail?.permissions?.canApply ?? false,
+                    freshnessStatus: studio.freshness.status,
+                    hasUncommittedDrafts: Object.keys(studio.drafts).length > 0,
+                    applyInFlight:
+                      studio.applyLifecycle === 'SUBMITTING' ||
+                      studio.applyLifecycle === 'RECONCILING',
+                    materializationInFlight: studio.isMaterializing,
+                  }) || 'Chưa thể xuất bản'
+                : 'Xuất bản bản dịch này lên hệ thống'
+            }
+            className={`gap-1.5 font-medium transition-all ${
+              studio.canApply
+                ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-600/20'
+                : 'opacity-50 cursor-not-allowed'
+            }`}
+          >
+            <Send className="w-3.5 h-3.5" />
+            Xuất Bản
+          </Button>
         </div>
       </div>
 
@@ -1326,6 +1363,29 @@ export default function MangaStudioJobPage({ params }: PageProps) {
           </div>
         </div>
       </div>
+
+      {/* Apply Translation Modal (RED 7 / Task 6) */}
+      <ApplyTranslationModal
+        isOpen={isApplyModalOpen}
+        onClose={() => setIsApplyModalOpen(false)}
+        storySlug={studio.jobDetail?.context.story.slug || ''}
+        reviewSummary={studio.reviewSummary}
+        applyLifecycle={studio.applyLifecycle}
+        applyResponse={studio.applyResponse}
+        applyError={studio.applyError}
+        onApply={async (mode) => {
+          await studio.applyJob(mode);
+        }}
+        onRetry={async () => {
+          await studio.retryApplyAction();
+        }}
+        onReconcile={async () => {
+          await studio.reconcileAfterCommitted();
+        }}
+        onReset={() => {
+          studio.resetApplyAction();
+        }}
+      />
     </div>
   );
 }

@@ -4130,7 +4130,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
   const canApply = useMemo(() => {
     return canApplyJob({
       jobStatus: jobDetail?.job.status as TranslationJobStatus,
-      canApplyPermission: jobDetail?.permissions.canApply ?? false,
+      canApplyPermission: jobDetail?.permissions?.canApply ?? false,
       freshnessStatus: freshness.status,
       hasUncommittedDrafts: Object.keys(drafts).length > 0,
       applyInFlight:
@@ -4139,7 +4139,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     });
   }, [
     jobDetail?.job.status,
-    jobDetail?.permissions.canApply,
+    jobDetail?.permissions?.canApply,
     freshness.status,
     drafts,
     applyLifecycle,

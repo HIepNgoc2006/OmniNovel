@@ -82,6 +82,9 @@ test.describe('Manga Review Studio Canvas & Layout Geometry E2E (Phase 4D RED 2)
             resultPageCount: 1,
             blockCount: 1,
           },
+          permissions: {
+            canApply: true,
+          },
         }),
       });
     });

@@ -1,9 +1,5 @@
 import { IsString, IsNotEmpty, IsIn } from 'class-validator';
-
-export enum ApplyTranslationMode {
-  OVERWRITE_ACTIVE_VERSION = 'OVERWRITE_ACTIVE_VERSION',
-  CREATE_ALTERNATE_VERSION = 'CREATE_ALTERNATE_VERSION',
-}
+import { ApplyTranslationMode } from '@omninovel/shared';
 
 export class ApplyTranslationJobDto {
   @IsString()

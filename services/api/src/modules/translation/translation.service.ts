@@ -10,7 +10,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, Between } from 'typeorm';
+import { Repository, DataSource, Between, EntityManager } from 'typeorm';
 import * as crypto from 'crypto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -47,6 +47,7 @@ import {
   ReviewSummaryDto,
   TranslationJobPreviewsResponse,
   MaterializationRequestResponse,
+  ApplyTranslationMode,
 } from '@omninovel/shared';
 import { TranslationJob } from './entities/translation-job.entity';
 import { TranslationProject } from './entities/translation-project.entity';
@@ -65,10 +66,7 @@ import { TranslationGateway } from './translation.gateway';
 import { TranslationProcessor } from './translation.processor';
 import { CreateTranslationJobDto } from './dto/create-translation-job.dto';
 import { RequestSourceReviewSlotsPageDto } from './dto/request-source-review-slots.dto';
-import {
-  ApplyTranslationJobDto,
-  ApplyTranslationMode,
-} from './dto/apply-translation-job.dto';
+import { ApplyTranslationJobDto } from './dto/apply-translation-job.dto';
 import { CreateGlossaryDto } from './dto/create-glossary.dto';
 import { WorkerEventCallbackDto } from './dto/worker-event-callback.dto';
 import { CompleteMaterializationDto } from './dto/complete-materialization.dto';
@@ -90,6 +88,12 @@ export const PACKAGE_MANGA_FILE_TYPES = new Set([
   'MANGA_ZIP_ARCHIVE',
   'MANGA_PACKAGE',
 ]);
+
+export interface StoryAccessResolution {
+  canReview: boolean;
+  canApply: boolean;
+  effectiveRole: 'ADMIN' | StoryMemberRole;
+}
 
 @Injectable()
 export class TranslationService {
@@ -628,11 +632,7 @@ export class TranslationService {
         );
       }
 
-      await this.checkStoryPermission(story.id, user, [
-        'OWNER',
-        'EDITOR',
-        'TRANSLATOR',
-      ]);
+      const access = await this.resolveStoryAccess(story.id, user, manager);
 
       // SQL Aggregation trực tiếp qua manager để đếm segments/pages mà không load toàn bộ vào RAM
       const aggResult = await manager.query(
@@ -754,6 +754,12 @@ export class TranslationService {
             : null,
         },
         reviewSummary,
+        permissions: {
+          canApply: access.canApply,
+          ...(access.canApply
+            ? {}
+            : { applyBlockReason: 'INSUFFICIENT_ROLE' as const }),
+        },
         glossarySnapshot: job.inputManifest?.glossarySnapshot || undefined,
         error: errorSummary,
       };
@@ -1646,27 +1652,46 @@ export class TranslationService {
 
       const storyId = job.project?.storyEdition?.story?.id;
       if (storyId) {
-        // Chỉ Story Owner, Editor hoặc Admin mới được apply
-        await this.checkStoryPermission(storyId, user, ['OWNER', 'EDITOR']);
+        const access = await this.resolveStoryAccess(storyId, user, manager);
+        if (!access.canApply) {
+          throw new ForbiddenException({
+            code: 'FORBIDDEN',
+            message: 'Bạn không có quyền áp dụng bản dịch cho tác phẩm này.',
+          });
+        }
       }
 
-      // Durable Idempotency: Nếu đã apply cùng key hoặc đã APPLIED
+      // Durable Idempotency: same key must preserve the original apply mode.
       if (
         job.status === TranslationJobStatus.APPLIED &&
         job.targetVersionId &&
-        (job.applyIdempotencyKey === idempotencyKey || !idempotencyKey)
+        job.applyIdempotencyKey === idempotencyKey
       ) {
+        if (job.applyMode !== null && job.applyMode !== dto.mode) {
+          throw new ConflictException({
+            code: 'IDEMPOTENCY_CONFLICT',
+            message:
+              'Idempotency-Key đã được sử dụng với một apply mode khác.',
+          });
+        }
+
         const existingTargetVersion = await manager.findOne(ChapterVersion, {
           where: { id: job.targetVersionId },
         });
         const chapter = await manager.findOne(Chapter, {
           where: { id: job.sourceVersion.chapterId },
         });
+        if (!chapter || !existingTargetVersion || !job.targetVersionId) {
+          throw new InternalServerErrorException(
+            'Dữ liệu Chapter hoặc TargetVersion không tồn tại cho TranslationJob đã áp dụng.',
+          );
+        }
         return {
-          chapterId: chapter?.id,
-          activeVersionId: chapter?.activeVersionId,
-          versionNumber: existingTargetVersion?.versionNumber,
-          versionType: existingTargetVersion?.versionType,
+          chapterId: chapter.id,
+          activeVersionId: chapter.activeVersionId,
+          targetVersionId: job.targetVersionId,
+          versionNumber: existingTargetVersion.versionNumber,
+          versionType: existingTargetVersion.versionType,
           isAlreadyApplied: true,
         };
       }
@@ -1836,10 +1861,11 @@ export class TranslationService {
            SET target_version_id = $2,
                status = 'APPLIED',
                apply_idempotency_key = $3,
+               apply_mode = $4,
                completed_at = NOW(),
                workspace_revision = workspace_revision + 1
            WHERE id = $1`,
-          [job.id, savedVersion.id, idempotencyKey || null],
+          [job.id, savedVersion.id, idempotencyKey || null, dto.mode],
         );
 
         return {
@@ -1865,10 +1891,11 @@ export class TranslationService {
          SET target_version_id = $2,
              status = 'APPLIED',
              apply_idempotency_key = $3,
+             apply_mode = $4,
              completed_at = NOW(),
              workspace_revision = workspace_revision + 1
          WHERE id = $1`,
-        [job.id, savedVersion.id, idempotencyKey || null],
+        [job.id, savedVersion.id, idempotencyKey || null, dto.mode],
       );
 
       return {
@@ -2703,6 +2730,39 @@ export class TranslationService {
       where: { projectId },
       order: { createdAt: 'ASC' },
     });
+  }
+
+  private async resolveStoryAccess(
+    storyId: string,
+    user: any,
+    manager?: EntityManager,
+  ): Promise<StoryAccessResolution> {
+    if (user.role === 'ADMIN') {
+      return { canReview: true, canApply: true, effectiveRole: 'ADMIN' };
+    }
+
+    const repo = manager
+      ? manager.getRepository(StoryMember)
+      : this.storyMemberRepo;
+    const membership = await repo.findOne({
+      where: { storyId, userId: user.id },
+    });
+
+    if (
+      !membership ||
+      !['OWNER', 'EDITOR', 'TRANSLATOR'].includes(membership.role)
+    ) {
+      throw new ForbiddenException(
+        'Bạn không có quyền truy cập tác phẩm này.',
+      );
+    }
+
+    const canApply = ['OWNER', 'EDITOR'].includes(membership.role);
+    return {
+      canReview: true,
+      canApply,
+      effectiveRole: membership.role as StoryMemberRole,
+    };
   }
 
   /**

@@ -10,6 +10,7 @@ import {
 } from 'typeorm';
 import {
   TranslationJobStatus,
+  ApplyTranslationMode,
   TranslationInputManifestV1,
   TranslationResultManifestV1,
 } from '@omninovel/shared';
@@ -65,6 +66,9 @@ export class TranslationJob {
 
   @Column({ name: 'apply_idempotency_key', length: 100, nullable: true })
   applyIdempotencyKey: string | null;
+
+  @Column({ name: 'apply_mode', type: 'varchar', length: 50, nullable: true })
+  applyMode: ApplyTranslationMode | null;
 
   @Column({
     type: 'varchar',

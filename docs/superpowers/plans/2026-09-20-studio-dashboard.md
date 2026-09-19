@@ -169,15 +169,15 @@ git commit -m "feat(web): implement useStudioDashboard hook with realtime accele
   - `StudioJobFilterBar`: Filter pills (`ALL`, `ACTIVE`, `REVIEW`, `APPLIED`, `PROBLEM`) and search input.
   - `StudioJobCard`: Job item with media badge, progress bar, chapter info, heartbeat/completed time fallback, and contextual CTA button.
 
-- [ ] **Step 1: Write failing component tests in `studio-dashboard-components.spec.tsx`**
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 1: Write failing component tests in `studio-dashboard-components.spec.tsx`**
+- [x] **Step 2: Run test to verify it fails**
 Run: `npm --prefix apps/web test -- src/test/studio-dashboard-components.spec.tsx`
 Expected: FAIL.
-- [ ] **Step 3: Implement sub-components in `apps/web/src/components/studio/dashboard/`**
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 3: Implement sub-components in `apps/web/src/components/studio/dashboard/`**
+- [x] **Step 4: Run test to verify it passes**
 Run: `npm --prefix apps/web test -- src/test/studio-dashboard-components.spec.tsx`
 Expected: PASS.
-- [ ] **Step 5: Commit Task 4**
+- [x] **Step 5: Commit Task 4**
 ```bash
 git add apps/web/src/components/studio/dashboard/ apps/web/src/test/studio-dashboard-components.spec.tsx
 git commit -m "feat(web): create modular Studio Dashboard UI sub-components (#145)"

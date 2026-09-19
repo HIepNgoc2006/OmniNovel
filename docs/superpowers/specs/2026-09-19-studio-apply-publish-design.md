@@ -59,7 +59,7 @@ export interface TranslationJobReviewDetailResponse {
 ```
 - `permissions` is **required**.
 - No localized strings in API contracts; the UI maps `'INSUFFICIENT_ROLE'` to user-facing copy.
-- Backend fix: Idempotent replay (`isAlreadyApplied: true`) **must** always return `targetVersionId: job.targetVersionId` (currently missing).
+- **Fail-closed Idempotent Replay**: Backend replay must fail-closed if `chapter` or `existingTargetVersion` is missing; it must never return undefined or malformed 200 responses.
 
 ### Lock 2: Idempotency Identity `(key, mode)` & Conflict Guard
 - Web client freezes `{ idempotencyKey: string, submittedMode: ApplyTranslationMode }` when submission starts.
@@ -86,6 +86,7 @@ export interface TranslationJobReviewDetailResponse {
   export type ApplyLifecycleState =
     | 'IDLE'
     | 'SUBMITTING'
+    | 'SUBMISSION_OUTCOME_UNKNOWN'
     | 'RECONCILING'
     | 'SUCCEEDED'
     | 'COMMITTED_RECONCILIATION_REQUIRED'
@@ -104,25 +105,26 @@ export interface TranslationJobReviewDetailResponse {
         error: ParsedApiError;
       }
     | {
+        outcome: 'SUBMISSION_OUTCOME_UNKNOWN';
+        error: ParsedApiError;
+      }
+    | {
         outcome: 'FAILED';
         error: ParsedApiError;
       };
   ```
-- **Workflow & Coherence Verification**:
-  1. `POST /api/v1/ai/jobs/:id/apply` succeeds with `ApplyTranslationJobResponse`.
-  2. UI retains response in state and transitions hook to `RECONCILING`.
-  3. UI triggers authoritative refetch: `refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' })`.
-  4. **Coherence Check**: Server authoritative detail must satisfy:
-     ```typescript
-     refreshedDetail.job.status === TranslationJobStatus.APPLIED &&
-     refreshedDetail.context.targetVersion?.id === response.targetVersionId &&
-     refreshedDetail.job.workspaceRevision >= previousWorkspaceRevision
-     ```
-  5. If all coherence conditions pass $\to$ transition to `SUCCEEDED`, workspace mode switches to `APPLIED` (read-only).
-  6. **Fault-tolerant handling**: If step 1 succeeds on server but step 3 fails (network drop) OR coherence check fails:
-     - Hook transitions to `COMMITTED_RECONCILIATION_REQUIRED`.
-     - Modal notifies user: *"Xuất bản đã được máy chủ ghi nhận, nhưng chưa thể hoàn tất đối chiếu không gian làm việc. Vui lòng làm mới trang."*
-     - UI does **not** report "Xuất bản thất bại" since the version was indeed committed.
+- **Semantics of Failure & Ambiguity**:
+  - Authoritative rejection (HTTP 400, 403, 409, 422, 500 with payload) $\to$ `FAILED`.
+  - Network disconnection / timeout prior to receiving response $\to$ `SUBMISSION_OUTCOME_UNKNOWN`. Frozen identity `{key, mode}` preserved; allows retry or reconcile.
+  - POST 200 OK received $\to$ `RECONCILING`.
+  - POST 200 OK received but subsequent `refetchDetail` fails or coherence check fails $\to$ `COMMITTED_RECONCILIATION_REQUIRED`.
+  - Coherence verified $\to$ `SUCCEEDED`, workspace switches to `APPLIED` (read-only).
+- **Coherence Check**: Server authoritative detail must satisfy:
+  ```typescript
+  refreshedDetail.job.status === TranslationJobStatus.APPLIED &&
+  refreshedDetail.context.targetVersion?.id === response.targetVersionId &&
+  refreshedDetail.job.workspaceRevision >= previousWorkspaceRevision
+  ```
 
 ### Lock 4: Reader Deep-link Invariant
 - Success state links must always include `?versionId=`:
@@ -209,6 +211,9 @@ export function canApplyJob(params: CanApplyJobParams): boolean {
 | useMangaReviewStudio (apps/web/src/lib/studio/use-manga-review-studio)  |
 |                                                                         |
 |  Lifecycle Owner: IDLE -> SUBMITTING -> RECONCILING -> SUCCEEDED        |
+|                        \-> SUBMISSION_OUTCOME_UNKNOWN                   |
+|                        \-> COMMITTED_RECONCILIATION_REQUIRED            |
+|                        \-> FAILED                                       |
 |  - Freezes (idempotencyKey, submittedMode)                              |
 |  - Calls POST /api/v1/ai/jobs/:id/apply                                 |
 |  - Upon 200 OK: calls refetchDetail({ requirement:                      |
@@ -238,8 +243,9 @@ export function canApplyJob(params: CanApplyJobParams): boolean {
    - Update `ApplyTranslationJobDto` to import `ApplyTranslationMode` from `@omninovel/shared`.
 3. **Controller & Service Updates**:
    - Refactor permission checking in `translation.service.ts`:
-     - Create helper `resolveStoryAccess(storyId: string, user: any): Promise<StoryAccessResolution>`.
+     - Helper: `resolveStoryAccess(storyId: string, user: any, manager?: EntityManager): Promise<StoryAccessResolution>`.
      - Returns `{ canReview: boolean; canApply: boolean; effectiveRole: 'ADMIN' | StoryMemberRole }`.
+     - Passes transaction `manager` when called within `dataSource.transaction('REPEATABLE READ', ...)` to preserve snapshot isolation.
      - Single query to `story_members` (or bypass for ADMIN), used for both workspace authorization and projecting:
        ```typescript
        permissions: {
@@ -250,10 +256,10 @@ export function canApplyJob(params: CanApplyJobParams): boolean {
    - `applyJob()` in `translation.service.ts`:
      - Maintain independent server-side guard `['OWNER', 'EDITOR']` / Admin.
      - Check `job.applyIdempotencyKey === idempotencyKey`:
-       - If `job.applyMode === null`: Replay existing result (`isAlreadyApplied: true`), always include `targetVersionId: job.targetVersionId`.
+       - If `job.applyMode === null`: Replay existing result (`isAlreadyApplied: true`), fail-closed on missing chapter/targetVersion, always include `targetVersionId: job.targetVersionId`.
        - If `job.applyMode !== null && job.applyMode === dto.mode`: Replay existing result (`isAlreadyApplied: true`), include `targetVersionId: job.targetVersionId`.
        - If `job.applyMode !== null && job.applyMode !== dto.mode`: Throw 409 `IDEMPOTENCY_CONFLICT`.
-     - In transaction: save `apply_mode = dto.mode`.
+     - In transaction: save `apply_mode = dto.mode` in **BOTH** SQL update paths (with and without `resultManifest`).
 
 ---
 
@@ -264,24 +270,26 @@ export function canApplyJob(params: CanApplyJobParams): boolean {
    - `ApplyTranslationJobRequest`
    - `ApplyTranslationJobResponse`
    - `TranslationJobReviewDetailResponse.permissions` (required)
-2. **Pure Policy (`apps/web/src/lib/studio/studio-apply-policy.ts`)**:
+2. **Fixture Migration**:
+   - Update existing test fixtures in `apps/web` (`manga-studio-foundation.spec.tsx`, `manga-studio-page-navigator.spec.tsx`, `manga-studio-route.spec.tsx`, `manga-studio-materialization.spec.tsx`, `manga-studio-realtime-cleanup.spec.tsx`, and E2E mock routes) to include `permissions: { canApply: true }`.
+3. **Pure Policy (`apps/web/src/lib/studio/studio-apply-policy.ts`)**:
    - `canApplyJob(params: CanApplyJobParams): boolean`
    - `resolveApplyBlockReason(params): string | null`
    - `resolvePostApplyReaderUrl(storySlug: string, response: ApplyTranslationJobResponse): string`
    - `classifyApplyError(error: unknown): ParsedApiError`
-3. **Modal Component (`apps/web/src/components/studio/apply-translation-modal.tsx`)**:
+4. **Modal Component (`apps/web/src/components/studio/apply-translation-modal.tsx`)**:
    - Accessible dialog built on `Modal`.
    - Explicit selection cards with Tailwind CSS rich aesthetics.
    - Verification summary and warning indicators: *"Còn {unverifiedCount} phân đoạn chưa được đánh dấu đã duyệt thủ công..."*
    - Success screen with direct Reader link (`?versionId=...`) and Dashboard link.
-4. **Hook Integration (`apps/web/src/lib/studio/use-manga-review-studio.ts`)**:
+5. **Hook Integration (`apps/web/src/lib/studio/use-manga-review-studio.ts`)**:
    - Single SSoT lifecycle state: `applyLifecycle: ApplyLifecycleState`
    - `applyError: ParsedApiError | null`
    - `applyResponse: ApplyTranslationJobResponse | null`
    - `applyJob: (mode: ApplyTranslationMode) => Promise<ApplyJobResult>`
    - `canApply: boolean`
    - `frozenSubmission: { idempotencyKey: string; submittedMode: ApplyTranslationMode } | null`
-5. **Page Integration (`apps/web/src/app/(site)/(studio)/studio/ai/jobs/[jobId]/page.tsx`)**:
+6. **Page Integration (`apps/web/src/app/(site)/(studio)/studio/ai/jobs/[jobId]/page.tsx`)**:
    - Add "Xuất Bản" button (`btn-open-apply-modal`) to header.
    - Render `ApplyTranslationModal`.
 
@@ -306,14 +314,14 @@ export function canApplyJob(params: CanApplyJobParams): boolean {
   - Verifies "Xuất Bản" button visibility and disabled states.
   - Verifies modal opening and closing.
 
-### Playwright E2E Tests (`apps/web/e2e/manga-studio-apply.spec.ts`):
-- Flow 1: Alternate version happy path (`CREATE_ALTERNATE_VERSION`) $\to$ modal opens $\to$ user selects alternate $\to$ submits $\to$ verifies Reader deep link with `?versionId=`.
-- Flow 2: Overwrite version happy path (`OVERWRITE_ACTIVE_VERSION`) $\to$ warning shown $\to$ confirmed $\to$ job transitions to `APPLIED`.
-
-### Backend Integration Tests:
-- `services/api/src/modules/translation/test/apply-job-idempotency.spec.ts`:
+### Backend Integration & E2E Tests:
+- `services/api/test/apply-job-idempotency.e2e-spec.ts` (Placed in `test/` running in E2E phase after DB migrations):
   - Case 4: Legacy job with `apply_idempotency_key` and `apply_mode = NULL` replayed $\to$ returns existing version without error or second version.
-  - Replay with same key + same mode $\to$ 200 OK (`isAlreadyApplied: true`, contains `targetVersionId`).
+  - Replay with same key + same mode $\to$ 200 OK (`isAlreadyApplied: true`, contains `targetVersionId`, fail-closed non-null assertions).
   - Replay with same key + different mode $\to$ 409 `IDEMPOTENCY_CONFLICT`.
   - Case 5: `getJob()` returns `canApply: true` for ADMIN/OWNER/EDITOR, `canApply: false` with `applyBlockReason: 'INSUFFICIENT_ROLE'` for TRANSLATOR, and 403 for non-members.
   - Permission gate on `POST /apply`: Translator-only $\to$ 403 `FORBIDDEN`.
+
+### Playwright E2E Tests (`apps/web/e2e/manga-studio-apply.spec.ts`):
+- Flow 1: Alternate version happy path (`CREATE_ALTERNATE_VERSION`) $\to$ modal opens $\to$ user selects alternate $\to$ submits $\to$ verifies Reader deep link with `?versionId=`.
+- Flow 2: Overwrite version happy path (`OVERWRITE_ACTIVE_VERSION`) $\to$ warning shown $\to$ confirmed $\to$ job transitions to `APPLIED`.

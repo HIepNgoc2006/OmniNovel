@@ -42,7 +42,7 @@
   - `ApplyTranslationJobResponse`: `{ chapterId: string, activeVersionId: string | null, targetVersionId: string, versionNumber: number, versionType: ChapterVersionType, isAlreadyApplied: boolean }`
   - `TranslationJobReviewDetailResponse.permissions`: `{ canApply: boolean, applyBlockReason?: 'INSUFFICIENT_ROLE' }` (required field).
 
-- [ ] **Step 1: Write/Update shared types in `packages/shared/src/index.ts`**
+- [x] **Step 1: Write/Update shared types in `packages/shared/src/index.ts`**
 
 ```typescript
 export enum ApplyTranslationMode {
@@ -77,21 +77,21 @@ export interface TranslationJobReviewDetailResponse {
 }
 ```
 
-- [ ] **Step 2: Build `@omninovel/shared`**
+- [x] **Step 2: Build `@omninovel/shared`**
 
 Run: `npm --prefix packages/shared run build`
 Expected: PASS with 0 errors.
 
-- [ ] **Step 3: Update existing test fixtures in `apps/web`**
+- [x] **Step 3: Update existing test fixtures in `apps/web`**
 
 Add `permissions: { canApply: true }` to default mock job detail responses in `manga-studio-foundation.spec.tsx`, `manga-studio-page-navigator.spec.tsx`, `manga-studio-route.spec.tsx`, `manga-studio-materialization.spec.tsx`, `manga-studio-realtime-cleanup.spec.tsx`, and `manga-studio-verification.spec.tsx`.
 
-- [ ] **Step 4: Verify typecheck passes across monorepo**
+- [x] **Step 4: Verify typecheck passes across monorepo**
 
 Run: `npm --prefix apps/web run typecheck`
 Expected: PASS with 0 TypeScript errors.
 
-- [ ] **Step 5: Commit Task 1**
+- [x] **Step 5: Commit Task 1**
 
 ```bash
 git add packages/shared/src/index.ts apps/web/src/test/
@@ -286,8 +286,9 @@ Test scenarios:
 - `canApplyJob` returns false if `applyInFlight === true` or `materializationInFlight === true`.
 - `canApplyJob` returns true only when all 6 conditions are satisfied.
 - `resolvePostApplyReaderUrl` formats `/stories/${slug}/read/${chapterId}?versionId=${targetVersionId}` for both `OVERWRITE_ACTIVE_VERSION` and `CREATE_ALTERNATE_VERSION`.
-- `classifyApplyError` extracts 400, 403, 409 (`IDEMPOTENCY_CONFLICT`), 409 (`ARTIFACT_STALE`), 500 into structured `ParsedApiError`.
-- Network timeout classifier detects timeout/network error and flags ambiguity.
+- `classifyApplyError` extracts 400, 403, 409 (`IDEMPOTENCY_CONFLICT`), 409 (`ARTIFACT_STALE`), 422 into structured `ParsedApiError` with non-ambiguous status.
+- HTTP 5xx classification hardening: HTTP 5xx errors from POST apply are classified as ambiguous (`isAmbiguous: true`, mapping to `SUBMISSION_OUTCOME_UNKNOWN`), retaining frozen `{ idempotencyKey, mode }` for retry since transaction might have committed prior to 5xx response.
+- Network timeout classifier detects timeout/network error and flags ambiguity (`isAmbiguous: true`).
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -336,10 +337,12 @@ git commit -m "feat(web): implement studio apply pure policy, lifecycle types, a
 - [ ] **Step 1: Write failing hook tests in `apps/web/src/test/manga-studio-apply-hook.spec.tsx`**
 
 Test scenarios:
-- Happy path: POST 200 -> RECONCILING -> refetchDetail confirms APPLIED + targetVersionId matches -> outcome `SUCCEEDED`.
+- Happy path: POST 200 -> RECONCILING -> refetchDetail confirms APPLIED + targetVersionId matches + `workspaceRevision > previousWorkspaceRevision` -> outcome `SUCCEEDED`.
 - Network drop / timeout during POST -> outcome `SUBMISSION_OUTCOME_UNKNOWN` (NOT FAILED), retains frozen submission for retry.
+- HTTP 5xx during POST -> outcome `SUBMISSION_OUTCOME_UNKNOWN` (ambiguous, retains frozen key & mode), NOT FAILED.
 - Post succeeds on server but refetchDetail fails -> outcome `COMMITTED_RECONCILIATION_REQUIRED`, does not claim failure.
-- Coherence failure: refetchDetail returns APPLIED but targetVersionId does not match -> outcome `COMMITTED_RECONCILIATION_REQUIRED`.
+- Coherence failure (targetVersionId mismatch): refetchDetail returns APPLIED but targetVersionId does not match -> outcome `COMMITTED_RECONCILIATION_REQUIRED`.
+- Coherence failure (revision monotonic bump): refetchDetail returns APPLIED but `workspaceRevision <= previousWorkspaceRevision` -> coherence violation mapping to `COMMITTED_RECONCILIATION_REQUIRED` (since backend Apply contract always bumps revision + 1).
 - Frozen submission enforcement: retry uses exact same key and mode. Resetting requires authoritative GET showing `READY_FOR_REVIEW`.
 - `canApply` respects `drafts` presence across all segments.
 

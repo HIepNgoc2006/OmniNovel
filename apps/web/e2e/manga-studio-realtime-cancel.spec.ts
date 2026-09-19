@@ -88,6 +88,9 @@ test.describe('Manga Review Studio Realtime & Cancel Protocol E2E (#149 RED 6)',
             resultPageCount: 1,
             blockCount: 1,
           },
+          permissions: {
+            canApply: true,
+          },
         }),
       });
     });
@@ -255,6 +258,7 @@ test.describe('Manga Review Studio Realtime & Cancel Protocol E2E (#149 RED 6)',
             chapter: { id: CHAPTER_ID, chapterNumber: '1', title: 'Chương 1' },
           },
           reviewSummary: { segmentCount: 1, verifiedCount: 0, pageCount: 1, resultPageCount: 1, blockCount: 1 },
+          permissions: { canApply: true },
         }),
       });
     });

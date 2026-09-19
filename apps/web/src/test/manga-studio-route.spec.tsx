@@ -80,6 +80,9 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
         resultPageCount: 3,
         blockCount: null,
       },
+      permissions: {
+        canApply: true,
+      },
     },
     segments: mockDefaultSegments,
     segmentsSyncStatus: 'SYNCED',

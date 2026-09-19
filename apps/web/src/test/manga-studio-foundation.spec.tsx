@@ -85,6 +85,9 @@ describe('Manga Review Studio Foundation (#149 RED 0)', () => {
       resultPageCount: 5, // Authoritative result manifest count
       blockCount: null,
     },
+    permissions: {
+      canApply: true,
+    },
   };
 
   const mockStaleComicJobDetail: TranslationJobReviewDetailResponse = {

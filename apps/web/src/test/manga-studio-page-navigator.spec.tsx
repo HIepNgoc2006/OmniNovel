@@ -217,6 +217,9 @@ describe('Manga Review Studio Hook Page Navigator (#149 RED 1)', () => {
       resultPageCount: 20, // 20 pages
       blockCount: null,
     },
+    permissions: {
+      canApply: true,
+    },
   };
 
   const mockSegments: TranslationSegmentDto[] = [
@@ -1313,6 +1316,9 @@ describe('Manga Review Studio Route & URL Synchronization (#149 RED 1)', () => {
       pageCount: 3,
       resultPageCount: 20, // 20 pages
       blockCount: null,
+    },
+    permissions: {
+      canApply: true,
     },
   };
 

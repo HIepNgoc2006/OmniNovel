@@ -554,6 +554,9 @@ describe('Manga Segment Editor (Phase 4D RED 3 #149)', () => {
         resultPageCount: 3,
         blockCount: null,
       },
+      permissions: {
+        canApply: true,
+      },
     };
 
     beforeEach(() => {

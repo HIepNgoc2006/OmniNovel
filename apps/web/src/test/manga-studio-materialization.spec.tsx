@@ -89,6 +89,9 @@ describe('Manga Review Studio Materialization Lifecycle (#149 RED 5, #157)', () 
       resultPageCount: 3,
       blockCount: null,
     },
+    permissions: {
+      canApply: true,
+    },
   };
 
   const mockStaleJobDetail: TranslationJobReviewDetailResponse = {

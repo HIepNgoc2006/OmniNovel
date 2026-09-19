@@ -141,6 +141,9 @@ test.describe('Manga Review Studio Materialization Lifecycle E2E (Phase 4D RED 5
               resultPageCount: 1,
               blockCount: 1,
             },
+            permissions: {
+              canApply: true,
+            },
           }),
         });
         return;
@@ -346,6 +349,9 @@ test.describe('Manga Review Studio Materialization Lifecycle E2E (Phase 4D RED 5
             pageCount: 1,
             resultPageCount: 1,
             blockCount: 1,
+          },
+          permissions: {
+            canApply: true,
           },
         }),
       });

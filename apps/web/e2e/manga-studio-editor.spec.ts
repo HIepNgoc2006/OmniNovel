@@ -95,6 +95,9 @@ test.describe('Manga Review Studio Editor, Draft Management & OCC E2E (Phase 4D 
             resultPageCount: 1,
             blockCount: 1,
           },
+          permissions: {
+            canApply: true,
+          },
         }),
       });
     });

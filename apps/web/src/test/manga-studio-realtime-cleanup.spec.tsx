@@ -106,6 +106,9 @@ describe('Manga Review Studio Realtime & Cleanup Integration (#149 RED 6)', () =
       resultPageCount: 3,
       blockCount: 2,
     },
+    permissions: {
+      canApply: true,
+    },
   };
 
   const mockSegments: TranslationSegmentDto[] = [

@@ -74,6 +74,9 @@ describe('Manga Review Studio RED 4 — Verification Interactions & Traversal', 
       resultPageCount: 1,
       blockCount: null,
     },
+    permissions: {
+      canApply: true,
+    },
   };
 
   const mockSegments: TranslationSegmentDto[] = [

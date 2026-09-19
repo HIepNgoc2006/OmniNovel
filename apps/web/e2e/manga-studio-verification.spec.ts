@@ -152,6 +152,9 @@ test.describe('Manga Review Studio Verification, 4-State Action Matrix & Travers
             resultPageCount: 1,
             blockCount: 3,
           },
+          permissions: {
+            canApply: true,
+          },
         }),
       });
     });

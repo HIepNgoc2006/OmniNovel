@@ -395,6 +395,10 @@ export interface TranslationJobReviewDetailResponse {
     targetVersion: { id: string; versionNumber: number } | null;
   };
   reviewSummary: ReviewSummaryDto;
+  permissions: {
+    canApply: boolean;
+    applyBlockReason?: 'INSUFFICIENT_ROLE';
+  };
   glossarySnapshot?: Array<{
     sourceTerm: string;
     targetTerm: string;
@@ -404,6 +408,24 @@ export interface TranslationJobReviewDetailResponse {
     code: string;
     message: string;
   };
+}
+
+export enum ApplyTranslationMode {
+  OVERWRITE_ACTIVE_VERSION = 'OVERWRITE_ACTIVE_VERSION',
+  CREATE_ALTERNATE_VERSION = 'CREATE_ALTERNATE_VERSION',
+}
+
+export interface ApplyTranslationJobRequest {
+  mode: ApplyTranslationMode;
+}
+
+export interface ApplyTranslationJobResponse {
+  chapterId: string;
+  activeVersionId: string | null;
+  targetVersionId: string;
+  versionNumber: number;
+  versionType: ChapterVersionType;
+  isAlreadyApplied: boolean;
 }
 
 export interface TranslationSegmentDto {

@@ -1,5 +1,6 @@
 import { IsString, IsNotEmpty, IsIn } from 'class-validator';
 import { ApplyTranslationMode } from '@omninovel/shared';
+export { ApplyTranslationMode } from '@omninovel/shared';
 
 export class ApplyTranslationJobDto {
   @IsString()

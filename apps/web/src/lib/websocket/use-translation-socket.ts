@@ -24,6 +24,7 @@ export type TranslationSocketSubscriptionState =
 
 export interface UseTranslationSocketOptions {
   jobId?: string;
+  jobIds?: string[];
   onProgress?: (event: JobProgressEvent) => void;
   onReady?: (event: JobReadyEvent) => void;
   onFailed?: (event: JobFailedEvent) => void;
@@ -37,12 +38,15 @@ export interface UseTranslationSocketReturn {
   error: string | null;
   subscribeJob: (id: string) => void;
   unsubscribeJob: (id: string) => void;
+  subscribeJobs: (ids: string[]) => void;
+  unsubscribeJobs: (ids: string[]) => void;
 }
 
 const WS_BASE_URL = process.env.NEXT_PUBLIC_WS_URL || 'http://localhost:8000';
 
 export function useTranslationSocket({
   jobId,
+  jobIds,
   onProgress,
   onReady,
   onFailed,
@@ -61,12 +65,30 @@ export function useTranslationSocket({
     callbacksRef.current = { onProgress, onReady, onFailed, onCanceled };
   });
 
-  // 2. Active Job ID Ref: Always read dynamic target without closing/reopening transport
+  // 2. Multi-Job Subscriptions Set SSoT: Retains all active subscribed jobs across reconnects
+  const subscribedJobIdsRef = useRef<Set<string>>(
+    new Set([
+      ...(jobId ? [jobId] : []),
+      ...(jobIds || []).filter(Boolean),
+    ]),
+  );
+
   const jobIdRef = useRef(jobId);
-  const activeSubscribedJobRef = useRef<string | null>(null);
   useEffect(() => {
     jobIdRef.current = jobId;
   }, [jobId]);
+
+  const isTargetJob = useCallback((eventJobId: string): boolean => {
+    // If neither jobId nor jobIds were passed and Set is empty, allow all (tester mode in legacy studio page)
+    if (subscribedJobIdsRef.current.size === 0 && !jobIdRef.current) {
+      return true;
+    }
+    // If Set has entries, only accept if in Set
+    if (subscribedJobIdsRef.current.size > 0) {
+      return subscribedJobIdsRef.current.has(eventJobId);
+    }
+    return eventJobId === jobIdRef.current;
+  }, []);
 
   // 3. Socket Transport Connection Lifecycle
   const connectSocket = useCallback(() => {
@@ -100,14 +122,15 @@ export function useTranslationSocket({
     socket.on('connect', () => {
       setIsConnected(true);
       setError(null);
-      const targetJob = jobIdRef.current;
-      if (targetJob) {
+
+      // Resubscribe all active job IDs in subscribedJobIdsRef on initial connect & reconnect!
+      if (subscribedJobIdsRef.current.size > 0) {
         setSubscriptionState('subscribing');
-        activeSubscribedJobRef.current = targetJob;
-        socket.emit('subscribe_job', { jobId: targetJob });
+        for (const targetJob of subscribedJobIdsRef.current) {
+          socket.emit('subscribe_job', { jobId: targetJob });
+        }
       } else {
         setSubscriptionState('idle');
-        activeSubscribedJobRef.current = null;
       }
     });
 
@@ -123,14 +146,17 @@ export function useTranslationSocket({
     });
 
     socket.on('subscribed', (data: { jobId?: string }) => {
-      if (data?.jobId && data.jobId === jobIdRef.current) {
+      if (data?.jobId && subscribedJobIdsRef.current.has(data.jobId)) {
         setSubscriptionState('subscribed');
       }
     });
 
     socket.on('unsubscribed', (data: { jobId?: string }) => {
-      if (data?.jobId && data.jobId === jobIdRef.current) {
-        setSubscriptionState('idle');
+      if (data?.jobId && subscribedJobIdsRef.current.has(data.jobId)) {
+        subscribedJobIdsRef.current.delete(data.jobId);
+        if (subscribedJobIdsRef.current.size === 0) {
+          setSubscriptionState('idle');
+        }
       }
     });
 
@@ -140,36 +166,32 @@ export function useTranslationSocket({
     });
 
     socket.on('job_progress', (data: JobProgressEvent) => {
-      const targetJob = jobIdRef.current;
-      if (!targetJob || data.jobId === targetJob) {
+      if (isTargetJob(data.jobId)) {
         setLastProgress(data);
         callbacksRef.current.onProgress?.(data);
       }
     });
 
     socket.on('job_ready_for_review', (data: JobReadyEvent) => {
-      const targetJob = jobIdRef.current;
-      if (!targetJob || data.jobId === targetJob) {
+      if (isTargetJob(data.jobId)) {
         callbacksRef.current.onReady?.(data);
       }
     });
 
     socket.on('job_failed', (data: JobFailedEvent) => {
-      const targetJob = jobIdRef.current;
-      if (!targetJob || data.jobId === targetJob) {
+      if (isTargetJob(data.jobId)) {
         callbacksRef.current.onFailed?.(data);
       }
     });
 
     socket.on('job_canceled', (data: JobCanceledEvent) => {
-      const targetJob = jobIdRef.current;
-      if (!targetJob || data.jobId === targetJob) {
+      if (isTargetJob(data.jobId)) {
         callbacksRef.current.onCanceled?.(data);
       }
     });
 
     socketRef.current = socket;
-  }, []);
+  }, [isTargetJob]);
 
   useEffect(() => {
     connectSocket();
@@ -199,10 +221,10 @@ export function useTranslationSocket({
     return () => {
       unsubscribe();
       if (socketRef.current) {
-        const currentJob = jobIdRef.current;
-        if (currentJob) {
-          socketRef.current.emit('unsubscribe_job', { jobId: currentJob });
+        for (const targetJob of subscribedJobIdsRef.current) {
+          socketRef.current.emit('unsubscribe_job', { jobId: targetJob });
         }
+        subscribedJobIdsRef.current.clear();
         socketRef.current.disconnect();
         socketRef.current = null;
         setIsConnected(false);
@@ -211,42 +233,137 @@ export function useTranslationSocket({
     };
   }, [connectSocket]);
 
-  // 4. Job Subscription Transition Lifecycle: Switch jobs without tearing down socket transport
+  // 4. Single Job Subscription Prop Transition Lifecycle
+  const prevJobIdRef = useRef<string | undefined>(jobId);
   useEffect(() => {
-    const socket = socketRef.current;
-    if (!socket || !socket.connected) {
-      if (!jobId) {
-        setSubscriptionState('idle');
-      }
-      return;
-    }
+    const prev = prevJobIdRef.current;
+    prevJobIdRef.current = jobId;
 
-    const prevSubscribed = activeSubscribedJobRef.current;
-    if (prevSubscribed && prevSubscribed !== jobId) {
-      socket.emit('unsubscribe_job', { jobId: prevSubscribed });
-      activeSubscribedJobRef.current = null;
+    const socket = socketRef.current;
+    if (prev && prev !== jobId) {
+      subscribedJobIdsRef.current.delete(prev);
+      if (socket?.connected) {
+        socket.emit('unsubscribe_job', { jobId: prev });
+      }
     }
 
     if (jobId) {
-      setSubscriptionState('subscribing');
-      activeSubscribedJobRef.current = jobId;
-      socket.emit('subscribe_job', { jobId });
-    } else {
+      if (!subscribedJobIdsRef.current.has(jobId)) {
+        subscribedJobIdsRef.current.add(jobId);
+        if (socket?.connected) {
+          setSubscriptionState('subscribing');
+          socket.emit('subscribe_job', { jobId });
+        }
+      }
+    } else if (subscribedJobIdsRef.current.size === 0) {
       setSubscriptionState('idle');
-      activeSubscribedJobRef.current = null;
     }
   }, [jobId]);
+
+  // 5. Multi-Job Subscription Prop Transition Lifecycle
+  const prevJobIdsRef = useRef<string[]>(jobIds || []);
+  useEffect(() => {
+    const currentList = jobIds || [];
+    const prevList = prevJobIdsRef.current;
+    prevJobIdsRef.current = currentList;
+
+    const socket = socketRef.current;
+    const currentSet = new Set(currentList.filter(Boolean));
+    const prevSet = new Set(prevList.filter(Boolean));
+
+    // Jobs to unsubscribe
+    for (const id of prevSet) {
+      if (!currentSet.has(id) && id !== jobIdRef.current) {
+        subscribedJobIdsRef.current.delete(id);
+        if (socket?.connected) {
+          socket.emit('unsubscribe_job', { jobId: id });
+        }
+      }
+    }
+
+    // Jobs to subscribe
+    let newlyAdded = false;
+    for (const id of currentSet) {
+      if (id && !subscribedJobIdsRef.current.has(id)) {
+        subscribedJobIdsRef.current.add(id);
+        newlyAdded = true;
+        if (socket?.connected) {
+          socket.emit('subscribe_job', { jobId: id });
+        }
+      }
+    }
+
+    if (newlyAdded && socket?.connected) {
+      setSubscriptionState('subscribing');
+    } else if (subscribedJobIdsRef.current.size === 0) {
+      setSubscriptionState('idle');
+    }
+  }, [jobIds]);
+
+  const subscribeJob = useCallback((id: string) => {
+    if (!id) return;
+    if (!subscribedJobIdsRef.current.has(id)) {
+      subscribedJobIdsRef.current.add(id);
+      if (socketRef.current?.connected) {
+        setSubscriptionState('subscribing');
+        socketRef.current.emit('subscribe_job', { jobId: id });
+      }
+    }
+  }, []);
+
+  const unsubscribeJob = useCallback((id: string) => {
+    if (!id) return;
+    if (subscribedJobIdsRef.current.has(id)) {
+      subscribedJobIdsRef.current.delete(id);
+      if (socketRef.current?.connected) {
+        socketRef.current.emit('unsubscribe_job', { jobId: id });
+      }
+      if (subscribedJobIdsRef.current.size === 0) {
+        setSubscriptionState('idle');
+      }
+    }
+  }, []);
+
+  const subscribeJobs = useCallback((ids: string[]) => {
+    if (!ids || ids.length === 0) return;
+    let added = false;
+    for (const id of ids) {
+      if (id && !subscribedJobIdsRef.current.has(id)) {
+        subscribedJobIdsRef.current.add(id);
+        added = true;
+        if (socketRef.current?.connected) {
+          socketRef.current.emit('subscribe_job', { jobId: id });
+        }
+      }
+    }
+    if (added && socketRef.current?.connected) {
+      setSubscriptionState('subscribing');
+    }
+  }, []);
+
+  const unsubscribeJobs = useCallback((ids: string[]) => {
+    if (!ids || ids.length === 0) return;
+    for (const id of ids) {
+      if (id && subscribedJobIdsRef.current.has(id)) {
+        subscribedJobIdsRef.current.delete(id);
+        if (socketRef.current?.connected) {
+          socketRef.current.emit('unsubscribe_job', { jobId: id });
+        }
+      }
+    }
+    if (subscribedJobIdsRef.current.size === 0) {
+      setSubscriptionState('idle');
+    }
+  }, []);
 
   return {
     isConnected,
     subscriptionState,
     lastProgress,
     error,
-    subscribeJob: (id: string) => {
-      socketRef.current?.emit('subscribe_job', { jobId: id });
-    },
-    unsubscribeJob: (id: string) => {
-      socketRef.current?.emit('unsubscribe_job', { jobId: id });
-    },
+    subscribeJob,
+    unsubscribeJob,
+    subscribeJobs,
+    unsubscribeJobs,
   };
 }

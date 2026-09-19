@@ -91,22 +91,22 @@ git commit -m "feat(shared,api,web): add dashboard contracts, multi-status query
   - Added methods: `subscribeJobs(ids: string[])`, `unsubscribeJobs(ids: string[])`.
   - Automatic multi-job resubscription on socket `connect` / reconnect / token rotation.
 
-- [ ] **Step 1: Write failing test in `use-translation-socket.spec.ts`**
+- [x] **Step 1: Write failing test in `use-translation-socket.spec.ts`**
 Scenarios:
 - Supplying `jobIds: ['j1', 'j2']` emits `subscribe_job` for both.
 - Calling `subscribeJobs(['j3'])` adds to internal Set and emits.
 - When socket disconnects and reconnects, it automatically resubscribes all active job IDs in the Set.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 Run: `npm --prefix apps/web test -- src/test/use-translation-socket.spec.ts`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement multi-job subscription persistence in `use-translation-socket.ts`**
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 3: Implement multi-job subscription persistence in `use-translation-socket.ts`**
+- [x] **Step 4: Run test to verify it passes**
 Run: `npm --prefix apps/web test -- src/test/use-translation-socket.spec.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 ```bash
 git add apps/web/src/lib/websocket/use-translation-socket.ts apps/web/src/test/use-translation-socket.spec.ts
 git commit -m "feat(web): add multi-job subscription persistence across reconnect to useTranslationSocket (#145)"

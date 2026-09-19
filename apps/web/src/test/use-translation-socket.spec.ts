@@ -223,4 +223,161 @@ describe('useTranslationSocket Hardening (#149 RED 6)', () => {
     expect(mockSocket.emit).toHaveBeenCalledWith('unsubscribe_job', { jobId: 'job-1' });
     expect(mockSocket.disconnect).toHaveBeenCalled();
   });
+
+  describe('Multi-Job Subscription Persistence (#145 Task 2)', () => {
+    it('6. Initializes with jobIds array and emits subscribe_job for all on connect', () => {
+      renderHook(() =>
+        useTranslationSocket({
+          jobIds: ['job-a', 'job-b'],
+        }),
+      );
+
+      act(() => {
+        mockSocket.connected = true;
+        eventHandlers['connect']?.();
+      });
+
+      expect(mockSocket.emit).toHaveBeenCalledWith('subscribe_job', { jobId: 'job-a' });
+      expect(mockSocket.emit).toHaveBeenCalledWith('subscribe_job', { jobId: 'job-b' });
+    });
+
+    it('7. subscribeJobs and unsubscribeJobs dynamically manages multiple subscriptions', () => {
+      const { result } = renderHook(() => useTranslationSocket());
+
+      act(() => {
+        mockSocket.connected = true;
+        eventHandlers['connect']?.();
+      });
+
+      mockSocket.emit.mockClear();
+
+      // Subscribe batch of jobs
+      act(() => {
+        result.current.subscribeJobs?.(['job-1', 'job-2']);
+      });
+
+      expect(mockSocket.emit).toHaveBeenCalledWith('subscribe_job', { jobId: 'job-1' });
+      expect(mockSocket.emit).toHaveBeenCalledWith('subscribe_job', { jobId: 'job-2' });
+
+      mockSocket.emit.mockClear();
+
+      // Unsubscribe one job
+      act(() => {
+        result.current.unsubscribeJobs?.(['job-1']);
+      });
+
+      expect(mockSocket.emit).toHaveBeenCalledWith('unsubscribe_job', { jobId: 'job-1' });
+      expect(mockSocket.emit).not.toHaveBeenCalledWith('unsubscribe_job', { jobId: 'job-2' });
+    });
+
+    it('8. Automatically resubscribes all active job IDs in Set on socket reconnect', () => {
+      const { result } = renderHook(() =>
+        useTranslationSocket({
+          jobIds: ['job-alpha', 'job-beta'],
+        }),
+      );
+
+      act(() => {
+        mockSocket.connected = true;
+        eventHandlers['connect']?.();
+      });
+
+      expect(mockSocket.emit).toHaveBeenCalledWith('subscribe_job', { jobId: 'job-alpha' });
+      expect(mockSocket.emit).toHaveBeenCalledWith('subscribe_job', { jobId: 'job-beta' });
+
+      // Add a third job dynamically
+      act(() => {
+        result.current.subscribeJobs?.(['job-gamma']);
+      });
+      expect(mockSocket.emit).toHaveBeenCalledWith('subscribe_job', { jobId: 'job-gamma' });
+
+      mockSocket.emit.mockClear();
+
+      // Simulate connection drop (disconnect)
+      act(() => {
+        mockSocket.connected = false;
+        eventHandlers['disconnect']?.();
+      });
+
+      // Simulate reconnect (connect)
+      act(() => {
+        mockSocket.connected = true;
+        eventHandlers['connect']?.();
+      });
+
+      // All 3 jobs must be automatically resubscribed!
+      expect(mockSocket.emit).toHaveBeenCalledWith('subscribe_job', { jobId: 'job-alpha' });
+      expect(mockSocket.emit).toHaveBeenCalledWith('subscribe_job', { jobId: 'job-beta' });
+      expect(mockSocket.emit).toHaveBeenCalledWith('subscribe_job', { jobId: 'job-gamma' });
+    });
+
+    it('9. Incoming events for any subscribed job in jobIds are processed, mismatched are dropped', () => {
+      const onProgress = vi.fn();
+      renderHook(() =>
+        useTranslationSocket({
+          jobIds: ['job-x', 'job-y'],
+          onProgress,
+        }),
+      );
+
+      act(() => {
+        mockSocket.connected = true;
+        eventHandlers['connect']?.();
+      });
+
+      // Event for job-x (subscribed)
+      act(() => {
+        eventHandlers['job_progress']?.({
+          jobId: 'job-x',
+          status: TranslationJobStatus.TRANSLATING,
+          progress: 30,
+          timestamp: new Date().toISOString(),
+        });
+      });
+      expect(onProgress).toHaveBeenCalledTimes(1);
+
+      // Event for job-y (subscribed)
+      act(() => {
+        eventHandlers['job_progress']?.({
+          jobId: 'job-y',
+          status: TranslationJobStatus.INPAINTING,
+          progress: 60,
+          timestamp: new Date().toISOString(),
+        });
+      });
+      expect(onProgress).toHaveBeenCalledTimes(2);
+
+      // Event for job-z (not subscribed)
+      act(() => {
+        eventHandlers['job_progress']?.({
+          jobId: 'job-z',
+          status: TranslationJobStatus.OCR,
+          progress: 90,
+          timestamp: new Date().toISOString(),
+        });
+      });
+      expect(onProgress).toHaveBeenCalledTimes(2); // Still 2, dropped!
+    });
+
+    it('10. Clean unmount unsubscribes all subscribed jobs in Set', () => {
+      const { unmount } = renderHook(() =>
+        useTranslationSocket({
+          jobIds: ['job-m1', 'job-m2'],
+        }),
+      );
+
+      act(() => {
+        mockSocket.connected = true;
+        eventHandlers['connect']?.();
+      });
+
+      mockSocket.emit.mockClear();
+
+      unmount();
+
+      expect(mockSocket.emit).toHaveBeenCalledWith('unsubscribe_job', { jobId: 'job-m1' });
+      expect(mockSocket.emit).toHaveBeenCalledWith('unsubscribe_job', { jobId: 'job-m2' });
+      expect(mockSocket.disconnect).toHaveBeenCalled();
+    });
+  });
 });

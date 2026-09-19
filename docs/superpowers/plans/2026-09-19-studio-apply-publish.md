@@ -117,7 +117,7 @@ git commit -m "feat(shared): add canonical apply types and review detail permiss
   - `GET /api/v1/ai/jobs/:id`: returns `permissions: { canApply: boolean, applyBlockReason?: 'INSUFFICIENT_ROLE' }`.
   - `POST /api/v1/ai/jobs/:id/apply`: enforces same-key same-mode replay (or legacy `apply_mode IS NULL`), 409 on mode mismatch, always returns non-null `targetVersionId`, updates `apply_mode` in both SQL paths.
 
-- [ ] **Step 1: Write failing backend E2E integration test**
+- [x] **Step 1: Write failing backend E2E integration test**
 
 In `services/api/test/apply-job-idempotency.e2e-spec.ts`:
 - Test 1: Replay with same key + same mode returns 200 OK (`isAlreadyApplied: true`, strictly non-null `targetVersionId`, `chapterId`, `versionNumber`).
@@ -126,12 +126,12 @@ In `services/api/test/apply-job-idempotency.e2e-spec.ts`:
 - Test 4: `getJob()` returns `canApply: true` for ADMIN/OWNER/EDITOR, and `canApply: false, applyBlockReason: 'INSUFFICIENT_ROLE'` for TRANSLATOR.
 - Test 5: `applyJob()` throws 403 `FORBIDDEN` for TRANSLATOR.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npm --prefix services/api run test:e2e -- apply-job-idempotency.e2e-spec.ts`
 Expected: FAIL (missing `apply_mode` column / methods).
 
-- [ ] **Step 3: Implement Migration 0014, Entity update, and Service refactoring**
+- [x] **Step 3: Implement Migration 0014, Entity update, and Service refactoring**
 
 1. Create migration `services/api/src/database/migrations/1700000000014-AddTranslationJobApplyMode.ts`:
 ```typescript
@@ -237,7 +237,7 @@ private async resolveStoryAccess(
 - In BOTH SQL update paths (with `resultManifest` around L1834 and without `resultManifest` around L1864):
   `SET target_version_id = $2, status = 'APPLIED', apply_idempotency_key = $3, apply_mode = $4, completed_at = NOW(), workspace_revision = workspace_revision + 1`
 
-- [ ] **Step 4: Run migration and E2E test to verify it passes**
+- [x] **Step 4: Run migration and E2E test to verify it passes**
 
 Run:
 ```powershell
@@ -246,7 +246,7 @@ npm --prefix services/api run test:e2e -- apply-job-idempotency.e2e-spec.ts
 ```
 Expected: PASS (all tests green).
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 
 ```bash
 git add services/api/src/database/migrations/1700000000014-AddTranslationJobApplyMode.ts \

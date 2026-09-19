@@ -127,7 +127,7 @@ git commit -m "feat(web): add multi-job subscription persistence across reconnec
   - State: `stories`, `projects`, `jobs`, `isLoading`, `error`, `filterGroup`, `searchKeyword`, `currentPage`, `totalPages`, `totalJobs`, `selectedStoryId`, `selectedProjectId`, `metrics`.
   - Actions: `setFilterGroup(group)`, `setSearchKeyword(keyword)`, `goToPage(page)`, `selectStory(id)`, `selectProject(id)`, `refetchJobs()`.
 
-- [ ] **Step 1: Write failing hook tests in `use-studio-dashboard.spec.ts`**
+- [x] **Step 1: Write failing hook tests in `use-studio-dashboard.spec.ts`**
 Scenarios:
 - Initial parallel fetch of managed stories, projects, and jobs.
 - Selecting status group (`ACTIVE`, `REVIEW`, `APPLIED`, `PROBLEM`) maps to query `statuses` array and resets to page 1.
@@ -135,18 +135,18 @@ Scenarios:
 - Realtime `job_ready_for_review`, `job_failed`, `job_canceled` triggers authoritative `fetchTranslationJobs` refetch.
 - Socket reconnect triggers full REST refresh.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 Run: `npm --prefix apps/web test -- src/test/use-studio-dashboard.spec.ts`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement `use-studio-dashboard.ts`**
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 3: Implement `use-studio-dashboard.ts`**
+- [x] **Step 4: Run test to verify it passes**
 Run: `npm --prefix apps/web test -- src/test/use-studio-dashboard.spec.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 ```bash
-git add apps/web/src/lib/studio/use-studio-dashboard.ts apps/web/src/test/use-studio-dashboard.spec.ts
+git add apps/web/src/lib/studio/use-studio-dashboard.ts apps/web/src/test/use-studio-dashboard.spec.ts apps/web/src/lib/api/translation.ts
 git commit -m "feat(web): implement useStudioDashboard hook with realtime acceleration and REST SSoT (#145)"
 ```
 

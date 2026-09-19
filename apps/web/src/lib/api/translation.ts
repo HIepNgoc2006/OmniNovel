@@ -46,7 +46,7 @@ export interface FetchTranslationJobsQuery {
   storyId?: string;
   projectId?: string;
   status?: TranslationJobStatus;
-  statuses?: TranslationJobStatus[];
+  statuses?: readonly TranslationJobStatus[] | TranslationJobStatus[];
   search?: string;
 }
 

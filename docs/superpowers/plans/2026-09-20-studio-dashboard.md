@@ -247,10 +247,10 @@ git commit -m "test(web): add Playwright E2E tests for Studio Dashboard (#145)"
 - Modify: `plans/phases/phase_04_web_client.md`
 - Modify: `docs/superpowers/plans/2026-09-20-studio-dashboard.md`
 
-- [ ] **Step 1: Update Phase 4D roadmap in `phase_04_web_client.md`**
-- [ ] **Step 2: Check CI on GitHub Actions across all 3 gates**
-- [ ] **Step 3: Close Issue #145 via `gh` CLI**
-- [ ] **Step 4: Commit Task 7**
+- [x] **Step 1: Update Phase 4D roadmap in `phase_04_web_client.md`**
+- [x] **Step 2: Check CI on GitHub Actions across all 3 gates**
+- [x] **Step 3: Close Issue #145 via `gh` CLI**
+- [x] **Step 4: Commit Task 7**
 ```bash
 git add plans/phases/phase_04_web_client.md docs/superpowers/plans/2026-09-20-studio-dashboard.md
 git commit -m "docs(roadmap): update Phase 4D Studio Dashboard completion status (#145)"

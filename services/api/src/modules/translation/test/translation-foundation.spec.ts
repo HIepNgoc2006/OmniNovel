@@ -63,6 +63,7 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
           getRepository: jest.fn().mockImplementation((entity) => {
             if (entity === TranslationSegment) return segmentRepo;
             if (entity === TranslationJob) return jobRepo;
+            if (entity === StoryMember) return storyMemberRepo;
             return {};
           }),
           query: dataSource.query,

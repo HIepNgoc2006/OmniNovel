@@ -2737,16 +2737,33 @@ export class TranslationService {
     user: any,
     manager?: EntityManager,
   ): Promise<StoryAccessResolution> {
-    if (user.role === 'ADMIN') {
+    if (user?.role === 'ADMIN') {
       return { canReview: true, canApply: true, effectiveRole: 'ADMIN' };
     }
 
-    const repo = manager
-      ? manager.getRepository(StoryMember)
-      : this.storyMemberRepo;
-    const membership = await repo.findOne({
-      where: { storyId, userId: user.id },
-    });
+    let membership: StoryMember | null = null;
+    if (manager && typeof manager.getRepository === 'function') {
+      try {
+        const repo = manager.getRepository(StoryMember);
+        if (repo && typeof repo.findOne === 'function') {
+          membership = await repo.findOne({
+            where: { storyId, userId: user.id },
+          });
+        }
+      } catch {
+        // Fallback below
+      }
+    }
+
+    if (
+      !membership &&
+      this.storyMemberRepo &&
+      typeof this.storyMemberRepo.findOne === 'function'
+    ) {
+      membership = await this.storyMemberRepo.findOne({
+        where: { storyId, userId: user.id },
+      });
+    }
 
     if (
       !membership ||

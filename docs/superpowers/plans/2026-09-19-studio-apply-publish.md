@@ -334,7 +334,7 @@ git commit -m "feat(web): implement studio apply pure policy, lifecycle types, a
     - `reconcileAfterCommitted()`: `Promise<boolean>`
     - `resetApplyAction()`: boolean (resets frozen state ONLY if authoritative GET proves `READY_FOR_REVIEW`)
 
-- [ ] **Step 1: Write failing hook tests in `apps/web/src/test/manga-studio-apply-hook.spec.tsx`**
+- [x] **Step 1: Write failing hook tests in `apps/web/src/test/manga-studio-apply-hook.spec.tsx`**
 
 Test scenarios:
 - Happy path: POST 200 -> RECONCILING -> refetchDetail confirms APPLIED + targetVersionId matches + `workspaceRevision > previousWorkspaceRevision` -> outcome `SUCCEEDED`.
@@ -346,18 +346,18 @@ Test scenarios:
 - Frozen submission enforcement: retry uses exact same key and mode. Resetting requires authoritative GET showing `READY_FOR_REVIEW`.
 - `canApply` respects `drafts` presence across all segments.
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `npm --prefix apps/web test -- src/test/manga-studio-apply-hook.spec.tsx`
 Expected: FAIL.
 
-- [ ] **Step 3: Implement API client call & hook orchestration**
+- [x] **Step 3: Implement API client call & hook orchestration**
 
 1. Add `applyTranslationJob` in `apps/web/src/lib/api/translation.ts`.
 2. Add single SSoT lifecycle states and methods in `useMangaReviewStudio.ts`.
 3. Enforce coherence validation and freeze guards.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `npm --prefix apps/web test -- src/test/manga-studio-apply-hook.spec.tsx`
 Expected: PASS.

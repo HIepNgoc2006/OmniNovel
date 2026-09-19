@@ -10,6 +10,8 @@ import {
   StandardErrorResponse,
   StandardErrorMeta,
   TranslationJobStatus,
+  ApplyTranslationJobRequest,
+  ApplyTranslationJobResponse,
 } from '@omninovel/shared';
 import { AxiosError } from 'axios';
 
@@ -167,6 +169,27 @@ export async function cancelTranslationJob(
   const response = await apiClient.post<{ id: string; status: TranslationJobStatus }>(
     `/ai/jobs/${jobId}/cancel`,
     {},
+  );
+  return response.data;
+}
+
+/**
+ * Apply / Publish reviewed TranslationJob
+ * POST /api/v1/ai/jobs/:jobId/apply
+ */
+export async function applyTranslationJob(
+  jobId: string,
+  request: ApplyTranslationJobRequest,
+  idempotencyKey?: string,
+): Promise<ApplyTranslationJobResponse> {
+  const headers: Record<string, string> = {};
+  if (idempotencyKey) {
+    headers['Idempotency-Key'] = idempotencyKey;
+  }
+  const response = await apiClient.post<ApplyTranslationJobResponse>(
+    `/ai/jobs/${jobId}/apply`,
+    request,
+    { headers },
   );
   return response.data;
 }

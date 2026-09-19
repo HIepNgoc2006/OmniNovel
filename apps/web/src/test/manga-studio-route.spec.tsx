@@ -168,6 +168,15 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     isCanceling: false,
     cancelError: null,
     canCancel: true,
+    // RED 7 / Task 4 Apply & Publish Protocol
+    canApply: true,
+    applyLifecycle: 'IDLE',
+    applyResponse: null,
+    applyError: null,
+    applyJob: vi.fn(),
+    retryApplyAction: vi.fn(),
+    reconcileAfterCommitted: vi.fn().mockResolvedValue(true),
+    resetApplyAction: vi.fn().mockReturnValue(true),
   };
 
   beforeEach(() => {

@@ -11,6 +11,8 @@ import {
   ReviewSummaryDto,
   PaginatedResponse,
   TranslationJobStatus,
+  ApplyTranslationMode,
+  ApplyTranslationJobResponse,
 } from '@omninovel/shared';
 import {
   fetchTranslationJobDetail,
@@ -19,9 +21,19 @@ import {
   updateTranslationSegment,
   requestJobMaterialization,
   cancelTranslationJob,
+  applyTranslationJob,
   parseApiError,
   ParsedApiError,
 } from '../api/translation';
+import {
+  ApplyLifecycleState,
+  ApplyJobResult,
+  FrozenApplySubmission,
+  canApplyJob,
+  classifyApplyError,
+  resolveApplyBlockReason,
+  ParsedApiError as ApplyParsedApiError,
+} from './studio-apply-policy';
 import {
   useTranslationSocket,
   TranslationSocketSubscriptionState,
@@ -79,6 +91,11 @@ export type {
 } from './studio-types';
 export { buildSaveSegmentResult } from './studio-types';
 export type { ParsedApiError } from '../api/translation';
+export type {
+  ApplyLifecycleState,
+  ApplyJobResult,
+  FrozenApplySubmission,
+} from './studio-apply-policy';
 
 export interface SaveSegmentOptions {
   baseVersion?: number;
@@ -213,6 +230,15 @@ export interface UseMangaReviewStudioReturn {
   isCanceling: boolean;
   cancelError: ParsedApiError | null;
   canCancel: boolean;
+  // RED 7 / Task 4 Apply & Publish Lifecycle
+  canApply: boolean;
+  applyLifecycle: ApplyLifecycleState;
+  applyResponse: ApplyTranslationJobResponse | null;
+  applyError: ApplyParsedApiError | null;
+  applyJob: (mode?: ApplyTranslationMode) => Promise<ApplyJobResult>;
+  retryApplyAction: () => Promise<ApplyJobResult>;
+  reconcileAfterCommitted: () => Promise<boolean>;
+  resetApplyAction: () => boolean;
 }
 
 const MAX_COHERENCE_RECONCILE_ATTEMPTS = 2;
@@ -4077,6 +4103,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       }
 
       // Still non-terminal: cancel request truly failed
+      // Still non-terminal: cancel request truly failed
       if (requestErr) {
         setCancelError(requestErr);
       } else {
@@ -4090,6 +4117,211 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       setIsCanceling(false);
     }
   }, [refetchDetail]);
+
+  // --- RED 7 / Task 4: Apply & Publish Lifecycle Orchestration ---
+  const [applyLifecycle, setApplyLifecycle] =
+    useState<ApplyLifecycleState>('IDLE');
+  const [applyError, setApplyError] = useState<ApplyParsedApiError | null>(null);
+  const [applyResponse, setApplyResponse] =
+    useState<ApplyTranslationJobResponse | null>(null);
+  const frozenSubmissionRef = useRef<FrozenApplySubmission | null>(null);
+  const previousWorkspaceRevisionRef = useRef<number>(0);
+
+  const canApply = useMemo(() => {
+    return canApplyJob({
+      jobStatus: jobDetail?.job.status as TranslationJobStatus,
+      canApplyPermission: jobDetail?.permissions.canApply ?? false,
+      freshnessStatus: freshness.status,
+      hasUncommittedDrafts: Object.keys(drafts).length > 0,
+      applyInFlight:
+        applyLifecycle === 'SUBMITTING' || applyLifecycle === 'RECONCILING',
+      materializationInFlight: isMaterializing,
+    });
+  }, [
+    jobDetail?.job.status,
+    jobDetail?.permissions.canApply,
+    freshness.status,
+    drafts,
+    applyLifecycle,
+    isMaterializing,
+  ]);
+
+  const executeApplySubmission = useCallback(
+    async (
+      targetMode?: ApplyTranslationMode,
+      explicitKey?: string,
+    ): Promise<ApplyJobResult> => {
+      let submission = frozenSubmissionRef.current;
+      if (!submission) {
+        const mode = targetMode ?? ApplyTranslationMode.OVERWRITE_ACTIVE_VERSION;
+        const idempotencyKey =
+          explicitKey ||
+          (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : `apply-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`);
+        submission = { idempotencyKey, mode };
+        frozenSubmissionRef.current = submission;
+      }
+
+      const { idempotencyKey, mode } = submission;
+      previousWorkspaceRevisionRef.current =
+        jobDetailRef.current?.job.workspaceRevision ?? 0;
+      const previousWorkspaceRevision = previousWorkspaceRevisionRef.current;
+
+      setApplyLifecycle('SUBMITTING');
+      setApplyError(null);
+
+      let res: ApplyTranslationJobResponse;
+      try {
+        res = await applyTranslationJob(jobId, { mode }, idempotencyKey);
+        setApplyResponse(res);
+      } catch (err: unknown) {
+        const classified = classifyApplyError(err);
+        setApplyError(classified);
+        if (classified.isAmbiguous) {
+          setApplyLifecycle('SUBMISSION_OUTCOME_UNKNOWN');
+          return { outcome: 'SUBMISSION_OUTCOME_UNKNOWN', error: classified };
+        } else {
+          setApplyLifecycle('FAILED');
+          frozenSubmissionRef.current = null;
+          return { outcome: 'FAILED', error: classified };
+        }
+      }
+
+      setApplyLifecycle('RECONCILING');
+
+      let refetchedDetail: TranslationJobReviewDetailResponse | null = null;
+      try {
+        await refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+        refetchedDetail = jobDetailRef.current;
+      } catch (reconcileErr: unknown) {
+        const classified = classifyApplyError(reconcileErr);
+        setApplyError(classified);
+        setApplyLifecycle('COMMITTED_RECONCILIATION_REQUIRED');
+        return {
+          outcome: 'COMMITTED_RECONCILIATION_REQUIRED',
+          response: res,
+          error: classified,
+        };
+      }
+
+      const isStatusApplied =
+        refetchedDetail?.job.status === TranslationJobStatus.APPLIED;
+      const isTargetVersionMatching =
+        refetchedDetail?.context.targetVersion?.id === res.targetVersionId;
+      const isRevisionStrictlyBumped =
+        typeof refetchedDetail?.job.workspaceRevision === 'number' &&
+        refetchedDetail.job.workspaceRevision > previousWorkspaceRevision;
+
+      if (isStatusApplied && isTargetVersionMatching && isRevisionStrictlyBumped) {
+        setApplyLifecycle('SUCCEEDED');
+        setApplyError(null);
+        frozenSubmissionRef.current = null;
+        return { outcome: 'SUCCEEDED', response: res };
+      } else {
+        const coherenceError: ApplyParsedApiError = {
+          code: 'COHERENCE_CHECK_FAILED',
+          message: !isStatusApplied
+            ? `Job status is ${refetchedDetail?.job.status ?? 'unknown'}, expected APPLIED`
+            : !isTargetVersionMatching
+              ? `Target version ID mismatch: refetched ${refetchedDetail?.context.targetVersion?.id} vs response ${res.targetVersionId}`
+              : `Workspace revision ${refetchedDetail?.job.workspaceRevision} must strictly exceed previous revision ${previousWorkspaceRevision}`,
+          status: 409,
+          isAmbiguous: false,
+        };
+        setApplyError(coherenceError);
+        setApplyLifecycle('COMMITTED_RECONCILIATION_REQUIRED');
+        return {
+          outcome: 'COMMITTED_RECONCILIATION_REQUIRED',
+          response: res,
+          error: coherenceError,
+        };
+      }
+    },
+    [jobId, refetchDetail],
+  );
+
+  const applyJob = useCallback(
+    async (
+      mode: ApplyTranslationMode = ApplyTranslationMode.OVERWRITE_ACTIVE_VERSION,
+    ): Promise<ApplyJobResult> => {
+      return executeApplySubmission(mode);
+    },
+    [executeApplySubmission],
+  );
+
+  const retryApplyAction = useCallback(async (): Promise<ApplyJobResult> => {
+    const frozen = frozenSubmissionRef.current;
+    if (!frozen) {
+      const err: ApplyParsedApiError = {
+        code: 'NO_FROZEN_SUBMISSION',
+        message: 'Không có phiên xuất bản nào đang chờ thử lại.',
+        isAmbiguous: false,
+      };
+      return { outcome: 'FAILED', error: err };
+    }
+    return executeApplySubmission(frozen.mode, frozen.idempotencyKey);
+  }, [executeApplySubmission]);
+
+  const reconcileAfterCommitted = useCallback(async (): Promise<boolean> => {
+    const currentResponse = applyResponse;
+    if (!currentResponse) {
+      return false;
+    }
+    setApplyLifecycle('RECONCILING');
+    try {
+      await refetchDetail({ requirement: 'AUTHORITATIVE_REQUIRED' });
+      const refetchedDetail = jobDetailRef.current;
+      const isStatusApplied =
+        refetchedDetail?.job.status === TranslationJobStatus.APPLIED;
+      const isTargetVersionMatching =
+        refetchedDetail?.context.targetVersion?.id ===
+        currentResponse.targetVersionId;
+      const isRevisionStrictlyBumped =
+        typeof refetchedDetail?.job.workspaceRevision === 'number' &&
+        refetchedDetail.job.workspaceRevision >
+          previousWorkspaceRevisionRef.current;
+
+      if (isStatusApplied && isTargetVersionMatching && isRevisionStrictlyBumped) {
+        setApplyLifecycle('SUCCEEDED');
+        setApplyError(null);
+        frozenSubmissionRef.current = null;
+        return true;
+      } else {
+        const coherenceError: ApplyParsedApiError = {
+          code: 'COHERENCE_CHECK_FAILED',
+          message: !isStatusApplied
+            ? `Job status is ${refetchedDetail?.job.status ?? 'unknown'}, expected APPLIED`
+            : !isTargetVersionMatching
+              ? `Target version ID mismatch: refetched ${refetchedDetail?.context.targetVersion?.id} vs response ${currentResponse.targetVersionId}`
+              : `Workspace revision ${refetchedDetail?.job.workspaceRevision} must strictly exceed previous revision ${previousWorkspaceRevisionRef.current}`,
+          status: 409,
+          isAmbiguous: false,
+        };
+        setApplyError(coherenceError);
+        setApplyLifecycle('COMMITTED_RECONCILIATION_REQUIRED');
+        return false;
+      }
+    } catch (reconcileErr: unknown) {
+      const classified = classifyApplyError(reconcileErr);
+      setApplyError(classified);
+      setApplyLifecycle('COMMITTED_RECONCILIATION_REQUIRED');
+      return false;
+    }
+  }, [applyResponse, refetchDetail]);
+
+  const resetApplyAction = useCallback((): boolean => {
+    if (
+      jobDetailRef.current?.job.status === TranslationJobStatus.READY_FOR_REVIEW
+    ) {
+      frozenSubmissionRef.current = null;
+      setApplyLifecycle('IDLE');
+      setApplyError(null);
+      setApplyResponse(null);
+      return true;
+    }
+    return false;
+  }, []);
 
   return {
     status,
@@ -4158,5 +4390,14 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     isCanceling,
     cancelError,
     canCancel,
+    // RED 7 / Task 4 Apply & Publish Protocol
+    canApply,
+    applyLifecycle,
+    applyResponse,
+    applyError,
+    applyJob,
+    retryApplyAction,
+    reconcileAfterCommitted,
+    resetApplyAction,
   };
 }

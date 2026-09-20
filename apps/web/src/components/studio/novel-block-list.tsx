@@ -13,8 +13,8 @@ export interface NovelBlockListProps {
   conflictStates?: Record<string, string>;
   errorStates?: Record<string, string>;
   onDraftChange: (segmentId: string, text: string) => void;
-  onSaveSegment: (segmentId: string) => void | Promise<void>;
-  onToggleVerify?: (segmentId: string) => void | Promise<void>;
+  onSaveSegment: (segmentId: string) => any;
+  onToggleVerify?: (segmentId: string) => any;
   isReadonly?: boolean;
 }
 

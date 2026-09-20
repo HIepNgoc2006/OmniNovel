@@ -22,8 +22,8 @@ export interface NovelSegmentEditorProps {
   segment: TranslationSegmentDto;
   draftText?: string;
   onDraftChange: (segmentId: string, text: string) => void;
-  onSave: (segmentId: string) => void | Promise<void>;
-  onToggleVerify?: (segmentId: string) => void | Promise<void>;
+  onSave: (segmentId: string) => any;
+  onToggleVerify?: (segmentId: string) => any;
   isSaving?: boolean;
   conflictMessage?: string | null;
   errorMessage?: string | null;

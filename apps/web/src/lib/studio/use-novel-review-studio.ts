@@ -51,6 +51,11 @@ export interface UseNovelReviewStudioReturn {
   discardSegmentDraft: (segmentId: string) => void;
   saveSegment: (segmentId: string) => Promise<boolean | TranslationSegmentDto>;
   toggleVerification: (segmentId: string) => Promise<boolean | TranslationSegmentDto>;
+  // Bulk Navigation
+  selectPrev: () => void;
+  selectNext: () => void;
+  selectNextUnverified: () => void;
+  selectNextError: () => void;
 }
 
 export function useNovelReviewStudio(
@@ -200,7 +205,7 @@ export function useNovelReviewStudio(
         mediaFormat: detail.context.story.mediaFormat,
       });
 
-      if (mode.mode === 'REVIEWABLE') {
+      if (mode.mode === 'REVIEWABLE' || mode.mode === 'APPLIED') {
         void loadAllSegments(currentJob, currentSeq);
       } else {
         setSegments([]);
@@ -453,6 +458,78 @@ export function useNovelReviewStudio(
     [segments],
   );
 
+  const selectPrev = useCallback(() => {
+    const list = segmentsRef.current;
+    if (list.length === 0) return;
+    const currentIndex = list.findIndex((s) => s.id === selectedSegmentId);
+    if (currentIndex <= 0) {
+      setSelectedSegmentId(list[list.length - 1].id);
+    } else {
+      setSelectedSegmentId(list[currentIndex - 1].id);
+    }
+  }, [selectedSegmentId]);
+
+  const selectNext = useCallback(() => {
+    const list = segmentsRef.current;
+    if (list.length === 0) return;
+    const currentIndex = list.findIndex((s) => s.id === selectedSegmentId);
+    if (currentIndex === -1 || currentIndex >= list.length - 1) {
+      setSelectedSegmentId(list[0].id);
+    } else {
+      setSelectedSegmentId(list[currentIndex + 1].id);
+    }
+  }, [selectedSegmentId]);
+
+  const selectNextUnverified = useCallback(() => {
+    const list = segmentsRef.current;
+    if (list.length === 0) return;
+    const currentIndex = list.findIndex((s) => s.id === selectedSegmentId);
+    const start = currentIndex >= 0 ? currentIndex + 1 : 0;
+
+    for (let i = start; i < list.length; i++) {
+      if (!list[i].isHumanVerified) {
+        setSelectedSegmentId(list[i].id);
+        return;
+      }
+    }
+    for (let i = 0; i < start; i++) {
+      if (!list[i].isHumanVerified) {
+        setSelectedSegmentId(list[i].id);
+        return;
+      }
+    }
+  }, [selectedSegmentId]);
+
+  const selectNextError = useCallback(() => {
+    const list = segmentsRef.current;
+    if (list.length === 0) return;
+    const currentIndex = list.findIndex((s) => s.id === selectedSegmentId);
+    const start = currentIndex >= 0 ? currentIndex + 1 : 0;
+
+    for (let i = start; i < list.length; i++) {
+      if (errorStates[list[i].id] || conflictStates[list[i].id]) {
+        setSelectedSegmentId(list[i].id);
+        return;
+      }
+    }
+    for (let i = 0; i < start; i++) {
+      if (errorStates[list[i].id] || conflictStates[list[i].id]) {
+        setSelectedSegmentId(list[i].id);
+        return;
+      }
+    }
+  }, [selectedSegmentId, errorStates, conflictStates]);
+
+  useEffect(() => {
+    if (!selectedSegmentId || typeof document === 'undefined') return;
+    const el = document.querySelector(
+      `[data-testid="novel-segment-container-${selectedSegmentId}"]`,
+    );
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [selectedSegmentId]);
+
   return {
     status,
     jobDetail,
@@ -475,5 +552,9 @@ export function useNovelReviewStudio(
     discardSegmentDraft,
     saveSegment,
     toggleVerification,
+    selectPrev,
+    selectNext,
+    selectNextUnverified,
+    selectNextError,
   };
 }

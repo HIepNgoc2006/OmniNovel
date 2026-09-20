@@ -178,19 +178,30 @@ export function NovelSegmentEditor({
               Block: {segment.anchorBlockId}
             </span>
           )}
-          <span className="text-[11px] text-slate-500 font-mono">
+          <span
+            data-testid={`novel-segment-version-${segment.id}`}
+            className="text-[11px] text-slate-500 font-mono"
+          >
             v{segment.version}
           </span>
         </div>
         <div className="flex items-center gap-2">
           {renderStateBadge()}
           {segment.isHumanVerified ? (
-            <Badge variant="success" className="text-[10px] gap-1">
+            <Badge
+              data-testid={`novel-segment-verified-badge-${segment.id}`}
+              variant="success"
+              className="text-[10px] gap-1"
+            >
               <CheckCircle2 className="w-3 h-3" />
               Đã duyệt
             </Badge>
           ) : (
-            <Badge variant="secondary" className="text-[10px]">
+            <Badge
+              data-testid={`novel-segment-unverified-badge-${segment.id}`}
+              variant="secondary"
+              className="text-[10px]"
+            >
               Chưa duyệt
             </Badge>
           )}

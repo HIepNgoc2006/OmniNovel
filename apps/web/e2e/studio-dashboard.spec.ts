@@ -162,7 +162,7 @@ test.describe('Studio Dashboard & Realtime Job Monitor E2E (#145 Task 6)', () =>
 
     // 4. Verify filtered job is displayed
     await expect(
-      page.getByRole('heading', { name: 'Solo Leveling E2E' }),
+      page.getByRole('heading', { name: 'Solo Leveling E2E' }).first(),
     ).toBeVisible();
     await expect(page.getByText(/Chương 10\.00/)).toBeVisible();
 

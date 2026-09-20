@@ -147,14 +147,13 @@ test.describe('Novel Review Studio E2E Suite (#150)', () => {
       async (route) => {
         if (route.request().method() === 'PATCH') {
           patchPayloadReceived = route.request().postDataJSON();
+          segmentVersion += 1;
           if (patchPayloadReceived.translatedText !== undefined) {
             translatedText = patchPayloadReceived.translatedText;
-            segmentVersion += 1;
             isHumanVerified = false;
           }
           if (patchPayloadReceived.isHumanVerified !== undefined) {
             isHumanVerified = patchPayloadReceived.isHumanVerified;
-            segmentVersion += 1;
           }
 
           await route.fulfill({
@@ -192,8 +191,11 @@ test.describe('Novel Review Studio E2E Suite (#150)', () => {
 
     // Verify initial CLEAN badge and version
     const stateBadge = page.getByTestId('novel-segment-state-badge');
+    const versionLabel = page.getByTestId(
+      `novel-segment-version-${SEGMENT_ID_1}`,
+    );
     await expect(stateBadge).toHaveText('CLEAN');
-    await expect(page.getByText('v1')).toBeVisible();
+    await expect(versionLabel).toHaveText('v1');
 
     // Edit textarea preserving anchors
     const textarea = page.getByTestId(`novel-segment-textarea-${SEGMENT_ID_1}`);
@@ -224,7 +226,7 @@ test.describe('Novel Review Studio E2E Suite (#150)', () => {
 
     // Verify updated state and version v2
     await expect(stateBadge).toHaveText('CLEAN');
-    await expect(page.getByText('v2')).toBeVisible();
+    await expect(versionLabel).toHaveText('v2');
 
     // Toggle Verify
     const verifyBtn = page.getByTestId(
@@ -232,8 +234,12 @@ test.describe('Novel Review Studio E2E Suite (#150)', () => {
     );
     await verifyBtn.click();
 
-    await expect(page.getByText('Đã duyệt')).toBeVisible();
-    await expect(page.getByText('v3')).toBeVisible();
+    const verifiedBadge = page.getByTestId(
+      `novel-segment-verified-badge-${SEGMENT_ID_1}`,
+    );
+    await expect(verifiedBadge).toBeVisible();
+    await expect(verifiedBadge).toContainText('Đã duyệt');
+    await expect(versionLabel).toHaveText('v3');
   });
 
   test('Flow B1: Client UX Gate - Corrupted anchor disables Save and blocks PATCH (PATCH count = 0)', async ({
@@ -500,6 +506,9 @@ test.describe('Novel Review Studio E2E Suite (#150)', () => {
     await expect(textarea).toHaveValue('Bản dịch thử ⟦S:0001⟧Lord⟦/S:0001⟧');
 
     // 4. Canonical version stays at v1 (NOT incremented)
-    await expect(page.getByText('v1')).toBeVisible();
+    const versionLabel = page.getByTestId(
+      `novel-segment-version-${SEGMENT_ID_1}`,
+    );
+    await expect(versionLabel).toHaveText('v1');
   });
 });

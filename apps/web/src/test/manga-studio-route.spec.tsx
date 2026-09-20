@@ -1,7 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, act } from '@testing-library/react';
-import React from 'react';
-import MangaStudioJobPage from '../app/(site)/(studio)/studio/ai/jobs/[jobId]/page';
+import { MangaReviewStudio } from '../components/studio/manga-review-studio';
 import * as studioHook from '../lib/studio/use-manga-review-studio';
 import {
   TranslationJobStatus,
@@ -199,7 +198,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     expect(await screen.findByText('Số Trang Chưa Sẵn Sàng')).toBeDefined();
@@ -230,7 +229,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     expect(await screen.findByText('Job Dịch Đã Kết Thúc')).toBeDefined();
@@ -253,7 +252,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     expect(await screen.findByText('Không Thể Truy Cập Job Dịch')).toBeDefined();
@@ -266,7 +265,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue(defaultMockReturn);
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     expect(await screen.findByText('One Piece — Chương 1.00: Khởi đầu')).toBeDefined();
@@ -286,7 +285,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     expect(
@@ -311,7 +310,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     expect(await screen.findByText('Không Thể Truy Cập Job Dịch')).toBeDefined();
@@ -332,7 +331,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     expect(
@@ -355,7 +354,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     expect(
@@ -381,7 +380,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     expect(await screen.findByText('Lỗi Tải Dữ Liệu Workspace')).toBeDefined();
@@ -410,7 +409,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     expect(await screen.findByText('Đang chuẩn bị không gian làm việc...')).toBeDefined();
@@ -433,7 +432,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     expect(await screen.findByText(/Chưa gán trang • Thứ tự #42/)).toBeDefined();
@@ -455,7 +454,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     const btn = await screen.findByTestId('btn-materializing');
@@ -477,7 +476,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     expect(await screen.findByText('Xung Đột Phiên Bản (409 VERSION_CONFLICT):')).toBeDefined();
@@ -501,7 +500,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     const closeBtn = await screen.findByText('Đóng');
@@ -524,7 +523,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     });
 
     await act(async () => {
-      render(<MangaStudioJobPage params={mockParams} />);
+      render(<MangaReviewStudio jobId={mockJobId} />);
     });
 
     expect(await screen.findByText('Chưa xác minh')).toBeDefined();
@@ -563,7 +562,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       const sourceImg = screen.getByTestId('canvas-source-image');
@@ -592,7 +591,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       // Switch to RESULT mode
@@ -614,7 +613,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     it('3. same-URL retry remounts fresh image DOM instance and prevents infinite retry if error persists (#149 P1-2)', async () => {
       const retryPreviewWindowSpy = vi.fn().mockResolvedValue(undefined);
 
-      const { rerender } = render(<MangaStudioJobPage params={mockParams} />);
+      const { rerender } = render(<MangaReviewStudio jobId={mockJobId} />);
 
       vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
         ...defaultMockReturn,
@@ -630,7 +629,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
         retryPreviewWindow: retryPreviewWindowSpy,
       });
 
-      rerender(<MangaStudioJobPage params={mockParams} />);
+      rerender(<MangaReviewStudio jobId={mockJobId} />);
 
       const sourceImg = screen.getByTestId('canvas-source-image');
       expect(sourceImg.getAttribute('data-presentation-epoch')).toBe('0');
@@ -656,7 +655,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
         retryPreviewWindow: retryPreviewWindowSpy,
       });
 
-      rerender(<MangaStudioJobPage params={mockParams} />);
+      rerender(<MangaReviewStudio jobId={mockJobId} />);
 
       // P1-2 Invariant: Even though URL is identical, previewWindowGeneration incremented to 1 and a new <img> DOM instance mounted
       const remountedImg = await screen.findByTestId('canvas-source-image');
@@ -673,7 +672,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
     it('3b. after successful reload on same URL, later independent error allows auto-retry again (#149 P1-2)', async () => {
       const retryPreviewWindowSpy = vi.fn().mockResolvedValue(undefined);
 
-      const { rerender } = render(<MangaStudioJobPage params={mockParams} />);
+      const { rerender } = render(<MangaReviewStudio jobId={mockJobId} />);
 
       vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
         ...defaultMockReturn,
@@ -689,7 +688,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
         retryPreviewWindow: retryPreviewWindowSpy,
       });
 
-      rerender(<MangaStudioJobPage params={mockParams} />);
+      rerender(<MangaReviewStudio jobId={mockJobId} />);
 
       const sourceImg = screen.getByTestId('canvas-source-image');
 
@@ -714,7 +713,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
         retryPreviewWindow: retryPreviewWindowSpy,
       });
 
-      rerender(<MangaStudioJobPage params={mockParams} />);
+      rerender(<MangaReviewStudio jobId={mockJobId} />);
 
       const remountedImg = await screen.findByTestId('canvas-source-image');
       expect(remountedImg.getAttribute('data-presentation-epoch')).toBe('1');
@@ -760,7 +759,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       const sourceImg = screen.getByTestId('canvas-source-image');
@@ -792,7 +791,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       // Route itself does NOT attach a duplicate focus listener (single focus owner in hook)
@@ -821,7 +820,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       const retryBtn = screen.getByText('Thử lại tải ảnh');
@@ -842,7 +841,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
         height: 1500,
       };
 
-      const { rerender } = render(<MangaStudioJobPage params={mockParams} />);
+      const { rerender } = render(<MangaReviewStudio jobId={mockJobId} />);
 
       vi.spyOn(studioHook, 'useMangaReviewStudio').mockReturnValue({
         ...defaultMockReturn,
@@ -858,7 +857,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
         retryPreviewWindow: retryPreviewWindowSpy,
       });
 
-      rerender(<MangaStudioJobPage params={mockParams} />);
+      rerender(<MangaReviewStudio jobId={mockJobId} />);
 
       const thumbImg = screen.getByTestId('thumbnail-image-1');
       expect(thumbImg).toBeInTheDocument();
@@ -885,7 +884,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
         retryPreviewWindow: retryPreviewWindowSpy,
       });
 
-      rerender(<MangaStudioJobPage params={mockParams} />);
+      rerender(<MangaReviewStudio jobId={mockJobId} />);
 
       // Fresh thumbnail <img> DOM instance mounted with data-generation=1
       const freshThumbImg = screen.getByTestId('thumbnail-image-1');
@@ -918,7 +917,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       expect(screen.getByTestId('segment-editor-empty')).toBeInTheDocument();
@@ -933,7 +932,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       expect(screen.getByTestId('segment-editor-container')).toBeInTheDocument();
@@ -952,7 +951,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       const textarea = screen.getByTestId('segment-translation-textarea');
@@ -975,7 +974,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       expect(screen.getByTestId('segment-translation-textarea')).toHaveValue(
@@ -1000,7 +999,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       const discardBtn = screen.getByTestId('btn-discard-draft');
@@ -1029,7 +1028,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       const saveBtn = screen.getByTestId('btn-save-segment');
@@ -1065,7 +1064,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       expect(screen.getByTestId('editor-occ-conflict-banner')).toBeInTheDocument();
@@ -1093,7 +1092,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       const badge = screen.getByTestId('review-summary-badge');
@@ -1116,7 +1115,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       const verifyBtn = screen.getByTestId('btn-toggle-verify');
@@ -1156,7 +1155,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       const nextBtn = screen.getByTestId('btn-next-segment');
@@ -1185,7 +1184,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       const applyBtn = screen.getByTestId('btn-open-apply-modal');
@@ -1200,7 +1199,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       const applyBtn = screen.getByTestId('btn-open-apply-modal');
@@ -1245,7 +1244,7 @@ describe('MangaStudioJobPage Route Component (#149 RED 0)', () => {
       });
 
       await act(async () => {
-        render(<MangaStudioJobPage params={mockParams} />);
+        render(<MangaReviewStudio jobId={mockJobId} />);
       });
 
       // APPLIED header badge should be rendered

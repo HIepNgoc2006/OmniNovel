@@ -243,7 +243,15 @@ export interface UseMangaReviewStudioReturn {
 
 const MAX_COHERENCE_RECONCILE_ATTEMPTS = 2;
 
-export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn {
+export interface UseMangaReviewStudioOptions {
+  initialJobDetail?: TranslationJobReviewDetailResponse | null;
+  onJobDetailChange?: (detail: TranslationJobReviewDetailResponse | null) => void;
+}
+
+export function useMangaReviewStudio(
+  jobId: string,
+  options?: UseMangaReviewStudioOptions,
+): UseMangaReviewStudioReturn {
   const { user, isAuthenticated, isLoading: authLoading } = useAuth();
 
   const [status, setStatus] = useState<
@@ -254,6 +262,12 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     statusRef.current = status;
   }, [status]);
 
+  const initialJobDetailConsumedRef = useRef(false);
+  const optionsRef = useRef(options);
+  useEffect(() => {
+    optionsRef.current = options;
+  }, [options]);
+
   const [jobDetail, setJobDetail] =
     useState<TranslationJobReviewDetailResponse | null>(null);
   const jobDetailRef = useRef<TranslationJobReviewDetailResponse | null>(null);
@@ -262,6 +276,7 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     (detail: TranslationJobReviewDetailResponse | null) => {
       jobDetailRef.current = detail;
       setJobDetail(detail);
+      optionsRef.current?.onJobDetailChange?.(detail);
     },
     [],
   );
@@ -1188,7 +1203,18 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
       setFatalError(null);
 
       try {
-        const detail = await fetchTranslationJobDetail(currentJob);
+        let detail: TranslationJobReviewDetailResponse;
+        if (
+          !explicitGen &&
+          options?.initialJobDetail &&
+          options.initialJobDetail.job.id === currentJob &&
+          !initialJobDetailConsumedRef.current
+        ) {
+          initialJobDetailConsumedRef.current = true;
+          detail = options.initialJobDetail;
+        } else {
+          detail = await fetchTranslationJobDetail(currentJob);
+        }
 
         // Scope Identity Guard: Must validate identity before comparing revision!
         if (!isRequestCurrent(currentGen, currentJob)) {
@@ -3838,6 +3864,9 @@ export function useMangaReviewStudio(jobId: string): UseMangaReviewStudioReturn 
     },
     [replaceAuthoritativeGate, isJobAccessError, purgeOnAccessError],
   );
+
+  loadPreviewWindowRef.current = loadPreviewWindow;
+  loadPageSegmentsRef.current = loadPageSegments;
 
   useEffect(() => {
     loadPreviewWindowRef.current = loadPreviewWindow;

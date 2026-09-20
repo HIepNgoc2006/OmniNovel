@@ -4,7 +4,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   CreateTranslationJobRequest,
-  FrozenJobSubmission as SharedFrozenJobSubmission,
   ManagedStorySummaryDto,
   StudioChapterVersionSummaryDto,
 } from '@omninovel/shared';

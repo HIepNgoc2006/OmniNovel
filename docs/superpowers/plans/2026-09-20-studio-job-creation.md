@@ -132,7 +132,7 @@ git commit -m "feat(web): add job creation client API, consent policy, and ambig
     - Lifecycle: `IDLE` | `SUBMITTING` | `SUBMISSION_OUTCOME_UNKNOWN` | `SUCCEEDED` | `FAILED`.
     - Methods: `selectStory`, `selectEdition`, `selectChapter`, `selectVersion`, `setSourceLang`, `setTargetLang`, `setProvider`, `setExternalConsent`, `submit`, `retry`, `reset`.
 
-- [ ] **Step 1: Viết test cho hook `use-create-translation-job.spec.ts`**
+- [x] **Step 1: Viết test cho hook `use-create-translation-job.spec.ts`**
 Cover các case:
 1. Hierarchy loading: Chọn managed story dùng canonical `slug` để tải hierarchy qua `getStoryBySlugApi(slug)`; chọn chapter tải chapterVersions.
 2. Form defaults: Chọn version tự động fill `sourceLang` từ version/story.
@@ -140,18 +140,18 @@ Cover các case:
 4. Frozen submission identity: Submit lần đầu sinh UUID-v4; khi gặp 500/timeout gọi `retry()` giữ nguyên UUID-v4; khi user sửa input form reset submission identity.
 5. Canonical 202 handoff: Cả `isDuplicate: false` và `isDuplicate: true` đều kích hoạt router chuyển hướng tới `/studio/ai/jobs/:jobId`.
 
-- [ ] **Step 2: Chạy test để xác nhận fail**
+- [x] **Step 2: Chạy test để xác nhận fail**
 Run: `npm --prefix apps/web test -- src/test/use-create-translation-job.spec.ts`
 Expected: FAIL do chưa tạo hook.
 
-- [ ] **Step 3: Triển khai hook `useCreateTranslationJob`**
+- [x] **Step 3: Triển khai hook `useCreateTranslationJob`**
 Cài đặt hook với quản lý hierarchy, frozen submission identity, và error classification.
 
-- [ ] **Step 4: Chạy test để xác nhận pass**
+- [x] **Step 4: Chạy test để xác nhận pass**
 Run: `npm --prefix apps/web test -- src/test/use-create-translation-job.spec.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 3**
+- [x] **Step 5: Commit Task 3**
 ```bash
 git add apps/web/src/lib/studio/use-create-translation-job.ts \
         apps/web/src/test/use-create-translation-job.spec.ts

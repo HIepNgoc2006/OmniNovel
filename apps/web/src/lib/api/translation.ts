@@ -92,7 +92,9 @@ export async function fetchTranslationJobs(
 export function parseApiError(error: unknown): ParsedApiError {
   if (error && typeof error === 'object' && 'isAxiosError' in error) {
     const axiosErr = error as AxiosError<StandardErrorResponse>;
-    const errData = axiosErr.response?.data?.error;
+    const rawData = axiosErr.response?.data as any;
+    const errData =
+      rawData?.error || (rawData?.code || rawData?.message ? rawData : undefined);
     if (errData && typeof errData === 'object') {
       return {
         code: errData.code || 'UNKNOWN_ERROR',

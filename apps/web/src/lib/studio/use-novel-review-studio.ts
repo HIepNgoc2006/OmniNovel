@@ -8,6 +8,7 @@ import {
 import {
   fetchTranslationJobDetail,
   fetchTranslationJobSegments,
+  updateTranslationSegment,
   parseApiError,
   ParsedApiError,
 } from '../api/translation';
@@ -18,7 +19,9 @@ import {
   getNovelStudioWorkspaceMode,
   sortNovelSegmentsDeterministic,
   groupSegmentsByAnchorBlock,
+  buildUpdateSegmentPayload,
 } from './novel-studio-policy';
+import { validateSegmentTopology } from './novel-segment-policy';
 
 export interface UseNovelReviewStudioOptions {
   initialJobDetail?: TranslationJobReviewDetailResponse | null;
@@ -39,6 +42,15 @@ export interface UseNovelReviewStudioReturn {
   refetchDetail: () => Promise<TranslationJobReviewDetailResponse | null>;
   refetchSegments: () => Promise<void>;
   updateJobDetail: (detail: TranslationJobReviewDetailResponse | null) => void;
+  // Segment edits & OCC states
+  drafts: Record<string, string>;
+  savingSegmentIds: Record<string, boolean>;
+  conflictStates: Record<string, string>;
+  errorStates: Record<string, string>;
+  setSegmentDraft: (segmentId: string, text: string) => void;
+  discardSegmentDraft: (segmentId: string) => void;
+  saveSegment: (segmentId: string) => Promise<boolean | TranslationSegmentDto>;
+  toggleVerification: (segmentId: string) => Promise<boolean | TranslationSegmentDto>;
 }
 
 export function useNovelReviewStudio(
@@ -58,6 +70,19 @@ export function useNovelReviewStudio(
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(
     null,
   );
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const draftsRef = useRef(drafts);
+  draftsRef.current = drafts;
+  const segmentsRef = useRef(segments);
+  segmentsRef.current = segments;
+
+  const [savingSegmentIds, setSavingSegmentIds] = useState<
+    Record<string, boolean>
+  >({});
+  const [conflictStates, setConflictStates] = useState<Record<string, string>>(
+    {},
+  );
+  const [errorStates, setErrorStates] = useState<Record<string, string>>({});
 
   const activeJobIdRef = useRef(jobId);
   const loadSeqRef = useRef(0);
@@ -222,6 +247,212 @@ export function useNovelReviewStudio(
     [],
   );
 
+  const setSegmentDraft = useCallback((segmentId: string, text: string) => {
+    setDrafts((prev) => ({ ...prev, [segmentId]: text }));
+    setErrorStates((prev) => {
+      if (!prev[segmentId]) return prev;
+      const next = { ...prev };
+      delete next[segmentId];
+      return next;
+    });
+    setConflictStates((prev) => {
+      if (!prev[segmentId]) return prev;
+      const next = { ...prev };
+      delete next[segmentId];
+      return next;
+    });
+  }, []);
+
+  const discardSegmentDraft = useCallback((segmentId: string) => {
+    setDrafts((prev) => {
+      const next = { ...prev };
+      delete next[segmentId];
+      return next;
+    });
+    setErrorStates((prev) => {
+      const next = { ...prev };
+      delete next[segmentId];
+      return next;
+    });
+    setConflictStates((prev) => {
+      const next = { ...prev };
+      delete next[segmentId];
+      return next;
+    });
+  }, []);
+
+  const saveSegment = useCallback(
+    async (segmentId: string): Promise<boolean | TranslationSegmentDto> => {
+      const seg = segmentsRef.current.find((s) => s.id === segmentId);
+      if (!seg) return false;
+
+      const draft = draftsRef.current[segmentId];
+      if (draft === undefined || draft === (seg.translatedText ?? '')) {
+        return false;
+      }
+
+      // 1. Client UX gate validation
+      const validation = validateSegmentTopology(seg.rawText, draft, {
+        segmentId: seg.id,
+        anchorBlockId: seg.anchorBlockId ?? undefined,
+      });
+
+      if (!validation.valid) {
+        setErrorStates((prev) => ({
+          ...prev,
+          [segmentId]: validation.error || 'Cấu trúc thẻ bảo vệ không hợp lệ.',
+        }));
+        return false;
+      }
+
+      // 2. Build OCC payload (only translatedText and expectedVersion)
+      const payload = buildUpdateSegmentPayload({
+        expectedVersion: seg.version,
+        translatedText: draft,
+        isHumanVerified: false,
+      });
+
+      setSavingSegmentIds((prev) => ({ ...prev, [segmentId]: true }));
+      setErrorStates((prev) => {
+        const next = { ...prev };
+        delete next[segmentId];
+        return next;
+      });
+      setConflictStates((prev) => {
+        const next = { ...prev };
+        delete next[segmentId];
+        return next;
+      });
+
+      try {
+        const updated = await updateTranslationSegment(
+          activeJobIdRef.current,
+          segmentId,
+          payload,
+        );
+
+        setSegments((prev) =>
+          prev.map((s) => (s.id === segmentId ? updated : s)),
+        );
+        setDrafts((prev) => {
+          const next = { ...prev };
+          delete next[segmentId];
+          return next;
+        });
+
+        // Sync reviewSummary verifiedCount if verification state changed
+        setJobDetail((prev) => {
+          if (!prev) return prev;
+          const wasVerified = seg.isHumanVerified;
+          const isVerified = updated.isHumanVerified;
+          const verifiedDiff =
+            isVerified === wasVerified ? 0 : isVerified ? 1 : -1;
+          return {
+            ...prev,
+            reviewSummary: {
+              ...prev.reviewSummary,
+              verifiedCount: Math.max(
+                0,
+                prev.reviewSummary.verifiedCount + verifiedDiff,
+              ),
+            },
+          };
+        });
+
+        return updated;
+      } catch (err: any) {
+        const parsed = parseApiError(err);
+        if (parsed.code === 'VERSION_CONFLICT' || parsed.status === 409) {
+          setConflictStates((prev) => ({
+            ...prev,
+            [segmentId]:
+              parsed.message ||
+              'Xung đột phiên bản (409): Dữ liệu trên server đã được cập nhật.',
+          }));
+        } else if (
+          parsed.code === 'ANCHOR_TOPOLOGY_VIOLATION' ||
+          parsed.status === 400
+        ) {
+          setErrorStates((prev) => ({
+            ...prev,
+            [segmentId]:
+              parsed.message || 'Lỗi cấu trúc thẻ bảo vệ từ server authoritative',
+          }));
+        } else {
+          setErrorStates((prev) => ({
+            ...prev,
+            [segmentId]: parsed.message || 'Lỗi khi lưu phân đoạn dịch.',
+          }));
+        }
+        return false;
+      } finally {
+        setSavingSegmentIds((prev) => ({ ...prev, [segmentId]: false }));
+      }
+    },
+    [segments, drafts],
+  );
+
+  const toggleVerification = useCallback(
+    async (segmentId: string): Promise<boolean | TranslationSegmentDto> => {
+      const seg = segmentsRef.current.find((s) => s.id === segmentId);
+      if (!seg) return false;
+
+      const nextVerified = !seg.isHumanVerified;
+      const payload = {
+        expectedVersion: seg.version,
+        isHumanVerified: nextVerified,
+      };
+
+      setSavingSegmentIds((prev) => ({ ...prev, [segmentId]: true }));
+      try {
+        const updated = await updateTranslationSegment(
+          activeJobIdRef.current,
+          segmentId,
+          payload,
+        );
+
+        setSegments((prev) =>
+          prev.map((s) => (s.id === segmentId ? updated : s)),
+        );
+
+        setJobDetail((prev) => {
+          if (!prev) return prev;
+          const verifiedDiff = nextVerified ? 1 : -1;
+          return {
+            ...prev,
+            reviewSummary: {
+              ...prev.reviewSummary,
+              verifiedCount: Math.max(
+                0,
+                prev.reviewSummary.verifiedCount + verifiedDiff,
+              ),
+            },
+          };
+        });
+
+        return updated;
+      } catch (err) {
+        const parsed = parseApiError(err);
+        if (parsed.code === 'VERSION_CONFLICT' || parsed.status === 409) {
+          setConflictStates((prev) => ({
+            ...prev,
+            [segmentId]: parsed.message || 'Xung đột phiên bản (409).',
+          }));
+        } else {
+          setErrorStates((prev) => ({
+            ...prev,
+            [segmentId]:
+              parsed.message || 'Không thể thay đổi trạng thái duyệt.',
+          }));
+        }
+        return false;
+      } finally {
+        setSavingSegmentIds((prev) => ({ ...prev, [segmentId]: false }));
+      }
+    },
+    [segments],
+  );
+
   return {
     status,
     jobDetail,
@@ -236,5 +467,13 @@ export function useNovelReviewStudio(
     refetchDetail,
     refetchSegments,
     updateJobDetail,
+    drafts,
+    savingSegmentIds,
+    conflictStates,
+    errorStates,
+    setSegmentDraft,
+    discardSegmentDraft,
+    saveSegment,
+    toggleVerification,
   };
 }

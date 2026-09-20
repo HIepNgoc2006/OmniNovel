@@ -29,8 +29,6 @@
 - Modify: `services/api/src/modules/chapters/chapters.controller.ts`
 - Modify: `services/api/src/modules/chapters/chapters.service.ts`
 - Create: `services/api/src/modules/chapters/test/studio-chapter-versions.spec.ts`
-- Modify in Task 2 hardening: `services/api/src/modules/translation/translation.service.ts`
-- Test in Task 2 hardening: `services/api/src/modules/translation/test/job-creation-invariants.spec.ts`
 
 **Interfaces:**
 - Consumes: `ChapterVersion`, `StoryMemberGuard`, `JwtAuthGuard`.
@@ -40,30 +38,30 @@
   - `StudioChapterVersionSummaryDto`: `{ id: string; chapterId: string; versionNumber: number; versionType: ChapterVersionType; language: string; isPublished: boolean; sourceVersionId: string | null; createdAt: IsoDateString }`
   - Endpoint: `GET /api/v1/studio/chapters/:id/versions`
 
-- [ ] **Step 1: Thêm types vào `@omninovel/shared`**
+- [x] **Step 1: Thêm types vào `@omninovel/shared`**
 Thêm `CreateTranslationJobRequest`, `CreateTranslationJobResponse`, `StudioChapterVersionSummaryDto` vào `packages/shared/src/index.ts`.
 
-- [ ] **Step 2: Build `@omninovel/shared`**
+- [x] **Step 2: Build `@omninovel/shared`**
 Run: `npm --prefix packages/shared run build`
 Expected: PASS với 0 lỗi.
 
-- [ ] **Step 3: Viết test cho `findVersionsForStudio` trong `services/api`**
+- [x] **Step 3: Viết test cho `findVersionsForStudio` trong `services/api`**
 Tạo file `services/api/src/modules/chapters/test/studio-chapter-versions.spec.ts` kiểm tra:
 1. Trả về danh sách version theo thứ tự `versionNumber DESC`.
 2. Ném `NotFoundException` nếu chapterId không tồn tại.
 
-- [ ] **Step 4: Chạy test để xác nhận fail**
+- [x] **Step 4: Chạy test để xác nhận fail**
 Run: `npm --prefix services/api test -- src/modules/chapters/test/studio-chapter-versions.spec.ts`
 Expected: FAIL do chưa có method `findVersionsForStudio`.
 
-- [ ] **Step 5: Cài đặt `findVersionsForStudio` và endpoint controller**
+- [x] **Step 5: Cài đặt `findVersionsForStudio` và endpoint controller**
 Cài đặt trong `chapters.service.ts` và thêm `@Get('studio/chapters/:id/versions')` có guard trong `chapters.controller.ts`.
 
-- [ ] **Step 6: Chạy test để xác nhận pass**
+- [x] **Step 6: Chạy test để xác nhận pass**
 Run: `npm --prefix services/api test -- src/modules/chapters/test/studio-chapter-versions.spec.ts`
 Expected: PASS.
 
-- [ ] **Step 7: Commit Task 1**
+- [x] **Step 7: Commit Task 1**
 ```bash
 git add packages/shared/src/index.ts \
         services/api/src/modules/chapters/ \
@@ -79,6 +77,8 @@ git commit -m "feat(shared,api): add job creation contracts and studio chapter v
 - Modify: `apps/web/src/lib/api/translation.ts`
 - Create: `apps/web/src/lib/studio/studio-job-creation-policy.ts`
 - Create: `apps/web/src/test/studio-job-creation-policy.spec.ts`
+- Modify: `services/api/src/modules/translation/translation.service.ts`
+- Create: `services/api/src/modules/translation/test/job-creation-invariants.spec.ts`
 
 **Interfaces:**
 - Consumes: `CreateTranslationJobRequest`, `CreateTranslationJobResponse`, `StudioChapterVersionSummaryDto`.
@@ -125,7 +125,7 @@ git commit -m "feat(web): add job creation client API, consent policy, and ambig
 - Create: `apps/web/src/test/use-create-translation-job.spec.ts`
 
 **Interfaces:**
-- Consumes: `studio-job-creation-policy`, `translation.ts`, `stories.ts`, Next.js `useRouter`.
+- Consumes: `studio-job-creation-policy`, `translation.ts`, `stories.ts#getStoryBySlugApi`, Next.js `useRouter`.
 - Produces:
   - Hook `useCreateTranslationJob(options)`:
     - State: `stories`, `storyDetail`, `chapterVersions`, `selectedStoryId`, `selectedEditionId`, `selectedChapterId`, `selectedVersionId`, `sourceLang`, `targetLang`, `provider`, `externalConsent`.
@@ -134,7 +134,7 @@ git commit -m "feat(web): add job creation client API, consent policy, and ambig
 
 - [ ] **Step 1: Viết test cho hook `use-create-translation-job.spec.ts`**
 Cover các case:
-1. Hierarchy loading: Chọn story tải storyDetail; chọn chapter tải chapterVersions.
+1. Hierarchy loading: Chọn managed story dùng canonical `slug` để tải hierarchy qua `getStoryBySlugApi(slug)`; chọn chapter tải chapterVersions.
 2. Form defaults: Chọn version tự động fill `sourceLang` từ version/story.
 3. Concurrency guard: Chặn click submit khi `isSubmitting === true`.
 4. Frozen submission identity: Submit lần đầu sinh UUID-v4; khi gặp 500/timeout gọi `retry()` giữ nguyên UUID-v4; khi user sửa input form reset submission identity.
@@ -214,7 +214,7 @@ git commit -m "feat(web): build studio job creation UI components and consent ca
   - Dashboard CTA "Tạo Bản Dịch Mới" trỏ đến `/studio/ai/jobs/new`.
 
 - [ ] **Step 1: Tạo page `/studio/ai/jobs/new/page.tsx`**
-Bọc `CreateJobForm` trong layout studio, hỗ trợ search params `?storyId=...&chapterId=...`.
+Bọc `CreateJobForm` trong layout studio, hỗ trợ search params `?storySlug=...&chapterId=...`. Không quét nhiều trang managed stories để resolve một `storyId`.
 
 - [ ] **Step 2: Cập nhật Dashboard CTA link trong `studio/page.tsx`**
 Đổi link "Tạo Bản Dịch Mới" từ placeholder `/studio/manga` thành `/studio/ai/jobs/new`.

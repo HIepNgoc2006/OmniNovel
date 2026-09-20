@@ -90,25 +90,25 @@ git commit -m "feat(shared,api): add job creation contracts and studio chapter v
   - `shouldReuseIdempotencyKey(previous, current, isAmbiguous)`
   - `classifyJobCreationError(error)` (chuẩn hóa HTTP 5xx / timeout ambiguity)
 
-- [ ] **Step 1: Viết test cho pure policy trong `studio-job-creation-policy.spec.ts`**
+- [x] **Step 1: Viết test cho pure policy trong `studio-job-creation-policy.spec.ts`**
 Cover các case:
 1. `validateJobCreationForm`: Thiếu chapterVersionId, trùng source/target language, external provider thiếu consent checkbox.
 2. `shouldReuseIdempotencyKey`: Giữ nguyên key khi ambiguous error và form không đổi; tạo key mới khi đổi input.
 3. `classifyJobCreationError`: 5xx / timeout / network abort là `isAmbiguous: true`; 400/403/404/409 là `isAmbiguous: false` có message chuẩn.
 4. Backend authority hardening: `createJob()` phải reject khi `sourceLang` không khớp `ChapterVersion.language`, hoặc `targetLang === sourceLang`, để API trực tiếp không bypass canonical hierarchy/form policy.
 
-- [ ] **Step 2: Chạy test để xác nhận fail**
+- [x] **Step 2: Chạy test để xác nhận fail**
 Run: `npm --prefix apps/web test -- src/test/studio-job-creation-policy.spec.ts`
 Expected: FAIL do chưa có file policy.
 
-- [ ] **Step 3: Cài đặt `studio-job-creation-policy.ts` và client APIs trong `translation.ts`**
+- [x] **Step 3: Cài đặt `studio-job-creation-policy.ts` và client APIs trong `translation.ts`**
 Triển khai hàm pure policy và các API `createTranslationJobApi`, `fetchStudioChapterVersions`. Đồng thời harden `TranslationService.createJob()` với canonical language invariants và test backend tương ứng.
 
-- [ ] **Step 4: Chạy test để xác nhận pass**
+- [x] **Step 4: Chạy test để xác nhận pass**
 Run: `npm --prefix apps/web test -- src/test/studio-job-creation-policy.spec.ts`
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 2**
+- [x] **Step 5: Commit Task 2**
 ```bash
 git add apps/web/src/lib/api/translation.ts \
         apps/web/src/lib/studio/studio-job-creation-policy.ts \

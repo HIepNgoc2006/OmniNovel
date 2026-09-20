@@ -9,6 +9,8 @@ import {
   fetchManagedStories,
   fetchTranslationProjects,
   fetchTranslationJobs,
+  createTranslationJobApi,
+  fetchStudioChapterVersions,
   parseApiError,
 } from '../lib/api/translation';
 import { apiClient } from '../lib/api/client';
@@ -125,6 +127,38 @@ describe('Translation API Client & Error Parsing (#149 RED 0)', () => {
       const res = await cancelTranslationJob('job-1');
       expect(spy).toHaveBeenCalledWith('/ai/jobs/job-1/cancel', {});
       expect(res).toEqual({ id: 'job-1', status: 'CANCELED' });
+    });
+
+    it('createTranslationJobApi calls POST /ai/jobs with payload and Idempotency-Key header (#146 Task 2)', async () => {
+      const payload = {
+        chapterVersionId: 'ver-1',
+        sourceLang: 'ja',
+        targetLang: 'vi',
+        provider: 'OPENAI',
+        externalConsent: true,
+      };
+      const idempotencyKey = 'key-uuid-123';
+      const spy = vi.spyOn(apiClient, 'post').mockResolvedValue({
+        data: { jobId: 'job-1', status: 'VALIDATING', isDuplicate: false },
+      } as any);
+
+      const res = await createTranslationJobApi(payload, idempotencyKey);
+      expect(spy).toHaveBeenCalledWith('/ai/jobs', payload, {
+        headers: {
+          'Idempotency-Key': idempotencyKey,
+        },
+      });
+      expect(res).toEqual({ jobId: 'job-1', status: 'VALIDATING', isDuplicate: false });
+    });
+
+    it('fetchStudioChapterVersions calls GET /studio/chapters/:id/versions (#146 Task 2)', async () => {
+      const spy = vi.spyOn(apiClient, 'get').mockResolvedValue({
+        data: [{ id: 'ver-1', versionNumber: 1, versionType: 'RAW_ORIGINAL' }],
+      } as any);
+
+      const res = await fetchStudioChapterVersions('chap-1');
+      expect(spy).toHaveBeenCalledWith('/studio/chapters/chap-1/versions');
+      expect(res).toEqual([{ id: 'ver-1', versionNumber: 1, versionType: 'RAW_ORIGINAL' }]);
     });
   });
 

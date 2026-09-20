@@ -168,6 +168,18 @@ export class TranslationService {
       );
     }
 
+    if (dto.sourceLang !== sourceVersion.language) {
+      throw new BadRequestException(
+        `SOURCE_LANGUAGE_MISMATCH: Ngôn ngữ nguồn '${dto.sourceLang}' không khớp với ngôn ngữ của ChapterVersion ('${sourceVersion.language}').`,
+      );
+    }
+
+    if (dto.targetLang === dto.sourceLang) {
+      throw new BadRequestException(
+        `IDENTICAL_LANGUAGES: Ngôn ngữ đích không được trùng với ngôn ngữ nguồn ('${dto.sourceLang}').`,
+      );
+    }
+
     const story = sourceVersion.chapter?.storyEdition?.story;
     const edition = sourceVersion.chapter?.storyEdition;
 

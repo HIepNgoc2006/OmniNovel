@@ -15,6 +15,9 @@ import {
   ManagedStorySummaryDto,
   ApplyTranslationJobRequest,
   ApplyTranslationJobResponse,
+  CreateTranslationJobRequest,
+  CreateTranslationJobResponse,
+  StudioChapterVersionSummaryDto,
 } from '@omninovel/shared';
 import { AxiosError } from 'axios';
 
@@ -252,6 +255,39 @@ export async function applyTranslationJob(
     `/ai/jobs/${jobId}/apply`,
     request,
     { headers },
+  );
+  return response.data;
+}
+
+/**
+  * Create a new TranslationJob with durable Idempotency-Key
+  * POST /api/v1/ai/jobs
+  */
+export async function createTranslationJobApi(
+  payload: CreateTranslationJobRequest,
+  idempotencyKey: string,
+): Promise<CreateTranslationJobResponse> {
+  const response = await apiClient.post<CreateTranslationJobResponse>(
+    '/ai/jobs',
+    payload,
+    {
+      headers: {
+        'Idempotency-Key': idempotencyKey,
+      },
+    },
+  );
+  return response.data;
+}
+
+/**
+  * Fetch chapter versions for Studio without incrementing reader view metrics
+  * GET /api/v1/studio/chapters/:chapterId/versions
+  */
+export async function fetchStudioChapterVersions(
+  chapterId: string,
+): Promise<StudioChapterVersionSummaryDto[]> {
+  const response = await apiClient.get<StudioChapterVersionSummaryDto[]>(
+    `/studio/chapters/${chapterId}/versions`,
   );
   return response.data;
 }

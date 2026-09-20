@@ -72,7 +72,8 @@ export default function StudioPage() {
 
           {/* Action: Create New Translation */}
           <Link
-            href="/studio/manga"
+            href="/studio/ai/jobs/new"
+            data-testid="create-job-cta-btn"
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 active:scale-95 transition-all shadow-lg shadow-indigo-600/20"
           >
             <Plus className="w-4 h-4" />

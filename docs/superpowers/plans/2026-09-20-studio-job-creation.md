@@ -173,25 +173,25 @@ git commit -m "feat(web): implement useCreateTranslationJob hook with frozen sub
 - Produces:
   - Accessible UI sub-components: `StudioHierarchySelector`, `StudioProviderConsentCard`, `CreateJobForm`.
 
-- [ ] **Step 1: Viết test cho `create-job-form.spec.tsx`**
+- [x] **Step 1: Viết test cho `create-job-form.spec.tsx`**
 Cover các case:
 1. Render form và hierarchy steps.
 2. Khi chọn provider `OPENAI`, card disclosure & consent checkbox xuất hiện; submit button disabled nếu chưa check.
 3. Khi chọn provider `MOCK`, consent checkbox ẩn; submit button cho phép bấm.
 4. Khi state là `SUBMISSION_OUTCOME_UNKNOWN`, hiển thị warning alert kèm nút "Thử lại với cùng Idempotency Key".
 
-- [ ] **Step 2: Chạy test để xác nhận fail**
+- [x] **Step 2: Chạy test để xác nhận fail**
 Run: `npm --prefix apps/web test -- src/test/create-job-form.spec.tsx`
 Expected: FAIL do chưa có components.
 
-- [ ] **Step 3: Cài đặt các sub-components và `CreateJobForm`**
+- [x] **Step 3: Cài đặt các sub-components và `CreateJobForm`**
 Xây dựng UI tuân thủ design system, rich aesthetics, Tailwind CSS 4, responsive layout.
 
-- [ ] **Step 4: Chạy test để xác nhận pass**
+- [x] **Step 4: Chạy test để xác nhận pass**
 Run: `npm --prefix apps/web test -- src/test/create-job-form.spec.tsx`
 Expected: PASS.
 
-- [ ] **Step 5: Commit Task 4**
+- [x] **Step 5: Commit Task 4**
 ```bash
 git add apps/web/src/components/studio/job-creation/ \
         apps/web/src/test/create-job-form.spec.tsx
@@ -213,17 +213,17 @@ git commit -m "feat(web): build studio job creation UI components and consent ca
   - Route `/studio/ai/jobs/new`
   - Dashboard CTA "Tạo Bản Dịch Mới" trỏ đến `/studio/ai/jobs/new`.
 
-- [ ] **Step 1: Tạo page `/studio/ai/jobs/new/page.tsx`**
+- [x] **Step 1: Tạo page `/studio/ai/jobs/new/page.tsx`**
 Bọc `CreateJobForm` trong layout studio, hỗ trợ search params `?storySlug=...&chapterId=...`. Không quét nhiều trang managed stories để resolve một `storyId`.
 
-- [ ] **Step 2: Cập nhật Dashboard CTA link trong `studio/page.tsx`**
+- [x] **Step 2: Cập nhật Dashboard CTA link trong `studio/page.tsx`**
 Đổi link "Tạo Bản Dịch Mới" từ placeholder `/studio/manga` thành `/studio/ai/jobs/new`.
 
-- [ ] **Step 3: Cập nhật và chạy unit tests của Dashboard**
+- [x] **Step 3: Cập nhật và chạy unit tests của Dashboard**
 Run: `npm --prefix apps/web test -- src/test/studio-dashboard-page.spec.tsx`
 Expected: PASS với link mới `/studio/ai/jobs/new`.
 
-- [ ] **Step 4: Commit Task 5**
+- [x] **Step 4: Commit Task 5**
 ```bash
 git add apps/web/src/app/\(site\)/\(studio\)/studio/ai/jobs/new/page.tsx \
         apps/web/src/app/\(site\)/\(studio\)/studio/page.tsx \

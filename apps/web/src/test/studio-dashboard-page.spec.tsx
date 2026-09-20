@@ -97,6 +97,10 @@ describe('StudioPage Integration (#145 Task 5)', () => {
     expect(screen.getByText('Solo Leveling')).toBeInTheDocument();
     expect(screen.getByText(/Chương 1\.00/)).toBeInTheDocument();
     expect(screen.getByTestId('job-cta-button')).toHaveTextContent(/Duyệt bản dịch/i);
+    expect(screen.getByTestId('create-job-cta-btn')).toHaveAttribute(
+      'href',
+      '/studio/ai/jobs/new',
+    );
   });
 
   it('2. Renders loading state during initial load', () => {

@@ -629,7 +629,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         .set('Authorization', `Bearer ${translatorAAccessToken}`)
         .send({
           versionType: ChapterVersionType.RAW_ORIGINAL,
-          language: 'vi',
+          language: 'ja',
         })
         .expect(201);
 

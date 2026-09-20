@@ -442,6 +442,31 @@ export enum ApplyTranslationMode {
   CREATE_ALTERNATE_VERSION = 'CREATE_ALTERNATE_VERSION',
 }
 
+export interface CreateTranslationJobRequest {
+  chapterVersionId: string;
+  sourceLang: string;
+  targetLang: string;
+  provider?: string;
+  externalConsent?: boolean;
+}
+
+export interface CreateTranslationJobResponse {
+  jobId: string;
+  status: TranslationJobStatus;
+  isDuplicate: boolean;
+}
+
+export interface StudioChapterVersionSummaryDto {
+  id: string;
+  chapterId: string;
+  versionNumber: number;
+  versionType: ChapterVersionType;
+  language: string;
+  isPublished: boolean;
+  sourceVersionId: string | null;
+  createdAt: IsoDateString;
+}
+
 export interface ApplyTranslationJobRequest {
   mode: ApplyTranslationMode;
 }

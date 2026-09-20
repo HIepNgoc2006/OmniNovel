@@ -9,6 +9,7 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { ChaptersService } from './chapters.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -51,6 +52,20 @@ export class ChaptersController {
       body.title,
       body.volumeId,
     );
+  }
+
+  // 3. Lấy danh sách versions nhẹ cho Studio Job Creation (#146)
+  @Get('studio/chapters/:id/versions')
+  @UseGuards(JwtAuthGuard, StoryMemberGuard)
+  @RequireStoryRole(
+    StoryMemberRole.OWNER,
+    StoryMemberRole.EDITOR,
+    StoryMemberRole.TRANSLATOR,
+  )
+  getVersionsForStudio(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) chapterId: string,
+  ) {
+    return this.chaptersService.findVersionsForStudio(chapterId);
   }
 
   // 3. Tạo version mới cho chapter (Story OWNER, EDITOR, TRANSLATOR hoặc Global ADMIN)

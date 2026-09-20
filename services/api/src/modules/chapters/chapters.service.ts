@@ -12,7 +12,13 @@ import { Volume } from './entities/volume.entity';
 import { MediaAsset } from './entities/media-asset.entity';
 import { StoryEdition } from '../stories/entities/story-edition.entity';
 import { Story } from '../stories/entities/story.entity';
-import { ChapterVersionType, GlobalRole, StoryMemberRole, StoryVisibility } from '@omninovel/shared';
+import {
+  ChapterVersionType,
+  GlobalRole,
+  StoryMemberRole,
+  StoryVisibility,
+  StudioChapterVersionSummaryDto,
+} from '@omninovel/shared';
 
 @Injectable()
 export class ChaptersService {
@@ -212,6 +218,34 @@ export class ChaptersService {
         next: nextQuery.length > 0 ? nextQuery[0] : null,
       },
     };
+  }
+
+  async findVersionsForStudio(
+    chapterId: string,
+  ): Promise<StudioChapterVersionSummaryDto[]> {
+    const chapter = await this.chapterRepository.findOne({
+      where: { id: chapterId },
+    });
+
+    if (!chapter) {
+      throw new NotFoundException('Chương truyện không tồn tại.');
+    }
+
+    const versions = await this.versionRepository.find({
+      where: { chapterId },
+      order: { versionNumber: 'DESC' },
+    });
+
+    return versions.map((version) => ({
+      id: version.id,
+      chapterId: version.chapterId,
+      versionNumber: version.versionNumber,
+      versionType: version.versionType,
+      language: version.language,
+      isPublished: version.isPublished,
+      sourceVersionId: version.sourceVersionId,
+      createdAt: version.createdAt.toISOString(),
+    }));
   }
 
   async createChapter(

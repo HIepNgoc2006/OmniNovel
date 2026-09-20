@@ -11,7 +11,7 @@
 ## Global Constraints
 - **Target Issue:** #146 ([Phase 4D][Web] Implement translation job creation workflow with consent and idempotency)
 - **5 Locked Invariants:**
-  1. **Canonical hierarchy:** Managed Story → Edition → Chapter → source `ChapterVersion`.
+  1. **Canonical hierarchy:** Managed Story → Edition → Chapter → source `ChapterVersion`. Backend creation authority MUST reject `sourceLang !== sourceVersion.language` and `targetLang === sourceLang`; UI validation is defense-in-depth only.
   2. **Consent:** External provider (`OPENAI`, `DEEPL`, `GEMINI`, `CLAUDE`) chỉ gửi `externalConsent: true` sau explicit user action; local/mock provider (`MOCK`, `LOCAL`, `LOCAL_LLM`) không ép consent.
   3. **Frozen submission identity:** Một logical submit giữ nguyên UUID-v4 `Idempotency-Key` khi retry/network ambiguity; chỉ sinh key mới khi user chỉnh sửa input form.
   4. **No double submit:** Disable/concurrency guard; canonical response `202 { jobId, status, isDuplicate }`; phân loại lỗi rõ ràng.
@@ -29,6 +29,8 @@
 - Modify: `services/api/src/modules/chapters/chapters.controller.ts`
 - Modify: `services/api/src/modules/chapters/chapters.service.ts`
 - Create: `services/api/src/modules/chapters/test/studio-chapter-versions.spec.ts`
+- Modify in Task 2 hardening: `services/api/src/modules/translation/translation.service.ts`
+- Test in Task 2 hardening: `services/api/src/modules/translation/test/job-creation-invariants.spec.ts`
 
 **Interfaces:**
 - Consumes: `ChapterVersion`, `StoryMemberGuard`, `JwtAuthGuard`.
@@ -93,13 +95,14 @@ Cover các case:
 1. `validateJobCreationForm`: Thiếu chapterVersionId, trùng source/target language, external provider thiếu consent checkbox.
 2. `shouldReuseIdempotencyKey`: Giữ nguyên key khi ambiguous error và form không đổi; tạo key mới khi đổi input.
 3. `classifyJobCreationError`: 5xx / timeout / network abort là `isAmbiguous: true`; 400/403/404/409 là `isAmbiguous: false` có message chuẩn.
+4. Backend authority hardening: `createJob()` phải reject khi `sourceLang` không khớp `ChapterVersion.language`, hoặc `targetLang === sourceLang`, để API trực tiếp không bypass canonical hierarchy/form policy.
 
 - [ ] **Step 2: Chạy test để xác nhận fail**
 Run: `npm --prefix apps/web test -- src/test/studio-job-creation-policy.spec.ts`
 Expected: FAIL do chưa có file policy.
 
 - [ ] **Step 3: Cài đặt `studio-job-creation-policy.ts` và client APIs trong `translation.ts`**
-Triển khai hàm pure policy và các API `createTranslationJobApi`, `fetchStudioChapterVersions`.
+Triển khai hàm pure policy và các API `createTranslationJobApi`, `fetchStudioChapterVersions`. Đồng thời harden `TranslationService.createJob()` với canonical language invariants và test backend tương ứng.
 
 - [ ] **Step 4: Chạy test để xác nhận pass**
 Run: `npm --prefix apps/web test -- src/test/studio-job-creation-policy.spec.ts`

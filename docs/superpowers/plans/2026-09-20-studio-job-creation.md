@@ -246,16 +246,16 @@ git commit -m "feat(web): integrate job creation route and wire dashboard CTA (#
     - Consent Gate: Chọn OpenAI → Bị chặn nếu chưa consent → Submit thành công sau khi consent.
     - Ambiguity Retry: Giả lập 500/timeout → Nhấn thử lại gửi cùng `Idempotency-Key`.
 
-- [ ] **Step 1: Viết E2E test trong `apps/web/e2e/studio-job-creation.spec.ts`**
-- [ ] **Step 2: Chạy E2E test bằng Playwright**
+- [x] **Step 1: Viết E2E test trong `apps/web/e2e/studio-job-creation.spec.ts`**
+- [x] **Step 2: Chạy E2E test bằng Playwright**
 Run: `npm --prefix apps/web run test:e2e -- e2e/studio-job-creation.spec.ts`
 Expected: PASS tất cả các flows.
 
-- [ ] **Step 3: Chạy full test suite regression**
+- [x] **Step 3: Chạy full test suite regression**
 Run: `npm --prefix apps/web test --run`
 Expected: Tất cả các bài test Vitest của web pass.
 
-- [ ] **Step 4: Commit Task 6**
+- [x] **Step 4: Commit Task 6**
 ```bash
 git add apps/web/e2e/studio-job-creation.spec.ts
 git commit -m "test(web): add Playwright E2E test suite for studio job creation workflow (#146)"
@@ -266,10 +266,10 @@ git commit -m "test(web): add Playwright E2E test suite for studio job creation 
 ### Task 7: Documentation & Roadmap Phase 4D Update
 
 **Files:**
-- Modify: `plans/ROADMAP.md` (hoặc tài liệu Phase 4D tương ứng)
+- Modify: `plans/phases/phase_04_web_client.md`
 
-- [ ] **Step 1: Cập nhật trạng thái Issue #146 hoàn thành**
-- [ ] **Step 2: Commit & Push**
+- [x] **Step 1: Cập nhật trạng thái Issue #146 hoàn thành**
+- [x] **Step 2: Commit & Push**
 ```bash
 git add plans/
 git commit -m "docs(roadmap): update Phase 4D translation job creation workflow completion status (#146)"

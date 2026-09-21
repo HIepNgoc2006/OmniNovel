@@ -139,6 +139,13 @@ Khi biên tập viên chỉnh sửa bản dịch phân đoạn (`translation_seg
 
 ### Ranh giới Chuyển giao Trách nhiệm (Handoff Ownership Boundary):
 * **#161 (Materialization Protocol & Fencing):** Chịu trách nhiệm đặc tả snapshot phân đoạn V1 (`MaterializationSnapshotV1`), Content-Addressed storage key, dedicated BullMQ queue deduplication, và fenced completion callback nguyên tử.
-* **#162 / #163 (Immutable Source Context):** Chịu trách nhiệm bảo toàn dữ liệu nguồn bất biến (`cleanBases` cho Manga và structure snapshot cho Novel).
+* **#162 (Manga Clean Bases):** Chịu trách nhiệm bảo toàn dữ liệu ảnh gốc đã xóa chữ (`cleanBases` cho Manga) có attempt-isolation.
+* **#163 (Novel Structure Snapshot - COMPLETED):**
+  - **Content-Addressed Immutable Snapshot:** Snapshot cấu trúc phân đoạn của Novel được lưu trữ bất biến tại `ai/jobs/{jobId}/structure/{sha256}.json`.
+  - **Fenced Upload Protocol & ChecksumSHA256 Binding:** Presigned PUT upload URL được ký kèm `ChecksumSHA256` (Base64) tại endpoint `/internal/v1/ai/jobs/:id/structure-snapshot-upload`. Worker phải gửi header `x-amz-checksum-sha256` tương ứng khi PUT, ngăn chặn ghi đè sai hash hoặc stale attempt PUT race.
+  - **Narrow State Gate:** Endpoint cấp upload URL chỉ mở khi `job.status === PREPROCESSING && attemptNumber === job.attemptCount && mediaFormat === NOVEL`.
+  - **Core Streaming Hash Gate:** `StorageService.hashInternalObjectSha256()` stream trực tiếp từ S3/MinIO (giới hạn <= 10MB) để verify: `exists`, `size > 0`, `contentType === 'application/json'`, `actualSha256 === reference.sha256`.
+  - **Manifest Pinning & Backward Compatibility:** `NovelResultManifestV1.structureSnapshot` là optional ở parser TS/Python để backward-compatible với manifest cũ, nhưng Core callback gate bắt buộc 100% callback `READY_FOR_REVIEW` mới phải có snapshot hợp lệ.
+  - **Rebuilder Decoupling (#158 Prerequisite):** `NovelDocumentRebuilder.rebuild_from_snapshot()` khôi phục cây Document AST hoàn toàn từ snapshot JSON, duyệt qua `snapshot.segments` và `snapshot.anchorMaps` mà không phụ thuộc vào `NovelSegmenter` hiện hành (được kiểm chứng độc lập bằng runtime assertion monkeypatching).
 * **#157 / #158 (Materialization Processors & Workers):** Chịu trách nhiệm đọc snapshot và source context, sinh presigned download URLs ngắn hạn ngay trước khi gọi worker, và re-render/rebuild artifact cuối cùng. Không tự ý mở rộng schema của snapshot V1.
 

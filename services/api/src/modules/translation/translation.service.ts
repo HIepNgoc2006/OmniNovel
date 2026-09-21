@@ -2845,19 +2845,27 @@ export class TranslationService {
       ]);
     }
 
+    const canonicalSource = dto.sourceTerm?.trim();
+    const canonicalTarget = dto.targetTerm?.trim();
+    const canonicalCategory = dto.category?.trim();
+
+    if (!canonicalSource || !canonicalTarget) {
+      throw new BadRequestException('Thuật ngữ gốc và bản dịch không được để trống.');
+    }
+
     let glossary = await this.glossaryRepo.findOne({
-      where: { projectId: dto.projectId, sourceTerm: dto.sourceTerm },
+      where: { projectId: dto.projectId, sourceTerm: canonicalSource },
     });
 
     if (glossary) {
-      glossary.targetTerm = dto.targetTerm;
-      glossary.category = dto.category || glossary.category;
+      glossary.targetTerm = canonicalTarget;
+      glossary.category = canonicalCategory || glossary.category;
     } else {
       glossary = this.glossaryRepo.create({
         projectId: dto.projectId,
-        sourceTerm: dto.sourceTerm,
-        targetTerm: dto.targetTerm,
-        category: dto.category || 'CHARACTER_NAME',
+        sourceTerm: canonicalSource,
+        targetTerm: canonicalTarget,
+        category: canonicalCategory || 'CHARACTER_NAME',
       });
     }
 

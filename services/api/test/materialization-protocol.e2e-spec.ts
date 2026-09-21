@@ -99,7 +99,12 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
         if (key.includes('invalid-mime')) {
           return { exists: true, contentLength: 12345, contentType: 'image/png' };
         }
-        return { exists: true, contentLength: 12345, contentType: 'image/webp' };
+        const isHtml = key.endsWith('.html') || key.includes('content.html');
+        return {
+          exists: true,
+          contentLength: 12345,
+          contentType: isHtml ? 'text/html; charset=utf-8' : 'image/webp',
+        };
       });
     jest.spyOn(storageService, 'headInternalObject').mockResolvedValue(true);
 
@@ -277,7 +282,7 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       VALUES (
         '${novelProjectId}', '${novelVersionId}',
         '${TranslationJobStatus.READY_FOR_REVIEW}', 2, 1,
-        '{"version": 1, "mediaFormat": "NOVEL", "title": "Tiểu thuyết test", "language": "vi", "htmlKey": "ai/jobs/n1/materializations/rev-1/content.html", "htmlFileSizeBytes": 12345, "segmentCount": 1, "charCount": 100, "qa": {"passed": true, "score": 0.95, "fingerprintMatch": true, "issuesCount": 0}, "metrics": {"totalBlocks": 10, "totalBatches": 2, "glossaryHits": 5}}',
+        '{"version": 1, "mediaFormat": "NOVEL", "title": "Tiểu thuyết test", "language": "vi", "htmlKey": "ai/jobs/n1/materializations/rev-1/content.html", "htmlFileSizeBytes": 12345, "segmentCount": 1, "charCount": 100, "qa": {"passed": true, "score": 0.95, "fingerprintMatch": true, "issuesCount": 0}, "metrics": {"totalBlocks": 10, "totalBatches": 2, "glossaryHits": 5}, "structureSnapshot": {"version": 1, "sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", "storageKey": "ai/jobs/n1/structure/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890.json", "sourceStructureFingerprint": "sha256:f1f2f3f4f5f6f7f8f9f0f1f2f3f4f5f6f7f8f9f0f1f2f3f4f5f6f7f8f9f0f1f2", "segmenterVersion": "1.0.0"}}',
         '${ownerId}'
       )
       RETURNING id;
@@ -889,6 +894,131 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
         totalBatches: 2,
         glossaryHits: 5,
       });
+      // Invariant #158: structureSnapshot must be preserved!
+      expect(manifest.structureSnapshot).toBeDefined();
+      expect(manifest.structureSnapshot.sha256).toBe(
+        'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+      );
+      expect(manifest.structureSnapshot.sourceStructureFingerprint).toBe(
+        'sha256:f1f2f3f4f5f6f7f8f9f0f1f2f3f4f5f6f7f8f9f0f1f2f3f4f5f6f7f8f9f0f1f2',
+      );
+    });
+
+    it('should retain structureSnapshot across consecutive materialization revisions (rev 2 -> rev 3) (#158)', async () => {
+      // Complete rev 2 first
+      const resRev2 = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${novelJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'NOVEL',
+          result: {
+            version: 1,
+            mediaFormat: 'NOVEL',
+            htmlKey: `ai/jobs/${novelJobId}/materializations/rev-2/content.html`,
+            htmlFileSizeBytes: 12345,
+            segmentCount: 1,
+            charCount: 150,
+            qa: { passed: true, score: 0.98, fingerprintMatch: true, issuesCount: 0 },
+          },
+        });
+      expect(resRev2.status).toBe(200);
+
+      // Now reviewer edits another segment, advancing review_revision to 3
+      await dataSource.query(`
+        UPDATE translation_jobs
+        SET review_revision = 3
+        WHERE id = '${novelJobId}'
+      `);
+
+      // Complete rev 3
+      const resRev3 = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${novelJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 3,
+          mediaFormat: 'NOVEL',
+          result: {
+            version: 1,
+            mediaFormat: 'NOVEL',
+            htmlKey: `ai/jobs/${novelJobId}/materializations/rev-3/content.html`,
+            htmlFileSizeBytes: 12345,
+            segmentCount: 1,
+            charCount: 160,
+            qa: { passed: true, score: 0.99, fingerprintMatch: true, issuesCount: 0 },
+          },
+        });
+
+      expect(resRev3.status).toBe(200);
+      expect(resRev3.body).toEqual({
+        outcome: 'APPLIED',
+        targetRevision: 3,
+        materializedRevision: 3,
+      });
+
+      const dbJob = await dataSource.query(`
+        SELECT materialized_revision, result_manifest FROM translation_jobs WHERE id = '${novelJobId}'
+      `);
+      expect(dbJob[0].materialized_revision).toBe(3);
+      const manifest = dbJob[0].result_manifest;
+      expect(manifest.htmlKey).toBe(
+        `ai/jobs/${novelJobId}/materializations/rev-3/content.html`,
+      );
+      // structureSnapshot must still be preserved identically!
+      expect(manifest.structureSnapshot).toBeDefined();
+      expect(manifest.structureSnapshot.sha256).toBe(
+        'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+      );
+    });
+
+    it('should reject Novel materialization callback with 400 PREFIX_JAIL_VIOLATION when htmlKey is not exact canonical key (#158)', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${novelJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'NOVEL',
+          result: {
+            version: 1,
+            mediaFormat: 'NOVEL',
+            htmlKey: `ai/jobs/${novelJobId}/materializations/rev-2/custom_output.html`,
+            htmlFileSizeBytes: 12345,
+            segmentCount: 1,
+            charCount: 150,
+            qa: { passed: true, score: 0.98, fingerprintMatch: true, issuesCount: 0 },
+          },
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error.message).toContain('PREFIX_JAIL_VIOLATION');
+    });
+
+    it('should reject Novel materialization callback with 400 ARTIFACT_INVALID_CONTENT_TYPE when MinIO Content-Type is not text/html; charset=utf-8 (#158)', async () => {
+      jest.spyOn(storageService, 'statInternalObject').mockResolvedValueOnce({
+        exists: true,
+        contentLength: 12345,
+        contentType: 'text/html', // missing charset=utf-8!
+      });
+
+      const failRes = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${novelJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'NOVEL',
+          result: {
+            version: 1,
+            mediaFormat: 'NOVEL',
+            htmlKey: `ai/jobs/${novelJobId}/materializations/rev-2/content.html`,
+            htmlFileSizeBytes: 12345,
+            segmentCount: 1,
+            charCount: 150,
+            qa: { passed: true, score: 0.98, fingerprintMatch: true, issuesCount: 0 },
+          },
+        });
+
+      expect(failRes.status).toBe(400);
+      expect(failRes.body.error.code).toBe('ARTIFACT_INVALID_CONTENT_TYPE');
     });
 
     it('should unlock applyJob() after materialization completion (no longer ARTIFACT_STALE)', async () => {

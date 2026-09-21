@@ -3285,19 +3285,26 @@ export class TranslationService {
         }
       }
     } else {
-      // Prefix-jail
-      if (!validatedNovelResult!.htmlKey.startsWith(expectedPrefix)) {
+      // Exact Canonical Jail (#158)
+      const expectedHtmlKey = `${expectedPrefix}content.html`;
+      if (validatedNovelResult!.htmlKey !== expectedHtmlKey) {
         throw new BadRequestException(
-          `PREFIX_JAIL_VIOLATION: htmlKey '${validatedNovelResult!.htmlKey}' không nằm trong prefix '${expectedPrefix}'.`,
+          `PREFIX_JAIL_VIOLATION: htmlKey '${validatedNovelResult!.htmlKey}' không khớp exact canonical key '${expectedHtmlKey}'.`,
         );
       }
 
-      // Pre-transaction HEAD & Exact Size Verification
+      // Pre-transaction HEAD, Exact Size & MIME Verification (#158)
       const stat = await this.storageService.statInternalObject(validatedNovelResult!.htmlKey, false);
       if (!stat.exists) {
         throw new BadRequestException(
           `ARTIFACT_NOT_FOUND_IN_STORAGE: Novel HTML artifact ${validatedNovelResult!.htmlKey} không tồn tại trong MinIO storage.`,
         );
+      }
+      if (stat.contentType !== 'text/html; charset=utf-8') {
+        throw new BadRequestException({
+          code: 'ARTIFACT_INVALID_CONTENT_TYPE',
+          message: `Novel HTML artifact ${validatedNovelResult!.htmlKey} có contentType (${stat.contentType}) không hợp lệ. Bắt buộc text/html; charset=utf-8.`,
+        });
       }
       if (stat.contentLength !== validatedNovelResult!.htmlFileSizeBytes) {
         throw new BadRequestException({
@@ -3381,6 +3388,7 @@ export class TranslationService {
           ...(currentManifest?.language ? { language: currentManifest.language } : {}),
           ...(currentManifest?.assets ? { assets: currentManifest.assets } : {}),
           ...(currentManifest?.metrics ? { metrics: currentManifest.metrics } : {}),
+          ...(currentManifest?.structureSnapshot ? { structureSnapshot: currentManifest.structureSnapshot } : {}),
         };
       }
 

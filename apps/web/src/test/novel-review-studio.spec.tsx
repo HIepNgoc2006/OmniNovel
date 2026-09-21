@@ -230,4 +230,63 @@ describe('NovelReviewStudio Component (#150 Tasks 6 & 7)', () => {
     fireEvent.keyDown(window, { key: 'ArrowDown', altKey: true });
     fireEvent.keyDown(window, { key: 'ArrowUp', altKey: true });
   });
+
+  it('6. pre-fills glossary when text selection is strictly inside novel segment source container', async () => {
+    const detail = createMockJobDetail(TranslationJobStatus.READY_FOR_REVIEW);
+    const onOpenGlossary = vi.fn();
+
+    render(
+      <NovelReviewStudio
+        jobId={mockJobId}
+        initialJobDetail={detail}
+        onOpenGlossary={onOpenGlossary}
+      />,
+    );
+
+    const sourceContainer = await screen.findByTestId('novel-segment-source-seg-1');
+    expect(sourceContainer).toBeInTheDocument();
+
+    // Mock window.getSelection inside sourceContainer
+    const mockTextNode = sourceContainer.firstChild || sourceContainer;
+    vi.spyOn(window, 'getSelection').mockReturnValue({
+      isCollapsed: false,
+      toString: () => 'Shadow Master',
+      anchorNode: mockTextNode,
+      focusNode: mockTextNode,
+    } as any);
+
+    fireEvent.click(screen.getByTestId('novel-studio-glossary-btn'));
+
+    expect(onOpenGlossary).toHaveBeenCalledWith('Shadow Master');
+  });
+
+  it('7. ignores selection when text is selected outside segment source container', async () => {
+    const detail = createMockJobDetail(TranslationJobStatus.READY_FOR_REVIEW);
+    const onOpenGlossary = vi.fn();
+
+    render(
+      <NovelReviewStudio
+        jobId={mockJobId}
+        initialJobDetail={detail}
+        onOpenGlossary={onOpenGlossary}
+      />,
+    );
+
+    const outsideElement = await screen.findByTestId('novel-studio-progress-counter');
+    expect(outsideElement).toBeInTheDocument();
+
+    // Mock window.getSelection outside source container (e.g. on header or toolbar)
+    vi.spyOn(window, 'getSelection').mockReturnValue({
+      isCollapsed: false,
+      toString: () => 'Outside Selection',
+      anchorNode: outsideElement,
+      focusNode: outsideElement,
+    } as any);
+
+    fireEvent.click(screen.getByTestId('novel-studio-glossary-btn'));
+
+    // Should NOT pass prefill, called with undefined
+    expect(onOpenGlossary).toHaveBeenCalledWith();
+  });
 });
+

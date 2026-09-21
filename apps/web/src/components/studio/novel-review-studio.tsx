@@ -3,6 +3,7 @@
 import React, { useEffect } from 'react';
 import { TranslationJobReviewDetailResponse } from '@omninovel/shared';
 import { useNovelReviewStudio } from '@/lib/studio/use-novel-review-studio';
+import { normalizeGlossarySelection } from '@/lib/studio/glossary-policy';
 import { NovelBlockList } from './novel-block-list';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -24,7 +25,7 @@ export interface NovelReviewStudioProps {
   jobId: string;
   initialJobDetail?: TranslationJobReviewDetailResponse | null;
   onJobDetailChange?: (detail: TranslationJobReviewDetailResponse | null) => void;
-  onOpenGlossary?: () => void;
+  onOpenGlossary?: (prefill?: string) => void;
 }
 
 export function NovelReviewStudio({
@@ -237,6 +238,42 @@ export function NovelReviewStudio({
     totalSegments > 0 ? Math.round((verifiedSegments / totalSegments) * 100) : 0;
   const isReadonly = !workspaceMode.canEdit;
 
+  const handleOpenGlossaryWithSelection = () => {
+    if (!onOpenGlossary) return;
+
+    if (typeof window !== 'undefined') {
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed) {
+        const selectedText = selection.toString().trim();
+        const anchorNode = selection.anchorNode;
+        const focusNode = selection.focusNode;
+
+        if (anchorNode && focusNode) {
+          const sourceContainers = document.querySelectorAll(
+            '[data-testid^="novel-segment-source-"]',
+          );
+          let isInsideSource = false;
+          for (const container of sourceContainers) {
+            if (container.contains(anchorNode) && container.contains(focusNode)) {
+              isInsideSource = true;
+              break;
+            }
+          }
+
+          if (isInsideSource && selectedText) {
+            const norm = normalizeGlossarySelection(selectedText);
+            if (norm.valid && norm.text) {
+              onOpenGlossary(norm.text);
+              return;
+            }
+          }
+        }
+      }
+    }
+
+    onOpenGlossary();
+  };
+
   return (
     <div
       data-testid="novel-review-workspace"
@@ -290,13 +327,14 @@ export function NovelReviewStudio({
                 variant="outline"
                 size="sm"
                 data-testid="novel-studio-glossary-btn"
-                onClick={onOpenGlossary}
+                onClick={handleOpenGlossaryWithSelection}
                 className="h-8 text-xs"
               >
                 <BookOpen className="w-3.5 h-3.5 mr-1 text-amber-400" />
                 Thuật ngữ (Glossary)
               </Button>
             )}
+
 
             <Button
               variant="secondary"

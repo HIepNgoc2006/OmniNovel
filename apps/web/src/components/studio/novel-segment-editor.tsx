@@ -215,7 +215,10 @@ export function NovelSegmentEditor({
             <span>Văn bản gốc (Source)</span>
             <span className="text-[10px] text-slate-500">Bất biến</span>
           </div>
-          <div className="min-h-[72px] text-sm text-slate-200 leading-relaxed select-text">
+          <div
+            data-testid={`novel-segment-source-${segment.id}`}
+            className="min-h-[72px] text-sm text-slate-200 leading-relaxed select-text"
+          >
             <ProtectedAnchorText text={segment.rawText} />
           </div>
         </div>

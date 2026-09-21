@@ -1,11 +1,12 @@
 'use client';
 
-import React, { use } from 'react';
+import React, { use, useState, useCallback } from 'react';
 import Link from 'next/link';
 import { MediaFormat } from '@omninovel/shared';
 import { useReviewJobDispatcher } from '@/lib/studio/use-review-job-dispatcher';
 import { MangaReviewStudio } from '@/components/studio/manga-review-studio';
 import { NovelReviewStudio } from '@/components/studio/novel-review-studio';
+import { GlossaryModal } from '@/components/studio/glossary/glossary-modal';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import {
@@ -23,6 +24,14 @@ interface PageProps {
 export default function TranslationReviewJobPage({ params }: PageProps) {
   const { jobId } = use(params);
   const dispatcher = useReviewJobDispatcher(jobId);
+
+  const [isGlossaryOpen, setIsGlossaryOpen] = useState(false);
+  const [glossaryPrefill, setGlossaryPrefill] = useState<string | undefined>();
+
+  const handleOpenGlossary = useCallback((prefill?: string) => {
+    setGlossaryPrefill(prefill);
+    setIsGlossaryOpen(true);
+  }, []);
 
   // 1. Initializing & Loading state
   if (dispatcher.status === 'initializing' || dispatcher.status === 'loading') {
@@ -132,22 +141,35 @@ export default function TranslationReviewJobPage({ params }: PageProps) {
   }
 
   // 5. Authoritative Media Format Dispatcher
-  switch (dispatcher.mediaFormat) {
-    case MediaFormat.COMIC:
-      return (
+  return (
+    <>
+      {dispatcher.mediaFormat === MediaFormat.COMIC ? (
         <MangaReviewStudio
           jobId={jobId}
           initialJobDetail={dispatcher.jobDetail}
           onJobDetailChange={dispatcher.updateJobDetail}
+          onOpenGlossary={() => handleOpenGlossary()}
         />
-      );
-    case MediaFormat.NOVEL:
-      return (
+      ) : (
         <NovelReviewStudio
           jobId={jobId}
           initialJobDetail={dispatcher.jobDetail}
           onJobDetailChange={dispatcher.updateJobDetail}
+          onOpenGlossary={handleOpenGlossary}
         />
-      );
-  }
+      )}
+
+      <GlossaryModal
+        isOpen={isGlossaryOpen}
+        onClose={() => {
+          setIsGlossaryOpen(false);
+          setGlossaryPrefill(undefined);
+        }}
+        projectId={dispatcher.jobDetail?.context?.project?.id}
+        snapshotTerms={dispatcher.jobDetail?.glossarySnapshot ?? []}
+        initialSourceTerm={glossaryPrefill}
+      />
+    </>
+  );
 }
+

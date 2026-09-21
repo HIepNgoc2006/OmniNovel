@@ -41,12 +41,14 @@ export interface MangaReviewStudioProps {
   jobId: string;
   initialJobDetail?: TranslationJobReviewDetailResponse | null;
   onJobDetailChange?: (detail: TranslationJobReviewDetailResponse | null) => void;
+  onOpenGlossary?: () => void;
 }
 
 export function MangaReviewStudio({
   jobId,
   initialJobDetail,
   onJobDetailChange,
+  onOpenGlossary,
 }: MangaReviewStudioProps) {
   const studio = useMangaReviewStudio(jobId, { initialJobDetail, onJobDetailChange });
   const searchParams = useSearchParams();
@@ -849,6 +851,20 @@ export function MangaReviewStudio({
                 <XCircle className="w-3.5 h-3.5 mr-1.5" />
               )}
               {studio.isCanceling ? 'Đang hủy...' : 'Hủy Job'}
+            </Button>
+          )}
+
+          {onOpenGlossary && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={onOpenGlossary}
+              data-testid="manga-studio-glossary-btn"
+              title="Tra cứu Từ điển Thuật ngữ"
+              className="text-xs"
+            >
+              <BookOpen className="w-3.5 h-3.5 mr-1.5 text-amber-400" />
+              Thuật ngữ
             </Button>
           )}
 

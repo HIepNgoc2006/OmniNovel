@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
 import React from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TranslationReviewJobPage from '../app/(site)/(studio)/studio/ai/jobs/[jobId]/page';
 import * as translationApi from '../lib/api/translation';
 import * as authContext from '../lib/auth/auth-context';
@@ -19,9 +20,8 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/studio/ai/jobs/job-dispatcher-test',
 }));
 
-describe('TranslationReviewJobPage Route Dispatcher (#150 Task 1)', () => {
+describe('TranslationReviewJobPage Route Dispatcher (#150, #151)', () => {
   const mockJobId = 'job-dispatcher-test';
-  const mockParams = Promise.resolve({ jobId: mockJobId });
 
   const createMockJobDetail = (
     mediaFormat: MediaFormat | string,
@@ -67,7 +67,27 @@ describe('TranslationReviewJobPage Route Dispatcher (#150 Task 1)', () => {
     permissions: {
       canApply: true,
     },
+    glossarySnapshot: [
+      {
+        sourceTerm: 'SnapshotHero',
+        targetTerm: 'Anh hùng Snapshot',
+        category: 'CHARACTER_NAME',
+      },
+    ],
   });
+
+  function renderWithProviders(ui: React.ReactElement) {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+      },
+    });
+    return render(
+      <QueryClientProvider client={queryClient}>
+        {ui}
+      </QueryClientProvider>,
+    );
+  }
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -81,6 +101,8 @@ describe('TranslationReviewJobPage Route Dispatcher (#150 Task 1)', () => {
       logout: vi.fn(),
       refetchUser: vi.fn(),
     });
+
+    vi.spyOn(translationApi, 'fetchProjectGlossary').mockResolvedValue([]);
   });
 
   it('1. dispatches to Manga workspace when story mediaFormat === COMIC', async () => {
@@ -99,7 +121,7 @@ describe('TranslationReviewJobPage Route Dispatcher (#150 Task 1)', () => {
     });
 
     await act(async () => {
-      render(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
+      renderWithProviders(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
     });
 
     expect(await screen.findByText('Canvas So Sánh & Vùng Thoại OCR')).toBeDefined();
@@ -117,7 +139,7 @@ describe('TranslationReviewJobPage Route Dispatcher (#150 Task 1)', () => {
     });
 
     await act(async () => {
-      render(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
+      renderWithProviders(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
     });
 
     expect(await screen.findByTestId('novel-review-workspace')).toBeDefined();
@@ -130,7 +152,7 @@ describe('TranslationReviewJobPage Route Dispatcher (#150 Task 1)', () => {
     );
 
     await act(async () => {
-      render(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
+      renderWithProviders(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
     });
 
     expect(await screen.findByText('Định Dạng Không Hợp Lệ')).toBeDefined();
@@ -151,7 +173,7 @@ describe('TranslationReviewJobPage Route Dispatcher (#150 Task 1)', () => {
     });
 
     await act(async () => {
-      render(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
+      renderWithProviders(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
     });
 
     expect(await screen.findByText('Yêu Cầu Xác Thực')).toBeDefined();
@@ -174,7 +196,7 @@ describe('TranslationReviewJobPage Route Dispatcher (#150 Task 1)', () => {
     });
 
     await act(async () => {
-      render(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
+      renderWithProviders(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
     });
 
     expect(await screen.findByText('Không Thể Truy Cập Job Dịch')).toBeDefined();
@@ -199,12 +221,65 @@ describe('TranslationReviewJobPage Route Dispatcher (#150 Task 1)', () => {
     });
 
     await act(async () => {
-      render(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
+      renderWithProviders(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
     });
 
     expect(await screen.findByText('Canvas So Sánh & Vùng Thoại OCR')).toBeDefined();
 
     // Authoritative fetch count MUST be exactly 1 on mount (zero double-fetch)
     expect(detailSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('7. opens route-level Glossary modal when Glossary button is clicked in Novel Studio', async () => {
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(
+      createMockJobDetail(MediaFormat.NOVEL),
+    );
+    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+      data: [],
+      pagination: { page: 1, limit: 50, total: 0, totalPages: 0 },
+      workspaceRevision: 1,
+    });
+
+    await act(async () => {
+      renderWithProviders(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
+    });
+
+    const glossaryBtn = await screen.findByTestId('novel-studio-glossary-btn');
+    expect(glossaryBtn).toBeInTheDocument();
+
+    expect(screen.queryByTestId('glossary-modal-content')).toBeNull();
+
+    fireEvent.click(glossaryBtn);
+
+    expect(screen.getByTestId('glossary-modal-content')).toBeInTheDocument();
+  });
+
+  it('8. opens route-level Glossary modal when Glossary button is clicked in Manga Studio', async () => {
+    vi.spyOn(translationApi, 'fetchTranslationJobDetail').mockResolvedValue(
+      createMockJobDetail(MediaFormat.COMIC),
+    );
+    vi.spyOn(translationApi, 'fetchTranslationJobSegments').mockResolvedValue({
+      data: [],
+      pagination: { page: 1, limit: 50, total: 0, totalPages: 0 },
+      workspaceRevision: 1,
+    });
+    vi.spyOn(translationApi, 'fetchTranslationJobPreviews').mockResolvedValue({
+      sourceAssets: [],
+      resultAssets: [],
+      workspaceRevision: 1,
+    });
+
+    await act(async () => {
+      renderWithProviders(<TranslationReviewJobPage params={Promise.resolve({ jobId: mockJobId })} />);
+    });
+
+    const glossaryBtn = await screen.findByTestId('manga-studio-glossary-btn');
+    expect(glossaryBtn).toBeInTheDocument();
+
+    expect(screen.queryByTestId('glossary-modal-content')).toBeNull();
+
+    fireEvent.click(glossaryBtn);
+
+    expect(screen.getByTestId('glossary-modal-content')).toBeInTheDocument();
   });
 });

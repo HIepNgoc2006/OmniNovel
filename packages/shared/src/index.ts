@@ -545,4 +545,37 @@ export interface TranslationJobPreviewsResponse {
   resultAssets: ReviewAssetDto[];
 }
 
+// ==========================================
+// TRANSLATION GLOSSARY CONTRACTS (#151)
+// ==========================================
+
+export interface GlossaryDisplayTerm {
+  sourceTerm: string;
+  targetTerm: string;
+  category: string;
+}
+
+export interface TranslationGlossaryItemDto extends GlossaryDisplayTerm {
+  id: string;
+  projectId: string;
+  createdAt: string;
+}
+
+export interface CreateGlossaryTermRequest {
+  projectId: string;
+  sourceTerm: string;
+  targetTerm: string;
+  category?: string;
+}
+
+export const SUGGESTED_GLOSSARY_CATEGORIES = [
+  { value: 'CHARACTER_NAME', label: 'Tên nhân vật' },
+  { value: 'LOCATION', label: 'Địa danh' },
+  { value: 'ORGANIZATION', label: 'Tổ chức / Bang phái' },
+  { value: 'ITEM', label: 'Vật phẩm / Bảo vật' },
+  { value: 'SKILL', label: 'Kỹ năng / Chiêu thức' },
+  { value: 'HONORIFIC', label: 'Danh xưng / Xưng hô' },
+  { value: 'OTHER', label: 'Thuật ngữ chung' },
+] as const;
+
 

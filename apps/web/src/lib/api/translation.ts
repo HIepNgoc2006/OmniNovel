@@ -18,6 +18,8 @@ import {
   CreateTranslationJobRequest,
   CreateTranslationJobResponse,
   StudioChapterVersionSummaryDto,
+  TranslationGlossaryItemDto,
+  CreateGlossaryTermRequest,
 } from '@omninovel/shared';
 import { AxiosError } from 'axios';
 
@@ -293,4 +295,33 @@ export async function fetchStudioChapterVersions(
   );
   return response.data;
 }
+
+/**
+ * Fetch translation glossary terms for a project
+ * GET /api/v1/ai/glossary?projectId=:projectId
+ */
+export async function fetchProjectGlossary(
+  projectId: string,
+): Promise<TranslationGlossaryItemDto[]> {
+  const response = await apiClient.get<TranslationGlossaryItemDto[]>(
+    '/ai/glossary',
+    { params: { projectId } },
+  );
+  return response.data;
+}
+
+/**
+ * Create or update a translation glossary term (exact upsert)
+ * POST /api/v1/ai/glossary
+ */
+export async function createProjectGlossary(
+  payload: CreateGlossaryTermRequest,
+): Promise<TranslationGlossaryItemDto> {
+  const response = await apiClient.post<TranslationGlossaryItemDto>(
+    '/ai/glossary',
+    payload,
+  );
+  return response.data;
+}
+
 

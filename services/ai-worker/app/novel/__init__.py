@@ -88,6 +88,14 @@ from app.novel.translator import (
     NovelTranslationResult,
     TranslatedNovelBlock,
 )
+from app.novel.structure_snapshot import (
+    canonicalize_source_structure_projection,
+    create_structure_snapshot,
+    document_to_snapshot_dict,
+    extract_source_structure_fingerprint,
+    serialize_canonical_structure_snapshot,
+    snapshot_dict_to_document,
+)
 
 __all__ = [
     "CanonicalNovelDocument",
@@ -146,4 +154,10 @@ __all__ = [
     "NovelTranslationResult",
     "TranslatedNovelBlock",
     "FullNovelPipeline",
+    "canonicalize_source_structure_projection",
+    "create_structure_snapshot",
+    "document_to_snapshot_dict",
+    "extract_source_structure_fingerprint",
+    "serialize_canonical_structure_snapshot",
+    "snapshot_dict_to_document",
 ]

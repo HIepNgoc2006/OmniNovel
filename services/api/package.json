@@ -37,7 +37,7 @@
     "@nestjs/typeorm": "^10.0.1",
     "@nestjs/websockets": "^10.4.22",
     "@omninovel/shared": "file:../../packages/shared",
-    "adm-zip": "^0.6.0",
+    "adm-zip": "^0.6.1",
     "argon2": "^0.31.2",
     "bullmq": "^6.2.1",
     "class-transformer": "^0.5.1",

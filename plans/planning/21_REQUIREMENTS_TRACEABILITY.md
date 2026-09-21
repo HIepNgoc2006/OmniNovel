@@ -12,7 +12,7 @@ Tài liệu này cung cấp ma trận truy vết khép kín 100% hai chiều (**
 | **UR-AUTH-02** | FR-AUTH-02 | UC-AUTH-02 | WEB-006 / MOB-008 | `POST /api/v1/auth/login` | `users` | TC-AUTH-02 |
 | **UR-AUTH-03** | FR-AUTH-03 | UC-AUTH-03 | WEB-006 / MOB-008 | `POST /api/v1/auth/logout` | Redis Session Keys | TC-AUTH-03 |
 | **UR-DISC-01** | FR-DISC-01 | UC-DISC-01 | WEB-001 / MOB-001 | `GET /api/v1/stories/featured` | `stories`, `volumes` | TC-DISC-01 |
-| **UR-DISC-02** | FR-DISC-02 | UC-DISC-02 | WEB-001 / MOB-002 | `GET /api/v1/stories/search` | `stories` (Trigram Index) | TC-DISC-02 |
+| **UR-DISC-02** | FR-DISC-02 | UC-DISC-02 | WEB-001 / MOB-002 | `GET /api/v1/stories?search=...` | `stories` (Trigram Index) | TC-DISC-02 |
 | **UR-DISC-03** | FR-DISC-03 | UC-DISC-03 | WEB-002 / MOB-001 | `GET /api/v1/stories` | `stories`, `genres` | TC-DISC-03 |
 | **UR-DISC-04** | FR-DISC-04 | UC-DISC-04 | WEB-001 / MOB-001 | `GET /api/v1/stories/rankings`| Redis Sorted Sets | TC-DISC-04 |
 | **UR-DISC-05** | FR-DISC-05 | UC-DISC-05 | WEB-003 / MOB-003 | `GET /api/v1/stories/:slug` | `stories`, `story_editions` | TC-DISC-05 |
@@ -25,7 +25,7 @@ Tài liệu này cung cấp ma trận truy vết khép kín 100% hai chiều (**
 | **UR-NOVEL-03**| FR-NOVEL-01 | UC-READ-04 | WEB-005 / MOB-006 | LocalStorage / Settings | LocalStorage | TC-NOVEL-01 |
 | **UR-NOVEL-04**| FR-NOVEL-02 | UC-READ-05 | WEB-005 / MOB-007 | `GET /api/v1/chapters/:id` | `media_assets` | TC-NOVEL-01 |
 | **UR-NOVEL-05**| FR-NOVEL-03 | UC-READ-04 | WEB-005 / MOB-006 | `GET /api/v1/stories/:slug` | `chapters`, `volumes` | TC-NOVEL-01 |
-| **UR-LIB-01** | FR-LIB-01 | UC-LIB-01 | WEB-007 / MOB-009 | `POST /api/v1/library/progress`| `reading_progress` | TC-NOVEL-01 |
+| **UR-LIB-01** | FR-LIB-01 | UC-LIB-01 | WEB-007 / MOB-009 | `PUT /api/v1/library/reading-progress`| `reading_progress` | TC-NOVEL-01 |
 | **UR-LIB-02** | FR-LIB-02 | UC-LIB-02 | WEB-007 / MOB-009 | `POST /api/v1/library/bookmarks`| `bookmarks` | TC-DISC-01 |
 | **UR-AI-01** | FR-STUD-01 | UC-STUD-01 | WEB-011 / Studio | `POST /api/v1/studio/stories` | `stories`, `story_members` | TC-STUD-01 |
 | **UR-AI-02** | FR-AI-01 | UC-STUD-02 | WEB-012 / Studio | `POST /api/v1/uploads/sessions`| `chapter_versions`, MinIO | TC-AI-01 |

@@ -71,14 +71,14 @@ Tài liệu này xác định sơ đồ cấu trúc trang (Sitemap), luồng đi
 | Mã Màn Hình | Tên Màn Hình | Mô Tả Chức Năng Chính | API Endpoints Liên Quan |
 | :--- | :--- | :--- | :--- |
 | **MOB-001** | Mobile Home Feed | Tabs: Đề cử HOT, Mới cập nhật, BXH Top Views | `GET /api/v1/stories/featured` |
-| **MOB-002** | Mobile Search & Suggestions | Thanh tìm kiếm tức thì có gợi ý kèm bộ lọc nhanh | `GET /api/v1/stories/search` |
+| **MOB-002** | Mobile Search & Suggestions | Thanh tìm kiếm tức thì có gợi ý kèm bộ lọc nhanh | `GET /api/v1/stories?search=...` |
 | **MOB-003** | Mobile Story Detail | Trang chi tiết truyện, Bottom Sheet chọn tập/chương | `GET /api/v1/stories/:slug` |
 | **MOB-004** | Mobile Webtoon Reader | Trình đọc cuộn dọc tối ưu 120Hz, RAM $< 150MB$ | `GET /api/v1/chapters/:id` |
 | **MOB-005** | Mobile Manga Paged Reader | Trình đọc lật trang phải $\rightarrow$ trái, phóng to pinch-zoom | `GET /api/v1/chapters/:id` |
 | **MOB-006** | Mobile Novel Reader | Trình đọc truyện chữ, menu tùy biến Typography | `GET /api/v1/chapters/:id` |
 | **MOB-007** | Mobile Illustration Gallery | Xem bộ sưu tập ảnh minh họa của tập truyện | `GET /api/v1/chapters/:id` |
 | **MOB-008** | Mobile Auth & Account | Đăng nhập/Đăng ký, quản lý phiên đăng nhập | `POST /api/v1/auth/login` |
-| **MOB-009** | Mobile Library & Saved Progress| Tủ sách cá nhân, nút "Đọc tiếp" mở đúng vị trí | `GET /api/v1/library/progress` |
+| **MOB-009** | Mobile Library & Saved Progress| Tủ sách cá nhân, nút "Đọc tiếp" mở đúng vị trí | `PUT /api/v1/library/reading-progress` & `GET /api/v1/library/reading-progress/:storyId` |
 | **MOB-010** | Mobile Gamification & Check-in | Điểm danh nhận Coin, xem Level, chọn Rank Theme | `POST /api/v1/gamification/checkin` |
 | **MOB-011** | Mobile Error Reporting Sheet | Bottom Sheet báo lỗi chương nhanh cho độc giả | `POST /api/v1/chapters/:id/reports` |
 | **MOB-012** | Mobile Offline Download Manager | Quản lý các chương đã tải đọc offline (V1 Scope)| CSDL SQLite Cục Bộ |

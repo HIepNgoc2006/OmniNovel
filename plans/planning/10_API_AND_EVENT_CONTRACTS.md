@@ -76,7 +76,8 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 | `GET` | `/api/v1/chapters/:id` | Params: `id`, Query: `versionId` (optional) | `200 OK` + `{ chapter, activeVersion, pages/content }` |
 | `POST` | `/api/v1/chapters/:id/reports` | Auth: Reader, Body: `{ pageNumber, errorType, description }` | `201 Created` + `{ reportId }` |
 | `GET` | `/api/v1/library` | Auth: Bearer Token | `200 OK` + `{ bookmarks: [...], history: [...] }` |
-| `POST` | `/api/v1/library/progress` | Auth: Bearer Token, Body: `{ storyId, chapterId, pageIndex, anchorBlockId, textOffset }` | `200 OK` + `{ syncedAt }` |
+| `PUT` | `/api/v1/library/reading-progress` | Auth: Bearer Token, Body: `{ chapterId: UUID, chapterVersionId?: UUID, readingMode?: 'WEBTOON' \| 'PAGED' \| 'NOVEL', progressPercentage: number, scrollPosition: number, storyId?: UUID }` | `200 OK` + `{ readingProgress }` |
+| `GET` | `/api/v1/library/reading-progress/:storyId` | Auth: Bearer Token, Params: `storyId: UUID` | `200 OK` + `{ readingProgress, readChapterIds: string[] }` |
 | `POST` | `/api/v1/library/bookmarks`| Auth: Bearer Token, Body: `{ storyId: UUID, isBookmarked: boolean }` | `200 OK` + `{ isBookmarked: boolean, followersCount: number }` (Idempotent state) |
 | `GET` | `/api/v1/library/bookmarks/:storyId`| Optional Auth: Bearer Token, Params: `storyId` | `200 OK` + `{ isBookmarked: boolean }` |
 

@@ -70,6 +70,19 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
       contentLength: 1024,
       contentType: 'image/webp',
     } as any);
+    jest
+      .spyOn(storageService, 'hashInternalObjectSha256')
+      .mockImplementation(async (key: string) => {
+        const parts = key.split('/');
+        const filename = parts[parts.length - 1] || '';
+        const sha256 = filename.replace('.json', '');
+        return {
+          sha256,
+          size: 1024,
+          contentType: 'application/json',
+          exists: true,
+        };
+      });
 
     // Setup Test User
     const userRes = await dataSource.query(`
@@ -446,6 +459,14 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
           segmentCount: 4,
           charCount: 62, // 14 + 14 (with emoji 😀) + 13 + 21 = 62 Unicode code points
           htmlFileSizeBytes: 20480,
+          structureSnapshot: {
+            version: 1,
+            storageKey: `ai/jobs/${novelJobId}/structure/c0ffee112233445566778899aabbccddeeff00112233445566778899aabbccdd.json`,
+            sha256: 'c0ffee112233445566778899aabbccddeeff00112233445566778899aabbccdd',
+            segmenterVersion: 'novel-v1',
+            sourceStructureFingerprint:
+              'sha256:c0ffee112233445566778899aabbccddeeff00112233445566778899aabbccdd',
+          },
           qa: {
             passed: true,
             score: 1.0,

@@ -1168,7 +1168,15 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
           if (key.includes('size-mismatch')) {
             return { exists: true, contentLength: 999999, contentType: 'image/webp' };
           }
-          return { exists: true, contentLength: 12345, contentType: 'image/webp' };
+          if (key.includes('invalid-mime')) {
+            return { exists: true, contentLength: 12345, contentType: 'image/png' };
+          }
+          const isHtml = key.endsWith('.html') || key.includes('content.html');
+          return {
+            exists: true,
+            contentLength: 12345,
+            contentType: isHtml ? 'text/html; charset=utf-8' : 'image/webp',
+          };
         });
       }
     });
@@ -1480,7 +1488,230 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       );
       expect(finalJobs[0].status).toBe(TranslationJobStatus.APPLIED);
     });
+
+    it('should complete full cycle for NOVEL: segment edited -> apply blocked (stale) -> materialization queued -> processor executed -> callback completed -> apply succeeded (#158)', async () => {
+      // 0. Setup AI Worker dispatch mock for materialize-novel
+      const mockWorkerFetch = jest.fn().mockImplementation(async (url: string, opts: any) => {
+        if (url.includes('/internal/v1/jobs/materialize-novel')) {
+          const body = JSON.parse(opts.body);
+          expect(body.jobId).toBe(novelJobId);
+          expect(body.targetRevision).toBe(2);
+          expect(body.targetLanguage).toBe('vi');
+          expect(body.outputStorageKey).toBe(
+            `ai/jobs/${novelJobId}/materializations/rev-2/content.html`,
+          );
+
+          // Worker sends completion callback
+          const cbRes = await request(app.getHttpServer())
+            .post(`/internal/v1/ai/jobs/${novelJobId}/materializations/complete`)
+            .set('X-Internal-Service-Key', INTERNAL_KEY)
+            .send({
+              targetRevision: body.targetRevision,
+              mediaFormat: 'NOVEL',
+              result: {
+                version: 1,
+                mediaFormat: 'NOVEL',
+                htmlKey: body.outputStorageKey,
+                htmlFileSizeBytes: 12345,
+                segmentCount: 1,
+                charCount: 100,
+                qa: {
+                  passed: true,
+                  score: 1.0,
+                  fingerprintMatch: true,
+                  issuesCount: 0,
+                  issues: [],
+                },
+              },
+            });
+          expect(cbRes.status).toBe(200);
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ status: 'COMPLETED' }),
+          };
+        }
+        return { ok: false, status: 404 };
+      });
+      (global as any).fetch = mockWorkerFetch;
+
+      // 1. Current novelJobId: review_revision = 2, materialized_revision = 1
+      // Freshness Gate: Apply must be blocked (409 ARTIFACT_STALE)
+      const staleApplyRes = await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${novelJobId}/apply`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .set('Idempotency-Key', 'c0000000-0000-4000-8000-000000000001')
+        .send({ mode: 'OVERWRITE_ACTIVE_VERSION' });
+
+      expect(staleApplyRes.status).toBe(409);
+      expect(staleApplyRes.body.error.code).toBe('ARTIFACT_STALE');
+
+      // 2. Request materialization
+      const matReqRes = await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${novelJobId}/materializations`)
+        .set('Authorization', `Bearer ${ownerToken}`);
+
+      expect(matReqRes.status).toBe(202);
+      expect(matReqRes.body.status).toBe('ENQUEUED');
+      expect(matReqRes.body.targetRevision).toBe(2);
+
+      // 3. Get the queued BullMQ job
+      const bullJob = await materializationQueue.getJob(
+        `materialize-${novelJobId}-2`,
+      );
+      expect(bullJob).toBeDefined();
+
+      // 4. Ensure processor execution has completed
+      let attempts = 0;
+      while (attempts < 20) {
+        const rows = await dataSource.query(
+          `SELECT materialized_revision FROM translation_jobs WHERE id = '${novelJobId}'`,
+        );
+        if (rows[0]?.materialized_revision === 2) {
+          break;
+        }
+        await new Promise((r) => setTimeout(r, 100));
+        attempts++;
+      }
+
+      const checkRows = await dataSource.query(
+        `SELECT materialized_revision FROM translation_jobs WHERE id = '${novelJobId}'`,
+      );
+      if (checkRows[0]?.materialized_revision !== 2) {
+        const processor = app.get<TranslationMaterializationProcessor>(
+          TranslationMaterializationProcessor,
+        );
+        await processor.process(bullJob!);
+      }
+
+      // 5. Verify DB state: materializedRevision === 2 === reviewRevision, structureSnapshot preserved
+      const updatedJobs = await dataSource.query(
+        `SELECT materialized_revision, review_revision, result_manifest FROM translation_jobs WHERE id = '${novelJobId}'`,
+      );
+      expect(updatedJobs[0].materialized_revision).toBe(2);
+      expect(updatedJobs[0].review_revision).toBe(2);
+      expect(updatedJobs[0].result_manifest.htmlKey).toBe(
+        `ai/jobs/${novelJobId}/materializations/rev-2/content.html`,
+      );
+      expect(updatedJobs[0].result_manifest.structureSnapshot).toBeDefined();
+      expect(updatedJobs[0].result_manifest.structureSnapshot.version).toBe(1);
+
+      // 6. Freshness Gate Unlocked: Apply now succeeds!
+      const freshApplyRes = await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${novelJobId}/apply`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .set('Idempotency-Key', 'c0000000-0000-4000-8000-000000000002')
+        .send({ mode: 'OVERWRITE_ACTIVE_VERSION' });
+
+      expect(freshApplyRes.status).toBe(200);
+      expect(freshApplyRes.body.isAlreadyApplied).toBe(false);
+
+      // Verify job is now APPLIED
+      const finalJobs = await dataSource.query(
+        `SELECT status FROM translation_jobs WHERE id = '${novelJobId}'`,
+      );
+      expect(finalJobs[0].status).toBe(TranslationJobStatus.APPLIED);
+    });
+
+    it('should handle in-flight revision race for NOVEL: rev 2 rebuild in flight, segment edited to rev 3, rev 2 callback discarded as STALE_DISCARDED, rev 3 materializes and unlocks apply (#158)', async () => {
+      // 1. Advance reviewRevision from 2 to 3 (simulating user edit while rev 2 was in-flight)
+      await dataSource.query(`
+        UPDATE translation_jobs
+        SET review_revision = 3, materialized_revision = 1, status = '${TranslationJobStatus.READY_FOR_REVIEW}'
+        WHERE id = '${novelJobId}'
+      `);
+
+      // 2. In-flight Rev 2 callback arrives late
+      const staleCallbackRes = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${novelJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 2,
+          mediaFormat: 'NOVEL',
+          result: {
+            version: 1,
+            mediaFormat: 'NOVEL',
+            htmlKey: `ai/jobs/${novelJobId}/materializations/rev-2/content.html`,
+            htmlFileSizeBytes: 12345,
+            segmentCount: 1,
+            charCount: 100,
+            qa: {
+              passed: true,
+              score: 1.0,
+              fingerprintMatch: true,
+              issuesCount: 0,
+              issues: [],
+            },
+          },
+        });
+
+      expect(staleCallbackRes.status).toBe(200);
+      expect(staleCallbackRes.body.outcome).toBe('STALE_DISCARDED');
+
+      // Verify DB materialized_revision remains 1 (did NOT advance to 2)
+      const staleCheck = await dataSource.query(
+        `SELECT materialized_revision, review_revision FROM translation_jobs WHERE id = '${novelJobId}'`,
+      );
+      expect(staleCheck[0].materialized_revision).toBe(1);
+      expect(staleCheck[0].review_revision).toBe(3);
+
+      // Apply must still be blocked (409 ARTIFACT_STALE)
+      const staleApply = await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${novelJobId}/apply`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .set('Idempotency-Key', 'c0000000-0000-4000-8000-000000000003')
+        .send({ mode: 'OVERWRITE_ACTIVE_VERSION' });
+      expect(staleApply.status).toBe(409);
+      expect(staleApply.body.error.code).toBe('ARTIFACT_STALE');
+
+      // 3. Rev 3 callback completes
+      const rev3CallbackRes = await request(app.getHttpServer())
+        .post(`/internal/v1/ai/jobs/${novelJobId}/materializations/complete`)
+        .set('X-Internal-Service-Key', INTERNAL_KEY)
+        .send({
+          targetRevision: 3,
+          mediaFormat: 'NOVEL',
+          result: {
+            version: 1,
+            mediaFormat: 'NOVEL',
+            htmlKey: `ai/jobs/${novelJobId}/materializations/rev-3/content.html`,
+            htmlFileSizeBytes: 12345,
+            segmentCount: 1,
+            charCount: 110,
+            qa: {
+              passed: true,
+              score: 1.0,
+              fingerprintMatch: true,
+              issuesCount: 0,
+              issues: [],
+            },
+          },
+        });
+
+      expect(rev3CallbackRes.status).toBe(200);
+      expect(rev3CallbackRes.body.outcome).toBe('APPLIED');
+
+      // Verify DB materialized_revision is now 3
+      const rev3Check = await dataSource.query(
+        `SELECT materialized_revision, review_revision, result_manifest FROM translation_jobs WHERE id = '${novelJobId}'`,
+      );
+      expect(rev3Check[0].materialized_revision).toBe(3);
+      expect(rev3Check[0].review_revision).toBe(3);
+      expect(rev3Check[0].result_manifest.htmlKey).toBe(
+        `ai/jobs/${novelJobId}/materializations/rev-3/content.html`,
+      );
+      expect(rev3Check[0].result_manifest.structureSnapshot).toBeDefined();
+
+      // 4. Apply now succeeds!
+      const freshApply = await request(app.getHttpServer())
+        .post(`/api/v1/ai/jobs/${novelJobId}/apply`)
+        .set('Authorization', `Bearer ${ownerToken}`)
+        .set('Idempotency-Key', 'c0000000-0000-4000-8000-000000000004')
+        .send({ mode: 'OVERWRITE_ACTIVE_VERSION' });
+      expect(freshApply.status).toBe(200);
+    });
   });
 });
+
 
 

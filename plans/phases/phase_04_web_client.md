@@ -15,7 +15,7 @@
     - TanStack Query v5 quản lý Server State & SWR Caching.
     - WebSocket Gateway (`/ws/ai`) xác thực qua `socket.handshake.auth.token` và tự động reconnect khi token xoay vòng.
     - Gamification: Tiêu thụ endpoint chuẩn `/gamification/progression` và `UserProgressionResponse` từ `@omninovel/shared`.
-- **Trạng thái:** [/] Đang thực hiện (Phase 4A, 4B, 4C FROZEN tại commit 4cced19; Phase 4D.1-4D.4 Backend Core + #162 Manga Clean Bases + #166 WebSocket Security + #159 Manga Previews + #157 Manga Re-render + #155 Preview API + #178 Result Page Count HOÀN TẤT; Phase 4D.5 Manga Studio #149 RED 0–6 COMPLETED & MERGED tại main@00dcbc7, PR #188, Issue #149 CLOSED)
+- **Trạng thái:** [x] Đã hoàn thành (100% - Toàn bộ Phase 4A, 4B, 4C, 4D FROZEN tại main final baseline; Phase 4D.1-4D.4 Backend Core + #162 Manga Clean Bases + #166 WebSocket Security + #159 Manga Previews + #157 Manga Re-render + #155 Preview API + #178 Result Page Count + #165 Fail-closed Source Validation + #163 Novel Structure Snapshot + #158 Novel HTML Materialization + #145 Dashboard + #146 Creation + #149 Manga Studio + #150 Novel Studio + #151 Glossary + #152 Apply Flow HOÀN TẤT 100%)
 
 ---
 
@@ -46,7 +46,7 @@
   - [x] Đồng bộ tiến độ đọc & Gamification: Hook `useReadingProgress` đo thời gian đọc thực tế, bootstrap tiến độ (`serverResume` bao gồm `chapterVersionId` & `readingMode`) và `readChapterIds` từ server, tự động đồng bộ lên Server `PUT /api/v1/library/reading-progress` (Debounced) kèm fallback IndexedDB offline cache, tự động kích hoạt nhận thưởng +5 EXP khi đạt điều kiện (>=45s đọc & >=80% hoàn thành) theo contract `{ success: true, earnedExp: 5 }`.
   - [x] Bộ chọn phiên bản bản dịch (`VersionSelectorModal`) và Ngăn kéo mục lục nhảy chương nhanh (`ChapterDrawer`) tích hợp thanh tìm kiếm và hiển thị chính xác trạng thái "Đang đọc" / "Đã đọc".
 
-- [/] **Phase 4D: AI Translation Studio & Apply Management**
+- [x] **Phase 4D: AI Translation Studio & Apply Management (100% HOÀN TẤT & FROZEN)**
   - [x] **Phase 4D.1 Backend Foundation (PR #167 - MERGED `main@e490136`)**:
     - [x] Studio Story/Project/Job listings contracts (#144).
     - [x] Safe sanitized job review detail & SQL aggregate counters (#148).
@@ -108,7 +108,7 @@
     - [x] Preserve existing `#148` semantic of `pageCount` (`COUNT(DISTINCT page_number) FROM translation_segments`) (#178).
     - [x] Hardening F14: Enforce strict $1..N$ contiguous page sequence in `MangaResultManifestV1` across TypeScript shared validator and Python Pydantic v2 worker models, canonical ascending sort output, malformed JSON string error standardization (`PREVIEW_MANIFEST_INVARIANT_VIOLATION`), and comprehensive RED->GREEN regression tests (#178 follow-up).
     - [x] Full test coverage: unit tests in `manifest-validation.spec.ts` (sparse [1,3], starts-at-2 [2,3], canonical sort [2,1]), `translation-foundation.spec.ts`, `job-previews.spec.ts`, worker `test_manifest_parity.py`, and E2E in `studio-foundation.e2e-spec.ts`.
-  - [ ] **Phase 4D.5 Studio Frontend UI (#149)**:
+  - [x] **Phase 4D.5 Studio Frontend UI & Translation Flows (100% HOÀN TẤT & FROZEN)**:
     - [x] **Studio Dashboard & Realtime Job Monitor (#145)** (COMPLETED & MERGED, Issue #145):
       - [x] Canonical Contracts & Queries: `TranslationJobSummaryDto` (`storySlug`, `mediaFormat`, `heartbeatAt`), `JOB_STATUS_GROUPS`, multi-status filtering (`statuses`), server-side search, `fetchManagedStories`, `fetchTranslationProjects`, `fetchTranslationJobs`.
       - [x] Multi-Job WebSocket Persistence: `useTranslationSocket` quản lý `subscribedJobIdsRef: Set<string>`, auto-resubscribe khi reconnect/token rotation.
@@ -173,5 +173,11 @@
       - [x] **Task 5: Route-Level Shared Orchestration**: Tích hợp `GlossaryModal` tại route `TranslationReviewJobPage` (`/studio/ai/jobs/[jobId]`), quyền truy cập dựa trên backend access resolution chuẩn mực, zero duplicate code giữa Manga và Novel.
       - [x] **Task 6: Studio Trigger Integration**: Nút Glossary trên toolbar của Manga Review Studio; kiểm tra nguồn gốc vùng chọn cô lập trên Novel Review Studio (chỉ chấp nhận selection nằm bên trong `data-testid="novel-segment-source-{id}"`, loại trừ hoàn toàn selection từ textarea hoặc header).
       - [x] **Task 7: Comprehensive Verification & Monorepo CI Quality Gates**: 100% tests vượt qua gồm DTO validation, Service unit tests, pure policy tests, hook tests, component modal tests, route dispatcher integration tests, và selection isolation tests.
+    - [x] **Phase 4D Final Acceptance & Frozen Baseline Gate (#153)**:
+      - [x] **#165 Fail-Closed Source Artifact Validation**: Triển khai chốt chặn fail-closed tại `TranslationService.createJob` trả `400 Bad Request` (`SOURCE_VERSION_ARTIFACT_UNAVAILABLE`) khi `ChapterVersion` không có `promotedSession` hợp lệ; triệt tiêu hoàn toàn nguy cơ tạo "dead jobs" bị `sourceDownloadUrl = ""` khi enqueue; reverse packaging từ `MediaAsset[]` được chuyển thành Known Deferred Technical Debt (Phase 5 backlog).
+      - [x] **#172 Eventual Sweeper Classification**: Ghi nhận #172 (Automated TTL & Storage Sweeper) là Known Deferred Operational Maintenance (Post-Phase 4D Operations Backlog - Non-blocker).
+      - [x] **Canonical Route Parity**: Bảo toàn canonical Glossary endpoint `/api/v1/ai/glossary` (GET query `projectId`, POST body `{ projectId, sourceTerm, targetTerm, category }`), Studio versions `/api/v1/studio/chapters/:id/versions`, Bounded previews `/api/v1/ai/jobs/:id/previews`, và Materializations `/api/v1/ai/jobs/:id/materializations`.
+      - [x] **Anti-Overclaiming Testing Disclosure**: Ghi nhận minh bạch toàn bộ 31 tests Playwright E2E chạy trên trình duyệt Chromium thực tế với API mock theo chuẩn OpenAPI; không overclaim live DB integration.
+      - [x] **Pre-Freeze Candidate Baseline**: Commit `f81ed49680d6abd282dfd4c6960795a0a6afe010`, GitHub Actions CI Run `35584542514` (Run #240) đạt 100% Green với **1,470 tests pass** (318 AI Worker, 306 Core Unit, 235 Core E2E, 580 Web Vitest, 31 Web Playwright). Final freeze SHA và exact counts sẽ được đối chiếu trên HEAD merge cuối cùng.
 
 

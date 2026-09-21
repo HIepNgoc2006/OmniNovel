@@ -88,17 +88,20 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 | `POST` | `/api/v1/studio/stories/:id/editions` | Auth: Story Owner / Global Admin, Body: `{ editionName, language, isDefault }` | `201 Created` + `{ editionId }` |
 | `POST` | `/api/v1/studio/editions/:id/volumes` | Auth: Story Editor / Story Owner / Global Admin, Body: `{ volumeNumber, title, coverUrl }` | `201 Created` + `{ volumeId }` |
 | `POST` | `/api/v1/studio/volumes/:id/chapters` | Auth: Story Editor / Story Owner / Global Admin, Body: `{ chapterNumber, title }` | `201 Created` + `{ chapterId }` |
+| `GET` | `/api/v1/studio/chapters/:id/versions` | Auth: Story Member (OWNER/EDITOR/TRANSLATOR) / Global Admin, Params: `id` (UUID) | `200 OK` + `StudioChapterVersionSummaryDto[]` |
 | `POST` | `/api/v1/uploads/sessions`| Auth: Story Uploader / Story Translator / Story Editor / Story Owner / Global Admin, Body: `{ storyEditionId, chapterNumber, fileType: 'ZIP' \| 'TEXT' \| 'EPUB' \| 'MARKDOWN', fileSize }` | `201 Created` + `{ uploadId, presignedUrls: [...] }` |
 | `GET` | `/api/v1/ai/projects` | Auth: Story Member / Global Admin, Query: `page`, `limit`, `storyId` | `200 OK` + `{ data: TranslationProjectSummaryDto[], pagination }` |
 | `GET` | `/api/v1/ai/jobs` | Auth: Story Member / Global Admin, Query: `page`, `limit`, `storyId`, `projectId`, `status` | `200 OK` + `{ data: TranslationJobSummaryDto[], pagination }` |
-| `POST` | `/api/v1/ai/jobs` | Header: `Idempotency-Key` (UUID-v4), Auth: Story Translator / Story Editor / Story Owner / Global Admin, Body: `{ chapterVersionId, sourceLang, targetLang, provider }` | `202 Accepted` + `{ jobId, status: 'QUEUED' }` |
-| `GET` | `/api/v1/ai/jobs/:id` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` | `200 OK` + `{ job, context, reviewSummary, glossarySnapshot?, error? }` |
-| `GET` | `/api/v1/ai/jobs/:id/segments` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` (UUID), Query: `page`, `limit`, `pageNumber?` | `200 OK` + `{ data: TranslationSegmentDto[], pagination }` |
+| `POST` | `/api/v1/ai/jobs` | Header: `Idempotency-Key` (UUID-v4), Auth: Story Translator / Story Editor / Story Owner / Global Admin, Body: `{ chapterVersionId, sourceLang, targetLang, provider, externalConsent?: boolean }` | `202 Accepted` + `{ jobId, status: 'QUEUED' }` (Errors: `400 SOURCE_VERSION_ARTIFACT_UNAVAILABLE` khi version thiếu session tải lên #165, `400 EXTERNAL_PROVIDER_CONSENT_REQUIRED`, `400 SOURCE_LANGUAGE_MISMATCH`, `400 IDENTICAL_LANGUAGES`) |
+| `GET` | `/api/v1/ai/jobs/:id` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` | `200 OK` + `{ job, context, reviewSummary: { ... reviewSummary, resultPageCount? }, permissions: { canApply }, glossarySnapshot?, error? }` |
+| `GET` | `/api/v1/ai/jobs/:id/previews` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` (UUID), Query: `pageNumber` HOẶC `fromPage` & `toPage` (bounded $\le 5$ trang) | `200 OK` + `TranslationJobPreviewsResponse` (`{ workspaceRevision, sourceAssets, resultAssets }`) |
+| `GET` | `/api/v1/ai/jobs/:id/segments` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` (UUID), Query: `page`, `limit`, `pageNumber?` | `200 OK` + `TranslationJobSegmentsResponse` (`{ data: TranslationSegmentDto[], pagination, workspaceRevision }`) |
 | `PATCH`| `/api/v1/ai/jobs/:jobId/segments/:segmentId` | Auth: Story Member (`OWNER`/`EDITOR`/`TRANSLATOR`) / Global Admin, Params: `jobId` (UUID-v4), `segmentId` (UUID-v4), Body: `{ translatedText?: string (max 50k), isHumanVerified?: boolean, expectedVersion: number (min 1, max 2147483647) }` | `200 OK` + `TranslationSegmentDto` (Errors: `400 EMPTY_MUTATION`, `400 ANCHOR_TOPOLOGY_VIOLATION`, `400 Validation/Immutable field`, `403 FORBIDDEN`, `404 NOT_FOUND`, `409 VERSION_CONFLICT` kèm `meta: { currentVersion, expectedVersion }`, `409 NOT_REVIEWABLE`) |
 | `POST` | `/api/v1/ai/jobs/:id/cancel` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` (UUID) | `200 OK` + `{ jobId, status: 'CANCELED' }` |
-| `POST` | `/api/v1/ai/jobs/:id/apply` | Header: `Idempotency-Key` (UUID-v4), Auth: Story Editor / Story Owner / Global Admin, Params: `id` (UUID), Body: `{ mode: 'OVERWRITE_ACTIVE_VERSION' \| 'CREATE_ALTERNATE_VERSION' }` | `200 OK` + `{ chapterId, activeVersionId, versionNumber }` (Errors: `409 ARTIFACT_STALE` khi `materializedRevision !== reviewRevision` kèm `meta: { reviewRevision, materializedRevision }`, `400 / 409 NOT_READY`) |
+| `POST` | `/api/v1/ai/jobs/:id/apply` | Header: `Idempotency-Key` (UUID-v4), Auth: Story Editor / Story Owner / Global Admin, Params: `id` (UUID), Body: `{ mode: 'OVERWRITE_ACTIVE_VERSION' \| 'CREATE_ALTERNATE_VERSION' }` | `200 OK` + `ApplyTranslationJobResponse` (Errors: `409 ARTIFACT_STALE` khi `materializedRevision !== reviewRevision` kèm `meta: { reviewRevision, materializedRevision }`, `400 / 409 NOT_READY`) |
 | `POST` | `/api/v1/ai/jobs/:id/materializations` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Params: `id` (UUID) | `202 Accepted` + `{ status: 'ENQUEUED' \| 'ALREADY_ENQUEUED', targetRevision }` HOẶC `200 OK` + `{ status: 'ALREADY_FRESH', targetRevision }` (Errors: `403 FORBIDDEN` cho `UPLOADER`, `409 NOT_REVIEWABLE`, `409 REVISION_INVARIANT_VIOLATION`) |
-| `GET/POST` | `/api/v1/ai/glossary` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Body (POST): `{ projectId, sourceTerm, targetTerm, category }` | `200 OK / 201 Created` + `{ glossaryTerm }` |
+| `GET` | `/api/v1/ai/glossary` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Query: `projectId` (UUID) | `200 OK` + `TranslationGlossaryItemDto[]` |
+| `POST` | `/api/v1/ai/glossary` | Auth: Story Translator / Story Editor / Story Owner / Global Admin, Body: `{ projectId, sourceTerm (1..100), targetTerm (1..100), category? (<=50) }` | `201 Created` + `TranslationGlossaryItemDto` (Exact-upsert semantics, whitespace normalized #189 & #151) |
 | `POST` | `/internal/v1/ai/jobs/:id/events` | Header: `X-Internal-Service-Key`, Body: `{ eventId, attemptNumber, sequence, stage, progress, resultManifest, segments }` | `200 OK` + `{ received: true, status, sequence }` |
 | `POST` | `/internal/v1/ai/jobs/:id/materializations/complete` | Header: `X-Internal-Service-Key`, Params: `id` (UUID), Body: `{ targetRevision, mediaFormat, result }` | `200 OK` + `{ outcome: 'APPLIED' \| 'ALREADY_APPLIED' \| 'STALE_DISCARDED', targetRevision, materializedRevision }` (Errors: `400 ARTIFACT_SIZE_MISMATCH`, `400 PREFIX_JAIL_VIOLATION`, `400 ARTIFACT_NOT_FOUND_IN_STORAGE`, `409 MATERIALIZATION_RESULT_CONFLICT`) |
 
@@ -120,12 +123,17 @@ Hệ thống phân biệt 2 cấp độ Idempotency:
 
 ---
 
-## 4. GIAO THỨC WEBSOCKET TIẾN TRÌNH DỊCH THUẬT (RECONNECT-AWARE)
+## 4. GIAO THỨC WEBSOCKET TIẾN TRÌNH DỊCH THUẬT (SANITIZED & RECONNECT-AWARE)
+
+Giao thức WebSocket (`/ws/ai`) sử dụng Socket.IO với JWT Authentication qua `socket.handshake.auth.token`. Toàn bộ payload được khử khuẩn nghiêm ngặt (sanitized), loại bỏ hoàn toàn raw manifests, internal S3 keys, error traces và canaries (#166):
 
 ```
 Client ──[ Connect & Handshake (JWT Auth) ]──> WebSocket Gateway (/ws/ai)
 Client ──[ Subscribe Event: { event: "subscribe_job", data: { jobId: "job-123" } } ]──> Gateway
-Server ──[ Emit: "job_progress", payload: { stage: "OCR", current: 15, total: 30, overall: 45 } ]──> Client
-Server ──[ Emit: "job_completed", payload: { jobId: "job-123", previewReady: true } ]──> Client
+Server ──[ Emit: "job_progress", payload: { jobId, status, progress, heartbeatAt?, timestamp } ]──> Client
+Server ──[ Emit: "job_ready_for_review", payload: { jobId, status: 'READY_FOR_REVIEW', timestamp } ]──> Client
+Server ──[ Emit: "job_failed", payload: { jobId, status: 'FAILED', timestamp } ]──> Client
+Server ──[ Emit: "job_canceled", payload: { jobId, status: 'CANCELED', timestamp } ]──> Client
 ```
-* **Chính sách Reconnection:** Nếu kết nối WebSocket bị đứt, Client tự động kết nối lại theo Exponential Backoff (1s, 2s, 4s, tối đa 10s) và gọi `GET /api/v1/ai/jobs/:id` để lấy trạng thái mới nhất từ Redis/DB.
+* **Chính sách Reconnection & Source of Truth:** WebSocket đóng vai trò là tín hiệu đánh thức thời gian thực (realtime acceleration signal). HTTP GET endpoints (`/api/v1/ai/jobs/:id`) là Source of Truth tối cao (authoritative truth). Khi socket reconnect hoặc token xoay vòng, Client tự động kết nối lại và kích hoạt reconciliation HTTP an toàn.
+

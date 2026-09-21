@@ -41,7 +41,7 @@ Toàn bộ 24 tài liệu đặc tả kỹ thuật và theo dõi tiến độ th
 * [Phase 2: Core Backend API & Security](phases/phase_02_backend_core.md) `[x] Đã hoàn thành (100% - 56/56 E2E Tests Passing)`
   * [Kế hoạch Kỹ thuật Chi tiết Phase 2](phases/phase_02_implementation_plan.md)
 * [Phase 3: AI Translation Worker & Upload Queue](phases/phase_03_ai_worker.md) `[x] Đã hoàn thành (100% - Vertical Slice 1, 2, 3 FROZEN - 184/184 AI Worker Tests & 106/106 NestJS Tests - 290/290 Total Tests Passed)`
-* [Phase 4: Web Client (TruyenQQ & DocLN)](phases/phase_04_web_client.md) `[/] Đang thực hiện (Phase 4A, 4B, 4C & 4D.1–4D.4 + #162 Clean Bases + #166 WS Security + #159 Source Previews + #157 Re-render + #155 Preview API + #163 Structure Snapshot + #158 Novel Materialization + #149 Manga Studio + #150 Novel Studio + #151 Glossary Integration & #189 Backend Prerequisite 100% HOÀN TẤT & FROZEN)`
+* [Phase 4: Web Client (TruyenQQ & DocLN & AI Translation Studio)](phases/phase_04_web_client.md) `[x] Đã hoàn thành (100% - Toàn bộ Phase 4A, 4B, 4C, 4D FROZEN tại final main baseline)`
 * [Phase 5: Mobile App (Flutter 120Hz & Offline)](phases/phase_05_mobile_app.md) `[ ] Chưa bắt đầu`
 * [Phase 6: DevOps, CI/CD & Academic Defense](phases/phase_06_devops_final.md) `[ ] Chưa bắt đầu`
 

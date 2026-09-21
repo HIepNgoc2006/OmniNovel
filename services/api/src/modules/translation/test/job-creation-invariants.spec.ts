@@ -136,4 +136,22 @@ describe('Job Creation Backend Authority Invariants (#146 Task 2)', () => {
       service.createJob(mockUser, dto, idempotencyKey),
     ).rejects.toThrow(NotFoundException);
   });
+
+  it('rejects with BadRequestException and SOURCE_VERSION_ARTIFACT_UNAVAILABLE when source version has no promoted upload session (#165)', async () => {
+    const dto = {
+      chapterVersionId: validVersionId,
+      sourceLang: 'ja',
+      targetLang: 'vi',
+      provider: 'MOCK',
+    };
+
+    await expect(
+      service.createJob(mockUser, dto, idempotencyKey),
+    ).rejects.toThrow(BadRequestException);
+
+    await expect(
+      service.createJob(mockUser, dto, idempotencyKey),
+    ).rejects.toThrow(/SOURCE_VERSION_ARTIFACT_UNAVAILABLE/);
+  });
 });
+

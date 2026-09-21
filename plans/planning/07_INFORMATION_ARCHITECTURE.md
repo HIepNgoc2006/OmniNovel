@@ -25,12 +25,14 @@ Tài liệu này xác định sơ đồ cấu trúc trang (Sitemap), luồng đi
 │   ├── /gamification/checkin (Điểm danh hàng ngày & Lịch Streak)
 │   ├── /gamification/missions (Danh sách Nhiệm vụ Ngày/Tuần)
 │   └── /gamification/ledger (Sổ cái Lịch sử biến động số dư)
-├── /studio (Xưởng sáng tác & Dịch thuật dành cho Creator/Translator)
-│   ├── /studio/stories (Danh sách truyện quản lý)
-│   ├── /studio/stories/new (Tạo bộ truyện mới & Ấn bản)
-│   ├── /studio/stories/:id/chapters (Quản lý các chương & version)
-│   ├── /studio/stories/:id/upload (Upload ZIP ảnh / File Text)
-│   └── /studio/ai/jobs/:jobId (Màn hình tiến trình dịch, Diff Preview & Popup xuất bản)
+├── /studio (Xưởng dịch thuật & Quản lý ấn bản dành cho Translator/Editor)
+│   ├── /studio (Dashboard quản lý Story, Project, Realtime Jobs & Metrics - #145)
+│   ├── /studio/ai/jobs/new (Tạo Translation Job mới, chọn version, consent & idempotency - #146)
+│   └── /studio/ai/jobs/:jobId (Unified Format-Aware Review Studio)
+│       ├── Manga Review Studio: Canvas Bounding Box, Segment OCC Editor, Re-render Lifecycle (#149)
+│       ├── Novel Review Studio: AST Block Grouping, Protected Anchor Tokenizer, OCC Verification (#150)
+│       ├── Modal Quản lý Thuật ngữ Dịch (Live Project Glossary vs Job Snapshot - #151)
+│       └── Modal Xuất bản Chương: Ghi đè Active Version vs Tạo Version phụ (#152)
 ├── /profile (Quản lý tài khoản, đổi mật khẩu, avatar)
 └── /admin (Khu vực Quản trị viên)
     ├── /admin/users (Quản lý tài khoản & phân quyền)
@@ -54,10 +56,12 @@ Tài liệu này xác định sơ đồ cấu trúc trang (Sitemap), luồng đi
 | **WEB-008** | Trung Tâm Gamification (Gamification)| Xem Level, thanh tiến trình EXP, chọn Rank Theme | `GET /api/v1/gamification/progression`, `PATCH /.../rank-theme` |
 | **WEB-009** | Điểm Danh & Nhiệm Vụ (Daily Checkin)| Lịch điểm danh tháng, nhận thưởng chuỗi streak | `POST /api/v1/gamification/checkin` |
 | **WEB-010** | Sổ Cái Biến Động Số Dư (Ledger History)| Tra cứu toàn bộ lịch sử cộng/trừ EXP và OmniCoin | `GET /api/v1/gamification/transactions` |
-| **WEB-011** | Studio - Quản Lý Truyện (Studio Stories)| Danh sách tác phẩm quản lý, tạo ấn bản StoryEdition | `GET /api/v1/studio/stories`, `POST /api/v1/studio/stories` |
-| **WEB-012** | Studio - Tải Lên Chương (Chapter Upload)| Kéo thả file ZIP ảnh Manga / File Text Novel | `POST /api/v1/uploads/sessions` |
-| **WEB-013** | Studio - Tiến Trình Dịch AI (AI Progress)| Theo dõi % OCR/Dịch/Inpaint qua WebSocket | `GET /api/v1/ai/jobs/:id`, WebSocket Gateway |
-| **WEB-014** | Studio - Diff Preview & Popup Xuất Bản| So sánh ảnh trước/sau và chọn Ghi đè / Nhân bản | `POST /api/v1/ai/jobs/:id/apply` |
+| **WEB-011** | Studio - Tổng Quan Dashboard | Metrics thẻ tiến độ, bộ chọn Story, bảng lọc multi-status, card danh sách job realtime | `GET /api/v1/studio/stories`, `GET /api/v1/ai/jobs`, WebSocket `/ws/ai` |
+| **WEB-012** | Studio - Tạo Job Dịch Mới | Chọn Story/Edition/Chapter Version, cảnh báo & consent external provider, idempotency key cố định | `GET /api/v1/studio/chapters/:id/versions`, `POST /api/v1/ai/jobs` |
+| **WEB-013** | Studio - Trình Duyệt Manga Review | Canvas Bounding Box ảnh gốc/dịch, thanh điều hướng trang bounded, Segment OCC Editor, Re-render Materialization Lifecycle | `GET /api/v1/ai/jobs/:id`, `GET /api/v1/ai/jobs/:id/previews`, `GET /api/v1/ai/jobs/:id/segments`, `PATCH /.../segments/:id`, `POST /.../materializations` |
+| **WEB-014** | Studio - Trình Duyệt Novel Review | Danh sách AST blocks theo nhóm, Tokenizer thẻ bảo vệ `⟦...⟧`, kiểm tra topology client/server, Save OCC & duyệt tiến độ | `GET /api/v1/ai/jobs/:id`, `GET /api/v1/ai/jobs/:id/segments`, `PATCH /.../segments/:id`, `POST /.../materializations` |
+| **WEB-014A**| Studio - Modal Xuất Bản Chương | So sánh và lựa chọn chiến lược Ghi đè Active Version vs Tạo Version phụ, kiểm tra Freshness Gate | `POST /api/v1/ai/jobs/:id/apply` |
+| **WEB-014B**| Studio - Modal Thuật Ngữ Dịch | Quản lý Live Project Glossary (thêm/sửa/chuẩn hóa) và tra cứu snapshot thuật ngữ bất biến của Job | `GET /api/v1/ai/glossary`, `POST /api/v1/ai/glossary` |
 | **WEB-015** | Admin - Báo Lỗi & Kiểm Duyệt (Admin Hub) | Quản lý báo lỗi chương, phân quyền người dùng, takedown | `GET /api/v1/admin/reports`, `PATCH /api/v1/admin/users/:id` |
 
 ---

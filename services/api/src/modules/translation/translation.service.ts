@@ -212,15 +212,12 @@ export class TranslationService {
     } else if (promotedSessions.length === 1) {
       sourceUploadSessionId = promotedSessions[0].id;
     } else {
-      // 0 upload session -> Kiểm tra xem có media assets nào cho version này không
-      const mediaAssetsCount = await this.mediaAssetRepo.count({
-        where: { versionId: sourceVersion.id },
+      // #165 Short-term Fail-closed Gate: Phiên bản nguồn chưa có canonical upload session package
+      throw new BadRequestException({
+        code: 'SOURCE_VERSION_ARTIFACT_UNAVAILABLE',
+        message:
+          'SOURCE_VERSION_ARTIFACT_UNAVAILABLE: Phiên bản nguồn chưa có gói artifact tải lên hợp lệ để xử lý dịch thuật.',
       });
-      if (mediaAssetsCount === 0) {
-        throw new NotFoundException(
-          'Không tìm thấy source package hay media assets cho version này.',
-        );
-      }
     }
 
     // 5. Resolve/Upsert TranslationProject (Unique theo editionId + sourceLang + targetLang)

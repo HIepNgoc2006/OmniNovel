@@ -2325,6 +2325,58 @@ export class TranslationService {
             }
           }
         }
+
+        // Invariant #163: Novel Structure Snapshot Enforcement & Storage Streaming Hash Verification
+        if (!novelManifest.structureSnapshot) {
+          throw new BadRequestException({
+            code: 'NOVEL_MISSING_STRUCTURE_SNAPSHOT',
+            message:
+              'Novel job bắt buộc phải có structureSnapshot trong resultManifest khi ở trạng thái READY_FOR_REVIEW (#163).',
+          });
+        }
+
+        const snapshotRef = novelManifest.structureSnapshot;
+        const expectedSnapshotKey = `ai/jobs/${jobId}/structure/${snapshotRef.sha256}.json`;
+        if (snapshotRef.storageKey !== expectedSnapshotKey) {
+          throw new BadRequestException({
+            code: 'INVALID_STRUCTURE_SNAPSHOT_STORAGE_KEY',
+            message: `StructureSnapshot storageKey (${snapshotRef.storageKey}) không khớp với canonical path: ${expectedSnapshotKey}`,
+          });
+        }
+
+        const snapshotCheck = await this.storageService.hashInternalObjectSha256(
+          snapshotRef.storageKey,
+          false,
+          10 * 1024 * 1024,
+        );
+
+        if (!snapshotCheck.exists) {
+          throw new BadRequestException({
+            code: 'ARTIFACT_NOT_FOUND_IN_STORAGE',
+            message: `Structure snapshot ${snapshotRef.storageKey} không tồn tại trong MinIO storage.`,
+          });
+        }
+
+        if (snapshotCheck.size <= 0) {
+          throw new BadRequestException({
+            code: 'INVALID_STRUCTURE_SNAPSHOT_SIZE',
+            message: `Structure snapshot ${snapshotRef.storageKey} rỗng (size <= 0).`,
+          });
+        }
+
+        if (snapshotCheck.contentType !== 'application/json') {
+          throw new BadRequestException({
+            code: 'INVALID_STRUCTURE_SNAPSHOT_CONTENT_TYPE',
+            message: `Structure snapshot ${snapshotRef.storageKey} có contentType không hợp lệ (${snapshotCheck.contentType}). Yêu cầu: application/json.`,
+          });
+        }
+
+        if (snapshotCheck.sha256 !== snapshotRef.sha256) {
+          throw new BadRequestException({
+            code: 'STRUCTURE_SNAPSHOT_HASH_MISMATCH',
+            message: `Actual sha256 (${snapshotCheck.sha256}) không khớp với sha256 trong manifest reference (${snapshotRef.sha256}).`,
+          });
+        }
       } else {
         const comicManifest = eventDto.resultManifest as MangaResultManifestV1;
         if (!comicManifest.pages || comicManifest.pages.length === 0) {

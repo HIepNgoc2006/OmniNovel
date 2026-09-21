@@ -101,7 +101,11 @@ describe('Novel Structure Snapshot Upload Protocol (#163)', () => {
         { provide: StorageService, useValue: storageService },
         {
           provide: TranslationGateway,
-          useValue: { server: { to: jest.fn().mockReturnValue({ emit: jest.fn() }) } },
+          useValue: {
+            server: { to: jest.fn().mockReturnValue({ emit: jest.fn() }) },
+            broadcastJobReady: jest.fn(),
+            broadcastJobProgress: jest.fn(),
+          },
         },
         { provide: TranslationProcessor, useValue: {} },
         { provide: DataSource, useValue: dataSource },
@@ -205,5 +209,233 @@ describe('Novel Structure Snapshot Upload Protocol (#163)', () => {
     await expect(
       service.createStructureSnapshotUploadUrl(validNovelJob.id, 1, validSha256),
     ).rejects.toThrow(BadRequestException);
+  });
+
+  describe('READY_FOR_REVIEW Structure Snapshot Gate (#163, P0.2, P0.4)', () => {
+    const sampleSegments = [
+      {
+        sortOrder: 1,
+        anchorBlockId: 'blk_0001_h1',
+        blockType: 'HEADING',
+        rawText: 'Header',
+        translatedText: 'Tiêu đề',
+      },
+      {
+        sortOrder: 2,
+        anchorBlockId: 'blk_0002_p',
+        blockType: 'NARRATION',
+        rawText: 'Body',
+        translatedText: 'Nội dung',
+      },
+    ];
+
+    const validNovelManifest = {
+      version: 1,
+      mediaFormat: 'NOVEL',
+      htmlKey: `ai/jobs/${validNovelJob.id}/attempt-1/novel_translated.html`,
+      segmentCount: 2,
+      charCount: [...'Tiêu đề'].length + [...'Nội dung'].length,
+      htmlFileSizeBytes: 1024,
+      title: 'Tiêu đề',
+      language: 'vi',
+      qa: {
+        passed: true,
+        score: 1.0,
+        fingerprintMatch: true,
+        issuesCount: 0,
+        issues: [],
+      },
+      structureSnapshot: {
+        version: 1,
+        storageKey: `ai/jobs/${validNovelJob.id}/structure/${validSha256}.json`,
+        sha256: validSha256,
+        segmenterVersion: 'novel-v1',
+        sourceStructureFingerprint: `sha256:${validSha256}`,
+      },
+    };
+
+    beforeEach(() => {
+      jobRepo.findOne.mockResolvedValue({
+        ...validNovelJob,
+        status: TranslationJobStatus.QUALITY_CHECK,
+      });
+
+      storageService.headInternalObject = jest.fn().mockResolvedValue(true);
+      storageService.hashInternalObjectSha256 = jest.fn().mockResolvedValue({
+        exists: true,
+        sha256: validSha256,
+        size: 2048,
+        contentType: 'application/json',
+      });
+
+      const txJob = {
+        ...validNovelJob,
+        status: TranslationJobStatus.QUALITY_CHECK,
+        lastSequence: 0,
+      };
+      dataSource.transaction = jest.fn().mockImplementation(async (cb) => {
+        const manager = {
+          query: jest.fn(),
+          findOne: jest.fn().mockResolvedValue(txJob),
+          save: jest.fn().mockImplementation((entity, data) => data || entity),
+          createQueryBuilder: jest.fn(),
+          create: jest.fn().mockImplementation((entity, data) => data),
+          delete: jest.fn().mockResolvedValue(undefined),
+        };
+        return await cb(manager);
+      });
+    });
+
+    it('should successfully pass READY_FOR_REVIEW when structureSnapshot is valid and verified in storage', async () => {
+      const event: any = {
+        eventId: 'e-ready-1',
+        attemptNumber: 1,
+        sequence: 1,
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progress: 100,
+        resultManifest: validNovelManifest,
+        segments: sampleSegments,
+      };
+
+      const res = await service.handleWorkerEvent(validNovelJob.id, event);
+      expect(res).toBeDefined();
+      expect(storageService.hashInternalObjectSha256).toHaveBeenCalledWith(
+        `ai/jobs/${validNovelJob.id}/structure/${validSha256}.json`,
+        false,
+        10 * 1024 * 1024,
+      );
+    });
+
+    it('should reject when structureSnapshot is missing in new READY_FOR_REVIEW callback (P0.4)', async () => {
+      const { structureSnapshot, ...legacyManifestWithoutSnapshot } = validNovelManifest;
+      const event: any = {
+        eventId: 'e-ready-missing-snap',
+        attemptNumber: 1,
+        sequence: 1,
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progress: 100,
+        resultManifest: legacyManifestWithoutSnapshot,
+        segments: sampleSegments,
+      };
+
+      await expect(
+        service.handleWorkerEvent(validNovelJob.id, event),
+      ).rejects.toThrow('Novel job bắt buộc phải có structureSnapshot trong resultManifest');
+    });
+
+    it('should reject when storageKey does not match canonical pattern or hash', async () => {
+      const tamperedManifest = {
+        ...validNovelManifest,
+        structureSnapshot: {
+          ...validNovelManifest.structureSnapshot,
+          storageKey: `ai/jobs/${validNovelJob.id}/structure/stale_snapshot.json`,
+        },
+      };
+
+      const event: any = {
+        eventId: 'e-ready-tampered-key',
+        attemptNumber: 1,
+        sequence: 1,
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progress: 100,
+        resultManifest: tamperedManifest,
+        segments: sampleSegments,
+      };
+
+      await expect(
+        service.handleWorkerEvent(validNovelJob.id, event),
+      ).rejects.toThrow('không khớp với canonical path');
+    });
+
+    it('should reject when structure snapshot object does not exist in MinIO (P0.2)', async () => {
+      storageService.hashInternalObjectSha256.mockResolvedValueOnce({
+        exists: false,
+        size: 0,
+      });
+
+      const event: any = {
+        eventId: 'e-ready-non-existent-snap',
+        attemptNumber: 1,
+        sequence: 1,
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progress: 100,
+        resultManifest: validNovelManifest,
+        segments: sampleSegments,
+      };
+
+      await expect(
+        service.handleWorkerEvent(validNovelJob.id, event),
+      ).rejects.toThrow('không tồn tại trong MinIO storage');
+    });
+
+    it('should reject when structure snapshot object size is empty (size <= 0) (P0.2)', async () => {
+      storageService.hashInternalObjectSha256.mockResolvedValueOnce({
+        exists: true,
+        size: 0,
+        contentType: 'application/json',
+        sha256: validSha256,
+      });
+
+      const event: any = {
+        eventId: 'e-ready-empty-snap',
+        attemptNumber: 1,
+        sequence: 1,
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progress: 100,
+        resultManifest: validNovelManifest,
+        segments: sampleSegments,
+      };
+
+      await expect(
+        service.handleWorkerEvent(validNovelJob.id, event),
+      ).rejects.toThrow('rỗng (size <= 0)');
+    });
+
+    it('should reject when structure snapshot has invalid contentType (P0.2)', async () => {
+      storageService.hashInternalObjectSha256.mockResolvedValueOnce({
+        exists: true,
+        size: 2048,
+        contentType: 'text/plain',
+        sha256: validSha256,
+      });
+
+      const event: any = {
+        eventId: 'e-ready-wrong-ct-snap',
+        attemptNumber: 1,
+        sequence: 1,
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progress: 100,
+        resultManifest: validNovelManifest,
+        segments: sampleSegments,
+      };
+
+      await expect(
+        service.handleWorkerEvent(validNovelJob.id, event),
+      ).rejects.toThrow('có contentType không hợp lệ');
+    });
+
+    it('should reject when actual streamed SHA-256 does not match manifest reference (P0.2)', async () => {
+      const differentHash = 'a'.repeat(64);
+      storageService.hashInternalObjectSha256.mockResolvedValueOnce({
+        exists: true,
+        size: 2048,
+        contentType: 'application/json',
+        sha256: differentHash,
+      });
+
+      const event: any = {
+        eventId: 'e-ready-hash-mismatch-snap',
+        attemptNumber: 1,
+        sequence: 1,
+        stage: TranslationJobStatus.READY_FOR_REVIEW,
+        progress: 100,
+        resultManifest: validNovelManifest,
+        segments: sampleSegments,
+      };
+
+      await expect(
+        service.handleWorkerEvent(validNovelJob.id, event),
+      ).rejects.toThrow('không khớp với sha256 trong manifest reference');
+    });
   });
 });

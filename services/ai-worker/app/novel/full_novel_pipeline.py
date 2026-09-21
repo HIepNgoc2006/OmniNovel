@@ -218,11 +218,13 @@ class FullNovelPipeline:
             )
 
             # Tái tạo Document AST với targetLanguage tương ứng
-            target_lang = (
-                input_manifest.targetLanguage
-                if isinstance(input_manifest, TranslationInputManifestV1)
-                else (input_manifest.get("targetLanguage") if isinstance(input_manifest, dict) else "vi")
-            ) or "vi"
+            if isinstance(input_manifest, TranslationInputManifestV1):
+                target_lang = getattr(input_manifest, "targetLang", getattr(input_manifest, "targetLanguage", "vi"))
+            elif isinstance(input_manifest, dict):
+                target_lang = input_manifest.get("targetLang") or input_manifest.get("targetLanguage") or "vi"
+            else:
+                target_lang = "vi"
+            target_lang = target_lang or "vi"
 
             translated_doc: CanonicalNovelDocument = self.rebuilder.rebuild(
                 source_doc=source_doc,

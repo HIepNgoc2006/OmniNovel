@@ -1416,5 +1416,129 @@
         "sourceStructureFingerprint": "invalid-fingerprint"
       }
     }
+  },
+  {
+    "id": "valid-novel-result-with-assets-source-href",
+    "schema": "NOVEL_RESULT_V1",
+    "description": "Valid Novel result manifest with asset sourceHref provenance (#158)",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "novels/chapter-1.html",
+      "segmentCount": 1,
+      "charCount": 10,
+      "htmlFileSizeBytes": 1024,
+      "qa": {
+        "passed": true,
+        "score": 1.0,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      },
+      "assets": [
+        {
+          "sourceHref": "images/chapter01/illust_01.jpg",
+          "storageKey": "ai/jobs/job-1/assets/illust_01.jpg",
+          "contentType": "image/jpeg",
+          "fileSizeBytes": 54321
+        },
+        {
+          "sourceHref": "/images/chapter01/illust_02.jpg",
+          "storageKey": "ai/jobs/job-1/assets/illust_02.jpg",
+          "contentType": "image/jpeg",
+          "fileSizeBytes": 65432
+        }
+      ]
+    },
+    "canonical": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "novels/chapter-1.html",
+      "segmentCount": 1,
+      "charCount": 10,
+      "htmlFileSizeBytes": 1024,
+      "qa": {
+        "passed": true,
+        "score": 1.0,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      },
+      "assets": [
+        {
+          "sourceHref": "images/chapter01/illust_01.jpg",
+          "storageKey": "ai/jobs/job-1/assets/illust_01.jpg",
+          "contentType": "image/jpeg",
+          "fileSizeBytes": 54321
+        },
+        {
+          "sourceHref": "images/chapter01/illust_02.jpg",
+          "storageKey": "ai/jobs/job-1/assets/illust_02.jpg",
+          "contentType": "image/jpeg",
+          "fileSizeBytes": 65432
+        }
+      ]
+    }
+  },
+  {
+    "id": "invalid-novel-result-duplicate-source-href",
+    "schema": "NOVEL_RESULT_V1",
+    "description": "Reject Novel result manifest with duplicate sourceHref in assets (#158)",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "novels/chapter-1.html",
+      "segmentCount": 1,
+      "charCount": 10,
+      "htmlFileSizeBytes": 1024,
+      "qa": {
+        "passed": true,
+        "score": 1.0,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      },
+      "assets": [
+        {
+          "sourceHref": "images/chapter01/illust_01.jpg",
+          "storageKey": "ai/jobs/job-1/assets/illust_01_a.jpg",
+          "contentType": "image/jpeg",
+          "fileSizeBytes": 54321
+        },
+        {
+          "sourceHref": "images/chapter01/illust_01.jpg",
+          "storageKey": "ai/jobs/job-1/assets/illust_01_b.jpg",
+          "contentType": "image/jpeg",
+          "fileSizeBytes": 65432
+        }
+      ]
+    }
+  },
+  {
+    "id": "invalid-novel-result-empty-source-href",
+    "schema": "NOVEL_RESULT_V1",
+    "description": "Reject Novel result manifest with empty sourceHref in assets (#158)",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "novels/chapter-1.html",
+      "segmentCount": 1,
+      "charCount": 10,
+      "htmlFileSizeBytes": 1024,
+      "qa": {
+        "passed": true,
+        "score": 1.0,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      },
+      "assets": [
+        {
+          "sourceHref": "",
+          "storageKey": "ai/jobs/job-1/assets/illust_01.jpg",
+          "contentType": "image/jpeg",
+          "fileSizeBytes": 54321
+        }
+      ]
+    }
   }
 ]

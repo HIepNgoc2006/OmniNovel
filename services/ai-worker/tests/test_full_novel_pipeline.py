@@ -130,6 +130,7 @@ async def test_full_novel_pipeline_execution_e2e(monkeypatch):
     assert manifest["qa"]["fingerprintMatch"] is True
     assert manifest["metrics"]["promptVersion"] == "novel-ja-vi-v2"
     assert len(manifest["assets"]) == 1
+    assert manifest["assets"][0].get("sourceHref") == "assets/star.png"
     assert "assets_star--" in manifest["assets"][0]["storageKey"]
     assert manifest["assets"][0]["storageKey"].endswith(".png")
 

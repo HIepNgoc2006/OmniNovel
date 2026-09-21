@@ -144,10 +144,30 @@ class NovelResultQaModel(StrictManifestModel):
     issues: Optional[List[NovelResultQaIssueModel]] = None
 
 
+def normalize_novel_asset_href(raw_href: Optional[str]) -> str:
+    if not raw_href or not isinstance(raw_href, str):
+        return ""
+    cleaned = raw_href.strip().replace("\\", "/")
+    while cleaned.startswith("/"):
+        cleaned = cleaned[1:]
+    return cleaned
+
+
 class NovelResultAssetModel(StrictManifestModel):
+    sourceHref: Optional[str] = Field(None, min_length=1)
     storageKey: str = Field(..., min_length=1)
     contentType: Optional[str] = None
     fileSizeBytes: int = Field(..., gt=0, le=JS_MAX_SAFE_INTEGER)
+
+    @field_validator("sourceHref")
+    @classmethod
+    def validate_source_href(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            cleaned = normalize_novel_asset_href(v)
+            if not cleaned:
+                raise ValueError("sourceHref cannot be empty or whitespace only")
+            return cleaned
+        return None
 
     @model_validator(mode="before")
     @classmethod
@@ -186,6 +206,20 @@ class NovelResultManifestV1(StrictManifestModel):
     qa: NovelResultQaModel
     metrics: Optional[NovelResultMetricsModel] = None
     structureSnapshot: Optional["NovelStructureSnapshotReferenceModel"] = None
+
+    @field_validator("assets")
+    @classmethod
+    def validate_assets_source_href_uniqueness(
+        cls, v: Optional[List[NovelResultAssetModel]]
+    ) -> Optional[List[NovelResultAssetModel]]:
+        if v:
+            seen_hrefs = set()
+            for asset in v:
+                if asset.sourceHref is not None:
+                    if asset.sourceHref in seen_hrefs:
+                        raise ValueError(f"DUPLICATE_SOURCE_HREF: Duplicate sourceHref '{asset.sourceHref}' in assets")
+                    seen_hrefs.add(asset.sourceHref)
+        return v
 
 
 # ----------------------------------------------------------------------

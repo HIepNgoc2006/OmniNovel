@@ -31,6 +31,7 @@ from app.models.manifests import (
     NovelResultQaIssueModel,
     NovelResultMetricsModel,
     NovelStructureSnapshotReferenceModel,
+    normalize_novel_asset_href,
 )
 from app.pipeline.attempt_coordinator import AttemptProgressCoordinator
 from app.translation.providers.base import TranslationProvider
@@ -327,6 +328,7 @@ class FullNovelPipeline:
 
                         uploaded_assets.append(
                             NovelResultAssetModel(
+                                sourceHref=normalize_novel_asset_href(href),
                                 storageKey=storage_key,
                                 contentType=ct,
                                 fileSizeBytes=asset_path.stat().st_size,

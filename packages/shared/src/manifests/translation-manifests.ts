@@ -52,6 +52,7 @@ export interface NovelResultQaV1 {
 }
 
 export interface NovelResultAssetV1 {
+  sourceHref?: string;
   storageKey: string;
   contentType?: string;
   fileSizeBytes: number;
@@ -583,6 +584,17 @@ export function validateNovelQaV1(
   };
 }
 
+export function normalizeNovelAssetHref(rawHref: string): string {
+  if (!rawHref || typeof rawHref !== 'string') {
+    return '';
+  }
+  let cleaned = rawHref.trim().replace(/\\/g, '/');
+  while (cleaned.startsWith('/')) {
+    cleaned = cleaned.slice(1);
+  }
+  return cleaned;
+}
+
 export function validateNovelResultManifestV1(
   data: unknown,
 ): ValidationResult<NovelResultManifestV1> {
@@ -629,35 +641,31 @@ export function validateNovelResultManifestV1(
     errors.push(`mediaFormat must be 'NOVEL', got '${obj.mediaFormat}'`);
   }
 
-  // Check htmlKey
   if (typeof obj.htmlKey !== 'string' || obj.htmlKey.trim() === '') {
     errors.push('htmlKey must be a non-empty string');
   }
 
-  // Check segmentCount
   if (!isSafeNonNegativeInteger(obj.segmentCount)) {
     errors.push('segmentCount must be a non-negative integer');
   }
 
-  // Check charCount
   if (!isSafeNonNegativeInteger(obj.charCount)) {
     errors.push('charCount must be a non-negative integer');
   }
 
-  // Check htmlFileSizeBytes (required)
   if (!isSafePositiveInteger(obj.htmlFileSizeBytes)) {
     errors.push('htmlFileSizeBytes must be a positive safe integer');
   }
 
-  // Check optional title and language
   if (obj.title !== undefined && typeof obj.title !== 'string') {
-    errors.push('title must be a string if provided');
-  }
-  if (obj.language !== undefined && typeof obj.language !== 'string') {
-    errors.push('language must be a string if provided');
+    errors.push('title must be a string');
   }
 
-  // Check QA
+  if (obj.language !== undefined && typeof obj.language !== 'string') {
+    errors.push('language must be a string');
+  }
+
+  // Validate QA
   let validatedQa: NovelResultQaV1 | undefined;
   const qaValidation = validateNovelQaV1(obj.qa, { prefix: 'qa' });
   if (!qaValidation.valid) {
@@ -673,6 +681,8 @@ export function validateNovelResultManifestV1(
       errors.push('assets must be an array if provided');
     } else {
       validatedAssets = [];
+      const seenSourceHrefs = new Set<string>();
+
       obj.assets.forEach((ast: any, idx: number) => {
         if (!ast || typeof ast !== 'object' || Array.isArray(ast)) {
           errors.push(`assets[${idx}] must be an object`);
@@ -681,10 +691,30 @@ export function validateNovelResultManifestV1(
 
         assertNoUnknownKeys(
           ast,
-          ['storageKey', 'contentType', 'fileSizeBytes', 'fileSize'],
+          ['sourceHref', 'storageKey', 'contentType', 'fileSizeBytes', 'fileSize'],
           `assets[${idx}]`,
           errors,
         );
+
+        let canonicalSourceHref: string | undefined;
+        if (ast.sourceHref !== undefined) {
+          if (typeof ast.sourceHref !== 'string') {
+            errors.push(`assets[${idx}].sourceHref must be a string if provided`);
+          } else {
+            canonicalSourceHref = normalizeNovelAssetHref(ast.sourceHref);
+            if (!canonicalSourceHref) {
+              errors.push(
+                `assets[${idx}].sourceHref cannot be empty or whitespace only`,
+              );
+            } else if (seenSourceHrefs.has(canonicalSourceHref)) {
+              errors.push(
+                `DUPLICATE_SOURCE_HREF: assets[${idx}].sourceHref '${canonicalSourceHref}' is duplicate`,
+              );
+            } else {
+              seenSourceHrefs.add(canonicalSourceHref);
+            }
+          }
+        }
 
         if (typeof ast.storageKey !== 'string' || ast.storageKey.trim() === '') {
           errors.push(`assets[${idx}].storageKey must be a non-empty string`);
@@ -716,6 +746,7 @@ export function validateNovelResultManifestV1(
 
         if (errors.length === 0) {
           validatedAssets!.push({
+            ...(canonicalSourceHref ? { sourceHref: canonicalSourceHref } : {}),
             storageKey: ast.storageKey,
             ...(ast.contentType ? { contentType: ast.contentType } : {}),
             fileSizeBytes,

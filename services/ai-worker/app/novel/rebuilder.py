@@ -222,3 +222,227 @@ class NovelDocumentRebuilder:
             return DividerBlockNode(), current_index
 
         return None, current_index
+
+    def rebuild_from_snapshot(
+        self,
+        snapshot: Union[Any, Dict[str, Any]],
+        translated_blocks: Union[Dict[str, str], List[TranslatedNovelBlock], List[Dict[str, Any]]],
+        translated_title: Optional[str] = None,
+    ) -> CanonicalNovelDocument:
+        """
+        Tái tạo cây CanonicalNovelDocument tiếng Việt độc lập hoàn toàn từ NovelStructureSnapshot (#163).
+        Invariant: Tuyệt đối KHÔNG gọi hoặc khởi tạo NovelSegmenter.
+        Khôi phục source AST từ snapshot.document, tập hợp expected IDs từ snapshot.segments,
+        và InlineAnchorMaps từ snapshot.anchorMaps.
+        """
+        from app.novel.structure_snapshot import snapshot_dict_to_document
+        from app.novel.inline_anchors import ProtectedInlineMetadata
+
+        # 1. Trích xuất document, segments, anchorMaps từ snapshot (hỗ trợ cả dict lẫn Pydantic model)
+        if hasattr(snapshot, "document"):
+            doc_data = snapshot.document
+            if hasattr(doc_data, "model_dump"):
+                doc_dict = doc_data.model_dump(by_alias=True)
+            elif isinstance(doc_data, dict):
+                doc_dict = doc_data
+            else:
+                doc_dict = doc_data.__dict__
+            raw_segments = snapshot.segments
+            raw_anchor_maps = snapshot.anchorMaps
+        elif isinstance(snapshot, dict):
+            doc_dict = snapshot.get("document", {})
+            raw_segments = snapshot.get("segments", [])
+            raw_anchor_maps = snapshot.get("anchorMaps", {})
+        else:
+            raise NovelRebuilderError(f"Kiểu dữ liệu snapshot không hợp lệ: {type(snapshot)}")
+
+        source_doc = snapshot_dict_to_document(doc_dict)
+
+        expected_ids: List[str] = []
+        for seg in raw_segments:
+            if hasattr(seg, "anchorBlockId"):
+                expected_ids.append(seg.anchorBlockId)
+            elif isinstance(seg, dict):
+                expected_ids.append(seg.get("anchorBlockId") or seg.get("anchor_block_id"))
+            else:
+                raise NovelRebuilderError(f"Kiểu dữ liệu segment không hợp lệ: {type(seg)}")
+
+        if len(expected_ids) != len(set(expected_ids)):
+            raise NovelRebuilderError("Phát hiện trùng lặp anchorBlockId trong snapshot segments.")
+
+        # Khôi phục InlineAnchorMaps
+        reconstructed_anchor_maps: Dict[str, InlineAnchorMap] = {}
+        for blk_id, entries in (raw_anchor_maps or {}).items():
+            entry_map = {}
+            for e in entries:
+                if hasattr(e, "anchorId"):
+                    tag_type = e.tagType
+                    anchor_id = e.anchorId
+                    ruby_text = e.rubyText
+                    parenthesis_text = e.parenthesisText
+                    image_src = e.imageSrc
+                    image_alt = e.imageAlt
+                elif isinstance(e, dict):
+                    tag_type = e.get("tagType") or e.get("tag_type")
+                    anchor_id = e.get("anchorId") or e.get("anchor_id")
+                    ruby_text = e.get("rubyText") or e.get("ruby_text")
+                    parenthesis_text = e.get("parenthesisText") or e.get("parenthesis_text")
+                    image_src = e.get("imageSrc") or e.get("image_src")
+                    image_alt = e.get("imageAlt") or e.get("image_alt")
+                else:
+                    continue
+                entry_map[anchor_id] = ProtectedInlineMetadata(
+                    tag_type=tag_type,
+                    anchor_id=anchor_id,
+                    ruby_text=ruby_text,
+                    parenthesis_text=parenthesis_text,
+                    image_src=image_src,
+                    image_alt=image_alt,
+                )
+            reconstructed_anchor_maps[blk_id] = InlineAnchorMap(items=entry_map)
+
+        # 2. Chuẩn hóa translated_blocks và kiểm tra trùng lặp supplied keys
+        translation_map: Dict[str, str] = {}
+        seen_supplied_keys: Set[str] = set()
+
+        if isinstance(translated_blocks, dict):
+            translation_map = dict(translated_blocks)
+        elif isinstance(translated_blocks, list):
+            for item in translated_blocks:
+                if isinstance(item, TranslatedNovelBlock):
+                    aid = item.anchor_block_id
+                    txt = item.translated_text
+                elif isinstance(item, dict):
+                    aid = item.get("anchor_block_id") or item.get("anchorBlockId")
+                    txt = item.get("translated_text") or item.get("translatedText", "")
+                else:
+                    raise NovelRebuilderError(f"Kiểu dữ liệu item dịch không hợp lệ: {type(item)}")
+
+                if not aid:
+                    raise NovelRebuilderError("Phát hiện item dịch thiếu anchorBlockId.")
+
+                if aid in seen_supplied_keys:
+                    raise NovelRebuilderError(f"Phát hiện anchorBlockId bị trùng lặp trong input dịch: '{aid}'.")
+                seen_supplied_keys.add(aid)
+                translation_map[aid] = txt
+
+        # 3. Defense-in-depth: Kiểm tra Exact Set & Cardinality
+        if not self.fallback_to_raw_on_missing:
+            expected_set = set(expected_ids)
+            supplied_set = set(translation_map.keys())
+
+            extra_ids = supplied_set - expected_set
+            if extra_ids:
+                raise NovelRebuilderError(
+                    f"Phát hiện các translated block IDs dư thừa không tồn tại trong snapshot segments: {extra_ids}."
+                )
+
+            missing_ids = expected_set - supplied_set
+            if missing_ids:
+                raise MissingAnchorBlockError(
+                    f"Thiếu kết quả dịch cho các block bắt buộc trong snapshot: {missing_ids}."
+                )
+
+            if len(translation_map) != len(expected_ids):
+                raise NovelRebuilderError(
+                    f"Số lượng block dịch ({len(translation_map)}) không khớp số lượng block snapshot ({len(expected_ids)})."
+                )
+
+        # 4. Tái cấu trúc document blocks bằng expected_ids từ snapshot
+        translatable_counter = 0
+        rebuilt_blocks: List[NovelBlockNode] = []
+
+        for block in source_doc.blocks:
+            rebuilt, translatable_counter = self._rebuild_block_from_snapshot(
+                block, translatable_counter, expected_ids, translation_map, reconstructed_anchor_maps
+            )
+            if rebuilt:
+                rebuilt_blocks.append(rebuilt)
+
+        new_title = translated_title if translated_title is not None else source_doc.title
+
+        return CanonicalNovelDocument(
+            blocks=rebuilt_blocks,
+            title=new_title,
+            language="vi",
+            format=source_doc.format,
+            metadata=copy.deepcopy(source_doc.metadata),
+        )
+
+    def _rebuild_block_from_snapshot(
+        self,
+        block: NovelBlockNode,
+        translatable_index: int,
+        expected_ids: List[str],
+        translations: Dict[str, str],
+        anchor_maps: Dict[str, InlineAnchorMap],
+    ) -> Tuple[Optional[NovelBlockNode], int]:
+        strict_mode = not self.fallback_to_raw_on_missing
+
+        if isinstance(block, HeadingBlockNode):
+            if translatable_index >= len(expected_ids):
+                raise NovelRebuilderError("Index vượt quá số lượng expected_ids trong snapshot.")
+            block_id = expected_ids[translatable_index]
+            translatable_index += 1
+            translated_text = translations.get(block_id)
+
+            if translated_text is None:
+                if not self.fallback_to_raw_on_missing:
+                    raise MissingAnchorBlockError(f"Thiếu kết quả dịch cho Heading block '{block_id}'.")
+                translated_text = block.to_plain_text()
+
+            amap = anchor_maps.get(block_id, InlineAnchorMap())
+            new_children = InlineAnchorCodec.decode(translated_text, amap, strict=strict_mode)
+            return HeadingBlockNode(level=block.level, children=new_children), translatable_index
+
+        elif isinstance(block, ParagraphBlockNode):
+            if translatable_index >= len(expected_ids):
+                raise NovelRebuilderError("Index vượt quá số lượng expected_ids trong snapshot.")
+            block_id = expected_ids[translatable_index]
+            translatable_index += 1
+            translated_text = translations.get(block_id)
+
+            if translated_text is None:
+                if not self.fallback_to_raw_on_missing:
+                    raise MissingAnchorBlockError(f"Thiếu kết quả dịch cho Paragraph block '{block_id}'.")
+                translated_text = block.to_plain_text()
+
+            amap = anchor_maps.get(block_id, InlineAnchorMap())
+            new_children = InlineAnchorCodec.decode(translated_text, amap, strict=strict_mode)
+            return ParagraphBlockNode(children=new_children), translatable_index
+
+        elif isinstance(block, BlockquoteBlockNode):
+            if translatable_index >= len(expected_ids):
+                raise NovelRebuilderError("Index vượt quá số lượng expected_ids trong snapshot.")
+            block_id = expected_ids[translatable_index]
+            translatable_index += 1
+            translated_text = translations.get(block_id)
+
+            if translated_text is not None:
+                amap = anchor_maps.get(block_id, InlineAnchorMap())
+                new_children = InlineAnchorCodec.decode(translated_text, amap, strict=strict_mode)
+                return BlockquoteBlockNode(children=[ParagraphBlockNode(children=new_children)]), translatable_index
+            else:
+                sub_blocks: List[NovelBlockNode] = []
+                for child in block.children:
+                    rebuilt_child, translatable_index = self._rebuild_block_from_snapshot(
+                        child, translatable_index, expected_ids, translations, anchor_maps
+                    )
+                    if rebuilt_child:
+                        sub_blocks.append(rebuilt_child)
+                return BlockquoteBlockNode(children=sub_blocks), translatable_index
+
+        elif isinstance(block, IllustrationBlockNode):
+            return IllustrationBlockNode(
+                src=block.src,
+                alt=block.alt,
+                caption=block.caption,
+                width=block.width,
+                height=block.height,
+            ), translatable_index
+
+        elif isinstance(block, DividerBlockNode):
+            return DividerBlockNode(), translatable_index
+
+        return None, translatable_index
+

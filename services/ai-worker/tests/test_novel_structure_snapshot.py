@@ -272,7 +272,7 @@ class TestRebuildFromSnapshotIndependence:
 
         translated_blocks = [
             {"anchorBlockId": "blk_0001_h1", "translatedText": "Chương 1 ⟦S:0001⟧Khởi đầu⟦/S:0001⟧ bầu trời"},
-            {"anchorBlockId": "blk_0002_p", "translatedText": "Ngước nhìn bầu trời đêm, ⟦R:0002⟧sao vụn⟦/R:0002⟧ lấp lánh. Đó là một ⟦E:0003⟧đêm tĩnh lặng⟦/E:0003⟧."},
+            {"anchorBlockId": "blk_0002_p", "translatedText": "Ngước nhìn bầu trời đêm, ⟦R:0001⟧sao vụn⟦/R:0001⟧ lấp lánh. Đó là một ⟦E:0002⟧đêm tĩnh lặng⟦/E:0002⟧."},
             {"anchorBlockId": "blk_0003_dlg", "translatedText": "「Đi thôi, tới thị trấn tiếp theo」"},
             {"anchorBlockId": "blk_0004_quote", "translatedText": "Truyền thuyết cổ: Ánh sáng xé toạc màn đêm."},
         ]

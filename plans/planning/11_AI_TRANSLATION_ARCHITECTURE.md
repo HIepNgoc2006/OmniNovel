@@ -147,5 +147,14 @@ Khi biên tập viên chỉnh sửa bản dịch phân đoạn (`translation_seg
   - **Core Streaming Hash Gate:** `StorageService.hashInternalObjectSha256()` stream trực tiếp từ S3/MinIO (giới hạn <= 10MB) để verify: `exists`, `size > 0`, `contentType === 'application/json'`, `actualSha256 === reference.sha256`.
   - **Manifest Pinning & Backward Compatibility:** `NovelResultManifestV1.structureSnapshot` là optional ở parser TS/Python để backward-compatible với manifest cũ, nhưng Core callback gate bắt buộc 100% callback `READY_FOR_REVIEW` mới phải có snapshot hợp lệ.
   - **Rebuilder Decoupling (#158 Prerequisite):** `NovelDocumentRebuilder.rebuild_from_snapshot()` khôi phục cây Document AST hoàn toàn từ snapshot JSON, duyệt qua `snapshot.segments` và `snapshot.anchorMaps` mà không phụ thuộc vào `NovelSegmenter` hiện hành (được kiểm chứng độc lập bằng runtime assertion monkeypatching).
-* **#157 / #158 (Materialization Processors & Workers):** Chịu trách nhiệm đọc snapshot và source context, sinh presigned download URLs ngắn hạn ngay trước khi gọi worker, và re-render/rebuild artifact cuối cùng. Không tự ý mở rộng schema của snapshot V1.
+* **#157 (Manga Materialization Processor & Worker - COMPLETED):** Chịu trách nhiệm đọc snapshot và source context, sinh presigned download URLs ngắn hạn ngay trước khi gọi worker, và re-typeset Manga lên cleanBases với Pillow WebP lossless.
+* **#158 (Novel HTML Materialization - COMPLETED):**
+  - **Zero LLM & Zero Segmenter:** Tái cấu trúc HTML từ immutable structure snapshot (#163) kết hợp review segments mà không gọi lại LLM và không instantiate `NovelSegmenter` (đã verify bằng monkeypatching assertion).
+  - **Contract Parity & Strict Topology Validation:** Enforce Novel invariants trên `MaterializationSnapshotV1` (null geometry, non-empty `anchorBlockId`, `blockType in NovelBlockType`, sort order uniqueness) trên cả TypeScript shared validator và Python Pydantic v2 model.
+  - **Target Language Preservation:** Giữ nguyên `targetLanguage` từ manifest/job truyền vào worker, bảo toàn `<html lang="{target_language}">` trong HTML kết xuất thay vì hardcode tiếng Việt.
+  - **Asset Provenance & Normalization:** `sourceHref` canonical POSIX chuẩn hóa trong `NovelResultAssetV1` (`normalizeNovelAssetHref`). Fail-closed với `NOVEL_ASSET_MAPPING_UNAVAILABLE` nếu không resolve được mapping ảnh AST.
+  - **Exact Output Key & Prefix-Jail:** Worker tải lên exact canonical key `ai/jobs/{jobId}/materializations/rev-{targetRevision}/content.html` với MIME `text/html; charset=utf-8`.
+  - **Selective Manifest Merge:** Completion callback nguyên tử bảo toàn nguyên vẹn `title`, `language`, `assets`, `metrics`, và `structureSnapshot` qua các revision kế tiếp nhau.
+  - **Fenced Completion & Apply Freshness:** DB transaction cập nhật `materializedRevision = reviewRevision`, mở khóa Freshness Gate để `POST /apply` thành công.
+
 

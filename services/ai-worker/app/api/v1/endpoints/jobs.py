@@ -505,6 +505,7 @@ async def process_novel_job(req: ProcessJobRequest):
             translation_provider=provider,
             request_upload_urls_func=request_output_upload_urls,
             upload_file_func=upload_file_to_presigned_url,
+            request_structure_snapshot_upload_func=request_structure_snapshot_upload_url,
             prompt_version="novel-ja-vi-v2",
         )
 

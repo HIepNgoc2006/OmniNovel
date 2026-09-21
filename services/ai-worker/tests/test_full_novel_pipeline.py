@@ -279,5 +279,102 @@ async def test_asset_slot_collision_fail_closed_and_unambiguous_basename_fallbac
             raise ValueError(f"CRITICAL_ASSET_SLOT_COLLISION: Slot name '{colliding_slot}' already claimed")
 
 
+@pytest.mark.asyncio
+async def test_full_novel_pipeline_persists_structure_snapshot_in_preprocessing(monkeypatch):
+    """
+    Test verifying that FullNovelPipeline creates, signs, and uploads the
+    NovelStructureSnapshot during the PREPROCESSING stage, binding ChecksumSHA256
+    and pinning it into NovelResultManifestV1 (#163).
+    """
+    import json
+    epub_bytes = create_mock_novel_epub_bytes()
+
+    async def mock_safe_download(url: str, target_path: Path):
+        target_path.write_bytes(epub_bytes)
+
+    monkeypatch.setattr("app.novel.full_novel_pipeline.safe_download_archive", mock_safe_download)
+
+    uploaded_files = {}
+    snapshot_upload_requested = []
+
+    async def mock_request_upload_urls(job_id: str, attempt_number: int, file_specs: list):
+        return [
+            {
+                "filename": spec["filename"] if isinstance(spec, dict) else spec,
+                "uploadUrl": f"http://mock-minio/upload/{spec['filename'] if isinstance(spec, dict) else spec}",
+                "storageKey": f"ai/jobs/{job_id}/attempt-{attempt_number}/{spec['filename'] if isinstance(spec, dict) else spec}",
+            }
+            for spec in file_specs
+        ]
+
+    async def mock_request_structure_snapshot_upload(job_id: str, attempt_number: int, sha256: str):
+        snapshot_upload_requested.append({"job_id": job_id, "attempt_number": attempt_number, "sha256": sha256})
+        return {
+            "jobId": job_id,
+            "attemptNumber": attempt_number,
+            "storageKey": f"ai/jobs/{job_id}/structure/{sha256}.json",
+            "uploadUrl": f"http://mock-minio/upload-snapshot/{sha256}.json",
+            "sha256": sha256,
+        }
+
+    async def mock_upload_file(upload_url: str, data: bytes, content_type: str, extra_headers: dict = None):
+        uploaded_files[upload_url] = (data, content_type, extra_headers)
+
+    sink = RecordingProgressSink()
+    coordinator = AttemptProgressCoordinator(sink=sink, interval_seconds=100.0)
+
+    pipeline = FullNovelPipeline(
+        coordinator=coordinator,
+        translation_provider=MockTranslationProvider(),
+        request_upload_urls_func=mock_request_upload_urls,
+        upload_file_func=mock_upload_file,
+        request_structure_snapshot_upload_func=mock_request_structure_snapshot_upload,
+        prompt_version="novel-ja-vi-v2",
+    )
+
+    res = await pipeline.execute(
+        job_id="novel-test-job-structure-163",
+        attempt_number=1,
+        source_download_url="http://mock-storage/package.epub",
+        glossary_entries=[],
+    )
+
+    assert res["success"] is True
+
+    # 1. Verify snapshot upload slot was requested
+    assert len(snapshot_upload_requested) == 1
+    req = snapshot_upload_requested[0]
+    assert req["job_id"] == "novel-test-job-structure-163"
+    assert req["attempt_number"] == 1
+    assert len(req["sha256"]) == 64
+
+    # 2. Verify file was uploaded with application/json and ChecksumSHA256
+    snapshot_url = f"http://mock-minio/upload-snapshot/{req['sha256']}.json"
+    assert snapshot_url in uploaded_files
+    data, ct, headers = uploaded_files[snapshot_url]
+    assert ct == "application/json"
+    assert headers is not None
+    assert "x-amz-checksum-sha256" in headers
+
+    # 3. Verify content of uploaded snapshot JSON
+    snapshot_obj = json.loads(data.decode("utf-8"))
+    assert snapshot_obj["version"] == 1
+    assert snapshot_obj["segmenterVersion"] == "novel-v1"
+    assert snapshot_obj["sourceStructureFingerprint"].startswith("sha256:")
+    assert len(snapshot_obj["segments"]) == 3
+    assert "document" in snapshot_obj
+
+    # 4. Verify result manifest pinned the snapshot reference
+    manifest = res["resultManifest"]
+    assert manifest.structureSnapshot is not None
+    ref = manifest.structureSnapshot
+    assert ref.version == 1
+    assert ref.sha256 == req["sha256"]
+    assert ref.storageKey == f"ai/jobs/novel-test-job-structure-163/structure/{req['sha256']}.json"
+    assert ref.segmenterVersion == "novel-v1"
+    assert ref.sourceStructureFingerprint == snapshot_obj["sourceStructureFingerprint"]
+
+
+
 
 

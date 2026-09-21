@@ -8,6 +8,7 @@ import shutil
 import tempfile
 from typing import Any, Callable, Dict, List, Optional, Union
 
+import base64
 from app.core.ssrf_safe_downloader import safe_download_archive
 from app.novel.ast_parser import CanonicalNovelDocument, NovelAstParser
 from app.novel.inline_anchors import InlineAnchorCodec, InlineAnchorMap
@@ -16,6 +17,11 @@ from app.novel.rebuilder import NovelDocumentRebuilder
 from app.novel.security import ExtractedEpubChapter, SafeNovelPackageExtractor
 from app.novel.segmenter import NovelSegmenter, TranslatableBlock
 from app.novel.serializer import NovelDocumentSerializer
+from app.novel.structure_snapshot import (
+    create_structure_snapshot,
+    extract_source_structure_fingerprint,
+    serialize_canonical_structure_snapshot,
+)
 from app.novel.translator import NovelTranslationPipeline, NovelTranslationResult
 from app.models.manifests import (
     TranslationInputManifestV1,
@@ -24,6 +30,7 @@ from app.models.manifests import (
     NovelResultQaModel,
     NovelResultQaIssueModel,
     NovelResultMetricsModel,
+    NovelStructureSnapshotReferenceModel,
 )
 from app.pipeline.attempt_coordinator import AttemptProgressCoordinator
 from app.translation.providers.base import TranslationProvider
@@ -50,6 +57,7 @@ class FullNovelPipeline:
         rebuilder: Optional[NovelDocumentRebuilder] = None,
         request_upload_urls_func: Optional[Callable] = None,
         upload_file_func: Optional[Callable] = None,
+        request_structure_snapshot_upload_func: Optional[Callable] = None,
         prompt_version: str = "novel-ja-vi-v2",
     ):
         self.coordinator = coordinator
@@ -62,6 +70,7 @@ class FullNovelPipeline:
         self.rebuilder = rebuilder or NovelDocumentRebuilder()
         self.request_upload_urls = request_upload_urls_func
         self.upload_file = upload_file_func
+        self.request_structure_snapshot_upload = request_structure_snapshot_upload_func
         self.prompt_version = prompt_version
 
     async def execute(
@@ -135,6 +144,53 @@ class FullNovelPipeline:
             # Phân đoạn TranslatableBlocks và trích xuất Protected Inline Anchors
             segmenter = NovelSegmenter()
             blocks, anchor_maps = segmenter.segment_document_with_inline_anchors(source_doc)
+
+            # -------------------------------------------------------------
+            # Canonical Structure Snapshot (#163) - Persist in PREPROCESSING
+            # -------------------------------------------------------------
+            source_structure_fp = extract_source_structure_fingerprint(source_doc)
+            snapshot_dict = create_structure_snapshot(
+                source_doc=source_doc,
+                blocks=blocks,
+                anchor_maps=anchor_maps,
+                segmenter_version=segmenter.version,
+                source_structure_fingerprint=source_structure_fp,
+            )
+            canonical_snapshot_bytes, snapshot_sha256 = serialize_canonical_structure_snapshot(snapshot_dict)
+
+            structure_snapshot_ref = NovelStructureSnapshotReferenceModel(
+                version=1,
+                storageKey=f"ai/jobs/{job_id}/structure/{snapshot_sha256}.json",
+                sha256=snapshot_sha256,
+                segmenterVersion=segmenter.version,
+                sourceStructureFingerprint=source_structure_fp,
+            )
+
+            if self.request_structure_snapshot_upload:
+                slot = await self.request_structure_snapshot_upload(
+                    job_id=job_id,
+                    attempt_number=attempt_number,
+                    sha256=snapshot_sha256,
+                )
+                if isinstance(slot, dict):
+                    if slot.get("storageKey"):
+                        structure_snapshot_ref.storageKey = slot["storageKey"]
+                    upload_url = slot.get("uploadUrl")
+                    if upload_url and self.upload_file:
+                        checksum_base64 = base64.b64encode(bytes.fromhex(snapshot_sha256)).decode("ascii")
+                        try:
+                            await self.upload_file(
+                                upload_url,
+                                canonical_snapshot_bytes,
+                                "application/json",
+                                extra_headers={"x-amz-checksum-sha256": checksum_base64},
+                            )
+                        except TypeError:
+                            await self.upload_file(
+                                upload_url,
+                                canonical_snapshot_bytes,
+                                "application/json",
+                            )
 
             # -------------------------------------------------------------
             # Stage 2: TRANSLATING (50%) - Dịch thuật ngữ cảnh & Glossary
@@ -324,6 +380,7 @@ class FullNovelPipeline:
                 title=translated_doc.title or extracted_chapter.title,
                 language=translated_doc.language,
                 assets=uploaded_assets if uploaded_assets else None,
+                structureSnapshot=structure_snapshot_ref,
                 qa=NovelResultQaModel(
                     passed=qa_result.passed,
                     score=qa_result.score,

@@ -159,17 +159,20 @@ export default function TranslationReviewJobPage({ params }: PageProps) {
         />
       )}
 
-      <GlossaryModal
-        isOpen={isGlossaryOpen}
-        onClose={() => {
-          setIsGlossaryOpen(false);
-          setGlossaryPrefill(undefined);
-        }}
-        projectId={dispatcher.jobDetail?.context?.project?.id}
-        snapshotTerms={dispatcher.jobDetail?.glossarySnapshot ?? []}
-        initialSourceTerm={glossaryPrefill}
-      />
+      {isGlossaryOpen && (
+        <GlossaryModal
+          isOpen={isGlossaryOpen}
+          onClose={() => {
+            setIsGlossaryOpen(false);
+            setGlossaryPrefill(undefined);
+          }}
+          projectId={dispatcher.jobDetail?.context?.project?.id}
+          snapshotTerms={dispatcher.jobDetail?.glossarySnapshot ?? []}
+          initialSourceTerm={glossaryPrefill}
+        />
+      )}
     </>
   );
 }
+
 

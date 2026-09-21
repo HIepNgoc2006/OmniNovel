@@ -1715,6 +1715,32 @@ describe('OmniNovel Backend Core API (e2e)', () => {
       await dataSource.query(`DELETE FROM upload_sessions WHERE id = $1`, [secondSession[0].id]);
     });
 
+    it('POST /api/v1/ai/jobs on ChapterVersion without promoted upload session should return 400 Bad Request (SOURCE_VERSION_ARTIFACT_UNAVAILABLE) (#165)', async () => {
+      const emptyVersion = await dataSource.query(
+        `INSERT INTO chapter_versions (chapter_id, version_number, version_type, language, is_published)
+         VALUES ($1, 999, 'RAW_ORIGINAL', 'ja', false)
+         RETURNING id`,
+        [chapterAId],
+      );
+
+      const res = await request(app.getHttpServer())
+        .post('/api/v1/ai/jobs')
+        .set('Authorization', `Bearer ${translatorAAccessToken}`)
+        .set('Idempotency-Key', 'e0000000-0000-4000-a000-000000000099')
+        .send({
+          chapterVersionId: emptyVersion[0].id,
+          sourceLang: 'ja',
+          targetLang: 'vi',
+        })
+        .expect(400);
+
+      expect(res.body.error.code).toBe('SOURCE_VERSION_ARTIFACT_UNAVAILABLE');
+      expect(res.body.error.message).toContain('SOURCE_VERSION_ARTIFACT_UNAVAILABLE');
+
+      await dataSource.query(`DELETE FROM chapter_versions WHERE id = $1`, [emptyVersion[0].id]);
+    });
+
+
     it('POST /api/v1/ai/jobs with provider OPENAI without externalConsent should return 400 Bad Request', async () => {
       const res = await request(app.getHttpServer())
         .post('/api/v1/ai/jobs')

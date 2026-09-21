@@ -355,4 +355,47 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
     );
     expect(parseInt(versions[0].count, 10)).toBe(1);
   });
+
+  it('createJob() on ChapterVersion without promoted upload session must reject with 400 SOURCE_VERSION_ARTIFACT_UNAVAILABLE (#165)', async () => {
+    const noSessionVersion = await dataSource.query(
+      `INSERT INTO chapter_versions (chapter_id, version_number, version_type, language, is_published, created_by)
+       VALUES ($1, 999, 'RAW_ORIGINAL', 'ja', false, $2)
+       RETURNING id`,
+      [chapterId, ownerUser.id],
+    );
+    const noSessionVersionId = noSessionVersion[0].id;
+
+    await expect(
+      service.createJob(
+        ownerUser,
+        { chapterVersionId: noSessionVersionId, sourceLang: 'ja', targetLang: 'vi' },
+        `f0000000-0000-4000-a000-${Date.now().toString(16).padStart(12, '0').substring(0, 12)}`,
+      ),
+    ).rejects.toThrow(/SOURCE_VERSION_ARTIFACT_UNAVAILABLE/);
+
+    await dataSource.query(`DELETE FROM chapter_versions WHERE id = $1`, [noSessionVersionId]);
+  });
+
+  it('createJob() on valid ChapterVersion with promoted upload session must resolve valid non-empty sourceDownloadUrl in startAttempt() (#165)', async () => {
+    const jobKey = `f1000000-0000-4000-a000-${Date.now().toString(16).padStart(12, '0').substring(0, 12)}`;
+    const created = await service.createJob(
+      ownerUser,
+      { chapterVersionId: versionId, sourceLang: 'ja', targetLang: 'vi' },
+      jobKey,
+    );
+    const createdJobId = created.id;
+
+    await dataSource.query(
+      `UPDATE translation_jobs SET status = 'QUEUED', attempt_count = 0 WHERE id = $1`,
+      [createdJobId],
+    );
+
+    const attemptContext = await service.startAttempt(createdJobId, 1);
+    expect(attemptContext).toBeDefined();
+    expect(attemptContext?.sourceDownloadUrl).toBeDefined();
+    expect(typeof attemptContext?.sourceDownloadUrl).toBe('string');
+    expect(attemptContext?.sourceDownloadUrl.length).toBeGreaterThan(0);
+    expect(attemptContext?.sourceDownloadUrl).toContain('final_db.zip');
+  });
 });
+

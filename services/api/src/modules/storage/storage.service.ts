@@ -3,7 +3,9 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  PayloadTooLargeException,
 } from '@nestjs/common';
+import * as crypto from 'crypto';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
@@ -568,12 +570,14 @@ export class StorageService {
     contentType = 'image/webp',
     isManga = true,
     expiresInSeconds = 900,
+    checksumSha256Base64?: string,
   ): Promise<string> {
     const bucket = this.getInternalBucket(isManga);
     const command = new PutObjectCommand({
       Bucket: bucket,
       Key: key,
       ContentType: contentType,
+      ...(checksumSha256Base64 ? { ChecksumSHA256: checksumSha256Base64 } : {}),
     });
     return await getSignedUrl(this.s3Client, command, { expiresIn: expiresInSeconds });
   }
@@ -607,6 +611,67 @@ export class StorageService {
   async headInternalObject(key: string, isManga = true): Promise<boolean> {
     const stat = await this.statInternalObject(key, isManga);
     return stat.exists;
+  }
+
+  /**
+   * Tính mã băm SHA-256 của internal object bằng streaming để phòng ngừa tràn bộ nhớ (#163).
+   * Kiểm tra giới hạn kích thước tối đa (mặc định 10MB cho snapshot JSON).
+   */
+  async hashInternalObjectSha256(
+    key: string,
+    isManga = false,
+    maxBytes = 10 * 1024 * 1024,
+  ): Promise<{
+    exists: boolean;
+    sha256?: string;
+    size: number;
+    contentType?: string;
+  }> {
+    const bucket = this.getInternalBucket(isManga);
+    try {
+      const res = await this.s3Client.send(
+        new GetObjectCommand({
+          Bucket: bucket,
+          Key: key,
+        }),
+      );
+      if (!res.Body) {
+        return { exists: false, size: 0 };
+      }
+
+      const hash = crypto.createHash('sha256');
+      let totalBytes = 0;
+      const stream = res.Body as any;
+
+      for await (const chunk of stream) {
+        totalBytes += chunk.length;
+        if (totalBytes > maxBytes) {
+          if (typeof stream.destroy === 'function') {
+            stream.destroy();
+          }
+          throw new PayloadTooLargeException(
+            `Object ${key} vượt quá kích thước tối đa cho phép (${maxBytes} bytes).`,
+          );
+        }
+        hash.update(chunk);
+      }
+
+      return {
+        exists: true,
+        sha256: hash.digest('hex'),
+        size: totalBytes,
+        contentType: res.ContentType,
+      };
+    } catch (err: any) {
+      if (
+        err.name === 'NotFound' ||
+        err.name === 'NoSuchKey' ||
+        err.$metadata?.httpStatusCode === 404
+      ) {
+        return { exists: false, size: 0 };
+      }
+      throw err;
+    }
   }
 
   async uploadInternalBuffer(

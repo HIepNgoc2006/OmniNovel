@@ -1650,6 +1650,81 @@ export class TranslationService {
   }
 
   /**
+   * Cấp Presigned PUT URL có ràng buộc ChecksumSHA256 cho Novel structure snapshot (#163).
+   * Narrow stage gate: chỉ cho phép khi job ở trạng thái PREPROCESSING, attempt khớp, mediaFormat là NOVEL.
+   */
+  async createStructureSnapshotUploadUrl(
+    id: string,
+    attemptNumber: number,
+    sha256: string,
+  ) {
+    if (!sha256 || typeof sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(sha256)) {
+      throw new BadRequestException(
+        'sha256 phải là chuỗi hex 64 ký tự viết thường hợp lệ.',
+      );
+    }
+
+    const job = await this.jobRepo.findOne({
+      where: { id },
+      relations: [
+        'project',
+        'project.storyEdition',
+        'project.storyEdition.story',
+        'sourceVersion',
+        'sourceVersion.chapter',
+        'sourceVersion.chapter.storyEdition',
+        'sourceVersion.chapter.storyEdition.story',
+      ],
+    });
+
+    if (!job) {
+      throw new NotFoundException(`Không tìm thấy TranslationJob với ID: ${id}`);
+    }
+
+    // Narrow State Gate (#163): Chỉ cho phép trong trạng thái PREPROCESSING sau khi phân đoạn văn bản
+    if (job.status !== TranslationJobStatus.PREPROCESSING) {
+      throw new BadRequestException(
+        `Không thể cấp structure snapshot upload slot khi job ở trạng thái: ${job.status}. Chỉ cho phép trong trạng thái PREPROCESSING sau khi phân đoạn văn bản (#163).`,
+      );
+    }
+
+    if (attemptNumber !== job.attemptCount) {
+      throw new BadRequestException(
+        `Attempt ${attemptNumber} không khớp với attempt hiện tại của job (${job.attemptCount}).`,
+      );
+    }
+
+    // Fail-closed: Chỉ hỗ trợ định dạng NOVEL (#163)
+    const story =
+      job.project?.storyEdition?.story ||
+      job.sourceVersion?.chapter?.storyEdition?.story;
+    if (story?.mediaFormat !== MediaFormat.NOVEL) {
+      throw new BadRequestException(
+        'STRUCTURE_SNAPSHOT_ONLY_SUPPORTED_FOR_NOVEL: Structure snapshot upload slots chỉ hỗ trợ cho định dạng NOVEL (#163).',
+      );
+    }
+
+    const expectedKey = `ai/jobs/${id}/structure/${sha256}.json`;
+    const checksumSha256Base64 = Buffer.from(sha256, 'hex').toString('base64');
+
+    const uploadUrl = await this.storageService.createInternalUploadUrl(
+      expectedKey,
+      'application/json',
+      false, // isManga = false (Novel bucket)
+      900,
+      checksumSha256Base64,
+    );
+
+    return {
+      jobId: id,
+      attemptNumber,
+      storageKey: expectedKey,
+      uploadUrl,
+      sha256,
+    };
+  }
+
+  /**
    * Xuất bản kết quả dịch (Immutable ChapterVersion)
    */
   async applyJob(

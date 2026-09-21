@@ -174,14 +174,66 @@ async def request_source_review_upload_urls(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Failed to connect to Core API for source review upload URLs: {e}")
 
-async def upload_file_to_presigned_url(upload_url: str, data: bytes, content_type: str = "image/webp") -> None:
+async def request_structure_snapshot_upload_url(
+    job_id: str,
+    attempt_number: int,
+    sha256: str,
+) -> Dict[str, Any]:
     """
-    Upload buffer ảnh thật lên MinIO qua Presigned PUT URL.
+    Xin Core API cấp Presigned PUT URL cho Novel structure snapshot (#163).
+    Path: /internal/v1/ai/jobs/{job_id}/structure-snapshot-upload
+    Payload: {"attemptNumber": attempt_number, "sha256": sha256}
+    Fail-fast: Ném HTTPException(502) nếu Core API trả lỗi hoặc không cấp được URL.
+    """
+    url = f"{settings.CORE_API_INTERNAL_URL}/internal/v1/ai/jobs/{job_id}/structure-snapshot-upload"
+    payload = {
+        "attemptNumber": attempt_number,
+        "sha256": sha256,
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "X-Internal-Service-Key": settings.AI_WORKER_SECRET,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                if not data.get("uploadUrl") or not data.get("storageKey"):
+                    raise HTTPException(
+                        status_code=502,
+                        detail="Core API returned incomplete structure snapshot upload slot",
+                    )
+                return data
+            else:
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Core API request structure snapshot upload failed with status {resp.status_code}: {resp.text}",
+                )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Failed to connect to Core API for structure snapshot upload URL: {e}",
+        )
+
+async def upload_file_to_presigned_url(
+    upload_url: str,
+    data: bytes,
+    content_type: str = "image/webp",
+    extra_headers: Optional[Dict[str, str]] = None,
+) -> None:
+    """
+    Upload buffer ảnh hoặc JSON lên MinIO qua Presigned PUT URL.
     Fail-fast: Ném HTTPException(502) nếu upload thất bại.
     """
+    headers = {"Content-Type": content_type}
+    if extra_headers:
+        headers.update(extra_headers)
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.put(upload_url, content=data, headers={"Content-Type": content_type})
+            resp = await client.put(upload_url, content=data, headers=headers)
             if resp.status_code not in (200, 201):
                 raise HTTPException(
                     status_code=502,

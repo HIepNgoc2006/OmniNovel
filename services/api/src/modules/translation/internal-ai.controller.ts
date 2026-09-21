@@ -14,6 +14,7 @@ import { RequestOutputUploadsDto } from './dto/request-output-uploads.dto';
 import { RequestCleanBaseUploadsDto } from './dto/request-clean-base-uploads.dto';
 import { RequestSourceReviewSlotsDto } from './dto/request-source-review-slots.dto';
 import { CompleteMaterializationDto } from './dto/complete-materialization.dto';
+import { RequestStructureSnapshotUploadDto } from './dto/request-structure-snapshot-upload.dto';
 import { ParseUUIDPipe } from '@nestjs/common';
 
 @Controller('internal/v1/ai')
@@ -77,4 +78,18 @@ export class InternalAiController {
   ) {
     return await this.translationService.completeMaterialization(id, dto);
   }
+
+  @Post('jobs/:id/structure-snapshot-upload')
+  @HttpCode(HttpStatus.OK)
+  async createStructureSnapshotUploadUrl(
+    @Param('id', new ParseUUIDPipe()) id: string,
+    @Body() dto: RequestStructureSnapshotUploadDto,
+  ) {
+    return await this.translationService.createStructureSnapshotUploadUrl(
+      id,
+      dto.attemptNumber,
+      dto.sha256,
+    );
+  }
 }
+

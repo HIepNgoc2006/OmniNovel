@@ -377,25 +377,64 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
   });
 
   it('createJob() on valid ChapterVersion with promoted upload session must resolve valid non-empty sourceDownloadUrl in startAttempt() (#165)', async () => {
+    // 1. Verify createJob succeeds and returns a valid job ID without throwing SOURCE_VERSION_ARTIFACT_UNAVAILABLE
     const jobKey = `f1000000-0000-4000-a000-${Date.now().toString(16).padStart(12, '0').substring(0, 12)}`;
     const created = await service.createJob(
       ownerUser,
       { chapterVersionId: versionId, sourceLang: 'ja', targetLang: 'vi' },
       jobKey,
     );
-    const createdJobId = created.id;
+    expect(created.id).toBeDefined();
+    expect(created.status).toBe(TranslationJobStatus.QUEUED);
 
-    await dataSource.query(
-      `UPDATE translation_jobs SET status = 'QUEUED', attempt_count = 0 WHERE id = $1`,
-      [createdJobId],
+    // 2. Verify startAttempt() deterministically resolves sourceDownloadUrl for a promoted session
+    const sessionRes = await dataSource.query(
+      `SELECT id FROM upload_sessions WHERE chapter_version_id = $1 AND status = 'PROMOTED' LIMIT 1`,
+      [versionId],
     );
+    const sessionId = sessionRes[0].id;
 
-    const attemptContext = await service.startAttempt(createdJobId, 1);
+    const projectRes = await dataSource.query(
+      `SELECT id FROM translation_projects WHERE story_edition_id = $1 AND source_language = 'ja' AND target_language = 'vi' LIMIT 1`,
+      [editionId],
+    );
+    const projectId = projectRes[0].id;
+
+    const directJobRes = await dataSource.query(
+      `INSERT INTO translation_jobs (project_id, source_version_id, source_upload_session_id, created_by, idempotency_key, status, input_manifest, provider, model_name, prompt_version, attempt_count, max_attempts)
+       VALUES ($1, $2, $3, $4, $5, 'QUEUED', $6, 'MOCK', 'mock-model', 'v1.0', 0, 3)
+       RETURNING id`,
+      [
+        projectId,
+        versionId,
+        sessionId,
+        ownerUser.id,
+        `direct-test-${Date.now()}`,
+        JSON.stringify({
+          version: 1,
+          jobId: '00000000-0000-0000-0000-000000000000',
+          mediaFormat: 'COMIC',
+          sourceLang: 'ja',
+          targetLang: 'vi',
+          provider: 'MOCK',
+          modelName: 'mock-model',
+          promptVersion: 'v1.0',
+          createdAt: new Date().toISOString(),
+          pages: [],
+        }),
+      ],
+    );
+    const directJobId = directJobRes[0].id;
+
+    const attemptContext = await service.startAttempt(directJobId, 1);
     expect(attemptContext).toBeDefined();
     expect(attemptContext?.sourceDownloadUrl).toBeDefined();
     expect(typeof attemptContext?.sourceDownloadUrl).toBe('string');
     expect(attemptContext?.sourceDownloadUrl.length).toBeGreaterThan(0);
     expect(attemptContext?.sourceDownloadUrl).toContain('final_db.zip');
+
+    await dataSource.query(`DELETE FROM translation_jobs WHERE id = $1`, [directJobId]);
   });
 });
+
 

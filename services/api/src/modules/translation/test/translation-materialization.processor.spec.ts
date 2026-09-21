@@ -45,6 +45,7 @@ describe('TranslationMaterializationProcessor (#157)', () => {
     storageService = {
       createInternalDownloadUrl: jest.fn().mockResolvedValue('https://minio.local/get/file'),
       createInternalUploadUrl: jest.fn().mockResolvedValue('https://minio.local/put/file'),
+      headInternalObject: jest.fn().mockResolvedValue(true),
     };
 
     configService = {
@@ -203,20 +204,12 @@ describe('TranslationMaterializationProcessor (#157)', () => {
       expect(storageService.createInternalDownloadUrl).not.toHaveBeenCalled();
     });
 
-    it('should no-op if mediaFormat !== "COMIC"', async () => {
-      const novelJobData = { ...validJobData, mediaFormat: 'NOVEL' as const };
-      const job = createMockBullJob('materialize', novelJobData);
+    it('should throw UnrecoverableError if mediaFormat is not COMIC or NOVEL', async () => {
+      const unsupportedJobData = { ...validJobData, mediaFormat: 'AUDIO' as any };
+      const job = createMockBullJob('materialize', unsupportedJobData);
 
-      jobRepo.findOne = jest.fn().mockResolvedValue({
-        id: mockJobId,
-        status: TranslationJobStatus.READY_FOR_REVIEW,
-        reviewRevision: 2,
-        materializedRevision: 1,
-      } as TranslationJob);
-
-      await processor.process(job);
-
-      expect(storageService.createInternalDownloadUrl).not.toHaveBeenCalled();
+      await expect(processor.process(job)).rejects.toThrow(UnrecoverableError);
+      await expect(processor.process(job)).rejects.toThrow(/UNSUPPORTED_MEDIA_FORMAT/);
     });
   });
 
@@ -473,6 +466,167 @@ describe('TranslationMaterializationProcessor (#157)', () => {
 
       // Invariant: TranslationJob status MUST NOT be mutated to FAILED
       expect(jobRepo.save).toBeUndefined();
+    });
+  });
+
+  describe('NOVEL Materialization Dispatch (#158)', () => {
+    const novelJobData: MaterializationJobData = {
+      jobId: mockJobId,
+      targetRevision: 2,
+      mediaFormat: 'NOVEL',
+      snapshotKey: mockSnapshotKey,
+      snapshotSha256: mockSha256,
+      outputPrefix: mockOutputPrefix,
+    };
+
+    const validStructureSnapshot = {
+      version: 1,
+      storageKey: `ai/jobs/${mockJobId}/structure/${mockSha256}.json`,
+      sha256: mockSha256,
+      segmenterVersion: '1.0.0',
+      sourceStructureFingerprint: `sha256:${mockSha256}`,
+    };
+
+    const setupNovelJob = (manifestOverrides: any = {}) => {
+      const job = createMockBullJob('materialize', novelJobData);
+      jobRepo.findOne = jest.fn().mockResolvedValue({
+        id: mockJobId,
+        status: TranslationJobStatus.READY_FOR_REVIEW,
+        reviewRevision: 2,
+        materializedRevision: 1,
+        inputManifest: {
+          targetLang: 'vi',
+        },
+        resultManifest: {
+          title: 'Tiêu đề chương 1',
+          language: 'vi',
+          structureSnapshot: validStructureSnapshot,
+          assets: [
+            {
+              sourceHref: '/images/cover.jpg',
+              storageKey: `ai/jobs/${mockJobId}/assets/cover.jpg`,
+            },
+          ],
+          ...manifestOverrides,
+        },
+      } as unknown as TranslationJob);
+      return job;
+    };
+
+    it('should throw UnrecoverableError if resultManifest is missing', async () => {
+      const job = createMockBullJob('materialize', novelJobData);
+      jobRepo.findOne = jest.fn().mockResolvedValue({
+        id: mockJobId,
+        status: TranslationJobStatus.READY_FOR_REVIEW,
+        reviewRevision: 2,
+        materializedRevision: 1,
+        resultManifest: null,
+      } as unknown as TranslationJob);
+
+      await expect(processor.process(job)).rejects.toThrow(UnrecoverableError);
+      await expect(processor.process(job)).rejects.toThrow(/MISSING_RESULT_MANIFEST/);
+    });
+
+    it('should throw UnrecoverableError if structureSnapshot is missing or invalid', async () => {
+      const job = setupNovelJob({ structureSnapshot: null });
+
+      await expect(processor.process(job)).rejects.toThrow(UnrecoverableError);
+      await expect(processor.process(job)).rejects.toThrow(/MISSING_STRUCTURE_SNAPSHOT/);
+    });
+
+    it('should throw UnrecoverableError if structure snapshot does not exist in storage', async () => {
+      const job = setupNovelJob();
+      storageService.headInternalObject = jest.fn().mockResolvedValue(false);
+
+      await expect(processor.process(job)).rejects.toThrow(UnrecoverableError);
+      await expect(processor.process(job)).rejects.toThrow(/STRUCTURE_SNAPSHOT_NOT_FOUND/);
+    });
+
+    it('should dispatch novel materialization to AI worker with exact payload and canonical output key', async () => {
+      const job = setupNovelJob();
+      storageService.headInternalObject = jest.fn().mockResolvedValue(true);
+      storageService.createInternalDownloadUrl = jest
+        .fn()
+        .mockImplementation((key) => Promise.resolve(`https://minio.local/get/${key}`));
+      storageService.createInternalUploadUrl = jest
+        .fn()
+        .mockImplementation((key) => Promise.resolve(`https://minio.local/put/${key}`));
+
+      const mockFetch = jest.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: () => Promise.resolve('{"status":"OK"}'),
+      });
+      (global as any).fetch = mockFetch;
+
+      await processor.process(job);
+
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      const [calledUrl, calledOptions] = mockFetch.mock.calls[0];
+      expect(calledUrl).toBe('http://localhost:8001/internal/v1/jobs/materialize-novel');
+      expect(calledOptions.method).toBe('POST');
+      expect(calledOptions.headers['Content-Type']).toBe('application/json');
+      expect(calledOptions.headers['X-Internal-Service-Key']).toBe(
+        'internal_ai_worker_secret_secure_2026',
+      );
+
+      const parsedBody = JSON.parse(calledOptions.body);
+      expect(parsedBody.jobId).toBe(mockJobId);
+      expect(parsedBody.targetRevision).toBe(2);
+      expect(parsedBody.targetLanguage).toBe('vi');
+      expect(parsedBody.title).toBe('Tiêu đề chương 1');
+      expect(parsedBody.materializationSnapshotSha256).toBe(mockSha256);
+      expect(parsedBody.structureSnapshotSha256).toBe(validStructureSnapshot.sha256);
+      expect(parsedBody.sourceStructureFingerprint).toBe(
+        validStructureSnapshot.sourceStructureFingerprint,
+      );
+      expect(parsedBody.outputStorageKey).toBe(
+        `ai/jobs/${mockJobId}/materializations/rev-2/content.html`,
+      );
+      expect(parsedBody.assetMappings).toEqual([
+        {
+          sourceHref: '/images/cover.jpg',
+          storageKey: `ai/jobs/${mockJobId}/assets/cover.jpg`,
+        },
+      ]);
+
+      // Check upload URL created for content.html with text/html; charset=utf-8 and isManga=false
+      expect(storageService.createInternalUploadUrl).toHaveBeenCalledWith(
+        `ai/jobs/${mockJobId}/materializations/rev-2/content.html`,
+        'text/html; charset=utf-8',
+        false,
+        3600,
+      );
+    });
+
+    it('should throw UnrecoverableError on 422 deterministic worker error', async () => {
+      const job = setupNovelJob();
+      (global as any).fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 422,
+        text: () => Promise.resolve('Validation error: invalid fingerprint'),
+      });
+
+      await expect(processor.process(job)).rejects.toThrow(UnrecoverableError);
+      await expect(processor.process(job)).rejects.toThrow(/AI_WORKER_DETERMINISTIC_ERROR: 422/);
+    });
+
+    it('should throw standard Error on 500 transient worker error for BullMQ retry', async () => {
+      const job = setupNovelJob();
+      (global as any).fetch = jest.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: () => Promise.resolve('Internal server error'),
+      });
+
+      try {
+        await processor.process(job);
+        fail('Should have thrown an error');
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(Error);
+        expect(err instanceof UnrecoverableError).toBe(false);
+        expect(err.message).toContain('AI_WORKER_TRANSIENT_ERROR: 500');
+      }
     });
   });
 });

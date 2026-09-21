@@ -32,12 +32,10 @@ export class TranslationMaterializationProcessor extends WorkerHost {
     const jobData = job.data;
     const { jobId, targetRevision, mediaFormat } = jobData;
 
-    // Chỉ xử lý COMIC trong #157 (#158 sẽ xử lý NOVEL)
-    if (mediaFormat !== 'COMIC') {
-      this.logger.log(
-        `[MaterializationProcessor] Bỏ qua job ${jobId} vì mediaFormat là ${mediaFormat} (chưa hỗ trợ trong worker này).`,
+    if (mediaFormat !== 'COMIC' && mediaFormat !== 'NOVEL') {
+      throw new UnrecoverableError(
+        `UNSUPPORTED_MEDIA_FORMAT: ${mediaFormat}. Chỉ hỗ trợ 'COMIC' hoặc 'NOVEL'.`,
       );
-      return;
     }
 
     // 1. Read-Only DB Preflight & Fencing Check
@@ -88,6 +86,19 @@ export class TranslationMaterializationProcessor extends WorkerHost {
         `INVALID_SNAPSHOT_KEY: snapshotKey '${jobData.snapshotKey}' không khớp expected '${expectedSnapshotKey}'.`,
       );
     }
+
+    if (mediaFormat === 'COMIC') {
+      await this.dispatchComicMaterialization(jobData, dbJob);
+    } else {
+      await this.dispatchNovelMaterialization(jobData, dbJob);
+    }
+  }
+
+  private async dispatchComicMaterialization(
+    jobData: MaterializationJobData,
+    dbJob: TranslationJob,
+  ): Promise<void> {
+    const { jobId, targetRevision } = jobData;
 
     // 3. Authoritative N từ resultManifest.pages & Đối chiếu CleanBases (#157)
     const resultManifest = dbJob.resultManifest as {
@@ -225,6 +236,160 @@ export class TranslationMaterializationProcessor extends WorkerHost {
 
     this.logger.log(
       `[MaterializationProcessor] Dispatch materialize-manga thành công cho job ${jobId} rev ${targetRevision}`,
+    );
+  }
+
+  private async dispatchNovelMaterialization(
+    jobData: MaterializationJobData,
+    dbJob: TranslationJob,
+  ): Promise<void> {
+    const { jobId, targetRevision } = jobData;
+    const resultManifest = dbJob.resultManifest as any;
+
+    if (!resultManifest) {
+      throw new UnrecoverableError(
+        `MISSING_RESULT_MANIFEST: Job ${jobId} không có resultManifest.`,
+      );
+    }
+
+    const structureSnapshot = resultManifest.structureSnapshot;
+    if (
+      !structureSnapshot ||
+      structureSnapshot.version !== 1 ||
+      !structureSnapshot.storageKey ||
+      !SHA256_HEX_REGEX.test(structureSnapshot.sha256) ||
+      !structureSnapshot.sourceStructureFingerprint
+    ) {
+      throw new UnrecoverableError(
+        `MISSING_STRUCTURE_SNAPSHOT: Job ${jobId} không có structureSnapshot hợp lệ trong resultManifest (#163/#158).`,
+      );
+    }
+
+    // P1: Head/stat existence check trên structure snapshot (không streaming rehash)
+    const snapshotExists = await this.storageService.headInternalObject(
+      structureSnapshot.storageKey,
+      false,
+    );
+    if (!snapshotExists) {
+      throw new UnrecoverableError(
+        `STRUCTURE_SNAPSHOT_NOT_FOUND: Structure snapshot '${structureSnapshot.storageKey}' không tồn tại trong storage.`,
+      );
+    }
+
+    // Presigned download URLs (TTL 3600s)
+    const materializationSnapshotUrl =
+      await this.storageService.createInternalDownloadUrl(
+        jobData.snapshotKey,
+        false,
+        3600,
+      );
+
+    const structureSnapshotUrl =
+      await this.storageService.createInternalDownloadUrl(
+        structureSnapshot.storageKey,
+        false,
+        3600,
+      );
+
+    // Exact output key: ai/jobs/{jobId}/materializations/rev-{targetRevision}/content.html
+    const outputStorageKey = `${jobData.outputPrefix}content.html`;
+    const outputUploadUrl = await this.storageService.createInternalUploadUrl(
+      outputStorageKey,
+      'text/html; charset=utf-8',
+      false,
+      3600,
+    );
+
+    // Authoritative targetLanguage: inputManifest.targetLang || resultManifest.language || 'vi'
+    const targetLanguage =
+      dbJob.inputManifest?.targetLang ||
+      resultManifest.language ||
+      'vi';
+
+    // Title & Asset mappings
+    const title = resultManifest.title || undefined;
+    const rawAssets = resultManifest.assets || [];
+    const assetMappings: Array<{ sourceHref: string; storageKey: string }> = [];
+    for (const asset of rawAssets) {
+      if (asset.sourceHref && typeof asset.sourceHref === 'string' && asset.sourceHref.trim()) {
+        assetMappings.push({
+          sourceHref: asset.sourceHref.trim(),
+          storageKey: asset.storageKey,
+        });
+      }
+    }
+
+    const aiWorkerBaseUrl = this.configService.get<string>(
+      'AI_WORKER_BASE_URL',
+      'http://localhost:8001',
+    );
+    const aiWorkerSecret = this.configService.get<string>('AI_WORKER_SECRET');
+    const workerTimeoutMs = this.configService.get<number>(
+      'AI_WORKER_MATERIALIZATION_TIMEOUT_MS',
+      120_000,
+    );
+    const endpoint = `${aiWorkerBaseUrl}/internal/v1/jobs/materialize-novel`;
+
+    const payload = {
+      jobId,
+      targetRevision,
+      targetLanguage,
+      materializationSnapshotUrl,
+      materializationSnapshotSha256: jobData.snapshotSha256,
+      structureSnapshotUrl,
+      structureSnapshotSha256: structureSnapshot.sha256,
+      sourceStructureFingerprint: structureSnapshot.sourceStructureFingerprint,
+      outputUploadUrl,
+      outputStorageKey,
+      title,
+      assetMappings,
+    };
+
+    let response: Response;
+    try {
+      response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Internal-Service-Key': aiWorkerSecret || '',
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(workerTimeoutMs),
+      });
+    } catch (err: any) {
+      const isTimeout =
+        err?.name === 'TimeoutError' ||
+        err?.name === 'AbortError';
+
+      this.logger.error(
+        `[MaterializationProcessor] Lỗi ${isTimeout ? 'timeout' : 'mạng'} khi gọi AI Worker ${endpoint}: ${err.message}`,
+      );
+      throw new Error(
+        isTimeout
+          ? `AI_WORKER_TIMEOUT: exceeded ${workerTimeoutMs}ms`
+          : `AI_WORKER_NETWORK_ERROR: ${err.message}`,
+      );
+    }
+
+    if (!response.ok) {
+      const errorText = await response.text().catch(() => '');
+      const status = response.status;
+      if ([400, 401, 403, 404, 409, 422].includes(status)) {
+        this.logger.error(
+          `[MaterializationProcessor] AI Worker trả lỗi bất biến ${status}: ${errorText}`,
+        );
+        throw new UnrecoverableError(
+          `AI_WORKER_DETERMINISTIC_ERROR: ${status} - ${errorText}`,
+        );
+      }
+      this.logger.warn(
+        `[MaterializationProcessor] AI Worker trả lỗi tạm thời ${status}: ${errorText}`,
+      );
+      throw new Error(`AI_WORKER_TRANSIENT_ERROR: ${status} - ${errorText}`);
+    }
+
+    this.logger.log(
+      `[MaterializationProcessor] Dispatch materialize-novel thành công cho job ${jobId} rev ${targetRevision}`,
     );
   }
 }

@@ -1131,5 +1131,290 @@
         "provider": "OPENAI"
       }
     }
+  },
+  {
+    "id": "valid-novel-structure-snapshot-v1",
+    "schema": "NOVEL_STRUCTURE_SNAPSHOT_V1",
+    "description": "Valid Novel structure snapshot with complete AST and anchor maps (#163)",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "segmenterVersion": "novel-v1",
+      "sourceStructureFingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "document": {
+        "title": "Chương 1",
+        "language": "ja",
+        "format": "html",
+        "blocks": [
+          {
+            "type": "HEADING",
+            "level": 1,
+            "children": [
+              {
+                "type": "TEXT",
+                "text": "第1章"
+              }
+            ]
+          },
+          {
+            "type": "PARAGRAPH",
+            "children": [
+              {
+                "type": "TEXT",
+                "text": "夜空に"
+              },
+              {
+                "type": "RUBY",
+                "baseText": "星屑",
+                "rubyText": "ほしくず",
+                "parenthesisText": "（ほしくず）"
+              }
+            ]
+          }
+        ]
+      },
+      "segments": [
+        {
+          "anchorBlockId": "blk_0001_h1",
+          "sortOrder": 1,
+          "blockType": "HEADING"
+        },
+        {
+          "anchorBlockId": "blk_0002_p",
+          "sortOrder": 2,
+          "blockType": "NARRATION"
+        }
+      ],
+      "anchorMaps": {
+        "blk_0002_p": [
+          {
+            "anchorId": "0001",
+            "tagType": "R",
+            "rubyText": "ほしくず",
+            "parenthesisText": "（ほしくず）"
+          }
+        ]
+      }
+    },
+    "canonical": {
+      "version": 1,
+      "segmenterVersion": "novel-v1",
+      "sourceStructureFingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "document": {
+        "title": "Chương 1",
+        "language": "ja",
+        "format": "html",
+        "blocks": [
+          {
+            "type": "HEADING",
+            "level": 1,
+            "children": [
+              {
+                "type": "TEXT",
+                "text": "第1章"
+              }
+            ]
+          },
+          {
+            "type": "PARAGRAPH",
+            "children": [
+              {
+                "type": "TEXT",
+                "text": "夜空に"
+              },
+              {
+                "type": "RUBY",
+                "baseText": "星屑",
+                "rubyText": "ほしくず",
+                "parenthesisText": "（ほしくず）"
+              }
+            ]
+          }
+        ]
+      },
+      "segments": [
+        {
+          "anchorBlockId": "blk_0001_h1",
+          "sortOrder": 1,
+          "blockType": "HEADING"
+        },
+        {
+          "anchorBlockId": "blk_0002_p",
+          "sortOrder": 2,
+          "blockType": "NARRATION"
+        }
+      ],
+      "anchorMaps": {
+        "blk_0002_p": [
+          {
+            "anchorId": "0001",
+            "tagType": "R",
+            "rubyText": "ほしくず",
+            "parenthesisText": "（ほしくず）"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "invalid-novel-structure-snapshot-unknown-field",
+    "schema": "NOVEL_STRUCTURE_SNAPSHOT_V1",
+    "description": "Reject Novel structure snapshot with unknown extra field (#163)",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "segmenterVersion": "novel-v1",
+      "sourceStructureFingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "rogueField": "unauthorized",
+      "document": {
+        "language": "ja",
+        "format": "html",
+        "blocks": []
+      },
+      "segments": [
+        {
+          "anchorBlockId": "blk_0001_h1",
+          "sortOrder": 1,
+          "blockType": "HEADING"
+        }
+      ],
+      "anchorMaps": {}
+    }
+  },
+  {
+    "id": "invalid-novel-structure-snapshot-duplicate-segment",
+    "schema": "NOVEL_STRUCTURE_SNAPSHOT_V1",
+    "description": "Reject Novel structure snapshot with duplicate anchorBlockId (#163)",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "segmenterVersion": "novel-v1",
+      "sourceStructureFingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "document": {
+        "language": "ja",
+        "format": "html",
+        "blocks": []
+      },
+      "segments": [
+        {
+          "anchorBlockId": "blk_0001_h1",
+          "sortOrder": 1,
+          "blockType": "HEADING"
+        },
+        {
+          "anchorBlockId": "blk_0001_h1",
+          "sortOrder": 2,
+          "blockType": "HEADING"
+        }
+      ],
+      "anchorMaps": {}
+    }
+  },
+  {
+    "id": "invalid-novel-structure-snapshot-orphan-anchormap",
+    "schema": "NOVEL_STRUCTURE_SNAPSHOT_V1",
+    "description": "Reject Novel structure snapshot where anchor map references non-existent segment block (#163)",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "segmenterVersion": "novel-v1",
+      "sourceStructureFingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "document": {
+        "language": "ja",
+        "format": "html",
+        "blocks": []
+      },
+      "segments": [
+        {
+          "anchorBlockId": "blk_0001_h1",
+          "sortOrder": 1,
+          "blockType": "HEADING"
+        }
+      ],
+      "anchorMaps": {
+        "blk_non_existent": [
+          {
+            "anchorId": "0001",
+            "tagType": "R",
+            "rubyText": "foo"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "valid-novel-result-with-structure-snapshot",
+    "schema": "NOVEL_RESULT_V1",
+    "description": "Valid Novel result manifest with pinned structureSnapshot reference (#163)",
+    "valid": true,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "novels/chapter-1.html",
+      "segmentCount": 1,
+      "charCount": 10,
+      "htmlFileSizeBytes": 1024,
+      "qa": {
+        "passed": true,
+        "score": 1.0,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      },
+      "structureSnapshot": {
+        "version": 1,
+        "storageKey": "ai/jobs/job-1/structure/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.json",
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "segmenterVersion": "novel-v1",
+        "sourceStructureFingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    },
+    "canonical": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "novels/chapter-1.html",
+      "segmentCount": 1,
+      "charCount": 10,
+      "htmlFileSizeBytes": 1024,
+      "qa": {
+        "passed": true,
+        "score": 1.0,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      },
+      "structureSnapshot": {
+        "version": 1,
+        "storageKey": "ai/jobs/job-1/structure/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.json",
+        "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        "segmenterVersion": "novel-v1",
+        "sourceStructureFingerprint": "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+      }
+    }
+  },
+  {
+    "id": "invalid-novel-result-malformed-structure-snapshot",
+    "schema": "NOVEL_RESULT_V1",
+    "description": "Reject Novel result manifest with malformed structureSnapshot (#163)",
+    "valid": false,
+    "input": {
+      "version": 1,
+      "mediaFormat": "NOVEL",
+      "htmlKey": "novels/chapter-1.html",
+      "segmentCount": 1,
+      "charCount": 10,
+      "htmlFileSizeBytes": 1024,
+      "qa": {
+        "passed": true,
+        "score": 1.0,
+        "fingerprintMatch": true,
+        "issuesCount": 0
+      },
+      "structureSnapshot": {
+        "version": 1,
+        "storageKey": "ai/jobs/job-1/structure/test.json",
+        "sha256": "short-not-64-hex",
+        "segmenterVersion": "novel-v1",
+        "sourceStructureFingerprint": "invalid-fingerprint"
+      }
+    }
   }
 ]

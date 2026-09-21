@@ -6,7 +6,7 @@ Strict parity with @omninovel/shared translation-manifests.ts (#160, #164).
 import re
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Union, Literal, Annotated, Any, Set
+from typing import List, Optional, Union, Literal, Annotated, Any, Set, Dict
 from pydantic import BaseModel, ConfigDict, Field, model_validator, field_validator
 
 JS_MAX_SAFE_INTEGER = 9_007_199_254_740_991  # 2^53 - 1
@@ -185,6 +185,169 @@ class NovelResultManifestV1(StrictManifestModel):
     assets: Optional[List[NovelResultAssetModel]] = None
     qa: NovelResultQaModel
     metrics: Optional[NovelResultMetricsModel] = None
+    structureSnapshot: Optional["NovelStructureSnapshotReferenceModel"] = None
+
+
+# ----------------------------------------------------------------------
+# Novel Structure Snapshot Models (#163)
+# ----------------------------------------------------------------------
+
+class NovelStructureSnapshotReferenceModel(StrictManifestModel):
+    version: Literal[1] = Field(...)
+    storageKey: str = Field(..., min_length=1)
+    sha256: str = Field(..., pattern=r"^[0-9a-f]{64}$")
+    segmenterVersion: str = Field(..., min_length=1)
+    sourceStructureFingerprint: str = Field(..., pattern=r"^sha256:[0-9a-f]{64}$")
+
+
+class NovelSegmentSnapshotModel(StrictManifestModel):
+    anchorBlockId: str = Field(..., min_length=1)
+    sortOrder: int = Field(..., ge=1, le=JS_MAX_SAFE_INTEGER)
+    blockType: Union[NovelBlockType, Literal["HEADING", "DIALOGUE", "NARRATION", "BLOCKQUOTE"]]
+
+
+class NovelAnchorMapEntrySnapshotModel(StrictManifestModel):
+    anchorId: str = Field(..., min_length=1)
+    tagType: Literal["S", "E", "R", "IMG"]
+    rubyText: Optional[str] = None
+    parenthesisText: Optional[str] = None
+    imageSrc: Optional[str] = None
+    imageAlt: Optional[str] = None
+
+
+class TextInlineNodeSnapshotModel(StrictManifestModel):
+    type: Literal["TEXT"] = "TEXT"
+    text: str
+
+
+class RubyInlineNodeSnapshotModel(StrictManifestModel):
+    type: Literal["RUBY"] = "RUBY"
+    baseText: str = Field(..., min_length=1)
+    rubyText: str = Field(..., min_length=1)
+    parenthesisText: Optional[str] = None
+
+
+class InlineImageNodeSnapshotModel(StrictManifestModel):
+    type: Literal["INLINE_IMAGE"] = "INLINE_IMAGE"
+    src: str = Field(..., min_length=1)
+    alt: Optional[str] = None
+
+
+class StrongInlineNodeSnapshotModel(StrictManifestModel):
+    type: Literal["STRONG"] = "STRONG"
+    children: List["NovelInlineNodeSnapshotModel"] = Field(default_factory=list)
+
+
+class EmphasisInlineNodeSnapshotModel(StrictManifestModel):
+    type: Literal["EMPHASIS"] = "EMPHASIS"
+    children: List["NovelInlineNodeSnapshotModel"] = Field(default_factory=list)
+
+
+NovelInlineNodeSnapshotModel = Annotated[
+    Union[
+        TextInlineNodeSnapshotModel,
+        RubyInlineNodeSnapshotModel,
+        InlineImageNodeSnapshotModel,
+        StrongInlineNodeSnapshotModel,
+        EmphasisInlineNodeSnapshotModel,
+    ],
+    Field(discriminator="type"),
+]
+
+
+class HeadingBlockNodeSnapshotModel(StrictManifestModel):
+    type: Literal["HEADING"] = "HEADING"
+    level: int = Field(..., ge=1, le=6)
+    children: List[NovelInlineNodeSnapshotModel] = Field(default_factory=list)
+
+
+class ParagraphBlockNodeSnapshotModel(StrictManifestModel):
+    type: Literal["PARAGRAPH"] = "PARAGRAPH"
+    children: List[NovelInlineNodeSnapshotModel] = Field(default_factory=list)
+
+
+class BlockquoteBlockNodeSnapshotModel(StrictManifestModel):
+    type: Literal["BLOCKQUOTE"] = "BLOCKQUOTE"
+    children: List["NovelBlockNodeSnapshotModel"] = Field(default_factory=list)
+
+
+class IllustrationBlockNodeSnapshotModel(StrictManifestModel):
+    type: Literal["ILLUSTRATION"] = "ILLUSTRATION"
+    src: str = Field(..., min_length=1)
+    alt: Optional[str] = None
+    caption: Optional[str] = None
+    width: Optional[int] = Field(None, gt=0, le=JS_MAX_SAFE_INTEGER)
+    height: Optional[int] = Field(None, gt=0, le=JS_MAX_SAFE_INTEGER)
+
+
+class DividerBlockNodeSnapshotModel(StrictManifestModel):
+    type: Literal["DIVIDER"] = "DIVIDER"
+
+
+NovelBlockNodeSnapshotModel = Annotated[
+    Union[
+        HeadingBlockNodeSnapshotModel,
+        ParagraphBlockNodeSnapshotModel,
+        BlockquoteBlockNodeSnapshotModel,
+        IllustrationBlockNodeSnapshotModel,
+        DividerBlockNodeSnapshotModel,
+    ],
+    Field(discriminator="type"),
+]
+
+
+class CanonicalNovelDocumentSnapshotModel(StrictManifestModel):
+    title: Optional[str] = None
+    language: str = Field(..., min_length=1)
+    format: str = Field(..., min_length=1)
+    metadata: Optional[Dict[str, Any]] = None
+    blocks: List[NovelBlockNodeSnapshotModel] = Field(default_factory=list)
+
+
+class NovelStructureSnapshotModel(StrictManifestModel):
+    version: Literal[1] = Field(...)
+    segmenterVersion: str = Field(..., min_length=1)
+    sourceStructureFingerprint: str = Field(..., pattern=r"^sha256:[0-9a-f]{64}$")
+    document: CanonicalNovelDocumentSnapshotModel
+    segments: List[NovelSegmentSnapshotModel] = Field(..., min_length=1)
+    anchorMaps: Dict[str, List[NovelAnchorMapEntrySnapshotModel]] = Field(default_factory=dict)
+
+    @field_validator("segments")
+    @classmethod
+    def validate_segments(
+        cls, segments: List[NovelSegmentSnapshotModel]
+    ) -> List[NovelSegmentSnapshotModel]:
+        seen_ids: Set[str] = set()
+        seen_orders: Set[int] = set()
+        for s in segments:
+            if s.anchorBlockId in seen_ids:
+                raise ValueError(f"Duplicate anchorBlockId in segments: {s.anchorBlockId}")
+            seen_ids.add(s.anchorBlockId)
+            if s.sortOrder in seen_orders:
+                raise ValueError(f"Duplicate sortOrder in segments: {s.sortOrder}")
+            seen_orders.add(s.sortOrder)
+        n = len(segments)
+        for order in range(1, n + 1):
+            if order not in seen_orders:
+                raise ValueError(f"NON_CONTIGUOUS_SEGMENTS: Missing sortOrder {order} in 1..{n} sequence")
+        return sorted(segments, key=lambda s: s.sortOrder)
+
+    @model_validator(mode="after")
+    def validate_anchor_maps_reference_existing_blocks(self) -> "NovelStructureSnapshotModel":
+        valid_block_ids = {s.anchorBlockId for s in self.segments}
+        for block_id, entries in self.anchorMaps.items():
+            if block_id not in valid_block_ids:
+                raise ValueError(
+                    f"ANCHOR_MAP_ORPHAN_BLOCK: Anchor map key '{block_id}' does not exist in segments list"
+                )
+            seen_anchor_ids: Set[str] = set()
+            for entry in entries:
+                if entry.anchorId in seen_anchor_ids:
+                    raise ValueError(
+                        f"Duplicate anchorId '{entry.anchorId}' in anchor map for block '{block_id}'"
+                    )
+                seen_anchor_ids.add(entry.anchorId)
+        return self
 
 
 TranslationResultManifestV1 = Annotated[

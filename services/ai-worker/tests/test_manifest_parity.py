@@ -18,6 +18,8 @@ from app.models.manifests import (
     TranslationInputManifestV1,
     MangaReviewSourceManifestV1,
     MangaCleanBaseManifestV1,
+    NovelStructureSnapshotModel,
+    NovelStructureSnapshotReferenceModel,
 )
 
 CORPUS_PATH = Path(__file__).resolve().parents[3] / "packages" / "shared" / "fixtures" / "manifest-corpus.json"
@@ -28,6 +30,7 @@ SCHEMA_MODEL_MAP = {
     "INPUT_MANIFEST_V1": TranslationInputManifestV1,
     "MANGA_REVIEW_SOURCE_V1": MangaReviewSourceManifestV1,
     "MANGA_CLEAN_BASE_V1": MangaCleanBaseManifestV1,
+    "NOVEL_STRUCTURE_SNAPSHOT_V1": NovelStructureSnapshotModel,
 }
 
 

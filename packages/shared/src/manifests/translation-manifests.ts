@@ -64,6 +64,64 @@ export interface NovelResultMetricsV1 {
   promptVersion?: string;
 }
 
+// ----------------------------------------------------------------------
+// Novel Structure Snapshot Types (Version 1) (#163)
+// ----------------------------------------------------------------------
+
+export type NovelInlineNodeSnapshotV1 =
+  | { type: 'TEXT'; text: string }
+  | { type: 'RUBY'; baseText: string; rubyText: string; parenthesisText?: string }
+  | { type: 'STRONG'; children: NovelInlineNodeSnapshotV1[] }
+  | { type: 'EMPHASIS'; children: NovelInlineNodeSnapshotV1[] }
+  | { type: 'INLINE_IMAGE'; src: string; alt?: string };
+
+export type NovelBlockNodeSnapshotV1 =
+  | { type: 'HEADING'; level: number; children: NovelInlineNodeSnapshotV1[] }
+  | { type: 'PARAGRAPH'; children: NovelInlineNodeSnapshotV1[] }
+  | { type: 'BLOCKQUOTE'; children: NovelBlockNodeSnapshotV1[] }
+  | { type: 'ILLUSTRATION'; src: string; alt?: string; caption?: string; width?: number; height?: number }
+  | { type: 'DIVIDER' };
+
+export interface CanonicalNovelDocumentSnapshotV1 {
+  title?: string;
+  language: string;
+  format: string;
+  metadata?: Record<string, any>;
+  blocks: NovelBlockNodeSnapshotV1[];
+}
+
+export interface NovelSegmentSnapshotV1 {
+  anchorBlockId: string;
+  sortOrder: number;
+  blockType: NovelBlockType;
+}
+
+export interface NovelAnchorMapEntrySnapshotV1 {
+  anchorId: string;
+  tagType: 'S' | 'E' | 'R' | 'IMG';
+  rubyText?: string;
+  parenthesisText?: string;
+  imageSrc?: string;
+  imageAlt?: string;
+}
+
+export interface NovelStructureSnapshotV1 {
+  version: 1;
+  segmenterVersion: string;
+  sourceStructureFingerprint: string; // sha256:<64hex>
+  document: CanonicalNovelDocumentSnapshotV1;
+  segments: NovelSegmentSnapshotV1[];
+  anchorMaps: Record<string, NovelAnchorMapEntrySnapshotV1[]>;
+}
+
+export interface NovelStructureSnapshotReferenceV1 {
+  version: 1;
+  storageKey: string;
+  sha256: string;
+  segmenterVersion: string;
+  sourceStructureFingerprint: string;
+}
+
 export interface NovelResultManifestV1 {
   version: 1;
   mediaFormat: 'NOVEL';
@@ -76,6 +134,12 @@ export interface NovelResultManifestV1 {
   assets?: NovelResultAssetV1[];
   qa: NovelResultQaV1;
   metrics?: NovelResultMetricsV1;
+  /**
+   * Pinned reference to versioned immutable Novel structure snapshot (#163).
+   * Note: Optional at parser level for backward-compatibility with pre-#163 manifests,
+   * but strictly required by Core gate on all new READY_FOR_REVIEW callbacks.
+   */
+  structureSnapshot?: NovelStructureSnapshotReferenceV1;
 }
 
 // ----------------------------------------------------------------------
@@ -544,6 +608,7 @@ export function validateNovelResultManifestV1(
       'assets',
       'qa',
       'metrics',
+      'structureSnapshot',
     ],
     'NovelResultManifestV1',
     errors,
@@ -720,6 +785,20 @@ export function validateNovelResultManifestV1(
     }
   }
 
+  // Check structureSnapshot if present (#163)
+  let validatedStructureSnapshot: NovelStructureSnapshotReferenceV1 | undefined;
+  if (obj.structureSnapshot !== undefined) {
+    const snapValidation = validateNovelStructureSnapshotReferenceV1(
+      obj.structureSnapshot,
+      { prefix: 'structureSnapshot' },
+    );
+    if (!snapValidation.valid) {
+      errors.push(...snapValidation.errors);
+    } else {
+      validatedStructureSnapshot = snapValidation.value;
+    }
+  }
+
   if (errors.length > 0) {
     return { valid: false, errors };
   }
@@ -739,6 +818,9 @@ export function validateNovelResultManifestV1(
       ...(validatedAssets ? { assets: validatedAssets } : {}),
       qa: validatedQa!,
       ...(validatedMetrics ? { metrics: validatedMetrics } : {}),
+      ...(validatedStructureSnapshot
+        ? { structureSnapshot: validatedStructureSnapshot }
+        : {}),
     },
   };
 }
@@ -1099,6 +1181,480 @@ export function validateMangaCleanBaseManifestV1(
     value: {
       version: 1,
       pages: validatedPages,
+    },
+  };
+}
+
+// ----------------------------------------------------------------------
+// Novel Structure Snapshot Runtime Validators (#163)
+// ----------------------------------------------------------------------
+
+export function validateNovelStructureSnapshotReferenceV1(
+  data: unknown,
+  options?: { prefix?: string },
+): ValidationResult<NovelStructureSnapshotReferenceV1> {
+  const prefix = options?.prefix ? `${options.prefix}.` : '';
+  const errors: string[] = [];
+
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return {
+      valid: false,
+      errors: [`${prefix.replace(/\.$/, '') || 'data'} must be a non-null object`],
+    };
+  }
+
+  const obj = data as Record<string, any>;
+
+  assertNoUnknownKeys(
+    obj,
+    ['version', 'storageKey', 'sha256', 'segmenterVersion', 'sourceStructureFingerprint'],
+    `${prefix}NovelStructureSnapshotReferenceV1`,
+    errors,
+  );
+
+  if (obj.version !== 1) {
+    errors.push(
+      `MISSING_OR_INVALID_VERSION: Expected version 1, got ${obj.version}`,
+    );
+  }
+
+  if (typeof obj.storageKey !== 'string' || obj.storageKey.trim() === '') {
+    errors.push(`${prefix}storageKey must be a non-empty string`);
+  }
+
+  if (typeof obj.sha256 !== 'string' || !/^[a-f0-9]{64}$/.test(obj.sha256)) {
+    errors.push(
+      `${prefix}sha256 must be a 64-character lowercase hex string`,
+    );
+  }
+
+  if (typeof obj.segmenterVersion !== 'string' || obj.segmenterVersion.trim() === '') {
+    errors.push(`${prefix}segmenterVersion must be a non-empty string`);
+  }
+
+  if (
+    typeof obj.sourceStructureFingerprint !== 'string' ||
+    !/^sha256:[a-f0-9]{64}$/.test(obj.sourceStructureFingerprint)
+  ) {
+    errors.push(
+      `${prefix}sourceStructureFingerprint must match format 'sha256:<64hex>'`,
+    );
+  }
+
+  if (errors.length > 0) {
+    return { valid: false, errors };
+  }
+
+  return {
+    valid: true,
+    errors: [],
+    value: {
+      version: 1,
+      storageKey: obj.storageKey,
+      sha256: obj.sha256,
+      segmenterVersion: obj.segmenterVersion,
+      sourceStructureFingerprint: obj.sourceStructureFingerprint,
+    },
+  };
+}
+
+function validateNovelInlineNodeSnapshot(
+  node: any,
+  context: string,
+  errors: string[],
+): NovelInlineNodeSnapshotV1 | null {
+  if (!node || typeof node !== 'object' || Array.isArray(node)) {
+    errors.push(`${context} must be an object`);
+    return null;
+  }
+  if (!['TEXT', 'RUBY', 'STRONG', 'EMPHASIS', 'INLINE_IMAGE'].includes(node.type)) {
+    errors.push(`${context}.type must be one of TEXT, RUBY, STRONG, EMPHASIS, INLINE_IMAGE, got '${node.type}'`);
+    return null;
+  }
+
+  if (node.type === 'TEXT') {
+    assertNoUnknownKeys(node, ['type', 'text'], context, errors);
+    if (typeof node.text !== 'string') {
+      errors.push(`${context}.text must be a string`);
+    }
+    return { type: 'TEXT', text: node.text ?? '' };
+  } else if (node.type === 'RUBY') {
+    assertNoUnknownKeys(node, ['type', 'baseText', 'rubyText', 'parenthesisText'], context, errors);
+    if (typeof node.baseText !== 'string' || node.baseText.trim() === '') {
+      errors.push(`${context}.baseText must be a non-empty string`);
+    }
+    if (typeof node.rubyText !== 'string' || node.rubyText.trim() === '') {
+      errors.push(`${context}.rubyText must be a non-empty string`);
+    }
+    if (node.parenthesisText !== undefined && typeof node.parenthesisText !== 'string') {
+      errors.push(`${context}.parenthesisText must be a string if provided`);
+    }
+    return {
+      type: 'RUBY',
+      baseText: node.baseText,
+      rubyText: node.rubyText,
+      ...(node.parenthesisText !== undefined ? { parenthesisText: node.parenthesisText } : {}),
+    };
+  } else if (node.type === 'STRONG' || node.type === 'EMPHASIS') {
+    assertNoUnknownKeys(node, ['type', 'children'], context, errors);
+    if (!Array.isArray(node.children)) {
+      errors.push(`${context}.children must be an array of inline nodes`);
+      return null;
+    }
+    const children: NovelInlineNodeSnapshotV1[] = [];
+    node.children.forEach((c: any, idx: number) => {
+      const validated = validateNovelInlineNodeSnapshot(c, `${context}.children[${idx}]`, errors);
+      if (validated) children.push(validated);
+    });
+    return { type: node.type, children };
+  } else if (node.type === 'INLINE_IMAGE') {
+    assertNoUnknownKeys(node, ['type', 'src', 'alt'], context, errors);
+    if (typeof node.src !== 'string' || node.src.trim() === '') {
+      errors.push(`${context}.src must be a non-empty string`);
+    }
+    if (node.alt !== undefined && typeof node.alt !== 'string') {
+      errors.push(`${context}.alt must be a string if provided`);
+    }
+    return {
+      type: 'INLINE_IMAGE',
+      src: node.src,
+      ...(node.alt !== undefined ? { alt: node.alt } : {}),
+    };
+  }
+  return null;
+}
+
+function validateNovelBlockNodeSnapshot(
+  block: any,
+  context: string,
+  errors: string[],
+): NovelBlockNodeSnapshotV1 | null {
+  if (!block || typeof block !== 'object' || Array.isArray(block)) {
+    errors.push(`${context} must be an object`);
+    return null;
+  }
+  if (!['HEADING', 'PARAGRAPH', 'BLOCKQUOTE', 'ILLUSTRATION', 'DIVIDER'].includes(block.type)) {
+    errors.push(`${context}.type must be one of HEADING, PARAGRAPH, BLOCKQUOTE, ILLUSTRATION, DIVIDER, got '${block.type}'`);
+    return null;
+  }
+
+  if (block.type === 'HEADING') {
+    assertNoUnknownKeys(block, ['type', 'level', 'children'], context, errors);
+    if (!Number.isInteger(block.level) || block.level < 1 || block.level > 6) {
+      errors.push(`${context}.level must be an integer between 1 and 6`);
+    }
+    if (!Array.isArray(block.children)) {
+      errors.push(`${context}.children must be an array`);
+      return null;
+    }
+    const children: NovelInlineNodeSnapshotV1[] = [];
+    block.children.forEach((c: any, idx: number) => {
+      const v = validateNovelInlineNodeSnapshot(c, `${context}.children[${idx}]`, errors);
+      if (v) children.push(v);
+    });
+    return { type: 'HEADING', level: block.level, children };
+  } else if (block.type === 'PARAGRAPH') {
+    assertNoUnknownKeys(block, ['type', 'children'], context, errors);
+    if (!Array.isArray(block.children)) {
+      errors.push(`${context}.children must be an array`);
+      return null;
+    }
+    const children: NovelInlineNodeSnapshotV1[] = [];
+    block.children.forEach((c: any, idx: number) => {
+      const v = validateNovelInlineNodeSnapshot(c, `${context}.children[${idx}]`, errors);
+      if (v) children.push(v);
+    });
+    return { type: 'PARAGRAPH', children };
+  } else if (block.type === 'BLOCKQUOTE') {
+    assertNoUnknownKeys(block, ['type', 'children'], context, errors);
+    if (!Array.isArray(block.children)) {
+      errors.push(`${context}.children must be an array`);
+      return null;
+    }
+    const children: NovelBlockNodeSnapshotV1[] = [];
+    block.children.forEach((c: any, idx: number) => {
+      const v = validateNovelBlockNodeSnapshot(c, `${context}.children[${idx}]`, errors);
+      if (v) children.push(v);
+    });
+    return { type: 'BLOCKQUOTE', children };
+  } else if (block.type === 'ILLUSTRATION') {
+    assertNoUnknownKeys(block, ['type', 'src', 'alt', 'caption', 'width', 'height'], context, errors);
+    if (typeof block.src !== 'string' || block.src.trim() === '') {
+      errors.push(`${context}.src must be a non-empty string`);
+    }
+    if (block.alt !== undefined && typeof block.alt !== 'string') {
+      errors.push(`${context}.alt must be a string if provided`);
+    }
+    if (block.caption !== undefined && typeof block.caption !== 'string') {
+      errors.push(`${context}.caption must be a string if provided`);
+    }
+    if (block.width !== undefined && !isSafePositiveInteger(block.width)) {
+      errors.push(`${context}.width must be a positive safe integer if provided`);
+    }
+    if (block.height !== undefined && !isSafePositiveInteger(block.height)) {
+      errors.push(`${context}.height must be a positive safe integer if provided`);
+    }
+    return {
+      type: 'ILLUSTRATION',
+      src: block.src,
+      ...(block.alt !== undefined ? { alt: block.alt } : {}),
+      ...(block.caption !== undefined ? { caption: block.caption } : {}),
+      ...(block.width !== undefined ? { width: block.width } : {}),
+      ...(block.height !== undefined ? { height: block.height } : {}),
+    };
+  } else if (block.type === 'DIVIDER') {
+    assertNoUnknownKeys(block, ['type'], context, errors);
+    return { type: 'DIVIDER' };
+  }
+  return null;
+}
+
+export function validateNovelStructureSnapshotV1(
+  data: unknown,
+): ValidationResult<NovelStructureSnapshotV1> {
+  const errors: string[] = [];
+
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    return { valid: false, errors: ['Manifest data must be a non-null object'] };
+  }
+
+  const obj = data as Record<string, any>;
+
+  assertNoUnknownKeys(
+    obj,
+    ['version', 'segmenterVersion', 'sourceStructureFingerprint', 'document', 'segments', 'anchorMaps'],
+    'NovelStructureSnapshotV1',
+    errors,
+  );
+
+  if (obj.version !== 1) {
+    return {
+      valid: false,
+      errors: [
+        `MISSING_OR_INVALID_VERSION: Expected version 1, got ${obj.version}`,
+      ],
+    };
+  }
+
+  if (typeof obj.segmenterVersion !== 'string' || obj.segmenterVersion.trim() === '') {
+    errors.push('segmenterVersion must be a non-empty string');
+  }
+
+  if (
+    typeof obj.sourceStructureFingerprint !== 'string' ||
+    !/^sha256:[a-f0-9]{64}$/.test(obj.sourceStructureFingerprint)
+  ) {
+    errors.push("sourceStructureFingerprint must match format 'sha256:<64hex>'");
+  }
+
+  // Validate document
+  let validatedDocument: CanonicalNovelDocumentSnapshotV1 | undefined;
+  if (!obj.document || typeof obj.document !== 'object' || Array.isArray(obj.document)) {
+    errors.push('document must be a non-null object');
+  } else {
+    assertNoUnknownKeys(
+      obj.document,
+      ['title', 'language', 'format', 'metadata', 'blocks'],
+      'document',
+      errors,
+    );
+
+    if (obj.document.title !== undefined && typeof obj.document.title !== 'string') {
+      errors.push('document.title must be a string if provided');
+    }
+    if (typeof obj.document.language !== 'string' || obj.document.language.trim() === '') {
+      errors.push('document.language must be a non-empty string');
+    }
+    if (typeof obj.document.format !== 'string' || obj.document.format.trim() === '') {
+      errors.push('document.format must be a non-empty string');
+    }
+    if (
+      obj.document.metadata !== undefined &&
+      (typeof obj.document.metadata !== 'object' || obj.document.metadata === null || Array.isArray(obj.document.metadata))
+    ) {
+      errors.push('document.metadata must be an object if provided');
+    }
+
+    if (!Array.isArray(obj.document.blocks)) {
+      errors.push('document.blocks must be an array');
+    } else {
+      const blocks: NovelBlockNodeSnapshotV1[] = [];
+      obj.document.blocks.forEach((b: any, idx: number) => {
+        const v = validateNovelBlockNodeSnapshot(b, `document.blocks[${idx}]`, errors);
+        if (v) blocks.push(v);
+      });
+      validatedDocument = {
+        ...(obj.document.title !== undefined ? { title: obj.document.title } : {}),
+        language: obj.document.language ?? 'ja',
+        format: obj.document.format ?? 'html',
+        ...(obj.document.metadata !== undefined ? { metadata: obj.document.metadata } : {}),
+        blocks,
+      };
+    }
+  }
+
+  // Validate segments
+  const validatedSegments: NovelSegmentSnapshotV1[] = [];
+  if (!Array.isArray(obj.segments) || obj.segments.length === 0) {
+    errors.push('segments must be a non-empty array');
+  } else {
+    const seenBlockIds = new Set<string>();
+    const seenSortOrders = new Set<number>();
+
+    obj.segments.forEach((seg: any, idx: number) => {
+      if (!seg || typeof seg !== 'object' || Array.isArray(seg)) {
+        errors.push(`segments[${idx}] must be an object`);
+        return;
+      }
+      assertNoUnknownKeys(
+        seg,
+        ['anchorBlockId', 'sortOrder', 'blockType'],
+        `segments[${idx}]`,
+        errors,
+      );
+
+      if (typeof seg.anchorBlockId !== 'string' || seg.anchorBlockId.trim() === '') {
+        errors.push(`segments[${idx}].anchorBlockId must be a non-empty string`);
+      } else {
+        if (seenBlockIds.has(seg.anchorBlockId)) {
+          errors.push(`Duplicate anchorBlockId in segments: '${seg.anchorBlockId}'`);
+        }
+        seenBlockIds.add(seg.anchorBlockId);
+      }
+
+      if (!isSafePositiveInteger(seg.sortOrder)) {
+        errors.push(`segments[${idx}].sortOrder must be a positive integer >= 1`);
+      } else {
+        if (seenSortOrders.has(seg.sortOrder)) {
+          errors.push(`Duplicate sortOrder in segments: ${seg.sortOrder}`);
+        }
+        seenSortOrders.add(seg.sortOrder);
+      }
+
+      if (!Object.values(NovelBlockType).includes(seg.blockType)) {
+        errors.push(
+          `segments[${idx}].blockType must be one of ${Object.values(NovelBlockType).join(', ')}, got '${seg.blockType}'`,
+        );
+      }
+
+      if (errors.length === 0) {
+        validatedSegments.push({
+          anchorBlockId: seg.anchorBlockId,
+          sortOrder: seg.sortOrder,
+          blockType: seg.blockType,
+        });
+      }
+    });
+
+    // Check contiguous sortOrder 1..n
+    const n = obj.segments.length;
+    for (let order = 1; order <= n; order++) {
+      if (!seenSortOrders.has(order)) {
+        errors.push(`NON_CONTIGUOUS_SEGMENTS: Missing sortOrder ${order} in 1..${n} sequence`);
+      }
+    }
+  }
+
+  // Validate anchorMaps
+  const validatedAnchorMaps: Record<string, NovelAnchorMapEntrySnapshotV1[]> = {};
+  if (!obj.anchorMaps || typeof obj.anchorMaps !== 'object' || Array.isArray(obj.anchorMaps)) {
+    errors.push('anchorMaps must be an object');
+  } else {
+    const validSegmentIds = new Set(validatedSegments.map((s) => s.anchorBlockId));
+
+    for (const [blockId, entries] of Object.entries(obj.anchorMaps)) {
+      if (!validSegmentIds.has(blockId)) {
+        errors.push(
+          `ANCHOR_MAP_ORPHAN_BLOCK: Anchor map key '${blockId}' does not exist in segments list`,
+        );
+      }
+
+      if (!Array.isArray(entries)) {
+        errors.push(`anchorMaps['${blockId}'] must be an array`);
+        continue;
+      }
+
+      const seenAnchorIds = new Set<string>();
+      const validatedEntries: NovelAnchorMapEntrySnapshotV1[] = [];
+
+      entries.forEach((entry: any, eIdx: number) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+          errors.push(`anchorMaps['${blockId}'][${eIdx}] must be an object`);
+          return;
+        }
+
+        assertNoUnknownKeys(
+          entry,
+          ['anchorId', 'tagType', 'rubyText', 'parenthesisText', 'imageSrc', 'imageAlt'],
+          `anchorMaps['${blockId}'][${eIdx}]`,
+          errors,
+        );
+
+        if (typeof entry.anchorId !== 'string' || entry.anchorId.trim() === '') {
+          errors.push(`anchorMaps['${blockId}'][${eIdx}].anchorId must be a non-empty string`);
+        } else {
+          if (seenAnchorIds.has(entry.anchorId)) {
+            errors.push(
+              `Duplicate anchorId '${entry.anchorId}' in anchor map for block '${blockId}'`,
+            );
+          }
+          seenAnchorIds.add(entry.anchorId);
+        }
+
+        if (!['S', 'E', 'R', 'IMG'].includes(entry.tagType)) {
+          errors.push(
+            `anchorMaps['${blockId}'][${eIdx}].tagType must be one of S, E, R, IMG, got '${entry.tagType}'`,
+          );
+        }
+
+        if (entry.rubyText !== undefined && typeof entry.rubyText !== 'string') {
+          errors.push(`anchorMaps['${blockId}'][${eIdx}].rubyText must be a string if provided`);
+        }
+        if (entry.parenthesisText !== undefined && typeof entry.parenthesisText !== 'string') {
+          errors.push(`anchorMaps['${blockId}'][${eIdx}].parenthesisText must be a string if provided`);
+        }
+        if (entry.imageSrc !== undefined && typeof entry.imageSrc !== 'string') {
+          errors.push(`anchorMaps['${blockId}'][${eIdx}].imageSrc must be a string if provided`);
+        }
+        if (entry.imageAlt !== undefined && typeof entry.imageAlt !== 'string') {
+          errors.push(`anchorMaps['${blockId}'][${eIdx}].imageAlt must be a string if provided`);
+        }
+
+        if (errors.length === 0) {
+          validatedEntries.push({
+            anchorId: entry.anchorId,
+            tagType: entry.tagType,
+            ...(entry.rubyText !== undefined ? { rubyText: entry.rubyText } : {}),
+            ...(entry.parenthesisText !== undefined ? { parenthesisText: entry.parenthesisText } : {}),
+            ...(entry.imageSrc !== undefined ? { imageSrc: entry.imageSrc } : {}),
+            ...(entry.imageAlt !== undefined ? { imageAlt: entry.imageAlt } : {}),
+          });
+        }
+      });
+
+      // Sort entries deterministically by anchorId
+      validatedEntries.sort((a, b) => a.anchorId.localeCompare(b.anchorId));
+      validatedAnchorMaps[blockId] = validatedEntries;
+    }
+  }
+
+  if (errors.length > 0) {
+    return { valid: false, errors };
+  }
+
+  // Sort segments by sortOrder
+  validatedSegments.sort((a, b) => a.sortOrder - b.sortOrder);
+
+  return {
+    valid: true,
+    errors: [],
+    value: {
+      version: 1,
+      segmenterVersion: obj.segmenterVersion,
+      sourceStructureFingerprint: obj.sourceStructureFingerprint,
+      document: validatedDocument!,
+      segments: validatedSegments,
+      anchorMaps: validatedAnchorMaps,
     },
   };
 }

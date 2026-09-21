@@ -8,6 +8,8 @@ import {
   validateMangaReviewSourceManifestV1,
   validateMangaCleanBaseManifestV1,
   validateNovelMaterializationResultV1,
+  validateNovelStructureSnapshotV1,
+  validateNovelStructureSnapshotReferenceV1,
   NovelBlockType,
 } from '@omninovel/shared';
 
@@ -507,6 +509,117 @@ describe('Translation Manifest Runtime Validators & Corpus Parity (#164)', () =>
       expect(result.valid).toBe(false);
       expect(result.errors.some((e) => e.includes('htmlFileSizeBytes'))).toBe(true);
     });
+
+    it('should support backward compatibility: accept legacy persisted manifest without structureSnapshot', () => {
+      const legacyNovel = {
+        version: 1,
+        mediaFormat: 'NOVEL',
+        htmlKey: 'novels/chapter-1.html',
+        segmentCount: 5,
+        charCount: 100,
+        htmlFileSizeBytes: 1024,
+        qa: {
+          passed: true,
+          score: 1.0,
+          fingerprintMatch: true,
+          issuesCount: 0,
+        },
+      };
+
+      const result = validateNovelResultManifestV1(legacyNovel);
+      expect(result.valid).toBe(true);
+      expect(result.value?.structureSnapshot).toBeUndefined();
+    });
+
+    it('should accept valid Novel manifest with pinned structureSnapshot', () => {
+      const novelWithSnap = {
+        version: 1,
+        mediaFormat: 'NOVEL',
+        htmlKey: 'novels/chapter-1.html',
+        segmentCount: 5,
+        charCount: 100,
+        htmlFileSizeBytes: 1024,
+        qa: {
+          passed: true,
+          score: 1.0,
+          fingerprintMatch: true,
+          issuesCount: 0,
+        },
+        structureSnapshot: {
+          version: 1,
+          storageKey: 'ai/jobs/job-1/structure/0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef.json',
+          sha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+          segmenterVersion: 'novel-v1',
+          sourceStructureFingerprint: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        },
+      };
+
+      const result = validateNovelResultManifestV1(novelWithSnap);
+      expect(result.valid).toBe(true);
+      expect(result.value?.structureSnapshot?.sha256).toBe(
+        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      );
+    });
+
+    it('should reject Novel manifest when structureSnapshot is malformed', () => {
+      const novelWithBadSnap = {
+        version: 1,
+        mediaFormat: 'NOVEL',
+        htmlKey: 'novels/chapter-1.html',
+        segmentCount: 5,
+        charCount: 100,
+        htmlFileSizeBytes: 1024,
+        qa: {
+          passed: true,
+          score: 1.0,
+          fingerprintMatch: true,
+          issuesCount: 0,
+        },
+        structureSnapshot: {
+          version: 1,
+          storageKey: 'ai/jobs/job-1/structure/bad.json',
+          sha256: 'too-short',
+          segmenterVersion: 'novel-v1',
+          sourceStructureFingerprint: 'invalid',
+        },
+      };
+
+      const result = validateNovelResultManifestV1(novelWithBadSnap);
+      expect(result.valid).toBe(false);
+      expect(result.errors.length).toBeGreaterThanOrEqual(1);
+    });
+  });
+
+  describe('validateNovelStructureSnapshotV1 Strict Invariants (#163)', () => {
+    it('should reject snapshot with duplicate anchorId in the same block', () => {
+      const duplicateAnchorId = {
+        version: 1,
+        segmenterVersion: 'novel-v1',
+        sourceStructureFingerprint: 'sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        document: {
+          language: 'ja',
+          format: 'html',
+          blocks: [],
+        },
+        segments: [
+          {
+            anchorBlockId: 'blk_0001_p',
+            sortOrder: 1,
+            blockType: 'NARRATION',
+          },
+        ],
+        anchorMaps: {
+          blk_0001_p: [
+            { anchorId: '0001', tagType: 'R', rubyText: 'a' },
+            { anchorId: '0001', tagType: 'S' }, // Duplicate anchorId!
+          ],
+        },
+      };
+
+      const result = validateNovelStructureSnapshotV1(duplicateAnchorId);
+      expect(result.valid).toBe(false);
+      expect(result.errors.some((e) => e.includes("Duplicate anchorId '0001'"))).toBe(true);
+    });
   });
 
   describe('validateTranslationInputManifestV1', () => {
@@ -552,6 +665,7 @@ describe('Translation Manifest Runtime Validators & Corpus Parity (#164)', () =>
       INPUT_MANIFEST_V1: validateTranslationInputManifestV1,
       MANGA_REVIEW_SOURCE_V1: validateMangaReviewSourceManifestV1,
       MANGA_CLEAN_BASE_V1: validateMangaCleanBaseManifestV1,
+      NOVEL_STRUCTURE_SNAPSHOT_V1: validateNovelStructureSnapshotV1,
     };
 
     corpus.forEach((testCase) => {

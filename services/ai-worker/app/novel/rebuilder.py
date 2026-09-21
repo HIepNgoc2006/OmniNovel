@@ -56,9 +56,10 @@ class NovelDocumentRebuilder:
         translated_blocks: Union[Dict[str, str], List[TranslatedNovelBlock], List[Dict[str, Any]]],
         anchor_maps: Optional[Dict[str, InlineAnchorMap]] = None,
         translated_title: Optional[str] = None,
+        target_language: Optional[str] = None,
     ) -> CanonicalNovelDocument:
         """
-        Tái tạo cây CanonicalNovelDocument tiếng Việt từ cây nguồn và kết quả dịch.
+        Tái tạo cây CanonicalNovelDocument từ cây nguồn và kết quả dịch.
         """
         # 1. Trích xuất expected segments từ source document để xác định tập hợp anchor IDs cần có
         from app.novel.segmenter import NovelSegmenter
@@ -135,10 +136,12 @@ class NovelDocumentRebuilder:
         # Tiêu đề mới (nếu có) hoặc giữ nguyên tiêu đề gốc
         new_title = translated_title if translated_title is not None else source_doc.title
 
+        language = target_language or source_doc.language or "vi"
+
         return CanonicalNovelDocument(
             blocks=rebuilt_blocks,
             title=new_title,
-            language="vi",
+            language=language,
             format=source_doc.format,
             metadata=copy.deepcopy(source_doc.metadata),
         )
@@ -228,9 +231,10 @@ class NovelDocumentRebuilder:
         snapshot: Union[Any, Dict[str, Any]],
         translated_blocks: Union[Dict[str, str], List[TranslatedNovelBlock], List[Dict[str, Any]]],
         translated_title: Optional[str] = None,
+        target_language: Optional[str] = None,
     ) -> CanonicalNovelDocument:
         """
-        Tái tạo cây CanonicalNovelDocument tiếng Việt độc lập hoàn toàn từ NovelStructureSnapshot (#163).
+        Tái tạo cây CanonicalNovelDocument độc lập hoàn toàn từ NovelStructureSnapshot (#163).
         Invariant: Tuyệt đối KHÔNG gọi hoặc khởi tạo NovelSegmenter.
         Khôi phục source AST từ snapshot.document, tập hợp expected IDs từ snapshot.segments,
         và InlineAnchorMaps từ snapshot.anchorMaps.
@@ -361,10 +365,12 @@ class NovelDocumentRebuilder:
 
         new_title = translated_title if translated_title is not None else source_doc.title
 
+        language = target_language or source_doc.language or "vi"
+
         return CanonicalNovelDocument(
             blocks=rebuilt_blocks,
             title=new_title,
-            language="vi",
+            language=language,
             format=source_doc.format,
             metadata=copy.deepcopy(source_doc.metadata),
         )

@@ -288,6 +288,7 @@ class TestRebuildFromSnapshotIndependence:
             snapshot=snapshot,
             translated_blocks=translated_blocks,
             translated_title="Chương 1 Bầu trời khởi đầu",
+            target_language="vi",
         )
 
         assert rebuilt_doc.title == "Chương 1 Bầu trời khởi đầu"

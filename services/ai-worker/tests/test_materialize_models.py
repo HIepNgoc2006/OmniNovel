@@ -248,3 +248,297 @@ class TestMaterializeMangaRequestAndSlot:
         }
         with pytest.raises(ValidationError):
             MaterializeMangaPageSlot.model_validate(slot_data)
+
+
+def create_valid_novel_snapshot():
+    return {
+        "version": 1,
+        "jobId": VALID_UUID,
+        "targetRevision": 2,
+        "mediaFormat": "NOVEL",
+        "segments": [
+            {
+                "id": VALID_SEG_UUID,
+                "version": 1,
+                "pageNumber": None,
+                "bboxX": None,
+                "bboxY": None,
+                "bboxW": None,
+                "bboxH": None,
+                "anchorBlockId": "blk_0001_h1",
+                "sortOrder": 0,
+                "rawText": "第1章",
+                "translatedText": "Chương 1",
+                "blockType": "HEADING",
+            }
+        ],
+    }
+
+
+class TestNovelMaterializationSnapshot:
+    def test_valid_novel_snapshot(self):
+        data = create_valid_novel_snapshot()
+        snapshot = MaterializationSnapshotV1.model_validate(data)
+        assert snapshot.mediaFormat == "NOVEL"
+        assert len(snapshot.segments) == 1
+        assert snapshot.segments[0].anchorBlockId == "blk_0001_h1"
+        assert snapshot.segments[0].blockType == "HEADING"
+        assert snapshot.segments[0].pageNumber is None
+        assert snapshot.segments[0].bboxX is None
+
+    def test_novel_rejects_page_number_non_null(self):
+        data = create_valid_novel_snapshot()
+        data["segments"][0]["pageNumber"] = 1
+        with pytest.raises(ValidationError) as exc:
+            MaterializationSnapshotV1.model_validate(data)
+        assert "pageNumber must be null for NOVEL" in str(exc.value)
+
+    def test_novel_rejects_bbox_non_null(self):
+        for field in ["bboxX", "bboxY", "bboxW", "bboxH"]:
+            data = create_valid_novel_snapshot()
+            data["segments"][0][field] = 10
+            with pytest.raises(ValidationError) as exc:
+                MaterializationSnapshotV1.model_validate(data)
+            assert "bbox coordinates/dimensions must be null for NOVEL" in str(exc.value)
+
+    def test_novel_requires_non_empty_anchor_block_id(self):
+        data = create_valid_novel_snapshot()
+        data["segments"][0]["anchorBlockId"] = None
+        with pytest.raises(ValidationError) as exc:
+            MaterializationSnapshotV1.model_validate(data)
+        assert "anchorBlockId must be a non-empty string for NOVEL" in str(exc.value)
+
+        data["segments"][0]["anchorBlockId"] = "   "
+        with pytest.raises(ValidationError) as exc:
+            MaterializationSnapshotV1.model_validate(data)
+        assert "anchorBlockId must be a non-empty string for NOVEL" in str(exc.value)
+
+    def test_novel_rejects_duplicate_anchor_block_id(self):
+        data = create_valid_novel_snapshot()
+        data["segments"].append(
+            {
+                "id": "33333333-3333-4333-8333-333333333333",
+                "version": 1,
+                "pageNumber": None,
+                "bboxX": None,
+                "bboxY": None,
+                "bboxW": None,
+                "bboxH": None,
+                "anchorBlockId": "blk_0001_h1",  # duplicate!
+                "sortOrder": 1,
+                "rawText": "本文",
+                "translatedText": "Nội dung",
+                "blockType": "NARRATION",
+            }
+        )
+        with pytest.raises(ValidationError) as exc:
+            MaterializationSnapshotV1.model_validate(data)
+        assert "Duplicate anchorBlockId detected" in str(exc.value)
+
+    def test_novel_rejects_duplicate_sort_order(self):
+        data = create_valid_novel_snapshot()
+        data["segments"].append(
+            {
+                "id": "33333333-3333-4333-8333-333333333333",
+                "version": 1,
+                "pageNumber": None,
+                "bboxX": None,
+                "bboxY": None,
+                "bboxW": None,
+                "bboxH": None,
+                "anchorBlockId": "blk_0002_p",
+                "sortOrder": 0,  # duplicate sortOrder!
+                "rawText": "本文",
+                "translatedText": "Nội dung",
+                "blockType": "NARRATION",
+            }
+        )
+        with pytest.raises(ValidationError) as exc:
+            MaterializationSnapshotV1.model_validate(data)
+        assert "Duplicate sortOrder detected" in str(exc.value)
+
+    def test_novel_rejects_duplicate_segment_id(self):
+        data = create_valid_novel_snapshot()
+        data["segments"].append(
+            {
+                "id": VALID_SEG_UUID,  # duplicate id!
+                "version": 1,
+                "pageNumber": None,
+                "bboxX": None,
+                "bboxY": None,
+                "bboxW": None,
+                "bboxH": None,
+                "anchorBlockId": "blk_0002_p",
+                "sortOrder": 1,
+                "rawText": "本文",
+                "translatedText": "Nội dung",
+                "blockType": "NARRATION",
+            }
+        )
+        with pytest.raises(ValidationError) as exc:
+            MaterializationSnapshotV1.model_validate(data)
+        assert "Duplicate segment id detected" in str(exc.value)
+
+    def test_novel_requires_valid_block_type(self):
+        data = create_valid_novel_snapshot()
+        data["segments"][0]["blockType"] = None
+        with pytest.raises(ValidationError) as exc:
+            MaterializationSnapshotV1.model_validate(data)
+        assert "blockType must be one of" in str(exc.value)
+
+        data["segments"][0]["blockType"] = "INVALID_TYPE"
+        with pytest.raises(ValidationError) as exc:
+            MaterializationSnapshotV1.model_validate(data)
+        assert "blockType must be one of" in str(exc.value)
+
+
+class TestMaterializeNovelRequest:
+    def test_valid_novel_request(self):
+        from app.models.materialize import MaterializeNovelRequest, NovelAssetMapping
+
+        data = {
+            "jobId": VALID_UUID,
+            "targetRevision": 3,
+            "targetLanguage": "vi",
+            "materializationSnapshotUrl": "https://storage.local/materialize_snap.json",
+            "materializationSnapshotSha256": VALID_SHA256,
+            "structureSnapshotUrl": "https://storage.local/structure_snap.json",
+            "structureSnapshotSha256": VALID_SHA256,
+            "sourceStructureFingerprint": f"sha256:{VALID_SHA256}",
+            "outputUploadUrl": "https://storage.local/output.html",
+            "outputStorageKey": f"ai/jobs/{VALID_UUID}/materializations/rev-3/content.html",
+            "title": "Chương 1 Đã Dịch",
+            "assetMappings": [
+                {
+                    "sourceHref": "/images/cover.jpg",
+                    "storageKey": "ai/jobs/1/assets/cover.jpg",
+                }
+            ],
+        }
+        req = MaterializeNovelRequest.model_validate(data)
+        assert req.job_id == VALID_UUID
+        assert req.target_revision == 3
+        assert req.target_language == "vi"
+        assert req.title == "Chương 1 Đã Dịch"
+        assert len(req.asset_mappings) == 1
+        assert req.asset_mappings[0].source_href == "images/cover.jpg"
+
+    def test_rejects_non_canonical_output_storage_key(self):
+        from app.models.materialize import MaterializeNovelRequest
+
+        data = {
+            "jobId": VALID_UUID,
+            "targetRevision": 3,
+            "targetLanguage": "vi",
+            "materializationSnapshotUrl": "https://storage.local/materialize_snap.json",
+            "materializationSnapshotSha256": VALID_SHA256,
+            "structureSnapshotUrl": "https://storage.local/structure_snap.json",
+            "structureSnapshotSha256": VALID_SHA256,
+            "sourceStructureFingerprint": f"sha256:{VALID_SHA256}",
+            "outputUploadUrl": "https://storage.local/output.html",
+            "outputStorageKey": f"ai/jobs/{VALID_UUID}/materializations/rev-3/wrong_name.html",
+        }
+        with pytest.raises(ValidationError) as exc:
+            MaterializeNovelRequest.model_validate(data)
+        assert "outputStorageKey must be exact canonical key" in str(exc.value)
+
+    def test_rejects_duplicate_asset_mapping_href(self):
+        from app.models.materialize import MaterializeNovelRequest
+
+        data = {
+            "jobId": VALID_UUID,
+            "targetRevision": 3,
+            "targetLanguage": "vi",
+            "materializationSnapshotUrl": "https://storage.local/materialize_snap.json",
+            "materializationSnapshotSha256": VALID_SHA256,
+            "structureSnapshotUrl": "https://storage.local/structure_snap.json",
+            "structureSnapshotSha256": VALID_SHA256,
+            "sourceStructureFingerprint": f"sha256:{VALID_SHA256}",
+            "outputUploadUrl": "https://storage.local/output.html",
+            "outputStorageKey": f"ai/jobs/{VALID_UUID}/materializations/rev-3/content.html",
+            "assetMappings": [
+                {"sourceHref": "/images/pic.png", "storageKey": "key1"},
+                {"sourceHref": "images/pic.png", "storageKey": "key2"},
+            ],
+        }
+        with pytest.raises(ValidationError) as exc:
+            MaterializeNovelRequest.model_validate(data)
+        assert "Duplicate sourceHref detected" in str(exc.value)
+
+    def test_rejects_invalid_fingerprint_format(self):
+        from app.models.materialize import MaterializeNovelRequest
+
+        data = {
+            "jobId": VALID_UUID,
+            "targetRevision": 3,
+            "targetLanguage": "vi",
+            "materializationSnapshotUrl": "https://storage.local/materialize_snap.json",
+            "materializationSnapshotSha256": VALID_SHA256,
+            "structureSnapshotUrl": "https://storage.local/structure_snap.json",
+            "structureSnapshotSha256": VALID_SHA256,
+            "sourceStructureFingerprint": VALID_SHA256,  # missing sha256: prefix
+            "outputUploadUrl": "https://storage.local/output.html",
+            "outputStorageKey": f"ai/jobs/{VALID_UUID}/materializations/rev-3/content.html",
+        }
+        with pytest.raises(ValidationError) as exc:
+            MaterializeNovelRequest.model_validate(data)
+        assert "sourceStructureFingerprint" in str(exc.value)
+
+
+class TestNovelRebuilderConstructorAndLanguage:
+    def test_rebuilder_rebuild_from_snapshot_rejects_runtime_fallback_flag(self):
+        """P0 check: fallback_to_raw_on_missing must be configured via constructor only."""
+        from app.novel.rebuilder import NovelDocumentRebuilder
+
+        rebuilder = NovelDocumentRebuilder(fallback_to_raw_on_missing=False)
+        with pytest.raises(TypeError):
+            # Attempting to pass fallback_to_raw_on_missing to method must raise TypeError
+            rebuilder.rebuild_from_snapshot(
+                snapshot={},
+                translated_blocks={},
+                fallback_to_raw_on_missing=False,  # type: ignore
+            )
+
+    def test_rebuilder_target_language_preservation(self):
+        """P0 check: targetLanguage must be respected and not hardcoded to 'vi'."""
+        from app.novel.rebuilder import NovelDocumentRebuilder
+        from app.novel.ast_parser import HeadingBlockNode, TextNode, CanonicalNovelDocument
+
+        snapshot = {
+            "version": 1,
+            "document": {
+                "format": "EPUB",
+                "title": "Chapter 1",
+                "language": "ja",
+                "metadata": {},
+                "blocks": [
+                    {
+                        "type": "HEADING",
+                        "level": 1,
+                        "children": [{"type": "TEXT", "text": "第1章"}],
+                    }
+                ],
+            },
+            "segments": [
+                {
+                    "anchorBlockId": "blk_0001_h1",
+                    "sortOrder": 0,
+                    "blockType": "HEADING",
+                    "rawText": "第1章",
+                }
+            ],
+            "anchorMaps": {},
+        }
+
+        rebuilder = NovelDocumentRebuilder(fallback_to_raw_on_missing=False)
+        doc = rebuilder.rebuild_from_snapshot(
+            snapshot,
+            {"blk_0001_h1": "Chapter One"},
+            translated_title="Chapter 1 (EN)",
+            target_language="en",
+        )
+        assert doc.language == "en"
+        assert doc.title == "Chapter 1 (EN)"
+        assert len(doc.blocks) == 1
+        assert doc.blocks[0].children[0].text == "Chapter One"
+

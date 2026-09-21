@@ -44,7 +44,13 @@ def test_rebuilder_source_immutability():
     }
 
     rebuilder = NovelDocumentRebuilder()
-    rebuilt_doc = rebuilder.rebuild(source_doc, translations, amaps, translated_title="Chương 1")
+    rebuilt_doc = rebuilder.rebuild(
+        source_doc,
+        translations,
+        amaps,
+        translated_title="Chương 1",
+        target_language="vi",
+    )
 
     # Invariant: source_doc không bị thay đổi
     assert source_doc.language == "ja"

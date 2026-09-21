@@ -217,12 +217,19 @@ class FullNovelPipeline:
                 message="Rebuilding Document AST and evaluating structural QA invariants",
             )
 
-            # Tái tạo Document AST tiếng Việt
+            # Tái tạo Document AST với targetLanguage tương ứng
+            target_lang = (
+                input_manifest.targetLanguage
+                if isinstance(input_manifest, TranslationInputManifestV1)
+                else (input_manifest.get("targetLanguage") if isinstance(input_manifest, dict) else "vi")
+            ) or "vi"
+
             translated_doc: CanonicalNovelDocument = self.rebuilder.rebuild(
                 source_doc=source_doc,
                 translated_blocks=translation_result.blocks,
                 anchor_maps=anchor_maps,
                 translated_title=extracted_chapter.title,
+                target_language=target_lang,
             )
 
             # Thẩm định chất lượng cấu trúc và bảo toàn furigana / inline tags

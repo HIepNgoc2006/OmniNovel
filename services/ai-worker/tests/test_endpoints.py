@@ -443,5 +443,82 @@ def test_materialize_manga_happy_path(mock_re_render):
     mock_re_render.assert_awaited_once()
 
 
+def test_materialize_novel_missing_key():
+    response = client.post(
+        "/internal/v1/jobs/materialize-novel",
+        json={
+            "jobId": "11111111-1111-4111-8111-111111111111",
+            "targetRevision": 2,
+        },
+    )
+    assert response.status_code == 401
+    assert "Missing internal service secret" in response.json()["detail"]
+
+
+def test_materialize_novel_invalid_key():
+    response = client.post(
+        "/internal/v1/jobs/materialize-novel",
+        headers={"X-Internal-Service-Key": "wrong_key_secret"},
+        json={
+            "jobId": "11111111-1111-4111-8111-111111111111",
+            "targetRevision": 2,
+        },
+    )
+    assert response.status_code == 401
+    assert "Invalid internal service secret" in response.json()["detail"]
+
+
+def test_materialize_novel_invalid_payload():
+    # Missing required fields like snapshots, fingerprint, upload URL
+    response = client.post(
+        "/internal/v1/jobs/materialize-novel",
+        headers=AUTH_HEADERS,
+        json={
+            "jobId": "11111111-1111-4111-8111-111111111111",
+            "targetRevision": 2,
+        },
+    )
+    assert response.status_code == 422
+
+
+@patch("app.pipeline.novel_materializer.NovelMaterializer.materialize_novel", new_callable=AsyncMock)
+def test_materialize_novel_happy_path(mock_materialize):
+    mock_materialize.return_value = {
+        "htmlKey": "ai/jobs/11111111-1111-4111-8111-111111111111/materializations/rev-2/content.html",
+        "htmlFileSizeBytes": 1024,
+        "segmentCount": 2,
+        "charCount": 50,
+    }
+
+    valid_payload = {
+        "jobId": "11111111-1111-4111-8111-111111111111",
+        "targetRevision": 2,
+        "targetLanguage": "vi",
+        "materializationSnapshotUrl": "http://127.0.0.1:9000/internal-novel/mat.json",
+        "materializationSnapshotSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "structureSnapshotUrl": "http://127.0.0.1:9000/internal-novel/struct.json",
+        "structureSnapshotSha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "sourceStructureFingerprint": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "outputUploadUrl": "http://127.0.0.1:9000/internal-novel/out/content.html",
+        "outputStorageKey": "ai/jobs/11111111-1111-4111-8111-111111111111/materializations/rev-2/content.html",
+        "title": "Chương 1",
+        "assetMappings": [],
+    }
+
+    response = client.post(
+        "/internal/v1/jobs/materialize-novel",
+        headers=AUTH_HEADERS,
+        json=valid_payload,
+    )
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "COMPLETED"
+    assert data["jobId"] == "11111111-1111-4111-8111-111111111111"
+    assert data["targetRevision"] == 2
+    assert data["result"]["htmlFileSizeBytes"] == 1024
+    mock_materialize.assert_awaited_once()
+
+
+
 
 

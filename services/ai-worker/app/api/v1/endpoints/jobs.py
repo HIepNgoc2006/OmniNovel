@@ -17,8 +17,9 @@ from app.models.manifests import (
     NovelBlockType,
     TranslationInputManifestV1,
 )
-from app.models.materialize import MaterializeMangaRequest
+from app.models.materialize import MaterializeMangaRequest, MaterializeNovelRequest
 from app.pipeline.manga_re_renderer import MangaReRenderer
+from app.pipeline.novel_materializer import NovelMaterializer
 
 router = APIRouter()
 
@@ -613,5 +614,28 @@ async def materialize_manga(
         "jobId": request.job_id,
         "targetRevision": request.target_revision,
     }
+
+
+def get_novel_materializer() -> NovelMaterializer:
+    return NovelMaterializer()
+
+
+@router.post(
+    "/materialize-novel",
+    dependencies=[Depends(verify_internal_key)],
+    status_code=status.HTTP_200_OK,
+)
+async def materialize_novel(
+    request: MaterializeNovelRequest,
+    materializer: NovelMaterializer = Depends(get_novel_materializer),
+):
+    result = await materializer.materialize_novel(request)
+    return {
+        "status": "COMPLETED",
+        "jobId": request.job_id,
+        "targetRevision": request.target_revision,
+        "result": result,
+    }
+
 
 

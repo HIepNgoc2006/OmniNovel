@@ -7,7 +7,8 @@ if (!(Test-Path $PubCacheDir)) {
     New-Item -ItemType Directory -Path $PubCacheDir -Force | Out-Null
 }
 
-$Image = "ghcr.io/cirruslabs/flutter:latest"
+# Cố định image Flutter 3.44.0 (Dart 3.12.0) bất biến chống trôi dạt phiên bản
+$Image = "ghcr.io/cirruslabs/flutter@sha256:217a3d81b124f3fab82b24633bf66b256cc74528b894e7f17103f70150232077"
 $CmdArgs = if ($args) { $args -join " " } else { "" }
 $Cmd = "flutter $CmdArgs".Trim()
 

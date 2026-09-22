@@ -95,6 +95,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
             child: WebtoonReaderView(
               controller: _sessionController,
               imageCacheCoordinator: _imageCacheCoordinator,
+              initialPageIndex: widget.initialPageIndex,
               onProgressChanged: (pageIndex, progressPercentage, scrollOffset) {
                 _progressCoordinator.recordProgress(
                   storyId: widget.storyId,

@@ -80,6 +80,7 @@ void main() {
             context: any(named: 'context'),
             pages: any(named: 'pages'),
             adjacentIndexes: any(named: 'adjacentIndexes'),
+            targetWidth: any(named: 'targetWidth'),
           )).thenAnswer((_) async => {});
 
       await controller.loadChapter('ch1');
@@ -115,6 +116,7 @@ void main() {
             context: any(named: 'context'),
             pages: any(named: 'pages'),
             adjacentIndexes: {2, 3, 6, 7},
+            targetWidth: any(named: 'targetWidth'),
           )).called(1);
     });
   });

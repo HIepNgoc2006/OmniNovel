@@ -4,11 +4,13 @@ import '../models/reader_models.dart';
 import 'reader_image_cache_coordinator.dart';
 import 'reader_session_controller.dart';
 import 'reader_session_state.dart';
+import 'webtoon_geometry_calculator.dart';
 
 class WebtoonReaderView extends StatefulWidget {
   final ReaderSessionController controller;
   final ReaderImageCacheCoordinator imageCacheCoordinator;
   final ScrollController? scrollController;
+  final int initialPageIndex;
   final void Function(int pageIndex, double progressPercentage, double scrollOffset)?
       onProgressChanged;
 
@@ -17,6 +19,7 @@ class WebtoonReaderView extends StatefulWidget {
     required this.controller,
     required this.imageCacheCoordinator,
     this.scrollController,
+    this.initialPageIndex = 0,
     this.onProgressChanged,
   });
 
@@ -27,6 +30,11 @@ class WebtoonReaderView extends StatefulWidget {
 class _WebtoonReaderViewState extends State<WebtoonReaderView> {
   late final ScrollController _scrollController;
   bool _internalScrollController = false;
+
+  WebtoonGeometryCalculator? _geometryCalculator;
+  double? _lastViewportWidth;
+  bool _hasRestoredInitialPosition = false;
+  double _lastScrollOffset = 0.0;
 
   @override
   void initState() {
@@ -47,28 +55,49 @@ class _WebtoonReaderViewState extends State<WebtoonReaderView> {
     super.dispose();
   }
 
-  bool _onScrollNotification(ScrollNotification notification) {
+  bool _onScrollNotification(
+    ScrollNotification notification,
+    double viewportWidth,
+    double viewportHeight,
+    int targetWidth,
+  ) {
     if (notification is ScrollUpdateNotification) {
       final metrics = notification.metrics;
       final totalPages = widget.controller.state.totalPages;
-      if (totalPages <= 0 || metrics.maxScrollExtent <= 0) return false;
+      if (totalPages <= 0 || _geometryCalculator == null) return false;
 
-      // Ước lượng trang hiện tại dựa trên tỷ lệ cuộn
-      final scrollFraction = (metrics.pixels / metrics.maxScrollExtent).clamp(0.0, 1.0);
-      final estimatedCurrentPage = (scrollFraction * (totalPages - 1)).round();
-      final startIndex = (estimatedCurrentPage - 1).clamp(0, totalPages - 1);
-      final endIndex = (estimatedCurrentPage + 1).clamp(0, totalPages - 1);
+      final currentOffset = metrics.pixels;
+      final direction = currentOffset >= _lastScrollOffset
+          ? ScrollDirectionPreference.down
+          : ScrollDirectionPreference.up;
+      _lastScrollOffset = currentOffset;
+
+      final (startIndex, endIndex) = _geometryCalculator!.findVisibleRange(
+        currentOffset,
+        metrics.viewportDimension,
+      );
+
+      final focusedPageIndex = _geometryCalculator!.findFocusedPage(
+        currentOffset,
+        metrics.viewportDimension,
+        direction: direction,
+      );
 
       widget.controller.updateVisibleRange(
         context: context,
         startIndex: startIndex,
         endIndex: endIndex,
-        scrollOffset: metrics.pixels,
+        focusedIndex: focusedPageIndex,
+        scrollOffset: currentOffset,
         maxScrollOffset: metrics.maxScrollExtent,
+        targetWidth: targetWidth,
       );
 
-      final progress = scrollFraction * 100;
-      widget.onProgressChanged?.call(estimatedCurrentPage, progress, metrics.pixels);
+      final progress = metrics.maxScrollExtent > 0
+          ? ((currentOffset / metrics.maxScrollExtent) * 100).clamp(0.0, 100.0)
+          : ((focusedPageIndex / totalPages) * 100).clamp(0.0, 100.0);
+
+      widget.onProgressChanged?.call(focusedPageIndex, progress, currentOffset);
     }
     return false;
   }
@@ -115,70 +144,169 @@ class _WebtoonReaderViewState extends State<WebtoonReaderView> {
           );
         }
 
-        return NotificationListener<ScrollNotification>(
-          onNotification: _onScrollNotification,
-          child: ListView.builder(
-            controller: _scrollController,
-            physics: const BouncingScrollPhysics(),
-            addAutomaticKeepAlives: false, // Evict widget khi ra khỏi viewport
-            addRepaintBoundaries: true, // Phân tách render tree cho 120Hz mượt mà
-            itemCount: state.pages.length,
-            itemBuilder: (context, index) {
-              final page = state.pages[index];
-              final shouldRetain = state.windowResult.shouldRetainBitmap(index);
+        return LayoutBuilder(
+          builder: (context, constraints) {
+            final viewportWidth = constraints.maxWidth;
+            final viewportHeight = constraints.maxHeight;
+            final dpr = MediaQuery.of(context).devicePixelRatio;
+            final targetWidth = (viewportWidth * dpr).round().clamp(720, 1600);
 
-              return _WebtoonPageItem(
-                page: page,
-                pageIndex: index,
-                shouldRetainBitmap: shouldRetain,
-                coordinator: widget.imageCacheCoordinator,
+            if (_geometryCalculator == null || _lastViewportWidth != viewportWidth) {
+              _geometryCalculator = WebtoonGeometryCalculator(
+                viewportWidth: viewportWidth,
+                pages: state.pages,
               );
-            },
-          ),
+              _lastViewportWidth = viewportWidth;
+            }
+
+            // An toàn Resume: Chỉ nhảy vị trí một lần sau khi layout đầu tiên hoàn tất
+            if (!_hasRestoredInitialPosition &&
+                widget.initialPageIndex > 0 &&
+                state.pages.isNotEmpty) {
+              _hasRestoredInitialPosition = true;
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (!mounted || !_scrollController.hasClients) return;
+                final targetOffset =
+                    _geometryCalculator!.getOffsetForPage(widget.initialPageIndex);
+                _scrollController.jumpTo(targetOffset);
+              });
+            }
+
+            return NotificationListener<ScrollNotification>(
+              onNotification: (notification) => _onScrollNotification(
+                notification,
+                viewportWidth,
+                viewportHeight,
+                targetWidth,
+              ),
+              child: ListView.builder(
+                controller: _scrollController,
+                physics: const BouncingScrollPhysics(),
+                addAutomaticKeepAlives: false, // Evict widget khi ra khỏi viewport
+                addRepaintBoundaries: true, // Phân tách render tree cho 120/144Hz
+                itemCount: state.pages.length,
+                itemBuilder: (context, index) {
+                  final page = state.pages[index];
+                  final shouldRetain = state.windowResult.shouldRetainBitmap(index);
+
+                  return _WebtoonPageItem(
+                    key: ValueKey('${page.assetId}_$index'),
+                    page: page,
+                    pageIndex: index,
+                    shouldRetainBitmap: shouldRetain,
+                    coordinator: widget.imageCacheCoordinator,
+                    targetWidth: targetWidth,
+                  );
+                },
+              ),
+            );
+          },
         );
       },
     );
   }
 }
 
-class _WebtoonPageItem extends StatelessWidget {
+class _WebtoonPageItem extends StatefulWidget {
   final ChapterPage page;
   final int pageIndex;
   final bool shouldRetainBitmap;
   final ReaderImageCacheCoordinator coordinator;
+  final int targetWidth;
 
   const _WebtoonPageItem({
+    super.key,
     required this.page,
     required this.pageIndex,
     required this.shouldRetainBitmap,
     required this.coordinator,
+    required this.targetWidth,
   });
 
   @override
+  State<_WebtoonPageItem> createState() => _WebtoonPageItemState();
+}
+
+class _WebtoonPageItemState extends State<_WebtoonPageItem> {
+  Future<String>? _urlFuture;
+  bool _hasAutoRetried = false;
+  bool _isAutoRetrying = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.shouldRetainBitmap) {
+      _urlFuture = widget.coordinator.getPageUrl(widget.page);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _WebtoonPageItem oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.shouldRetainBitmap && _urlFuture == null) {
+      _urlFuture = widget.coordinator.getPageUrl(widget.page);
+    }
+  }
+
+  void _triggerOneShotRecovery() {
+    if (_hasAutoRetried || _isAutoRetrying) return;
+    _hasAutoRetried = true;
+    _isAutoRetrying = true;
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _urlFuture = widget.coordinator.refreshPageUrl(widget.page).whenComplete(() {
+          if (mounted) {
+            setState(() {
+              _isAutoRetrying = false;
+            });
+          }
+        });
+      });
+    });
+  }
+
+  void _manualRetry() {
+    setState(() {
+      _hasAutoRetried = false;
+      _isAutoRetrying = false;
+      _urlFuture = widget.coordinator.refreshPageUrl(widget.page);
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
-    // Duy trì aspect ratio cố định để ngăn chặn hiện tượng nhảy khung hình (content jump)
+    // Duy trì aspect ratio cố định để ngăn chặn hiện tượng giật nhảy layout (content jump)
     return AspectRatio(
-      aspectRatio: page.aspectRatio,
+      aspectRatio: widget.page.aspectRatio,
       child: Container(
         color: AppColors.oledBlack,
         alignment: Alignment.center,
-        child: !shouldRetainBitmap
-            ? _buildPlaceholder(text: 'Trang ${pageIndex + 1}')
+        child: !widget.shouldRetainBitmap
+            ? _buildPlaceholder(text: 'Trang ${widget.pageIndex + 1}')
             : FutureBuilder<String>(
-                future: coordinator.getPageUrl(page),
+                future: _urlFuture,
                 builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
+                  if (snapshot.connectionState == ConnectionState.waiting ||
+                      _isAutoRetrying) {
                     return _buildLoadingPlaceholder();
                   }
 
                   if (snapshot.hasError || !snapshot.hasData) {
-                    return _buildErrorPlaceholder();
+                    if (!_hasAutoRetried) {
+                      _triggerOneShotRecovery();
+                      return _buildLoadingPlaceholder();
+                    }
+                    return _buildErrorPlaceholder(onRetry: _manualRetry);
                   }
 
                   final downloadUrl = snapshot.data!;
-                  final imageProvider = coordinator.getImageProvider(
-                    page.assetId,
+                  final imageProvider = widget.coordinator.getImageProvider(
+                    widget.page.assetId,
                     downloadUrl,
+                    targetWidth: widget.targetWidth,
+                    page: widget.page,
                   );
 
                   return Image(
@@ -186,7 +314,11 @@ class _WebtoonPageItem extends StatelessWidget {
                     fit: BoxFit.fitWidth,
                     filterQuality: FilterQuality.medium,
                     errorBuilder: (context, error, stackTrace) {
-                      return _buildErrorPlaceholder();
+                      if (!_hasAutoRetried) {
+                        _triggerOneShotRecovery();
+                        return _buildLoadingPlaceholder();
+                      }
+                      return _buildErrorPlaceholder(onRetry: _manualRetry);
                     },
                     loadingBuilder: (context, child, loadingProgress) {
                       if (loadingProgress == null) return child;
@@ -231,19 +363,26 @@ class _WebtoonPageItem extends StatelessWidget {
     );
   }
 
-  Widget _buildErrorPlaceholder() {
+  Widget _buildErrorPlaceholder({VoidCallback? onRetry}) {
     return Container(
       color: AppColors.darkSurface,
       alignment: Alignment.center,
-      child: const Column(
+      child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(Icons.broken_image, color: AppColors.textMuted, size: 32),
-          SizedBox(height: 8),
-          Text(
+          const Icon(Icons.broken_image, color: AppColors.textMuted, size: 32),
+          const SizedBox(height: 8),
+          const Text(
             'Lỗi tải ảnh',
             style: TextStyle(color: AppColors.textMuted, fontSize: 12),
           ),
+          if (onRetry != null) ...[
+            const SizedBox(height: 8),
+            TextButton(
+              onPressed: onRetry,
+              child: const Text('Thử lại', style: TextStyle(fontSize: 12)),
+            ),
+          ],
         ],
       ),
     );

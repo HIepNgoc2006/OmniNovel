@@ -60,11 +60,14 @@ class ReaderSessionController extends ChangeNotifier {
     required BuildContext context,
     required int startIndex,
     required int endIndex,
+    int? focusedIndex,
     required double scrollOffset,
     required double maxScrollOffset,
+    int? targetWidth,
   }) {
     if (_state.status != ReaderStatus.ready || _state.totalPages == 0) return;
 
+    final actualFocused = (focusedIndex ?? startIndex).clamp(0, _state.totalPages - 1);
     final policy = ReaderWindowPolicy(totalPageCount: _state.totalPages);
     final window = policy.calculateWindow(
       visibleStartIndex: startIndex,
@@ -73,7 +76,7 @@ class ReaderSessionController extends ChangeNotifier {
 
     final progress = maxScrollOffset > 0
         ? ((scrollOffset / maxScrollOffset) * 100).clamp(0.0, 100.0)
-        : ((startIndex / _state.totalPages) * 100).clamp(0.0, 100.0);
+        : ((actualFocused / _state.totalPages) * 100).clamp(0.0, 100.0);
 
     // Evict distant bitmaps ngay lập tức khỏi RAM
     _imageCacheCoordinator.evictDistantBitmaps(
@@ -81,17 +84,18 @@ class ReaderSessionController extends ChangeNotifier {
       distantIndexes: window.distantIndexes,
     );
 
-    // Prefetch adjacent pages trong background
+    // Prefetch adjacent pages trong background có kiểm soát memory budget
     _imageCacheCoordinator.prefetchAdjacentPages(
       context: context,
       pages: _state.pages,
       adjacentIndexes: window.adjacentIndexes,
+      targetWidth: targetWidth,
     );
 
     _state = _state.copyWith(
       visibleStartIndex: startIndex,
       visibleEndIndex: endIndex,
-      focusedPageIndex: startIndex,
+      focusedPageIndex: actualFocused,
       progressPercentage: progress,
       scrollPosition: scrollOffset,
       windowResult: window,

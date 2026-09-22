@@ -218,7 +218,7 @@ void main() {
     );
   }
 
-  group('Phase 5B Vertical Slice — Story Detail to Webtoon Reader', () {
+  group('Phase 5B Vertical Slice Widget Integration Test — Story Detail to Webtoon Reader', () {
     testWidgets('StoryDetailScreen displays story info, genres, chapters and Read from start button', (tester) async {
       await tester.pumpWidget(buildRouterApp());
 

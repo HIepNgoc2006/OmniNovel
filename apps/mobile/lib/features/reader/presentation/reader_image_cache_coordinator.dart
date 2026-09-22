@@ -2,47 +2,161 @@ import 'package:flutter/widgets.dart';
 import '../models/reader_models.dart';
 import '../repositories/media_repository.dart';
 
+class _ActiveImageEntry {
+  final String url;
+  final int? targetWidth;
+  final ImageProvider provider;
+  final int estimatedSizeBytes;
+
+  const _ActiveImageEntry({
+    required this.url,
+    required this.targetWidth,
+    required this.provider,
+    required this.estimatedSizeBytes,
+  });
+}
+
+/// Bộ điều phối bộ nhớ ảnh Reader (Image Cache Coordinator)
+/// 1. Giới hạn giải mã theo targetWidth qua ResizeImage chống OOM với ảnh Webtoon siêu lớn.
+/// 2. Quản lý Provider Key đa chiều (assetId, targetWidth, url), tự động evict và đổi provider khi URL xoay vòng (signed URL rotation).
+/// 3. Hỗ trợ one-shot recovery khi signed URL hết hạn (403).
+/// 4. Kiểm soát ngân sách bộ nhớ (Memory-Budget-Aware Prefetch): Giới hạn tổng RAM bitmap của adjacent pages trong khoảng an toàn (60-90MB).
 class ReaderImageCacheCoordinator {
   final MediaRepository _mediaRepository;
 
-  // Map lưu trữ NetworkImage provider đã khởi tạo theo assetId để thực hiện evict chính xác
-  final Map<String, NetworkImage> _activeProviders = {};
+  /// Ngân sách bộ nhớ tối đa dành cho ảnh giải mã (mặc định 80MB)
+  final int imageBudgetBytes;
 
-  ReaderImageCacheCoordinator({required MediaRepository mediaRepository})
-      : _mediaRepository = mediaRepository;
+  // Map lưu trữ thông tin ảnh đang hoạt động theo assetId
+  final Map<String, _ActiveImageEntry> _activeEntries = {};
+
+  ReaderImageCacheCoordinator({
+    required MediaRepository mediaRepository,
+    this.imageBudgetBytes = 80 * 1024 * 1024, // 80 MB
+  }) : _mediaRepository = mediaRepository;
 
   /// Lấy presigned URL cho trang
   Future<String> getPageUrl(ChapterPage page) async {
     return _mediaRepository.getMediaDownloadUrl(page.assetId);
   }
 
-  /// Khởi tạo hoặc lấy lại ImageProvider đã có, lưu lại để sau này evict
-  ImageProvider getImageProvider(String assetId, String downloadUrl) {
-    return _activeProviders.putIfAbsent(
-      assetId,
-      () => NetworkImage(downloadUrl),
+  /// Làm mới Presigned URL khi gặp lỗi 403 / hết hạn token và xóa bỏ provider cũ
+  Future<String> refreshPageUrl(ChapterPage page) async {
+    invalidateAndEvict(page.assetId);
+    return _mediaRepository.getMediaDownloadUrl(
+      page.assetId,
+      forceRefresh: true,
     );
   }
 
-  /// Tải trước (precache/prefetch) các trang trong vùng ADJACENT
+  /// Tính toán dung lượng RAM bitmap giải mã ước lượng (RGBA 4 bytes/pixel)
+  static int estimateDecodedBytes(ChapterPage page, int targetWidth) {
+    if (targetWidth <= 0) return 0;
+    final ratio = page.aspectRatio > 0 ? page.aspectRatio : 0.65;
+    final height = (targetWidth / ratio).round();
+    return targetWidth * height * 4;
+  }
+
+  /// Khởi tạo hoặc tái sử dụng ImageProvider có giới hạn kích thước giải mã (ResizeImage).
+  /// Nếu downloadUrl hoặc targetWidth thay đổi, tự động evict provider cũ trước khi tạo mới.
+  ImageProvider getImageProvider(
+    String assetId,
+    String downloadUrl, {
+    int? targetWidth,
+    ChapterPage? page,
+  }) {
+    final existing = _activeEntries[assetId];
+    if (existing != null) {
+      if (existing.url == downloadUrl && existing.targetWidth == targetWidth) {
+        return existing.provider;
+      }
+      // URL hoặc kích thước thay đổi (xoay vòng signed URL): giải phóng provider cũ
+      existing.provider.evict();
+      _activeEntries.remove(assetId);
+    }
+
+    final netImage = NetworkImage(downloadUrl);
+    final ImageProvider provider = (targetWidth != null && targetWidth > 0)
+        ? ResizeImage(netImage, width: targetWidth, allowUpscaling: false)
+        : netImage;
+
+    final estimatedBytes = (page != null && targetWidth != null)
+        ? estimateDecodedBytes(page, targetWidth)
+        : 0;
+
+    _activeEntries[assetId] = _ActiveImageEntry(
+      url: downloadUrl,
+      targetWidth: targetWidth,
+      provider: provider,
+      estimatedSizeBytes: estimatedBytes,
+    );
+
+    return provider;
+  }
+
+  /// Tổng dung lượng RAM bitmap ước tính của các trang đang được quản lý
+  int get currentDecodedBytes {
+    int total = 0;
+    for (final entry in _activeEntries.values) {
+      total += entry.estimatedSizeBytes;
+    }
+    return total;
+  }
+
+  /// Tải trước (precache) các trang trong vùng ADJACENT có kiểm soát ngân sách bộ nhớ (Memory Budget)
   Future<void> prefetchAdjacentPages({
     required BuildContext context,
     required List<ChapterPage> pages,
     required Set<int> adjacentIndexes,
+    int? targetWidth,
   }) async {
+    int projectedBytes = currentDecodedBytes;
+
     for (final index in adjacentIndexes) {
       if (index < 0 || index >= pages.length) continue;
       final page = pages[index];
 
+      // Kiểm tra xem trang này đã được nạp chưa
+      if (!_activeEntries.containsKey(page.assetId)) {
+        if (targetWidth != null && targetWidth > 0) {
+          final pageBytes = estimateDecodedBytes(page, targetWidth);
+          // Nếu việc tải thêm trang này vượt quá ngân sách bộ nhớ (imageBudgetBytes), dừng prefetch
+          if (projectedBytes + pageBytes > imageBudgetBytes) {
+            continue;
+          }
+          projectedBytes += pageBytes;
+        }
+      }
+
       try {
         final url = await _mediaRepository.getMediaDownloadUrl(page.assetId);
-        final provider = getImageProvider(page.assetId, url);
+        final provider = getImageProvider(
+          page.assetId,
+          url,
+          targetWidth: targetWidth,
+          page: page,
+        );
         if (context.mounted) {
-          await precacheImage(provider, context);
+          await precacheImage(
+            provider,
+            context,
+            onError: (exception, stackTrace) {
+              // Bỏ qua lỗi mạng/decode khi prefetch trong background hoặc khi chạy offline/test
+            },
+          );
         }
       } catch (_) {
-        // Bỏ qua lỗi mạng khi prefetch, để viewport tự động retry khi scroll tới
+        // Bỏ qua lỗi mạng khi prefetch, để viewport tự động retry/recover khi scroll tới
       }
+    }
+  }
+
+  /// Xóa cache và thu hồi bitmap khỏi Flutter ImageCache cho assetId cụ thể
+  void invalidateAndEvict(String assetId) {
+    _mediaRepository.invalidate(assetId);
+    final entry = _activeEntries.remove(assetId);
+    if (entry != null) {
+      entry.provider.evict();
     }
   }
 
@@ -55,18 +169,18 @@ class ReaderImageCacheCoordinator {
       if (index < 0 || index >= pages.length) continue;
       final page = pages[index];
 
-      final provider = _activeProviders.remove(page.assetId);
-      if (provider != null) {
-        provider.evict();
+      final entry = _activeEntries.remove(page.assetId);
+      if (entry != null) {
+        entry.provider.evict();
       }
     }
   }
 
   /// Dọn sạch toàn bộ providers và image cache khi thoát Reader
   void dispose() {
-    for (final provider in _activeProviders.values) {
-      provider.evict();
+    for (final entry in _activeEntries.values) {
+      entry.provider.evict();
     }
-    _activeProviders.clear();
+    _activeEntries.clear();
   }
 }

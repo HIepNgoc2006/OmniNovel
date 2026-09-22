@@ -56,6 +56,7 @@ export class AuthController {
     return {
       user,
       accessToken,
+      refreshToken,
     };
   }
 
@@ -64,8 +65,13 @@ export class AuthController {
   async refresh(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
+    @Body('refreshToken') bodyRefreshToken?: string,
   ) {
-    const refreshToken = req.cookies?.refreshToken;
+    const refreshToken =
+      req.cookies?.refreshToken ||
+      bodyRefreshToken ||
+      (req.headers['x-refresh-token'] as string);
+
     const { accessToken, refreshToken: newRefreshToken } =
       await this.authService.refreshTokens(refreshToken);
 
@@ -79,6 +85,7 @@ export class AuthController {
 
     return {
       accessToken,
+      refreshToken: newRefreshToken,
     };
   }
 
@@ -93,8 +100,13 @@ export class AuthController {
   async logout(
     @Req() req: Request,
     @Res({ passthrough: true }) res: Response,
+    @Body('refreshToken') bodyRefreshToken?: string,
   ) {
-    const refreshToken = req.cookies?.refreshToken;
+    const refreshToken =
+      req.cookies?.refreshToken ||
+      bodyRefreshToken ||
+      (req.headers['x-refresh-token'] as string);
+
     await this.authService.logout(refreshToken);
 
     res.clearCookie('refreshToken', {

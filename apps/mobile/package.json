@@ -1,0 +1,12 @@
+{
+  "name": "@omninovel/mobile",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OmniNovel Mobile Client (Flutter Android-First)",
+  "scripts": {
+    "pub:get": "powershell -ExecutionPolicy Bypass -File scripts/flutter-runner.ps1 pub get",
+    "analyze": "powershell -ExecutionPolicy Bypass -File scripts/flutter-runner.ps1 analyze",
+    "test": "powershell -ExecutionPolicy Bypass -File scripts/flutter-runner.ps1 test",
+    "build:apk": "powershell -ExecutionPolicy Bypass -File scripts/flutter-runner.ps1 build apk --debug"
+  }
+}

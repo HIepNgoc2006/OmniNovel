@@ -68,12 +68,13 @@ apps/mobile/
 
 ## 3. Lộ Trình Triển Khai Phân Rã (WBS & Sub-phases)
 
-### 🚀 Phase 5A: Khung Ứng Dụng & Hạ Tầng Core (Foundation)
-- [ ] Khởi tạo dự án Flutter trong `apps/mobile` (cấu hình Android `minSdk 24`, `targetSdk 36`).
-- [ ] Xây dựng `core/api`: Dio client cấu hình baseURL, Timeout, Logging và Interceptor tự động làm mới JWT token (`/api/v1/auth/refresh`).
-- [ ] Chuẩn hóa Error Handling: Ánh xạ mã lỗi HTTP chuẩn JSON từ Core API (`code`, `message`, `requestId`).
-- [ ] Thiết lập Local Secure Storage lưu trữ Access Token và Refresh Token an toàn.
-- [ ] Xây dựng App Shell, Bottom Navigation Bar và Theme System (OmniNovel Dark Mode).
+### 🚀 Phase 5A: Khung Ứng Dụng & Hạ Tầng Core (Foundation) - [x] HOÀN THÀNH
+- [x] Khởi tạo dự án Flutter trong `apps/mobile` (cấu hình Android `minSdk 24`, `targetSdk 36`, `compileSdk 36`, Java 17).
+- [x] Xây dựng `core/api`: Dio client cấu hình baseURL, Timeout, Logging và `AuthInterceptor` tự động làm mới JWT token (`/api/v1/auth/refresh`) với Single-Flight Mutex concurrency guard.
+- [x] Chuẩn hóa Error Handling: Ánh xạ mã lỗi HTTP chuẩn JSON từ Core API (`code`, `message`, `requestId`, `details`, `meta`).
+- [x] Thiết lập Local Secure Storage lưu trữ Access Token và Refresh Token an toàn bằng `FlutterSecureStorage` (Android `EncryptedSharedPreferences`), tách biệt `PreferencesService` (SharedPreferences) cho cấu hình giao diện.
+- [x] Xây dựng App Shell, `GoRouter` với Auth Guard Redirect và Theme System (OmniNovel Dark Mode & OLED Pure Black `#000000`).
+- [x] Bộ kiểm thử Foundation: 18/18 tests GREEN, `flutter analyze` 0 error/warning (đáp ứng 100% Gate 5A).
 
 ### 📖 Phase 5B: Reader Vertical Slice (E2E Core Flow)
 - [ ] Xây dựng luồng đọc xuyên suốt hoàn chỉnh:
@@ -111,4 +112,4 @@ apps/mobile/
 - **[Issue #140](https://github.com/HIepNgoc2006/OmniNovel/issues/140):** Dependency security triage & remediation (Đã triage an toàn & vá `adm-zip`).
 - **[Issue #190](https://github.com/HIepNgoc2006/OmniNovel/issues/190):** `[Phase 5][Backend] Canonical Reverse Packaging for MediaAsset-backed ChapterVersions` (Phục vụ tải offline).
 - **[Issue #191](https://github.com/HIepNgoc2006/OmniNovel/issues/191):** `[Phase 5][Backend] Implement Chapter Error Reporting API (POST /api/v1/chapters/:id/reports)` (Phục vụ MOB-011).
-- **Phase 5 Parent Living Tracker:** *(Đang tạo)*
+- **[Issue #192](https://github.com/HIepNgoc2006/OmniNovel/issues/192):** `[Phase 5 Master Tracker] Flutter Mobile App Implementation (MOB-001 -> MOB-012)` (Master Living Tracker).

@@ -1,0 +1,40 @@
+name: omninovel_mobile
+description: OmniNovel Reader-First Android Mobile Client (Phase 5A Mobile Foundation)
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: '>=3.5.0 <4.0.0'
+  flutter: '>=3.24.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # Networking
+  dio: ^5.7.0
+
+  # Secure token storage
+  flutter_secure_storage: ^9.2.2
+
+  # Non-sensitive preferences (Theme, UI configs)
+  shared_preferences: ^2.3.2
+
+  # Declarative routing with auth redirect
+  go_router: ^14.3.0
+
+  # Minimal decoupled state propagation (no heavy framework overhead)
+  provider: ^6.1.2
+
+  # Typography & Icons
+  google_fonts: ^6.2.1
+  cupertino_icons: ^1.0.8
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  mocktail: ^1.0.4
+
+flutter:
+  uses-material-design: true

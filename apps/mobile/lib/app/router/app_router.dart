@@ -5,12 +5,31 @@ import '../../core/auth/auth_state.dart';
 import '../../core/api/api_client.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/home/presentation/home_screen.dart';
+import '../../features/story/presentation/story_detail_screen.dart';
+import '../../features/story/repositories/story_repository.dart';
+import '../../features/reader/presentation/reader_screen.dart';
+import '../../features/reader/repositories/chapter_repository.dart';
+import '../../features/reader/repositories/media_repository.dart';
+import '../../features/reader/repositories/reading_progress_repository.dart';
 
 class AppRouter {
   static GoRouter create({
     required AuthService authService,
     required ApiClient apiClient,
+    StoryRepository? storyRepository,
+    ChapterRepository? chapterRepository,
+    MediaRepository? mediaRepository,
+    ReadingProgressRepository? readingProgressRepository,
   }) {
+    final effectiveStoryRepo =
+        storyRepository ?? StoryRepository(apiClient: apiClient);
+    final effectiveChapterRepo =
+        chapterRepository ?? ChapterRepository(apiClient: apiClient);
+    final effectiveMediaRepo =
+        mediaRepository ?? MediaRepository(apiClient: apiClient);
+    final effectiveProgressRepo = readingProgressRepository ??
+        ReadingProgressRepository(apiClient: apiClient);
+
     return GoRouter(
       initialLocation: '/home',
       refreshListenable: authService,
@@ -47,7 +66,38 @@ class AppRouter {
             apiClient: apiClient,
           ),
         ),
+        GoRoute(
+          path: '/story/:slug',
+          builder: (context, state) {
+            final slug = state.pathParameters['slug']!;
+            return StoryDetailScreen(
+              slug: slug,
+              storyRepository: effectiveStoryRepo,
+              readingProgressRepository: effectiveProgressRepo,
+            );
+          },
+        ),
+        GoRoute(
+          path: '/reader/:chapterId',
+          builder: (context, state) {
+            final chapterId = state.pathParameters['chapterId']!;
+            final storyId = state.uri.queryParameters['storyId'] ?? '';
+            final pageIndexStr = state.uri.queryParameters['pageIndex'];
+            final initialPageIndex =
+                pageIndexStr != null ? (int.tryParse(pageIndexStr) ?? 0) : 0;
+            return ReaderScreen(
+              key: ValueKey('reader_$chapterId'),
+              chapterId: chapterId,
+              storyId: storyId,
+              initialPageIndex: initialPageIndex,
+              chapterRepository: effectiveChapterRepo,
+              mediaRepository: effectiveMediaRepo,
+              readingProgressRepository: effectiveProgressRepo,
+            );
+          },
+        ),
       ],
     );
   }
 }
+

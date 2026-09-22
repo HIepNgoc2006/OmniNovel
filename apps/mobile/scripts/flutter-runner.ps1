@@ -1,10 +1,3 @@
-param(
-    [Parameter(Mandatory = $true, Position = 0)]
-    [string]$Action,
-    [Parameter(ValueFromRemainingArguments = $true)]
-    [string[]]$ExtraArgs
-)
-
 $ErrorActionPreference = "Stop"
 
 $MobileDir = (Resolve-Path "$PSScriptRoot\..").Path
@@ -15,8 +8,8 @@ if (!(Test-Path $PubCacheDir)) {
 }
 
 $Image = "ghcr.io/cirruslabs/flutter:latest"
-$ArgsString = if ($ExtraArgs) { $ExtraArgs -join " " } else { "" }
-$Cmd = "flutter $Action $ArgsString".Trim()
+$CmdArgs = if ($args) { $args -join " " } else { "" }
+$Cmd = "flutter $CmdArgs".Trim()
 
 Write-Host "[OmniNovel Mobile Runner] Executing: $Cmd inside isolated container ($Image)..." -ForegroundColor Cyan
 

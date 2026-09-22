@@ -4,6 +4,17 @@ import 'api_error.dart';
 export 'api_error.dart';
 
 class ErrorMapper {
+  static ApiError fromDio(DioException error) => fromDioException(error);
+
+  static ApiError fromGeneric(dynamic error) {
+    if (error is ApiError) return error;
+    if (error is DioException) return fromDioException(error);
+    return ApiError(
+      code: 'UNKNOWN_ERROR',
+      message: error?.toString() ?? 'Đã xảy ra lỗi không xác định.',
+    );
+  }
+
   static ApiError fromDioException(DioException error) {
     switch (error.type) {
       case DioExceptionType.connectionTimeout:

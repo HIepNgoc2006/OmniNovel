@@ -506,6 +506,15 @@ export class StoriesService {
       Math.max(0, Number(dto.progressPercentage) || 0),
     );
     const scrollPosition = Math.max(0, Number(dto.scrollPosition) || 0);
+    const pageIndex =
+      dto.pageIndex != null
+        ? Math.max(1, Math.floor(Number(dto.pageIndex)))
+        : 1;
+    const anchorBlockId = dto.anchorBlockId || null;
+    const textOffset =
+      dto.textOffset != null
+        ? Math.max(0, Math.floor(Number(dto.textOffset)))
+        : 0;
 
     const completedAt = progressPercentage >= 80 ? new Date() : null;
 
@@ -514,14 +523,22 @@ export class StoriesService {
       await manager.query(
         `INSERT INTO reading_progress (
           user_id, story_id, chapter_id, chapter_version_id,
-          reading_mode, progress_percentage, scroll_position, updated_at
-        ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5::varchar, $6::numeric, $7::numeric, NOW())
+          reading_mode, progress_percentage, scroll_position,
+          page_index, anchor_block_id, text_offset, updated_at
+        ) VALUES (
+          $1::uuid, $2::uuid, $3::uuid, $4::uuid,
+          $5::varchar, $6::numeric, $7::numeric,
+          $8::int, $9::varchar, $10::int, NOW()
+        )
         ON CONFLICT (user_id, story_id) DO UPDATE SET
           chapter_id = EXCLUDED.chapter_id,
           chapter_version_id = EXCLUDED.chapter_version_id,
           reading_mode = EXCLUDED.reading_mode,
           progress_percentage = EXCLUDED.progress_percentage,
           scroll_position = EXCLUDED.scroll_position,
+          page_index = EXCLUDED.page_index,
+          anchor_block_id = EXCLUDED.anchor_block_id,
+          text_offset = EXCLUDED.text_offset,
           updated_at = NOW()`,
         [
           userId,
@@ -531,6 +548,9 @@ export class StoriesService {
           readingMode,
           progressPercentage,
           scrollPosition,
+          pageIndex,
+          anchorBlockId,
+          textOffset,
         ],
       );
 
@@ -564,6 +584,9 @@ export class StoriesService {
         readingMode,
         progressPercentage: Number(progressPercentage),
         scrollPosition: Number(scrollPosition),
+        pageIndex: Number(pageIndex),
+        anchorBlockId: anchorBlockId || null,
+        textOffset: Number(textOffset),
         updatedAt: new Date(),
       };
     });
@@ -601,6 +624,9 @@ export class StoriesService {
         rp.reading_mode AS "readingMode",
         CAST(rp.progress_percentage AS FLOAT) AS "progressPercentage",
         CAST(rp.scroll_position AS FLOAT) AS "scrollPosition",
+        COALESCE(rp.page_index, 1) AS "pageIndex",
+        rp.anchor_block_id AS "anchorBlockId",
+        COALESCE(rp.text_offset, 0) AS "textOffset",
         rp.updated_at AS "updatedAt"
        FROM reading_progress rp
        WHERE rp.user_id = $1 AND rp.story_id = $2`,
@@ -626,6 +652,9 @@ export class StoriesService {
         readingMode: 'WEBTOON',
         progressPercentage: 0,
         scrollPosition: 0,
+        pageIndex: 1,
+        anchorBlockId: null,
+        textOffset: 0,
         updatedAt: null,
         readChapterIds,
       };
@@ -639,6 +668,9 @@ export class StoriesService {
       readingMode: p.readingMode,
       progressPercentage: Number(p.progressPercentage) || 0,
       scrollPosition: Number(p.scrollPosition) || 0,
+      pageIndex: Number(p.pageIndex) || 1,
+      anchorBlockId: p.anchorBlockId || null,
+      textOffset: Number(p.textOffset) || 0,
       updatedAt: p.updatedAt,
       readChapterIds,
     };

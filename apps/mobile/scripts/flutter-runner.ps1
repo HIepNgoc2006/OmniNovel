@@ -14,7 +14,7 @@ if (!(Test-Path $PubCacheDir)) {
     New-Item -ItemType Directory -Path $PubCacheDir -Force | Out-Null
 }
 
-$Image = "ghcr.io/cirruslabs/flutter:3.24.5"
+$Image = "ghcr.io/cirruslabs/flutter:latest"
 $ArgsString = if ($ExtraArgs) { $ExtraArgs -join " " } else { "" }
 $Cmd = "flutter $Action $ArgsString".Trim()
 

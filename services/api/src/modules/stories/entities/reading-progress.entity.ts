@@ -48,6 +48,15 @@ export class ReadingProgress {
   })
   scrollPosition: number;
 
+  @Column({ name: 'page_index', type: 'int', default: 1 })
+  pageIndex: number;
+
+  @Column({ name: 'anchor_block_id', type: 'varchar', length: 100, nullable: true })
+  anchorBlockId: string | null;
+
+  @Column({ name: 'text_offset', type: 'int', default: 0 })
+  textOffset: number;
+
   @UpdateDateColumn({ name: 'updated_at', type: 'timestamptz' })
   updatedAt: Date;
 

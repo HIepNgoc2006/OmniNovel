@@ -2,10 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/theme/app_colors.dart';
 import '../models/manga_reading_mode.dart';
+import '../models/novel_block_models.dart';
+import '../models/reader_models.dart';
 import '../repositories/chapter_repository.dart';
 import '../repositories/media_repository.dart';
+import '../repositories/novel_content_repository.dart';
 import '../repositories/reading_progress_repository.dart';
 import 'manga_paged_reader_view.dart';
+import 'novel_content_parser.dart';
+import 'novel_reader_view.dart';
+import 'novel_settings_controller.dart';
+import 'novel_typography_sheet.dart';
 import 'reader_image_cache_coordinator.dart';
 import 'reader_session_controller.dart';
 import 'reader_session_state.dart';
@@ -17,9 +24,14 @@ class ReaderScreen extends StatefulWidget {
   final String storyId;
   final int initialPageIndex;
   final MangaReadingMode initialMode;
+  final String? initialAnchorBlockId;
+  final double? initialScrollPosition;
+  final double? initialProgressPercentage;
   final ChapterRepository chapterRepository;
   final MediaRepository mediaRepository;
   final ReadingProgressRepository readingProgressRepository;
+  final NovelContentRepository? novelContentRepository;
+  final NovelSettingsController? novelSettingsController;
 
   const ReaderScreen({
     super.key,
@@ -27,9 +39,14 @@ class ReaderScreen extends StatefulWidget {
     required this.storyId,
     this.initialPageIndex = 0,
     this.initialMode = MangaReadingMode.vertical,
+    this.initialAnchorBlockId,
+    this.initialScrollPosition,
+    this.initialProgressPercentage,
     required this.chapterRepository,
     required this.mediaRepository,
     required this.readingProgressRepository,
+    this.novelContentRepository,
+    this.novelSettingsController,
   });
 
   @override
@@ -40,15 +57,29 @@ class _ReaderScreenState extends State<ReaderScreen> {
   late final ReaderImageCacheCoordinator _imageCacheCoordinator;
   late final ReaderSessionController _sessionController;
   late final ReadingProgressCoordinator _progressCoordinator;
+  late final NovelSettingsController _novelSettingsController;
+  late final NovelContentRepository _novelContentRepository;
   late MangaReadingMode _currentMode;
   PageController? _pageController;
   final GlobalKey<WebtoonReaderViewState> _webtoonKey = GlobalKey();
   bool _showOverlay = false;
 
+  List<NovelBlockItem>? _novelBlocks;
+  bool _loadingNovelContent = false;
+  String? _novelContentError;
+
+  bool get _isNovel =>
+      _sessionController.state.chapterDetail?.story.mediaFormat == 'NOVEL';
+
   @override
   void initState() {
     super.initState();
     _currentMode = widget.initialMode;
+
+    _novelSettingsController =
+        widget.novelSettingsController ?? NovelSettingsController();
+    _novelContentRepository = widget.novelContentRepository ??
+        NovelContentRepository(mediaRepository: widget.mediaRepository);
 
     _imageCacheCoordinator = ReaderImageCacheCoordinator(
       mediaRepository: widget.mediaRepository,
@@ -63,6 +94,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _progressCoordinator.init();
 
     _sessionController.addListener(_onSessionStateChanged);
+    _novelSettingsController.addListener(_onNovelSettingsChanged);
 
     _sessionController.loadChapter(
       widget.chapterId,
@@ -70,9 +102,62 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
   }
 
+  void _onNovelSettingsChanged() {
+    if (mounted) setState(() {});
+  }
+
   void _onSessionStateChanged() {
     if (_sessionController.state.status == ReaderStatus.ready) {
-      _ensurePagedController();
+      if (_isNovel) {
+        _loadNovelIfNeeded();
+      } else {
+        _ensurePagedController();
+      }
+    }
+  }
+
+  Future<void> _loadNovelIfNeeded() async {
+    if (_novelBlocks != null || _loadingNovelContent) return;
+
+    final detail = _sessionController.state.chapterDetail;
+    if (detail == null) return;
+
+    final pages = detail.pages;
+    final novelAsset = pages.firstWhere(
+      (p) => p.assetType == 'NOVEL_HTML',
+      orElse: () => pages.isNotEmpty
+          ? pages.first
+          : const ChapterPage(assetId: '', sortOrder: 0),
+    );
+
+    if (novelAsset.assetId.isEmpty) {
+      setState(() {
+        _novelContentError = 'Không tìm thấy tệp nội dung tiểu thuyết.';
+      });
+      return;
+    }
+
+    setState(() {
+      _loadingNovelContent = true;
+      _novelContentError = null;
+    });
+
+    try {
+      final html = await _novelContentRepository.loadNovelHtml(novelAsset.assetId);
+      final blocks = NovelContentParser.parseHtml(html);
+      if (mounted) {
+        setState(() {
+          _novelBlocks = blocks;
+          _loadingNovelContent = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _novelContentError = e.toString();
+          _loadingNovelContent = false;
+        });
+      }
     }
   }
 
@@ -93,6 +178,9 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void didUpdateWidget(covariant ReaderScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.chapterId != widget.chapterId) {
+      _novelBlocks = null;
+      _loadingNovelContent = false;
+      _novelContentError = null;
       final oldController = _pageController;
       _pageController = null;
       if (oldController != null) {
@@ -110,6 +198,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   void dispose() {
     _sessionController.removeListener(_onSessionStateChanged);
+    _novelSettingsController.removeListener(_onNovelSettingsChanged);
+    if (widget.novelSettingsController == null) {
+      _novelSettingsController.dispose();
+    }
     _progressCoordinator.dispose();
     _sessionController.dispose();
     _pageController?.dispose();
@@ -170,11 +262,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppColors.oledBlack,
+      backgroundColor: _isNovel
+          ? _novelSettingsController.settings.theme.backgroundColor
+          : AppColors.oledBlack,
       body: Stack(
         children: [
-          // 1. Trình đọc tương ứng theo _currentMode (Không có outer GestureDetector bọc ngoài)
-          if (_currentMode == MangaReadingMode.vertical)
+          // 1. Trình đọc tương ứng (Novel vs Webtoon vs Manga Paged)
+          if (_isNovel)
+            _buildNovelView()
+          else if (_currentMode == MangaReadingMode.vertical)
             WebtoonReaderView(
               key: _webtoonKey,
               controller: _sessionController,
@@ -230,84 +326,94 @@ class _ReaderScreenState extends State<ReaderScreen> {
                         },
                       ),
                     ),
-                    // Menu chọn chế độ đọc
-                    PopupMenuButton<MangaReadingMode>(
-                      icon: const Icon(Icons.settings, color: AppColors.textPrimary),
-                      tooltip: 'Chế độ đọc',
-                      color: AppColors.darkSurfaceElevated,
-                      onSelected: _setReadingMode,
-                      itemBuilder: (context) => [
-                        PopupMenuItem(
-                          value: MangaReadingMode.rtl,
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.auto_stories,
-                                size: 18,
-                                color: _currentMode == MangaReadingMode.rtl
-                                    ? AppColors.primary
-                                    : AppColors.textMuted,
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                MangaReadingMode.rtl.displayName,
-                                style: TextStyle(
+                    // Menu chọn chế độ đọc cho Manga HOẶC Nút Typography cho Novel
+                    if (_isNovel)
+                      IconButton(
+                        icon: const Icon(Icons.text_fields, color: AppColors.textPrimary),
+                        tooltip: 'Tùy chỉnh giao diện đọc',
+                        onPressed: () => NovelTypographySheet.show(
+                          context,
+                          controller: _novelSettingsController,
+                        ),
+                      )
+                    else
+                      PopupMenuButton<MangaReadingMode>(
+                        icon: const Icon(Icons.settings, color: AppColors.textPrimary),
+                        tooltip: 'Chế độ đọc',
+                        color: AppColors.darkSurfaceElevated,
+                        onSelected: _setReadingMode,
+                        itemBuilder: (context) => [
+                          PopupMenuItem(
+                            value: MangaReadingMode.rtl,
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.auto_stories,
+                                  size: 18,
                                   color: _currentMode == MangaReadingMode.rtl
-                                      ? AppColors.primaryLight
-                                      : AppColors.textPrimary,
+                                      ? AppColors.primary
+                                      : AppColors.textMuted,
                                 ),
-                              ),
-                            ],
+                                const SizedBox(width: 8),
+                                Text(
+                                  MangaReadingMode.rtl.displayName,
+                                  style: TextStyle(
+                                    color: _currentMode == MangaReadingMode.rtl
+                                        ? AppColors.primaryLight
+                                        : AppColors.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                        PopupMenuItem(
-                          value: MangaReadingMode.ltr,
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.menu_book,
-                                size: 18,
-                                color: _currentMode == MangaReadingMode.ltr
-                                    ? AppColors.primary
-                                    : AppColors.textMuted,
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                MangaReadingMode.ltr.displayName,
-                                style: TextStyle(
+                          PopupMenuItem(
+                            value: MangaReadingMode.ltr,
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.menu_book,
+                                  size: 18,
                                   color: _currentMode == MangaReadingMode.ltr
-                                      ? AppColors.primaryLight
-                                      : AppColors.textPrimary,
+                                      ? AppColors.primary
+                                      : AppColors.textMuted,
                                 ),
-                              ),
-                            ],
+                                const SizedBox(width: 8),
+                                Text(
+                                  MangaReadingMode.ltr.displayName,
+                                  style: TextStyle(
+                                    color: _currentMode == MangaReadingMode.ltr
+                                        ? AppColors.primaryLight
+                                        : AppColors.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                        PopupMenuItem(
-                          value: MangaReadingMode.vertical,
-                          child: Row(
-                            children: [
-                              Icon(
-                                Icons.swap_vert,
-                                size: 18,
-                                color: _currentMode == MangaReadingMode.vertical
-                                    ? AppColors.primary
-                                    : AppColors.textMuted,
-                              ),
-                              const SizedBox(width: 8),
-                              Text(
-                                MangaReadingMode.vertical.displayName,
-                                style: TextStyle(
+                          PopupMenuItem(
+                            value: MangaReadingMode.vertical,
+                            child: Row(
+                              children: [
+                                Icon(
+                                  Icons.swap_vert,
+                                  size: 18,
                                   color: _currentMode == MangaReadingMode.vertical
-                                      ? AppColors.primaryLight
-                                      : AppColors.textPrimary,
+                                      ? AppColors.primary
+                                      : AppColors.textMuted,
                                 ),
-                              ),
-                            ],
+                                const SizedBox(width: 8),
+                                Text(
+                                  MangaReadingMode.vertical.displayName,
+                                  style: TextStyle(
+                                    color: _currentMode == MangaReadingMode.vertical
+                                        ? AppColors.primaryLight
+                                        : AppColors.textPrimary,
+                                  ),
+                                ),
+                              ],
+                            ),
                           ),
-                        ),
-                      ],
-                    ),
+                        ],
+                      ),
                   ],
                 ),
               ),
@@ -337,8 +443,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     return Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        // Slider điều hướng trang (nếu có từ 2 trang trở lên)
-                        if (totalPages > 1)
+                        // Slider điều hướng trang (chỉ cho Manga có từ 2 trang trở lên)
+                        if (!_isNovel && totalPages > 1)
                           SliderTheme(
                             data: SliderTheme.of(context).copyWith(
                               activeTrackColor: AppColors.primary,
@@ -364,10 +470,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
-                            Text(
-                              'Trang ${state.focusedPageIndex + 1} / $totalPages',
-                              style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                            ),
+                            if (!_isNovel)
+                              Text(
+                                'Trang ${state.focusedPageIndex + 1} / $totalPages',
+                                style: const TextStyle(color: AppColors.textSecondary, fontSize: 13),
+                              )
+                            else
+                              const SizedBox(width: 8),
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                               decoration: BoxDecoration(
@@ -375,7 +484,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: Text(
-                                _currentMode.displayName,
+                                _isNovel ? 'Tiểu thuyết' : _currentMode.displayName,
                                 style: const TextStyle(
                                   color: AppColors.primaryLight,
                                   fontSize: 11,
@@ -383,19 +492,22 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                 ),
                               ),
                             ),
-                            Text(
-                              '${state.progressPercentage.toStringAsFixed(1)}%',
-                              style: const TextStyle(
-                                color: AppColors.primaryLight,
-                                fontWeight: FontWeight.bold,
-                                fontSize: 13,
-                              ),
-                            ),
+                            if (!_isNovel)
+                              Text(
+                                '${state.progressPercentage.toStringAsFixed(1)}%',
+                                style: const TextStyle(
+                                  color: AppColors.primaryLight,
+                                  fontWeight: FontWeight.bold,
+                                  fontSize: 13,
+                                ),
+                              )
+                            else
+                              const SizedBox(width: 8),
                           ],
                         ),
                         const SizedBox(height: 8),
 
-                        // Nút chuyển chương Trước / Sau (Bảo toàn _currentMode qua query parameter)
+                        // Nút chuyển chương Trước / Sau
                         Row(
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
@@ -403,9 +515,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
                               onPressed: nav?.previous != null
                                   ? () {
                                       _progressCoordinator.flush();
-                                      context.pushReplacement(
-                                        '/reader/${nav!.previous!.id}?storyId=${widget.storyId}&pageIndex=0&mode=${_currentMode.name}',
-                                      );
+                                      final navUrl = _isNovel
+                                          ? '/reader/${nav!.previous!.id}?storyId=${widget.storyId}'
+                                          : '/reader/${nav!.previous!.id}?storyId=${widget.storyId}&pageIndex=0&mode=${_currentMode.name}';
+                                      context.pushReplacement(navUrl);
                                     }
                                   : null,
                               icon: const Icon(Icons.skip_previous, size: 20),
@@ -415,9 +528,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
                               onPressed: nav?.next != null
                                   ? () {
                                       _progressCoordinator.flush();
-                                      context.pushReplacement(
-                                        '/reader/${nav!.next!.id}?storyId=${widget.storyId}&pageIndex=0&mode=${_currentMode.name}',
-                                      );
+                                      final navUrl = _isNovel
+                                          ? '/reader/${nav!.next!.id}?storyId=${widget.storyId}'
+                                          : '/reader/${nav!.next!.id}?storyId=${widget.storyId}&pageIndex=0&mode=${_currentMode.name}';
+                                      context.pushReplacement(navUrl);
                                     }
                                   : null,
                               icon: const Icon(Icons.skip_next, size: 20),
@@ -433,6 +547,69 @@ class _ReaderScreenState extends State<ReaderScreen> {
             ),
         ],
       ),
+    );
+  }
+
+  Widget _buildNovelView() {
+    if (_sessionController.state.status == ReaderStatus.loading || _loadingNovelContent) {
+      return Center(
+        child: CircularProgressIndicator(
+          color: _novelSettingsController.settings.theme.textColor,
+        ),
+      );
+    }
+
+    if (_novelContentError != null || _sessionController.state.status == ReaderStatus.error) {
+      final errorMsg = _novelContentError ??
+          _sessionController.state.errorMessage ??
+          'Không thể tải nội dung tiểu thuyết';
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, color: Colors.redAccent, size: 48),
+              const SizedBox(height: 16),
+              Text(
+                errorMsg,
+                textAlign: TextAlign.center,
+                style: TextStyle(color: _novelSettingsController.settings.theme.textColor),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () {
+                  _sessionController.loadChapter(widget.chapterId);
+                  _loadNovelIfNeeded();
+                },
+                child: const Text('Thử lại'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_novelBlocks == null || _novelBlocks!.isEmpty) {
+      return Center(
+        child: Text(
+          'Chương này chưa có nội dung văn bản.',
+          style: TextStyle(color: _novelSettingsController.settings.theme.textColor),
+        ),
+      );
+    }
+
+    return NovelReaderView(
+      storyId: widget.storyId,
+      chapterId: widget.chapterId,
+      chapterVersionId: _sessionController.state.chapterDetail?.activeVersion?.id,
+      blocks: _novelBlocks!,
+      coordinator: _progressCoordinator,
+      settingsController: _novelSettingsController,
+      initialAnchorBlockId: widget.initialAnchorBlockId,
+      initialScrollPosition: widget.initialScrollPosition,
+      initialProgressPercentage: widget.initialProgressPercentage,
+      onTap: _toggleOverlay,
     );
   }
 

@@ -88,12 +88,24 @@ class AppRouter {
                 pageIndexStr != null ? (int.tryParse(pageIndexStr) ?? 0) : 0;
             final modeStr = state.uri.queryParameters['mode'];
             final initialMode = MangaReadingMode.fromName(modeStr);
+            final initialAnchorBlockId =
+                state.uri.queryParameters['anchorBlockId'];
+            final scrollPosStr = state.uri.queryParameters['scrollPosition'];
+            final initialScrollPosition =
+                scrollPosStr != null ? double.tryParse(scrollPosStr) : null;
+            final progressPctStr =
+                state.uri.queryParameters['progressPercentage'];
+            final initialProgressPercentage =
+                progressPctStr != null ? double.tryParse(progressPctStr) : null;
             return ReaderScreen(
               key: ValueKey('reader_$chapterId'),
               chapterId: chapterId,
               storyId: storyId,
               initialPageIndex: initialPageIndex,
               initialMode: initialMode,
+              initialAnchorBlockId: initialAnchorBlockId,
+              initialScrollPosition: initialScrollPosition,
+              initialProgressPercentage: initialProgressPercentage,
               chapterRepository: effectiveChapterRepo,
               mediaRepository: effectiveMediaRepo,
               readingProgressRepository: effectiveProgressRepo,

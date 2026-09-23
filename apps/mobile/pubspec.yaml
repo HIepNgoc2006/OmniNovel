@@ -30,6 +30,9 @@ dependencies:
   google_fonts: ^6.3.3
   cupertino_icons: ^1.0.8
 
+  # HTML DOM Parser for Novel Reader Engine
+  html: ^0.15.4
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

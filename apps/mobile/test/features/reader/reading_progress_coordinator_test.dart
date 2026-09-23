@@ -157,6 +157,8 @@ void main() {
         pageIndex: 12,
         progressPercentage: 65.0,
         scrollPosition: 4000.0,
+        anchorBlockId: 'blk_0012_p',
+        textOffset: 0,
         updatedAt: DateTime.parse('2026-09-22T08:35:00Z'), // Mới hơn
       );
 
@@ -166,6 +168,8 @@ void main() {
         pageIndex: 5,
         progressPercentage: 50.0,
         scrollPosition: 2000.0,
+        anchorBlockId: 'blk_0005_p',
+        textOffset: 0,
         updatedAt: DateTime.parse('2026-09-22T08:30:00Z'), // Cũ hơn
       );
 
@@ -182,6 +186,8 @@ void main() {
       expect(pointer?.serverPageIndex, 12);
       expect(pointer?.flutterPageIndex, 11);
       expect(pointer?.progressPercentage, 65.0);
+      expect(pointer?.anchorBlockId, 'blk_0012_p');
+      expect(pointer?.textOffset, 0);
     });
 
     test('resolveResumePointer chooses server progress when server is newer', () async {
@@ -191,6 +197,8 @@ void main() {
         pageIndex: 5,
         progressPercentage: 40.0,
         scrollPosition: 1000.0,
+        anchorBlockId: 'blk_0005_p',
+        textOffset: 0,
         updatedAt: DateTime.parse('2026-09-22T08:00:00Z'), // Cũ hơn
       );
 
@@ -200,6 +208,8 @@ void main() {
         pageIndex: 20,
         progressPercentage: 90.0,
         scrollPosition: 8000.0,
+        anchorBlockId: 'blk_0020_dlg',
+        textOffset: 0,
         updatedAt: DateTime.parse('2026-09-22T08:45:00Z'), // Mới hơn (ví dụ đọc từ Web)
       );
 
@@ -216,6 +226,8 @@ void main() {
       expect(pointer?.serverPageIndex, 20);
       expect(pointer?.flutterPageIndex, 19);
       expect(pointer?.progressPercentage, 90.0);
+      expect(pointer?.anchorBlockId, 'blk_0020_dlg');
+      expect(pointer?.textOffset, 0);
     });
   });
 }

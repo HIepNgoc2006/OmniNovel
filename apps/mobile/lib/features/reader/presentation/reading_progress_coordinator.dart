@@ -10,6 +10,8 @@ class ResumePointer {
   final int serverPageIndex;  // 1-based
   final double progressPercentage;
   final double scrollPosition;
+  final String? anchorBlockId;
+  final int? textOffset;
   final bool isFromLocal;
 
   const ResumePointer({
@@ -19,6 +21,8 @@ class ResumePointer {
     required this.serverPageIndex,
     required this.progressPercentage,
     required this.scrollPosition,
+    this.anchorBlockId,
+    this.textOffset,
     required this.isFromLocal,
   });
 }
@@ -87,6 +91,8 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
         pageIndex: payload.pageIndex, // 1-based
         progressPercentage: progressPercentage,
         scrollPosition: scrollPosition,
+        anchorBlockId: anchorBlockId,
+        textOffset: textOffset,
         updatedAt: DateTime.now(),
       ),
     );
@@ -145,6 +151,8 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
         serverPageIndex: local.pageIndex,
         progressPercentage: local.progressPercentage,
         scrollPosition: local.scrollPosition,
+        anchorBlockId: local.anchorBlockId,
+        textOffset: local.textOffset,
         isFromLocal: true,
       );
     }
@@ -157,6 +165,8 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
         serverPageIndex: server.pageIndex,
         progressPercentage: server.progressPercentage,
         scrollPosition: server.scrollPosition,
+        anchorBlockId: server.anchorBlockId,
+        textOffset: server.textOffset,
         isFromLocal: false,
       );
     }
@@ -174,6 +184,8 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
         serverPageIndex: local.pageIndex,
         progressPercentage: local.progressPercentage,
         scrollPosition: local.scrollPosition,
+        anchorBlockId: local.anchorBlockId,
+        textOffset: local.textOffset,
         isFromLocal: true,
       );
     } else {
@@ -184,6 +196,8 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
         serverPageIndex: server.pageIndex,
         progressPercentage: server.progressPercentage,
         scrollPosition: server.scrollPosition,
+        anchorBlockId: server.anchorBlockId,
+        textOffset: server.textOffset,
         isFromLocal: false,
       );
     }

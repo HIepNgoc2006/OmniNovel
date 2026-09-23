@@ -90,7 +90,7 @@ apps/mobile/
 
 ### 🎨 Phase 5C: Đa Định Dạng Trình Đọc & Tính Năng Hoàn Chỉnh (MOB-001..MOB-011)
 - [x] **[Phase 5C.1] Manga Paged Reader ([Issue #197](https://github.com/HIepNgoc2006/OmniNovel/issues/197)):** Hỗ trợ lật trang phải sang trái (RTL/LTR), phóng to/thu nhỏ cảm ứng (InteractiveViewer/Pinch-zoom), tái sử dụng hạ tầng ImageCache 80MB & progress sync.
-- [ ] **[Phase 5C.2] Novel Reader ([Issue #198](https://github.com/HIepNgoc2006/OmniNovel/issues/198)):** Trình đọc truyện chữ với giao diện Typography tùy biến (cỡ chữ, giãn dòng, theme Sepia/OLED) và định vị đoạn văn bằng `anchorBlockId`.
+- [x] **[Phase 5C.2] Novel Reader ([Issue #198](https://github.com/HIepNgoc2006/OmniNovel/issues/198)):** Trình đọc truyện chữ với giao diện Typography tùy biến (cỡ chữ, giãn dòng, theme Sepia/OLED) và định vị đoạn văn bằng `anchorBlockId`.
 - [ ] **[Phase 5C.3] Khám phá & Tìm kiếm ([Issue #199](https://github.com/HIepNgoc2006/OmniNovel/issues/199)):** Home Feed Hero Carousel, Tìm kiếm đa bộ lọc (`GET /api/v1/stories?search=...`), và Chi tiết truyện (Story Detail production UI).
 - [ ] **[Phase 5C.4] Tủ sách Cá nhân ([Issue #200](https://github.com/HIepNgoc2006/OmniNovel/issues/200)):** Quản lý Bookmark, Lịch sử đọc truyện (History) và Thẻ đọc tiếp nhanh (Continue Reading).
 - [ ] **[Phase 5C.5] Gamification & Hồ sơ ([Issue #201](https://github.com/HIepNgoc2006/OmniNovel/issues/201)):** Chuỗi điểm danh hàng ngày nhận Coin/EXP, tiến trình cấp độ MangaPass, và Rank Theme profile.

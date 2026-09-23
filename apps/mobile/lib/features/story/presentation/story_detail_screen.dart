@@ -210,13 +210,25 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
                     (c) => c.id == _resumePointer!.chapterId,
                     orElse: () => chapters.first,
                   );
-                  context.push(
-                    '/reader/${targetChapter.id}?storyId=${story.id}&pageIndex=${_resumePointer!.flutterPageIndex}',
+                  final uri = Uri(
+                    path: '/reader/${targetChapter.id}',
+                    queryParameters: {
+                      'storyId': story.id,
+                      'pageIndex': '${_resumePointer!.flutterPageIndex}',
+                      if (_resumePointer!.anchorBlockId != null)
+                        'anchorBlockId': _resumePointer!.anchorBlockId!,
+                      'scrollPosition': '${_resumePointer!.scrollPosition}',
+                      'progressPercentage':
+                          '${_resumePointer!.progressPercentage}',
+                    },
                   );
+                  context.push(uri.toString());
                 },
                 icon: const Icon(Icons.play_arrow),
                 label: Text(
-                  'Đọc tiếp (Trang ${_resumePointer!.serverPageIndex})',
+                  story.mediaFormat == 'NOVEL'
+                      ? 'Đọc tiếp'
+                      : 'Đọc tiếp (Trang ${_resumePointer!.serverPageIndex})',
                   style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
               ),

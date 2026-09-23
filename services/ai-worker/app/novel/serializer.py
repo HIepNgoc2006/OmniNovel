@@ -87,20 +87,34 @@ class NovelDocumentSerializer:
         return clean_src
 
     @classmethod
+    def _anchor_attrs(cls, block: NovelBlockNode) -> str:
+        attrs = []
+        anchor_id = getattr(block, "anchor_block_id", None)
+        if anchor_id:
+            attrs.append(f'data-anchor-block-id="{html.escape(anchor_id, quote=True)}"')
+        block_type = getattr(block, "block_type", None)
+        if block_type:
+            attrs.append(f'data-block-type="{html.escape(block_type, quote=True)}"')
+        return (" " + " ".join(attrs)) if attrs else ""
+
+    @classmethod
     def _render_block(cls, block: NovelBlockNode, asset_map: Optional[Dict[str, str]] = None) -> str:
         if isinstance(block, HeadingBlockNode):
             lvl = min(max(block.level, 1), 6)
             inner_html = "".join(cls._render_inline(c, asset_map=asset_map) for c in block.children)
-            return f"    <h{lvl}>{inner_html}</h{lvl}>"
+            attr_str = cls._anchor_attrs(block)
+            return f"    <h{lvl}{attr_str}>{inner_html}</h{lvl}>"
 
         elif isinstance(block, ParagraphBlockNode):
             inner_html = "".join(cls._render_inline(c, asset_map=asset_map) for c in block.children)
-            return f"    <p>{inner_html}</p>"
+            attr_str = cls._anchor_attrs(block)
+            return f"    <p{attr_str}>{inner_html}</p>"
 
         elif isinstance(block, BlockquoteBlockNode):
             sub_parts = [cls._render_block(c, asset_map=asset_map) for c in block.children]
             joined = "\n".join(sub_parts)
-            return f"    <blockquote>\n{joined}\n    </blockquote>"
+            attr_str = cls._anchor_attrs(block)
+            return f"    <blockquote{attr_str}>\n{joined}\n    </blockquote>"
 
         elif isinstance(block, IllustrationBlockNode):
             resolved_src = cls._resolve_src(block.src, asset_map)

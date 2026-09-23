@@ -80,6 +80,8 @@ class NovelBlockNode(NovelNode):
 class HeadingBlockNode(NovelBlockNode):
     level: int  # 1 to 6
     children: List[NovelInlineNode] = field(default_factory=list)
+    anchor_block_id: Optional[str] = None
+    block_type: Optional[str] = None
 
     def to_plain_text(self) -> str:
         return "".join(c.to_plain_text() for c in self.children).strip()
@@ -88,6 +90,8 @@ class HeadingBlockNode(NovelBlockNode):
 @dataclass
 class ParagraphBlockNode(NovelBlockNode):
     children: List[NovelInlineNode] = field(default_factory=list)
+    anchor_block_id: Optional[str] = None
+    block_type: Optional[str] = None
 
     def to_plain_text(self) -> str:
         return "".join(c.to_plain_text() for c in self.children).strip()
@@ -96,6 +100,8 @@ class ParagraphBlockNode(NovelBlockNode):
 @dataclass
 class BlockquoteBlockNode(NovelBlockNode):
     children: List[NovelBlockNode] = field(default_factory=list)
+    anchor_block_id: Optional[str] = None
+    block_type: Optional[str] = None
 
     def to_plain_text(self) -> str:
         return "\n".join(c.to_plain_text() for c in self.children).strip()

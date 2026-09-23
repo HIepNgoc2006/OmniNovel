@@ -144,6 +144,8 @@ class LocalReadingCheckpoint {
   final int pageIndex; // 1-based
   final double progressPercentage;
   final double scrollPosition;
+  final String? anchorBlockId;
+  final int? textOffset;
   final DateTime updatedAt;
 
   const LocalReadingCheckpoint({
@@ -153,6 +155,8 @@ class LocalReadingCheckpoint {
     required this.pageIndex,
     required this.progressPercentage,
     required this.scrollPosition,
+    this.anchorBlockId,
+    this.textOffset,
     required this.updatedAt,
   });
 
@@ -167,6 +171,8 @@ class LocalReadingCheckpoint {
       progressPercentage:
           (json['progressPercentage'] as num?)?.toDouble() ?? 0.0,
       scrollPosition: (json['scrollPosition'] as num?)?.toDouble() ?? 0.0,
+      anchorBlockId: json['anchorBlockId'] as String?,
+      textOffset: (json['textOffset'] as num?)?.toInt(),
       updatedAt: json['updatedAt'] != null
           ? DateTime.parse(json['updatedAt'] as String)
           : DateTime.now(),
@@ -180,6 +186,8 @@ class LocalReadingCheckpoint {
         'pageIndex': pageIndex,
         'progressPercentage': progressPercentage,
         'scrollPosition': scrollPosition,
+        if (anchorBlockId != null) 'anchorBlockId': anchorBlockId,
+        if (textOffset != null) 'textOffset': textOffset,
         'updatedAt': updatedAt.toIso8601String(),
       };
 }

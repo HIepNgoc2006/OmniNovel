@@ -262,14 +262,30 @@ class NovelDocumentRebuilder:
 
         source_doc = snapshot_dict_to_document(doc_dict)
 
-        expected_ids: List[str] = []
+        expected_segments: List[Dict[str, Any]] = []
         for seg in raw_segments:
             if hasattr(seg, "anchorBlockId"):
-                expected_ids.append(seg.anchorBlockId)
+                aid = seg.anchorBlockId
+                btype = getattr(seg.blockType, "value", seg.blockType) if hasattr(seg, "blockType") else "NARRATION"
+                sorder = getattr(seg, "sortOrder", 0)
             elif isinstance(seg, dict):
-                expected_ids.append(seg.get("anchorBlockId") or seg.get("anchor_block_id"))
+                aid = seg.get("anchorBlockId") or seg.get("anchor_block_id")
+                btype = seg.get("blockType") or seg.get("block_type") or "NARRATION"
+                sorder = seg.get("sortOrder") or seg.get("sort_order", 0)
             else:
                 raise NovelRebuilderError(f"Kiểu dữ liệu segment không hợp lệ: {type(seg)}")
+
+            if hasattr(btype, "value"):
+                btype = btype.value
+
+            expected_segments.append({
+                "anchorBlockId": aid,
+                "blockType": str(btype),
+                "sortOrder": sorder,
+            })
+
+        expected_segments.sort(key=lambda s: s["sortOrder"])
+        expected_ids = [s["anchorBlockId"] for s in expected_segments]
 
         if len(expected_ids) != len(set(expected_ids)):
             raise NovelRebuilderError("Phát hiện trùng lặp anchorBlockId trong snapshot segments.")
@@ -352,16 +368,21 @@ class NovelDocumentRebuilder:
                     f"Số lượng block dịch ({len(translation_map)}) không khớp số lượng block snapshot ({len(expected_ids)})."
                 )
 
-        # 4. Tái cấu trúc document blocks bằng expected_ids từ snapshot
+        # 4. Tái cấu trúc document blocks bằng expected_segments từ snapshot
         translatable_counter = 0
         rebuilt_blocks: List[NovelBlockNode] = []
 
         for block in source_doc.blocks:
             rebuilt, translatable_counter = self._rebuild_block_from_snapshot(
-                block, translatable_counter, expected_ids, translation_map, reconstructed_anchor_maps
+                block, translatable_counter, expected_segments, translation_map, reconstructed_anchor_maps
             )
             if rebuilt:
                 rebuilt_blocks.append(rebuilt)
+
+        if translatable_counter != len(expected_segments):
+            raise NovelRebuilderError(
+                f"SNAPSHOT_SEGMENT_TRAVERSAL_MISMATCH: Đã tiêu thụ {translatable_counter} segments nhưng snapshot có {len(expected_segments)} segments."
+            )
 
         new_title = translated_title if translated_title is not None else source_doc.title
 
@@ -379,16 +400,22 @@ class NovelDocumentRebuilder:
         self,
         block: NovelBlockNode,
         translatable_index: int,
-        expected_ids: List[str],
+        expected_segments: List[Dict[str, Any]],
         translations: Dict[str, str],
         anchor_maps: Dict[str, InlineAnchorMap],
     ) -> Tuple[Optional[NovelBlockNode], int]:
         strict_mode = not self.fallback_to_raw_on_missing
 
         if isinstance(block, HeadingBlockNode):
-            if translatable_index >= len(expected_ids):
-                raise NovelRebuilderError("Index vượt quá số lượng expected_ids trong snapshot.")
-            block_id = expected_ids[translatable_index]
+            if translatable_index >= len(expected_segments):
+                raise NovelRebuilderError("Index vượt quá số lượng expected_segments trong snapshot.")
+            seg = expected_segments[translatable_index]
+            block_id = seg["anchorBlockId"]
+            block_type = seg["blockType"]
+            if block_type != "HEADING":
+                raise NovelRebuilderError(
+                    f"SNAPSHOT_SEGMENT_TYPE_MISMATCH: HeadingBlockNode mong đợi blockType 'HEADING' nhưng nhận '{block_type}' cho block '{block_id}'."
+                )
             translatable_index += 1
             translated_text = translations.get(block_id)
 
@@ -399,12 +426,23 @@ class NovelDocumentRebuilder:
 
             amap = anchor_maps.get(block_id, InlineAnchorMap())
             new_children = InlineAnchorCodec.decode(translated_text, amap, strict=strict_mode)
-            return HeadingBlockNode(level=block.level, children=new_children), translatable_index
+            return HeadingBlockNode(
+                level=block.level,
+                children=new_children,
+                anchor_block_id=block_id,
+                block_type=block_type,
+            ), translatable_index
 
         elif isinstance(block, ParagraphBlockNode):
-            if translatable_index >= len(expected_ids):
-                raise NovelRebuilderError("Index vượt quá số lượng expected_ids trong snapshot.")
-            block_id = expected_ids[translatable_index]
+            if translatable_index >= len(expected_segments):
+                raise NovelRebuilderError("Index vượt quá số lượng expected_segments trong snapshot.")
+            seg = expected_segments[translatable_index]
+            block_id = seg["anchorBlockId"]
+            block_type = seg["blockType"]
+            if block_type not in ("NARRATION", "DIALOGUE"):
+                raise NovelRebuilderError(
+                    f"SNAPSHOT_SEGMENT_TYPE_MISMATCH: ParagraphBlockNode mong đợi 'NARRATION' hoặc 'DIALOGUE' nhưng nhận '{block_type}' cho block '{block_id}'."
+                )
             translatable_index += 1
             translated_text = translations.get(block_id)
 
@@ -415,28 +453,37 @@ class NovelDocumentRebuilder:
 
             amap = anchor_maps.get(block_id, InlineAnchorMap())
             new_children = InlineAnchorCodec.decode(translated_text, amap, strict=strict_mode)
-            return ParagraphBlockNode(children=new_children), translatable_index
+            return ParagraphBlockNode(
+                children=new_children,
+                anchor_block_id=block_id,
+                block_type=block_type,
+            ), translatable_index
 
         elif isinstance(block, BlockquoteBlockNode):
-            if translatable_index >= len(expected_ids):
-                raise NovelRebuilderError("Index vượt quá số lượng expected_ids trong snapshot.")
-            block_id = expected_ids[translatable_index]
+            if translatable_index >= len(expected_segments):
+                raise NovelRebuilderError("Index vượt quá số lượng expected_segments trong snapshot.")
+            seg = expected_segments[translatable_index]
+            block_id = seg["anchorBlockId"]
+            block_type = seg["blockType"]
+            if block_type != "BLOCKQUOTE":
+                raise NovelRebuilderError(
+                    f"SNAPSHOT_SEGMENT_TYPE_MISMATCH: BlockquoteBlockNode mong đợi 'BLOCKQUOTE' nhưng nhận '{block_type}' cho block '{block_id}'."
+                )
             translatable_index += 1
             translated_text = translations.get(block_id)
 
-            if translated_text is not None:
-                amap = anchor_maps.get(block_id, InlineAnchorMap())
-                new_children = InlineAnchorCodec.decode(translated_text, amap, strict=strict_mode)
-                return BlockquoteBlockNode(children=[ParagraphBlockNode(children=new_children)]), translatable_index
-            else:
-                sub_blocks: List[NovelBlockNode] = []
-                for child in block.children:
-                    rebuilt_child, translatable_index = self._rebuild_block_from_snapshot(
-                        child, translatable_index, expected_ids, translations, anchor_maps
-                    )
-                    if rebuilt_child:
-                        sub_blocks.append(rebuilt_child)
-                return BlockquoteBlockNode(children=sub_blocks), translatable_index
+            if translated_text is None:
+                if not self.fallback_to_raw_on_missing:
+                    raise MissingAnchorBlockError(f"Thiếu kết quả dịch cho Blockquote block '{block_id}'.")
+                translated_text = block.to_plain_text()
+
+            amap = anchor_maps.get(block_id, InlineAnchorMap())
+            new_children = InlineAnchorCodec.decode(translated_text, amap, strict=strict_mode)
+            return BlockquoteBlockNode(
+                children=[ParagraphBlockNode(children=new_children, anchor_block_id=block_id, block_type="NARRATION")],
+                anchor_block_id=block_id,
+                block_type=block_type,
+            ), translatable_index
 
         elif isinstance(block, IllustrationBlockNode):
             return IllustrationBlockNode(

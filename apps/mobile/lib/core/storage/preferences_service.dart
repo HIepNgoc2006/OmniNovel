@@ -5,6 +5,8 @@ abstract class IPreferencesService {
   bool isDarkMode();
   Future<void> setOledMode(bool isOled);
   bool isOledMode();
+  Future<void> setRankTheme(String userId, String themeId);
+  String? getRankTheme(String userId);
   Future<void> clearPreferences();
 }
 
@@ -13,6 +15,7 @@ class PreferencesService implements IPreferencesService {
 
   static const _keyDarkMode = 'setting_dark_mode';
   static const _keyOledMode = 'setting_oled_mode';
+  static String _keyRankTheme(String userId) => 'rank_theme_$userId';
 
   PreferencesService(this._prefs);
 
@@ -39,6 +42,16 @@ class PreferencesService implements IPreferencesService {
   @override
   bool isOledMode() {
     return _prefs.getBool(_keyOledMode) ?? false;
+  }
+
+  @override
+  Future<void> setRankTheme(String userId, String themeId) async {
+    await _prefs.setString(_keyRankTheme(userId), themeId);
+  }
+
+  @override
+  String? getRankTheme(String userId) {
+    return _prefs.getString(_keyRankTheme(userId));
   }
 
   @override

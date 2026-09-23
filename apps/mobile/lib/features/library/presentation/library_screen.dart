@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/theme/app_colors.dart';
+import '../../../core/theme/theme_tokens.dart';
 import '../models/library_models.dart';
 import '../repositories/library_repository.dart';
 
@@ -255,8 +256,8 @@ class _LibraryScreenState extends State<LibraryScreen>
         ],
         bottom: TabBar(
           controller: _tabController,
-          indicatorColor: AppColors.primary,
-          labelColor: AppColors.primary,
+          indicatorColor: context.primaryColor,
+          labelColor: context.primaryColor,
           unselectedLabelColor: AppColors.textSecondary,
           tabs: const [
             Tab(text: 'Đang theo dõi'),
@@ -289,15 +290,15 @@ class _LibraryScreenState extends State<LibraryScreen>
                 child: ChoiceChip(
                   label: Text(filter.label),
                   selected: isSelected,
-                  selectedColor: AppColors.primary.withValues(alpha: 0.25),
+                  selectedColor: context.primaryColor.withValues(alpha: 0.25),
                   backgroundColor: AppColors.darkSurface,
                   labelStyle: TextStyle(
-                    color: isSelected ? AppColors.primaryLight : AppColors.textSecondary,
+                    color: isSelected ? context.primaryColor : AppColors.textSecondary,
                     fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
                     fontSize: 13,
                   ),
                   side: BorderSide(
-                    color: isSelected ? AppColors.primary : AppColors.darkBorder,
+                    color: isSelected ? context.primaryColor : AppColors.darkBorder,
                   ),
                   onSelected: (_) => _onFilterChanged(filter),
                 ),
@@ -310,7 +311,7 @@ class _LibraryScreenState extends State<LibraryScreen>
         Expanded(
           child: RefreshIndicator(
             onRefresh: _fetchBookmarks,
-            color: AppColors.primary,
+            color: context.primaryColor,
             child: _buildBookmarksList(),
           ),
         ),
@@ -320,8 +321,8 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   Widget _buildBookmarksList() {
     if (_isLoadingBookmarks && _bookmarks.isEmpty) {
-      return const Center(
-        child: CircularProgressIndicator(color: AppColors.primary),
+      return Center(
+        child: CircularProgressIndicator(color: context.primaryColor),
       );
     }
 
@@ -387,12 +388,12 @@ class _LibraryScreenState extends State<LibraryScreen>
                           ? Image.network(
                               item.story.coverUrl!,
                               fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => const Icon(
+                              errorBuilder: (_, __, ___) => Icon(
                                 Icons.auto_stories,
-                                color: AppColors.primary,
+                                color: context.primaryColor,
                               ),
                             )
-                          : const Icon(Icons.auto_stories, color: AppColors.primary),
+                          : Icon(Icons.auto_stories, color: context.primaryColor),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -423,14 +424,14 @@ class _LibraryScreenState extends State<LibraryScreen>
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                             decoration: BoxDecoration(
-                              color: AppColors.primary.withValues(alpha: 0.15),
+                              color: context.primaryColor.withValues(alpha: 0.15),
                               borderRadius: BorderRadius.circular(12),
-                              border: Border.all(color: AppColors.primary.withValues(alpha: 0.4)),
+                              border: Border.all(color: context.primaryColor.withValues(alpha: 0.4)),
                             ),
                             child: Text(
                               '${item.unreadChapterCount} chương mới',
-                              style: const TextStyle(
-                                color: AppColors.primaryLight,
+                              style: TextStyle(
+                                color: context.primaryColor,
                                 fontSize: 11,
                                 fontWeight: FontWeight.bold,
                               ),
@@ -451,7 +452,7 @@ class _LibraryScreenState extends State<LibraryScreen>
   Widget _buildHistoryTab() {
     return RefreshIndicator(
       onRefresh: _fetchHistory,
-      color: AppColors.primary,
+      color: context.primaryColor,
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -588,7 +589,7 @@ class _LibraryScreenState extends State<LibraryScreen>
                     const SizedBox(height: 8),
                     ElevatedButton.icon(
                       style: ElevatedButton.styleFrom(
-                        backgroundColor: AppColors.primary,
+                        backgroundColor: context.primaryColor,
                         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                         minimumSize: Size.zero,
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -635,12 +636,12 @@ class _LibraryScreenState extends State<LibraryScreen>
                       ? Image.network(
                           item.story.coverUrl!,
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => const Icon(
+                          errorBuilder: (_, __, ___) => Icon(
                             Icons.auto_stories,
-                            color: AppColors.primary,
+                            color: context.primaryColor,
                           ),
                         )
-                      : const Icon(Icons.auto_stories, color: AppColors.primary),
+                      : Icon(Icons.auto_stories, color: context.primaryColor),
                 ),
               ),
               const SizedBox(width: 12),

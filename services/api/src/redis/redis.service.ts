@@ -52,6 +52,19 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
     return res === 'OK';
   }
 
+  // Atomic compare-and-delete lock release bằng Lua script
+  async releaseLock(key: string, token: string): Promise<boolean> {
+    const luaScript = `
+      if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("del", KEYS[1])
+      else
+        return 0
+      end
+    `;
+    const res = await this.client.eval(luaScript, 1, key, token);
+    return res === 1;
+  }
+
   // Sliding Window Rate Limiting bằng Lua script nguyên tử với resetTime tính theo request cũ nhất
   async checkRateLimit(
     key: string,

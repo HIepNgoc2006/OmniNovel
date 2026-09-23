@@ -269,6 +269,7 @@ export interface ReadChapterRewardResponse {
   level?: number;
   todayTotalReadExp?: number;
   dailyCap?: number;
+  serverDateVN: string;
 }
 
 export interface StandardErrorMeta {

@@ -54,6 +54,20 @@ export class GamificationController {
     return this.gamificationService.changeRankTheme(userId, dto.themeId);
   }
 
+  // 3b. Lấy danh sách chủ đề cấp bậc (GET /gamification/themes)
+  @Get('themes')
+  @UseGuards(JwtAuthGuard)
+  getThemes(@CurrentUser('id') userId: string) {
+    return this.gamificationService.getThemes(userId);
+  }
+
+  // 3c. Lấy danh sách phần thưởng mốc cấp độ (GET /gamification/rewards)
+  @Get('rewards')
+  @UseGuards(JwtAuthGuard)
+  getLevelRewards(@CurrentUser('id') userId: string) {
+    return this.gamificationService.getLevelRewards(userId);
+  }
+
   // 4. Nhận thưởng mốc cấp độ (POST /gamification/rewards/claim) - Canonical API Contract
   @Post('rewards/claim')
   @UseGuards(JwtAuthGuard)

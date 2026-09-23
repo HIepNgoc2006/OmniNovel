@@ -3,19 +3,22 @@ import 'package:google_fonts/google_fonts.dart';
 import 'app_colors.dart';
 
 class AppTheme {
-  static ThemeData get darkTheme => _buildTheme(
+  static ThemeData darkTheme([Color primary = AppColors.primary]) => _buildTheme(
         background: AppColors.darkBackground,
         surface: AppColors.darkSurface,
+        primary: primary,
       );
 
-  static ThemeData get oledTheme => _buildTheme(
+  static ThemeData oledTheme([Color primary = AppColors.primary]) => _buildTheme(
         background: AppColors.oledBlack,
         surface: AppColors.darkBackground,
+        primary: primary,
       );
 
   static ThemeData _buildTheme({
     required Color background,
     required Color surface,
+    Color primary = AppColors.primary,
   }) {
     final baseTextTheme = GoogleFonts.interTextTheme(ThemeData.dark().textTheme);
 
@@ -24,7 +27,7 @@ class AppTheme {
       brightness: Brightness.dark,
       scaffoldBackgroundColor: background,
       colorScheme: ColorScheme.dark(
-        primary: AppColors.primary,
+        primary: primary,
         secondary: AppColors.accent,
         surface: surface,
         error: AppColors.error,

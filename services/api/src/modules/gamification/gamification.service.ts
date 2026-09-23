@@ -3,7 +3,9 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource } from 'typeorm';
 import { UserProgression } from '../users/entities/user-progression.entity';
@@ -61,6 +63,8 @@ export function getVietnamDayBoundaries(date = new Date()): {
 
 @Injectable()
 export class GamificationService {
+  private readonly logger = new Logger(GamificationService.name);
+
   constructor(
     @InjectRepository(UserProgression)
     private progressionRepository: Repository<UserProgression>,
@@ -118,122 +122,133 @@ export class GamificationService {
   async checkIn(userId: string, idempotencyKeyHeader?: string) {
     const { todayVN, yesterdayVN } = getVietnamDayBoundaries();
 
-    // Redis SETNX với TTL 120s theo đúng contract chống duplicate concurrent requests
-    const redisLockKey = `idempotency:checkin:${userId}:${idempotencyKeyHeader || todayVN}`;
-    const acquired = await this.redisService.setnx(redisLockKey, '1', 120);
-    if (!acquired && idempotencyKeyHeader) {
-      throw new BadRequestException('Yêu cầu điểm danh trùng lặp đang được xử lý.');
+    // Canonical Redis Distributed Lock chống race condition & duplicate in-flight requests
+    const lockToken = randomUUID();
+    const redisLockKey = `gamification:lock:checkin:${userId}:${todayVN}`;
+    const acquired = await this.redisService.setnx(redisLockKey, lockToken, 120);
+    if (!acquired) {
+      throw new BadRequestException('CHECKIN_REQUEST_IN_FLIGHT: Yêu cầu điểm danh đang được xử lý.');
     }
 
-    return this.dataSource.transaction(async (manager) => {
-      const progression = await manager.findOne(UserProgression, {
-        where: { userId },
-        lock: { mode: 'pessimistic_write' },
-      });
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        const progression = await manager.findOne(UserProgression, {
+          where: { userId },
+          lock: { mode: 'pessimistic_write' },
+        });
 
-      if (!progression) {
-        throw new NotFoundException('Không tìm thấy hồ sơ tiến trình độc giả.');
+        if (!progression) {
+          throw new NotFoundException('Không tìm thấy hồ sơ tiến trình độc giả.');
+        }
+
+        // Kiểm tra đã điểm danh hôm nay chưa (FR-GAM-01)
+        const existingCheckin = await manager.findOne(DailyCheckin, {
+          where: { userId, checkinDate: todayVN },
+        });
+
+        if (existingCheckin) {
+          throw new BadRequestException('CHECKIN_ALREADY_CLAIMED: Bạn đã điểm danh ngày hôm nay rồi.');
+        }
+
+        // Tính Chuỗi Streak
+        let streak = 1;
+        if (progression.lastCheckinDate === yesterdayVN) {
+          streak = progression.currentStreak + 1;
+        }
+        const maxStreak = Math.max(progression.maxStreak, streak);
+
+        // Tính Thưởng Chuỗi theo SSoT:
+        // Base: +10 EXP, +5 Coin
+        // 7 ngày: +50 EXP, +20 Coin
+        // 14 ngày: +100 EXP, +50 Coin
+        // 30 ngày: +300 EXP, +150 Coin
+        let rewardExp = 10;
+        let rewardCoins = 5;
+        let earnedBadgeId: string | null = null;
+
+        if (streak === 30 || (streak > 30 && streak % 30 === 0)) {
+          rewardExp += 300;
+          rewardCoins += 150;
+          earnedBadgeId = 'BADGE_DILIGENT_READER_30D';
+        } else if (streak === 14 || (streak > 14 && streak % 14 === 0)) {
+          rewardExp += 100;
+          rewardCoins += 50;
+        } else if (streak === 7 || (streak > 7 && streak % 7 === 0)) {
+          rewardExp += 50;
+          rewardCoins += 20;
+        }
+
+        // 1. Lưu bản ghi điểm danh
+        const checkinRecord = manager.create(DailyCheckin, {
+          userId,
+          checkinDate: todayVN,
+          streakCount: streak,
+          rewardCoins,
+          rewardExp,
+        });
+        await manager.save(checkinRecord);
+
+        // 2. Ghi Sổ Cái Bất Biến - EXP
+        const newTotalExp = (BigInt(progression.totalExp) + BigInt(rewardExp)).toString();
+        const expTx = manager.create(RewardTransaction, {
+          userId,
+          rewardType: RewardType.EXP,
+          amount: rewardExp,
+          balanceAfter: newTotalExp,
+          sourceType: RewardSourceType.CHECKIN,
+          sourceId: todayVN,
+          idempotencyKey: `CHECKIN:${userId}:${todayVN}:EXP`,
+        });
+        await manager.save(expTx);
+
+        // 3. Ghi Sổ Cái Bất Biến - OMNICOIN
+        const newBalance = (BigInt(progression.omnicoinBalance) + BigInt(rewardCoins)).toString();
+        const coinTx = manager.create(RewardTransaction, {
+          userId,
+          rewardType: RewardType.OMNICOIN,
+          amount: rewardCoins,
+          balanceAfter: newBalance,
+          sourceType: RewardSourceType.CHECKIN,
+          sourceId: todayVN,
+          idempotencyKey: `CHECKIN:${userId}:${todayVN}:OMNICOIN`,
+        });
+        await manager.save(coinTx);
+
+        // 4. Cập nhật UserProgression
+        progression.totalExp = newTotalExp;
+        progression.omnicoinBalance = newBalance;
+        progression.currentStreak = streak;
+        progression.maxStreak = maxStreak;
+        progression.lastCheckinDate = todayVN;
+        progression.level = this.calculateLevel(newTotalExp);
+        await manager.save(progression);
+
+        return {
+          alreadyCheckedIn: false,
+          message: `Điểm danh thành công! Chuỗi ${streak} ngày.`,
+          coinsEarned: rewardCoins,
+          expEarned: rewardExp,
+          newStreak: streak,
+          maxStreak,
+          earnedBadgeId,
+          totalExp: newTotalExp,
+          omnicoinBalance: newBalance,
+          level: progression.level,
+        };
+      });
+    } finally {
+      try {
+        await this.redisService.releaseLock(redisLockKey, lockToken);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Không thể giải phóng Redis lock ${redisLockKey}: ${message}`);
       }
-
-      // Kiểm tra đã điểm danh hôm nay chưa (FR-GAM-01)
-      const existingCheckin = await manager.findOne(DailyCheckin, {
-        where: { userId, checkinDate: todayVN },
-      });
-
-      if (existingCheckin) {
-        throw new BadRequestException('CHECKIN_ALREADY_CLAIMED: Bạn đã điểm danh ngày hôm nay rồi.');
-      }
-
-      // Tính Chuỗi Streak
-      let streak = 1;
-      if (progression.lastCheckinDate === yesterdayVN) {
-        streak = progression.currentStreak + 1;
-      }
-      const maxStreak = Math.max(progression.maxStreak, streak);
-
-      // Tính Thưởng Chuỗi theo SSoT:
-      // Base: +10 EXP, +5 Coin
-      // 7 ngày: +50 EXP, +20 Coin
-      // 14 ngày: +100 EXP, +50 Coin
-      // 30 ngày: +300 EXP, +150 Coin
-      let rewardExp = 10;
-      let rewardCoins = 5;
-      let earnedBadgeId: string | null = null;
-
-      if (streak === 30 || (streak > 30 && streak % 30 === 0)) {
-        rewardExp += 300;
-        rewardCoins += 150;
-        earnedBadgeId = 'BADGE_DILIGENT_READER_30D';
-      } else if (streak === 14 || (streak > 14 && streak % 14 === 0)) {
-        rewardExp += 100;
-        rewardCoins += 50;
-      } else if (streak === 7 || (streak > 7 && streak % 7 === 0)) {
-        rewardExp += 50;
-        rewardCoins += 20;
-      }
-
-      // 1. Lưu bản ghi điểm danh
-      const checkinRecord = manager.create(DailyCheckin, {
-        userId,
-        checkinDate: todayVN,
-        streakCount: streak,
-        rewardCoins,
-        rewardExp,
-      });
-      await manager.save(checkinRecord);
-
-      // 2. Ghi Sổ Cái Bất Biến - EXP
-      const newTotalExp = (BigInt(progression.totalExp) + BigInt(rewardExp)).toString();
-      const expTx = manager.create(RewardTransaction, {
-        userId,
-        rewardType: RewardType.EXP,
-        amount: rewardExp,
-        balanceAfter: newTotalExp,
-        sourceType: RewardSourceType.CHECKIN,
-        sourceId: todayVN,
-        idempotencyKey: `CHECKIN:${userId}:${todayVN}:EXP`,
-      });
-      await manager.save(expTx);
-
-      // 3. Ghi Sổ Cái Bất Biến - OMNICOIN
-      const newBalance = (BigInt(progression.omnicoinBalance) + BigInt(rewardCoins)).toString();
-      const coinTx = manager.create(RewardTransaction, {
-        userId,
-        rewardType: RewardType.OMNICOIN,
-        amount: rewardCoins,
-        balanceAfter: newBalance,
-        sourceType: RewardSourceType.CHECKIN,
-        sourceId: todayVN,
-        idempotencyKey: `CHECKIN:${userId}:${todayVN}:OMNICOIN`,
-      });
-      await manager.save(coinTx);
-
-      // 4. Cập nhật UserProgression
-      progression.totalExp = newTotalExp;
-      progression.omnicoinBalance = newBalance;
-      progression.currentStreak = streak;
-      progression.maxStreak = maxStreak;
-      progression.lastCheckinDate = todayVN;
-      progression.level = this.calculateLevel(newTotalExp);
-      await manager.save(progression);
-
-      return {
-        alreadyCheckedIn: false,
-        message: `Điểm danh thành công! Chuỗi ${streak} ngày.`,
-        coinsEarned: rewardCoins,
-        expEarned: rewardExp,
-        newStreak: streak,
-        maxStreak,
-        earnedBadgeId,
-        totalExp: newTotalExp,
-        omnicoinBalance: newBalance,
-        level: progression.level,
-      };
-    });
+    }
   }
 
   // 3. THƯỞNG ĐỌC CHƯƠNG TRUYỆN: +5 EXP, KIỂM TRA CHAPTER THỰC TẾ & ACCESS, ĐIỀU KIỆN >=45s & >=80%, TRẦN 100 EXP/NGÀY VN
   async rewardReadChapter(userOrId: any, dto: ReadChapterRewardDto) {
+    const { todayVN, startOfDay, startOfNextDay } = getVietnamDayBoundaries();
     const userId = typeof userOrId === 'string' ? userOrId : userOrId.id;
     const isGlobalAdmin =
       typeof userOrId === 'object' &&
@@ -270,9 +285,10 @@ export class GamificationService {
       return {
         success: false,
         earnedExp: 0,
-        reason: 'CRITERIA_NOT_MET',
+        reason: 'CRITERIA_NOT_MET' as const,
         message:
           'Chưa đạt điều kiện nhận thưởng (cần thời gian đọc tối thiểu 45 giây và cuộn qua ít nhất 80% nội dung).',
+        serverDateVN: todayVN,
       };
     }
 
@@ -296,16 +312,15 @@ export class GamificationService {
         return {
           success: true,
           earnedExp: 0,
-          reason: 'ALREADY_REWARDED',
+          reason: 'ALREADY_REWARDED' as const,
           message: 'Bạn đã nhận thưởng EXP cho chương này rồi.',
           totalExp: progression.totalExp,
           level: progression.level,
+          serverDateVN: todayVN,
         };
       }
 
       // 4. Kiểm tra Trần Tối Đa 100 EXP/ngày chuẩn xác theo biên ngày Asia/Ho_Chi_Minh (UTC+7)
-      const { startOfDay, startOfNextDay } = getVietnamDayBoundaries();
-
       const sumRes = await manager.query(
         `SELECT COALESCE(SUM(amount), 0) AS total 
          FROM reward_transactions 
@@ -321,10 +336,11 @@ export class GamificationService {
         return {
           success: true,
           earnedExp: 0,
-          reason: 'DAILY_CAP_REACHED',
+          reason: 'DAILY_CAP_REACHED' as const,
           message: 'Bạn đã đạt giới hạn tối đa 100 EXP đọc truyện trong ngày hôm nay.',
           totalExp: progression.totalExp,
           level: progression.level,
+          serverDateVN: todayVN,
         };
       }
 
@@ -356,6 +372,7 @@ export class GamificationService {
         dailyCap: 100,
         totalExp: newTotalExp,
         level: progression.level,
+        serverDateVN: todayVN,
       };
     });
   }
@@ -384,7 +401,12 @@ export class GamificationService {
     const badgeIcon = matchingRank[0]?.badge_icon || null;
 
     const progress = this.getExpProgress(progression.totalExp);
-    const { todayVN } = getVietnamDayBoundaries();
+    const { todayVN, startOfNextDay } = getVietnamDayBoundaries();
+    const now = new Date();
+    const secondsUntilNextCheckin = Math.max(
+      0,
+      Math.floor((startOfNextDay.getTime() - now.getTime()) / 1000),
+    );
 
     return {
       userId: progression.userId,
@@ -406,6 +428,10 @@ export class GamificationService {
         badgeIcon,
       },
       progress,
+      serverDateVN: todayVN,
+      serverNow: now.toISOString(),
+      nextCheckinAt: startOfNextDay.toISOString(),
+      secondsUntilNextCheckin,
     };
   }
 
@@ -454,75 +480,145 @@ export class GamificationService {
 
   // 6. NHẬN THƯỞNG MỐC LEVEL ĐÃ CẤU HÌNH (POST /gamification/rewards/claim)
   async claimLevelReward(userId: string, milestoneLevel: number, idempotencyKeyHeader?: string) {
-    const redisLockKey = `idempotency:claim:${userId}:${idempotencyKeyHeader || milestoneLevel}`;
-    const acquired = await this.redisService.setnx(redisLockKey, '1', 120);
-    if (!acquired && idempotencyKeyHeader) {
-      throw new BadRequestException('Yêu cầu nhận thưởng trùng lặp đang được xử lý.');
+    const lockToken = randomUUID();
+    const redisLockKey = `gamification:lock:level-reward:${userId}:${milestoneLevel}`;
+    const acquired = await this.redisService.setnx(redisLockKey, lockToken, 120);
+    if (!acquired) {
+      throw new BadRequestException('LEVEL_REWARD_REQUEST_IN_FLIGHT: Yêu cầu nhận thưởng cấp độ đang được xử lý.');
     }
 
-    return this.dataSource.transaction(async (manager) => {
-      const progression = await manager.findOne(UserProgression, {
-        where: { userId },
-        lock: { mode: 'pessimistic_write' },
-      });
+    try {
+      return await this.dataSource.transaction(async (manager) => {
+        const progression = await manager.findOne(UserProgression, {
+          where: { userId },
+          lock: { mode: 'pessimistic_write' },
+        });
 
-      if (!progression) {
-        throw new NotFoundException('Không tìm thấy hồ sơ tiến trình.');
+        if (!progression) {
+          throw new NotFoundException('Không tìm thấy hồ sơ tiến trình.');
+        }
+
+        // CHỈ CLAIM PHẦN THƯỞNG ĐÃ CẤU HÌNH TRONG level_rewards (Không tự động phát sinh)
+        const reward = await manager.findOne(LevelReward, {
+          where: { milestoneLevel },
+        });
+
+        if (!reward) {
+          throw new NotFoundException('Không có phần thưởng nào được cấu hình cho mốc cấp độ này.');
+        }
+
+        if (progression.level < milestoneLevel) {
+          throw new BadRequestException(
+            `Bạn cần đạt cấp độ ${milestoneLevel} để nhận phần thưởng này (Cấp hiện tại: ${progression.level}).`,
+          );
+        }
+
+        const alreadyClaimed = await manager.findOne(UserClaimedLevelReward, {
+          where: { userId, rewardId: reward.id },
+        });
+
+        if (alreadyClaimed) {
+          throw new BadRequestException('LEVEL_REWARD_ALREADY_CLAIMED: Bạn đã nhận phần thưởng mốc cấp độ này rồi.');
+        }
+
+        // 1. Ghi nhận claim
+        const claim = manager.create(UserClaimedLevelReward, {
+          userId,
+          rewardId: reward.id,
+        });
+        await manager.save(claim);
+
+        // 2. Ghi Sổ Cái Bất Biến
+        const newBalance = (BigInt(progression.omnicoinBalance) + BigInt(reward.rewardCoins)).toString();
+        const tx = manager.create(RewardTransaction, {
+          userId,
+          rewardType: RewardType.OMNICOIN,
+          amount: reward.rewardCoins,
+          balanceAfter: newBalance,
+          sourceType: RewardSourceType.LEVEL_REWARD,
+          sourceId: milestoneLevel.toString(),
+          idempotencyKey: `LEVEL_REWARD:${userId}:${milestoneLevel}:OMNICOIN`,
+        });
+        await manager.save(tx);
+
+        // 3. Cập nhật UserProgression
+        progression.omnicoinBalance = newBalance;
+        await manager.save(progression);
+
+        return {
+          rewardCoins: reward.rewardCoins,
+          rewardBadgeId: reward.rewardBadgeId,
+          claimedAt: claim.claimedAt,
+        };
+      });
+    } finally {
+      try {
+        await this.redisService.releaseLock(redisLockKey, lockToken);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(`Không thể giải phóng Redis lock ${redisLockKey}: ${message}`);
       }
+    }
+  }
 
-      // CHỈ CLAIM PHẦN THƯỞNG ĐÃ CẤU HÌNH TRONG level_rewards (Không tự động phát sinh)
-      const reward = await manager.findOne(LevelReward, {
-        where: { milestoneLevel },
-      });
-
-      if (!reward) {
-        throw new NotFoundException('Không có phần thưởng nào được cấu hình cho mốc cấp độ này.');
-      }
-
-      if (progression.level < milestoneLevel) {
-        throw new BadRequestException(
-          `Bạn cần đạt cấp độ ${milestoneLevel} để nhận phần thưởng này (Cấp hiện tại: ${progression.level}).`,
-        );
-      }
-
-      const alreadyClaimed = await manager.findOne(UserClaimedLevelReward, {
-        where: { userId, rewardId: reward.id },
-      });
-
-      if (alreadyClaimed) {
-        throw new BadRequestException('Bạn đã nhận phần thưởng mốc cấp độ này rồi.');
-      }
-
-      // 1. Ghi nhận claim
-      const claim = manager.create(UserClaimedLevelReward, {
-        userId,
-        rewardId: reward.id,
-      });
-      await manager.save(claim);
-
-      // 2. Ghi Sổ Cái Bất Biến
-      const newBalance = (BigInt(progression.omnicoinBalance) + BigInt(reward.rewardCoins)).toString();
-      const tx = manager.create(RewardTransaction, {
-        userId,
-        rewardType: RewardType.OMNICOIN,
-        amount: reward.rewardCoins,
-        balanceAfter: newBalance,
-        sourceType: RewardSourceType.LEVEL_REWARD,
-        sourceId: milestoneLevel.toString(),
-        idempotencyKey: `LEVEL_REWARD:${userId}:${milestoneLevel}:OMNICOIN`,
-      });
-      await manager.save(tx);
-
-      // 3. Cập nhật UserProgression
-      progression.omnicoinBalance = newBalance;
-      await manager.save(progression);
-
-      return {
-        rewardCoins: reward.rewardCoins,
-        rewardBadgeId: reward.rewardBadgeId,
-        claimedAt: claim.claimedAt,
-      };
+  // 6b. LẤY DANH SÁCH CHỦ ĐỀ CẤP BẬC (GET /gamification/themes)
+  async getThemes(userId?: string) {
+    let userLevel = 1;
+    if (userId) {
+      const p = await this.progressionRepository.findOne({ where: { userId } });
+      if (p) userLevel = p.level;
+    }
+    const themes = await this.themeRepository.find({
+      where: { isActive: true },
+      order: { id: 'ASC' },
     });
+    const rankLevels = await this.levelRepository.find();
+
+    return {
+      themes: themes.map((theme) => {
+        const matchingRank = rankLevels.find(
+          (rl) => rl.themeId === theme.id && rl.minLevel <= userLevel && rl.maxLevel >= userLevel,
+        );
+        return {
+          id: theme.id,
+          name: theme.name,
+          description: theme.description,
+          isActive: theme.isActive,
+          currentRankTitle: matchingRank?.rankTitle || 'Độc Giả',
+          badgeIcon: matchingRank?.badgeIcon || null,
+        };
+      }),
+    };
+  }
+
+  // 6c. LẤY DANH SÁCH MỐC THƯỞNG CẤP ĐỘ (GET /gamification/rewards)
+  async getLevelRewards(userId: string) {
+    const progression = await this.progressionRepository.findOne({ where: { userId } });
+    const userLevel = progression?.level || 1;
+
+    const rewards = await this.levelRewardRepository.find({
+      order: { milestoneLevel: 'ASC' },
+    });
+
+    const claimed = await this.dataSource.getRepository(UserClaimedLevelReward).find({
+      where: { userId },
+    });
+    const claimedRewardIds = new Set(claimed.map((c) => c.rewardId));
+
+    return {
+      rewards: rewards.map((r) => {
+        const isClaimed = claimedRewardIds.has(r.id);
+        const canClaim = !isClaimed && userLevel >= r.milestoneLevel;
+        return {
+          id: r.id,
+          milestoneLevel: r.milestoneLevel,
+          rewardCoins: r.rewardCoins,
+          rewardBadgeId: r.rewardBadgeId,
+          isClaimed,
+          canClaim,
+        };
+      }),
+    };
   }
 
   // 7. TRUY VẤN LỊCH SỬ SỔ CÁI (GET /gamification/transactions)

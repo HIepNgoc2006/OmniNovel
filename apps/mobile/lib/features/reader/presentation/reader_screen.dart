@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/theme/app_colors.dart';
+import '../../../core/theme/theme_tokens.dart';
+import '../../gamification/repositories/gamification_repository.dart';
 import '../models/manga_reading_mode.dart';
 import '../models/novel_block_models.dart';
 import '../models/reader_models.dart';
@@ -30,6 +32,7 @@ class ReaderScreen extends StatefulWidget {
   final ChapterRepository chapterRepository;
   final MediaRepository mediaRepository;
   final ReadingProgressRepository readingProgressRepository;
+  final GamificationRepository? gamificationRepository;
   final NovelContentRepository? novelContentRepository;
   final NovelSettingsController? novelSettingsController;
 
@@ -45,6 +48,7 @@ class ReaderScreen extends StatefulWidget {
     required this.chapterRepository,
     required this.mediaRepository,
     required this.readingProgressRepository,
+    this.gamificationRepository,
     this.novelContentRepository,
     this.novelSettingsController,
   });
@@ -90,6 +94,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
     );
     _progressCoordinator = ReadingProgressCoordinator(
       repository: widget.readingProgressRepository,
+      gamificationRepository: widget.gamificationRepository,
     );
     _progressCoordinator.init();
     _progressCoordinator.startSession(widget.storyId);
@@ -109,6 +114,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   void _onSessionStateChanged() {
     if (_sessionController.state.status == ReaderStatus.ready) {
+      final currentChapter = _sessionController.state.chapterDetail;
+      if (currentChapter != null) {
+        _progressCoordinator.onChapterReady(currentChapter.chapter.id);
+      }
       if (_isNovel) {
         _loadNovelIfNeeded();
       } else {
@@ -352,7 +361,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                   Icons.auto_stories,
                                   size: 18,
                                   color: _currentMode == MangaReadingMode.rtl
-                                      ? AppColors.primary
+                                      ? context.primaryColor
                                       : AppColors.textMuted,
                                 ),
                                 const SizedBox(width: 8),
@@ -360,7 +369,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                   MangaReadingMode.rtl.displayName,
                                   style: TextStyle(
                                     color: _currentMode == MangaReadingMode.rtl
-                                        ? AppColors.primaryLight
+                                        ? context.primaryColor
                                         : AppColors.textPrimary,
                                   ),
                                 ),
@@ -375,7 +384,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                   Icons.menu_book,
                                   size: 18,
                                   color: _currentMode == MangaReadingMode.ltr
-                                      ? AppColors.primary
+                                      ? context.primaryColor
                                       : AppColors.textMuted,
                                 ),
                                 const SizedBox(width: 8),
@@ -383,7 +392,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                   MangaReadingMode.ltr.displayName,
                                   style: TextStyle(
                                     color: _currentMode == MangaReadingMode.ltr
-                                        ? AppColors.primaryLight
+                                        ? context.primaryColor
                                         : AppColors.textPrimary,
                                   ),
                                 ),
@@ -398,7 +407,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                   Icons.swap_vert,
                                   size: 18,
                                   color: _currentMode == MangaReadingMode.vertical
-                                      ? AppColors.primary
+                                      ? context.primaryColor
                                       : AppColors.textMuted,
                                 ),
                                 const SizedBox(width: 8),
@@ -406,7 +415,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                                   MangaReadingMode.vertical.displayName,
                                   style: TextStyle(
                                     color: _currentMode == MangaReadingMode.vertical
-                                        ? AppColors.primaryLight
+                                        ? context.primaryColor
                                         : AppColors.textPrimary,
                                   ),
                                 ),
@@ -448,10 +457,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
                         if (!_isNovel && totalPages > 1)
                           SliderTheme(
                             data: SliderTheme.of(context).copyWith(
-                              activeTrackColor: AppColors.primary,
+                              activeTrackColor: context.primaryColor,
                               inactiveTrackColor: AppColors.darkSurface,
-                              thumbColor: AppColors.primaryLight,
-                              overlayColor: AppColors.primary.withValues(alpha: 0.2),
+                              thumbColor: context.primaryColor,
+                              overlayColor: context.primaryColor.withValues(alpha: 0.2),
                               trackHeight: 3,
                             ),
                             child: Slider(
@@ -616,8 +625,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   Widget _buildPagedReaderView() {
     if (_sessionController.state.status != ReaderStatus.ready || _pageController == null) {
-      return const Center(
-        child: CircularProgressIndicator(color: AppColors.primary),
+      return Center(
+        child: CircularProgressIndicator(color: context.primaryColor),
       );
     }
 

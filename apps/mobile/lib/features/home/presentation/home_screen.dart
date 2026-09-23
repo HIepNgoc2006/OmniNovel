@@ -131,6 +131,12 @@ class _HomeScreenState extends State<HomeScreen> {
             onPressed: () => context.push('/library'),
           ),
           IconButton(
+            key: const Key('home_profile_button'),
+            icon: const Icon(Icons.person_outline, color: AppColors.textPrimary, size: 24),
+            tooltip: 'Hồ sơ cá nhân & MangaPass',
+            onPressed: () => context.push('/profile'),
+          ),
+          IconButton(
             key: const Key('home_search_button'),
             icon: const Icon(Icons.search, color: AppColors.textPrimary, size: 26),
             tooltip: 'Tìm kiếm truyện',

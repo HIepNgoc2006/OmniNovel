@@ -28,4 +28,15 @@ class ApiEndpoints {
 
   // Chapter Reporting (Issue #191)
   static String chapterReport(String chapterId) => '/chapters/$chapterId/reports';
+
+  // Gamification & Rewards (Phase 5C.5)
+  static const String gamificationProgression = '/gamification/progression';
+  static const String gamificationCheckin = '/gamification/checkin';
+  static const String gamificationThemes = '/gamification/themes';
+  static const String gamificationRankTheme = '/gamification/rank-theme';
+  static const String gamificationRewards = '/gamification/rewards';
+  static const String gamificationRewardsClaim = '/gamification/rewards/claim';
+  static const String gamificationTransactions = '/gamification/transactions';
+  static const String gamificationReadChapter = '/gamification/read-chapter';
+  static const String gamificationLeaderboard = '/gamification/leaderboard';
 }

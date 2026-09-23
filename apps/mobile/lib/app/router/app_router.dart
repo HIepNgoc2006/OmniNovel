@@ -12,6 +12,8 @@ import '../../features/story/presentation/story_detail_screen.dart';
 import '../../features/story/repositories/story_repository.dart';
 import '../../features/reader/models/manga_reading_mode.dart';
 import '../../features/reader/presentation/reader_screen.dart';
+import '../../features/gamification/repositories/gamification_repository.dart';
+import '../../features/profile/presentation/profile_screen.dart';
 import '../../features/reader/repositories/chapter_repository.dart';
 import '../../features/reader/repositories/media_repository.dart';
 import '../../features/reader/repositories/reading_progress_repository.dart';
@@ -25,6 +27,7 @@ class AppRouter {
     MediaRepository? mediaRepository,
     ReadingProgressRepository? readingProgressRepository,
     LibraryRepository? libraryRepository,
+    GamificationRepository? gamificationRepository,
   }) {
     final effectiveStoryRepo =
         storyRepository ?? StoryRepository(apiClient: apiClient);
@@ -43,6 +46,8 @@ class AppRouter {
           progressRepository: effectiveProgressRepo,
           userIdProvider: () => authService.state.user?.id,
         );
+    final effectiveGamificationRepo = gamificationRepository ??
+        GamificationRepository(apiClient: apiClient);
 
     return GoRouter(
       initialLocation: '/home',
@@ -85,6 +90,13 @@ class AppRouter {
           path: '/library',
           builder: (context, state) => LibraryScreen(
             libraryRepository: effectiveLibraryRepo,
+          ),
+        ),
+        GoRoute(
+          path: '/profile',
+          builder: (context, state) => ProfileScreen(
+            authService: authService,
+            gamificationRepository: effectiveGamificationRepo,
           ),
         ),
         GoRoute(
@@ -147,6 +159,7 @@ class AppRouter {
               chapterRepository: effectiveChapterRepo,
               mediaRepository: effectiveMediaRepo,
               readingProgressRepository: effectiveProgressRepo,
+              gamificationRepository: effectiveGamificationRepo,
             );
           },
         ),

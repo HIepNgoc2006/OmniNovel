@@ -2,6 +2,7 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/theme/app_colors.dart';
+import '../../../core/theme/theme_tokens.dart';
 import '../../library/models/library_models.dart';
 import '../../library/repositories/library_repository.dart';
 import '../../reader/models/reading_progress_models.dart';
@@ -193,7 +194,7 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
               key: const Key('story_bookmark_button'),
               icon: Icon(
                 _isBookmarked ? Icons.bookmark : Icons.bookmark_border,
-                color: _isBookmarked ? AppColors.primary : AppColors.textPrimary,
+                color: _isBookmarked ? context.primaryColor : AppColors.textPrimary,
               ),
               tooltip: _isBookmarked ? 'Bỏ theo dõi' : 'Theo dõi truyện',
               onPressed: _toggleBookmark,
@@ -206,8 +207,8 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
 
   Widget _buildBody() {
     if (_isLoading) {
-      return const Center(
-        child: CircularProgressIndicator(color: AppColors.primary),
+      return Center(
+        child: CircularProgressIndicator(color: context.primaryColor),
       );
     }
 
@@ -246,7 +247,7 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
 
     return RefreshIndicator(
       onRefresh: _loadStoryAndProgress,
-      color: AppColors.primary,
+      color: context.primaryColor,
       child: ListView(
         padding: const EdgeInsets.all(16),
         children: [
@@ -457,15 +458,15 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
                         ? Image.network(
                             story.coverUrl!,
                             fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => const Icon(
+                            errorBuilder: (_, __, ___) => Icon(
                               Icons.auto_stories,
-                              color: AppColors.primary,
+                              color: context.primaryColor,
                               size: 40,
                             ),
                           )
-                        : const Icon(
+                        : Icon(
                             Icons.auto_stories,
-                            color: AppColors.primary,
+                            color: context.primaryColor,
                             size: 40,
                           ),
                   ),
@@ -492,13 +493,13 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
                               (g) => Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                                 decoration: BoxDecoration(
-                                  color: AppColors.primary.withValues(alpha: 0.15),
+                                  color: context.primaryColor.withValues(alpha: 0.15),
                                   borderRadius: BorderRadius.circular(12),
-                                  border: Border.all(color: AppColors.primary.withValues(alpha: 0.3)),
+                                  border: Border.all(color: context.primaryColor.withValues(alpha: 0.3)),
                                 ),
                                 child: Text(
                                   g.name,
-                                  style: const TextStyle(color: AppColors.primaryLight, fontSize: 11),
+                                  style: TextStyle(color: context.primaryColor, fontSize: 11),
                                 ),
                               ),
                             )
@@ -516,12 +517,12 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                               decoration: BoxDecoration(
-                                color: AppColors.primary.withValues(alpha: 0.25),
+                                color: context.primaryColor.withValues(alpha: 0.25),
                                 borderRadius: BorderRadius.circular(4),
                               ),
                               child: Text(
                                 story.publicationFormat!,
-                                style: const TextStyle(color: AppColors.primaryLight, fontSize: 10, fontWeight: FontWeight.bold),
+                                style: TextStyle(color: context.primaryColor, fontSize: 10, fontWeight: FontWeight.bold),
                               ),
                             ),
                             const SizedBox(width: 8),

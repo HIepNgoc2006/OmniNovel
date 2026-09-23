@@ -108,6 +108,10 @@ describe('Reading History Concurrency & Lock Serialization (Integration - Gate 6
       );
       expect(Number(saveRows[0]?.epoch)).toBe(0);
 
+      // Lấy backend PID của connection DELETE để scope chính xác lock contention
+      const pidRes = await qrDelete.query('SELECT pg_backend_pid() AS pid');
+      const deleteBackendPid = Number(pidRes[0]?.pid);
+
       // 2. Transaction DELETE cố gắng lấy exclusive row update trên cùng counter
       // Trong PostgreSQL: INSERT ... ON CONFLICT DO UPDATE đòi exclusive row lock (FOR UPDATE), sẽ bị BLOCK bởi FOR SHARE lock của qrSave!
       const deletePromise = qrDelete.query(
@@ -127,11 +131,12 @@ describe('Reading History Concurrency & Lock Serialization (Integration - Gate 6
       await new Promise((resolve) => setTimeout(resolve, 150));
       expect(deleteResolved).toBe(false);
 
-      // Verify trong PostgreSQL system catalog: Có lock contention thực sự (waiting lock)
+      // Verify trong PostgreSQL system catalog: Đúng PID của qrDelete đang bị block (waiting lock)
       const lockCheck = await dataSource.query(
         `SELECT COUNT(*) AS "waitingCount"
          FROM pg_locks
-         WHERE granted = false`,
+         WHERE pid = $1 AND granted = false`,
+        [deleteBackendPid],
       );
       expect(Number(lockCheck[0]?.waitingCount)).toBeGreaterThanOrEqual(1);
 

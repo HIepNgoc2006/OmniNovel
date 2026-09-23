@@ -190,5 +190,53 @@ void main() {
             that: isA<ReadingProgressPayload>().having((p) => p.writeEpoch, 'writeEpoch', 10),
           ))).called(1);
     });
+
+    test('Gate 6G: Failed hydration must NOT seed epoch zero and must not dispatch network payload', () async {
+      // 1. Server getProgress fails (network drop / offline)
+      when(() => mockRepo.ensureServerEpoch('story-offline')).thenThrow(
+        Exception('Network connectivity offline'),
+      );
+      when(() => mockRepo.getCachedServerEpoch('story-offline')).thenReturn(null);
+
+      // Start reading session
+      await coordinator.startSession('story-offline');
+
+      // Verify server sync is DISABLED and cached epoch is NOT zero (remains null)
+      expect(coordinator.isServerSyncEnabled, isFalse);
+      expect(mockRepo.getCachedServerEpoch('story-offline'), isNull);
+
+      // 2. User reads offline and updates progress
+      coordinator.recordProgress(
+        storyId: 'story-offline',
+        chapterId: 'ch-offline-1',
+        flutterPageIndex: 2,
+        progressPercentage: 25.0,
+        scrollPosition: 600.0,
+      );
+
+      // Local checkpoint is saved
+      verify(() => mockRepo.saveLocalCheckpoint(any())).called(1);
+
+      // Network must NOT be touched and must NOT send writeEpoch: 0
+      await coordinator.flush();
+      verifyNever(() => mockRepo.saveProgress(any()));
+
+      // 3. Network recovers, re-hydration yields canonical epoch (e.g. 7)
+      when(() => mockRepo.ensureServerEpoch('story-offline')).thenAnswer((_) async => 7);
+      when(() => mockRepo.getCachedServerEpoch('story-offline')).thenReturn(7);
+      when(() => mockRepo.saveProgress(any())).thenAnswer(
+        (_) async => const ReadingProgressResponse(storyId: 'story-offline', writeEpoch: 7),
+      );
+
+      // Start new session after reconnection
+      await coordinator.startSession('story-offline');
+      expect(coordinator.isServerSyncEnabled, isTrue);
+
+      // Pending draft is now materialized with canonical epoch 7
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      verify(() => mockRepo.saveProgress(any(
+            that: isA<ReadingProgressPayload>().having((p) => p.writeEpoch, 'writeEpoch', 7),
+          ))).called(1);
+    });
   });
 }

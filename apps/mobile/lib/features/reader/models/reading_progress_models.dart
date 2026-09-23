@@ -176,7 +176,7 @@ class ReadingProgressResponse {
     this.textOffset = 0,
     this.updatedAt,
     this.readChapterIds = const [],
-    this.writeEpoch = 0,
+    required this.writeEpoch,
   });
 
   /// Lấy 0-based index dùng nội bộ trong Flutter

@@ -24,6 +24,7 @@ void main() {
         storyId: 'story-1',
         chapterId: 'ch-1',
         readChapterIds: ['ch-1', 'ch-2'],
+        writeEpoch: 1,
       ),
     );
   });
@@ -165,6 +166,46 @@ void main() {
     final posVol1 = tester.getTopLeft(vol1Finder).dy;
     final posVol2 = tester.getTopLeft(vol2Finder).dy;
     expect(posVol1 < posVol2, isTrue, reason: 'Tập 1 phải hiển thị trước Tập 2 khi đang sắp xếp Cũ nhất');
+  });
+
+  testWidgets('StoryDetailScreen does not setServerEpoch and falls back to local checkpoint when getProgress fails', (tester) async {
+    const story = StoryDetail(
+      id: 'story-offline',
+      slug: 'story-offline',
+      title: 'Truyện Ngoại Tuyến',
+      editions: [
+        StoryEdition(
+          id: 'ed-1',
+          editionName: 'Official',
+          isDefault: true,
+          chapters: [
+            ChapterItemSummary(id: 'ch-1', chapterNumber: '1', title: 'Chương 1'),
+          ],
+        ),
+      ],
+    );
+
+    // Server getProgress throws error
+    when(() => mockProgressRepo.getProgress('story-offline')).thenThrow(Exception('Network Error'));
+    when(() => mockProgressRepo.getLocalCheckpoint('story-offline')).thenAnswer(
+      (_) async => LocalReadingCheckpoint(
+        storyId: 'story-offline',
+        chapterId: 'ch-1',
+        pageIndex: 1,
+        progressPercentage: 50.0,
+        scrollPosition: 200.0,
+        updatedAt: DateTime.now(),
+      ),
+    );
+
+    await tester.pumpWidget(buildWidget(story));
+    await tester.pumpAndSettle();
+
+    // Verify setServerEpoch was NEVER called (avoids zero-fallback seeding)
+    verifyNever(() => mockProgressRepo.setServerEpoch(any(), any()));
+
+    // Verify screen loaded and continue button shows local progress
+    expect(find.textContaining('Đọc tiếp'), findsOneWidget);
   });
 }
 

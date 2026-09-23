@@ -67,7 +67,7 @@ void main() {
   setUp(() {
     mockRepo = MockReadingProgressRepository();
     when(() => mockRepo.saveLocalCheckpoint(any())).thenAnswer((_) async {});
-    when(() => mockRepo.saveProgress(any())).thenAnswer((_) async => const ReadingProgressResponse(storyId: 'story-1'));
+    when(() => mockRepo.saveProgress(any())).thenAnswer((_) async => const ReadingProgressResponse(storyId: 'story-1', writeEpoch: 1));
 
     coordinator = ReadingProgressCoordinator(
       repository: mockRepo,

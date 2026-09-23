@@ -75,18 +75,25 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
           libraryRepo.getBookmarkStatus(story.id)
         else
           Future.value(const BookmarkStatusResponse(isBookmarked: false)),
-        widget.readingProgressRepository.getProgress(story.id).catchError((_) {
-          return const ReadingProgressResponse(storyId: '');
-        }),
+        () async {
+          try {
+            return await widget.readingProgressRepository.getProgress(story.id);
+          } catch (_) {
+            return null;
+          }
+        }(),
         widget.readingProgressRepository.getLocalCheckpoint(story.id),
       ]);
 
       final bookmarkRes = results[0] as BookmarkStatusResponse;
-      final serverProgress = results[1] as ReadingProgressResponse;
+      final serverProgress = results[1] as ReadingProgressResponse?;
       final localCheckpoint = results[2] as LocalReadingCheckpoint?;
 
-      // Hydrate server epoch
-      widget.readingProgressRepository.setServerEpoch(story.id, serverProgress.writeEpoch);
+      // Hydrate server epoch CHỈ KHI getProgress() thành công (tránh zero-fallback)
+      if (serverProgress != null) {
+        widget.readingProgressRepository
+            .setServerEpoch(story.id, serverProgress.writeEpoch);
+      }
 
       // Phân giải resume pointer từ hàm thuần túy với cùng 1 snapshot
       final pointer = _progressCoordinator.resolveResumePointerFrom(
@@ -98,7 +105,8 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
         setState(() {
           _story = story;
           _resumePointer = pointer;
-          _readChapterIds = serverProgress.readChapterIds.toSet();
+          _readChapterIds =
+              serverProgress?.readChapterIds.toSet() ?? const <String>{};
           _isBookmarked = bookmarkRes.isBookmarked;
           _followersCount = story.followersCount;
           _isLoading = false;

@@ -106,6 +106,7 @@ void main() {
         progressPercentage: 20.0,
         scrollPosition: 0.0,
         updatedAt: DateTime.now(),
+        writeEpoch: 1,
       ),
     );
 

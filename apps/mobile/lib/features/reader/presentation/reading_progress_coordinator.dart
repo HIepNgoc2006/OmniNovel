@@ -199,10 +199,10 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
   /// Hàm thuần túy đối chiếu Local Checkpoint vs Server Progress (Khử duplicate GET)
   ResumePointer? resolveResumePointerFrom({
     required LocalReadingCheckpoint? local,
-    required ReadingProgressResponse server,
+    required ReadingProgressResponse? server,
   }) {
     final hasLocal = local != null && local.chapterId.isNotEmpty;
-    final hasServer = server.hasProgress && server.chapterId != null;
+    final hasServer = server != null && server.hasProgress && server.chapterId != null;
 
     if (!hasLocal && !hasServer) {
       return null;
@@ -239,7 +239,7 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
     // Có cả 2: So sánh updatedAt
     final localTime = local!.updatedAt;
     final serverTime =
-        server.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+        server!.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
 
     if (localTime.isAfter(serverTime)) {
       return ResumePointer(
@@ -271,13 +271,17 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
   /// Tiện ích lấy ResumePointer khi gọi độc lập
   Future<ResumePointer?> resolveResumePointer(String storyId) async {
     final localFuture = _repository.getLocalCheckpoint(storyId);
-    final serverFuture = _repository.getProgress(storyId).catchError((_) {
-      return const ReadingProgressResponse(storyId: '');
-    });
+    final serverFuture = () async {
+      try {
+        return await _repository.getProgress(storyId);
+      } catch (_) {
+        return null;
+      }
+    }();
 
     final results = await Future.wait([localFuture, serverFuture]);
     final local = results[0] as LocalReadingCheckpoint?;
-    final server = results[1] as ReadingProgressResponse;
+    final server = results[1] as ReadingProgressResponse?;
 
     return resolveResumePointerFrom(local: local, server: server);
   }

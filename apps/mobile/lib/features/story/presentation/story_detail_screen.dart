@@ -2,6 +2,9 @@ import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/theme/app_colors.dart';
+import '../../library/models/library_models.dart';
+import '../../library/repositories/library_repository.dart';
+import '../../reader/models/reading_progress_models.dart';
 import '../../reader/presentation/reading_progress_coordinator.dart';
 import '../../reader/repositories/reading_progress_repository.dart';
 import '../models/story_models.dart';
@@ -11,12 +14,14 @@ class StoryDetailScreen extends StatefulWidget {
   final String slug;
   final StoryRepository storyRepository;
   final ReadingProgressRepository readingProgressRepository;
+  final LibraryRepository? libraryRepository;
 
   const StoryDetailScreen({
     super.key,
     required this.slug,
     required this.storyRepository,
     required this.readingProgressRepository,
+    this.libraryRepository,
   });
 
   @override
@@ -28,6 +33,9 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
   StoryDetail? _story;
   ResumePointer? _resumePointer;
   Set<String> _readChapterIds = {};
+  bool _isBookmarked = false;
+  int _followersCount = 0;
+  bool _isTogglingBookmark = false;
   bool _isLoading = true;
   String? _errorMessage;
 
@@ -57,20 +65,42 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
     });
 
     try {
+      // Pha 1: Phân giải slug lấy story.id
       final story = await widget.storyRepository.getStoryBySlug(widget.slug);
-      final pointer = await _progressCoordinator.resolveResumePointer(story.id);
 
-      Set<String> readIds = {};
-      try {
-        final serverProgress = await widget.readingProgressRepository.getProgress(story.id);
-        readIds = serverProgress.readChapterIds.toSet();
-      } catch (_) {}
+      // Pha 2: Chạy song song 1 lần duy nhất (Gate 8: Khử duplicate getProgress)
+      final libraryRepo = widget.libraryRepository;
+      final results = await Future.wait([
+        if (libraryRepo != null)
+          libraryRepo.getBookmarkStatus(story.id)
+        else
+          Future.value(const BookmarkStatusResponse(isBookmarked: false)),
+        widget.readingProgressRepository.getProgress(story.id).catchError((_) {
+          return const ReadingProgressResponse(storyId: '');
+        }),
+        widget.readingProgressRepository.getLocalCheckpoint(story.id),
+      ]);
+
+      final bookmarkRes = results[0] as BookmarkStatusResponse;
+      final serverProgress = results[1] as ReadingProgressResponse;
+      final localCheckpoint = results[2] as LocalReadingCheckpoint?;
+
+      // Hydrate server epoch
+      widget.readingProgressRepository.setServerEpoch(story.id, serverProgress.writeEpoch);
+
+      // Phân giải resume pointer từ hàm thuần túy với cùng 1 snapshot
+      final pointer = _progressCoordinator.resolveResumePointerFrom(
+        local: localCheckpoint,
+        server: serverProgress,
+      );
 
       if (mounted) {
         setState(() {
           _story = story;
           _resumePointer = pointer;
-          _readChapterIds = readIds;
+          _readChapterIds = serverProgress.readChapterIds.toSet();
+          _isBookmarked = bookmarkRes.isBookmarked;
+          _followersCount = story.followersCount;
           _isLoading = false;
         });
       }
@@ -81,6 +111,49 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
           _isLoading = false;
         });
       }
+    }
+  }
+
+  Future<void> _toggleBookmark() async {
+    if (_story == null || _isTogglingBookmark) return;
+    final libraryRepo = widget.libraryRepository;
+    if (libraryRepo == null) return;
+
+    _isTogglingBookmark = true;
+    final prevStatus = _isBookmarked;
+    final prevFollowers = _followersCount;
+    final newStatus = !prevStatus;
+
+    // Optimistic UI update (Gate 8)
+    setState(() {
+      _isBookmarked = newStatus;
+      _followersCount =
+          newStatus ? prevFollowers + 1 : (prevFollowers - 1).clamp(0, 999999);
+    });
+
+    try {
+      final res = await libraryRepo.setBookmark(_story!.id, newStatus);
+      if (mounted) {
+        setState(() {
+          _isBookmarked = res.isBookmarked;
+        });
+      }
+    } catch (e) {
+      // Rollback khi server reject
+      if (mounted) {
+        setState(() {
+          _isBookmarked = prevStatus;
+          _followersCount = prevFollowers;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Không thể cập nhật theo dõi: ${e.toString()}'),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+    } finally {
+      _isTogglingBookmark = false;
     }
   }
 
@@ -106,6 +179,18 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
         title: Text(_story?.title ?? 'Chi tiết truyện'),
         backgroundColor: AppColors.oledBlack,
         elevation: 0,
+        actions: [
+          if (_story != null)
+            IconButton(
+              key: const Key('story_bookmark_button'),
+              icon: Icon(
+                _isBookmarked ? Icons.bookmark : Icons.bookmark_border,
+                color: _isBookmarked ? AppColors.primary : AppColors.textPrimary,
+              ),
+              tooltip: _isBookmarked ? 'Bỏ theo dõi' : 'Theo dõi truyện',
+              onPressed: _toggleBookmark,
+            ),
+        ],
       ),
       body: _buildBody(),
     );

@@ -32,11 +32,14 @@ void main() {
         scrollPosition: 800,
         flutterPageIndex: 9, // Trang thứ 10 trong danh sách 0-indexed
         storyId: 'story-1',
+        writeEpoch: 2,
       );
 
       expect(payload.pageIndex, 10); // 1-based cho server
       expect(payload.flutterPageIndex, 9); // internal 0-based
+      expect(payload.writeEpoch, 2);
       expect(payload.toJson()['pageIndex'], 10);
+      expect(payload.toJson()['writeEpoch'], 2);
     });
 
     test('ReadingProgressResponse parses 1-based pageIndex and provides flutterPageIndex', () {
@@ -49,6 +52,7 @@ void main() {
         'anchorBlockId': 'block-uuid',
         'textOffset': 200,
         'readChapterIds': ['ch-0', 'ch-1'],
+        'writeEpoch': 3,
       };
 
       final response = ReadingProgressResponse.fromJson(json);
@@ -58,22 +62,25 @@ void main() {
       expect(response.flutterPageIndex, 14); // 0-based
       expect(response.anchorBlockId, 'block-uuid');
       expect(response.textOffset, 200);
+      expect(response.writeEpoch, 3);
       expect(response.hasProgress, isTrue);
       expect(response.readChapterIds.length, 2);
     });
 
-    test('saveProgress sends PUT to ApiEndpoints.readingProgress', () async {
+    test('saveProgress sends PUT to ApiEndpoints.readingProgress with writeEpoch', () async {
       final payload = ReadingProgressPayload.fromFlutterIndex(
         chapterId: 'ch-1',
         progressPercentage: 50.0,
         scrollPosition: 1000,
         flutterPageIndex: 2,
         storyId: 'story-1',
+        writeEpoch: 5,
       );
 
       when(() => mockApiClient.put<Map<String, dynamic>>(
             ApiEndpoints.readingProgress,
             data: any<dynamic>(named: 'data'),
+            cancelToken: any(named: 'cancelToken'),
           )).thenAnswer(
         (_) async => Response<Map<String, dynamic>>(
           requestOptions: RequestOptions(path: ApiEndpoints.readingProgress),
@@ -85,6 +92,7 @@ void main() {
             'scrollPosition': 1000.0,
             'pageIndex': 3,
             'textOffset': 0,
+            'writeEpoch': 5,
           },
         ),
       );
@@ -93,13 +101,15 @@ void main() {
 
       expect(result.pageIndex, 3);
       expect(result.flutterPageIndex, 2);
+      expect(result.writeEpoch, 5);
       verify(() => mockApiClient.put<Map<String, dynamic>>(
             ApiEndpoints.readingProgress,
             data: any<dynamic>(named: 'data'),
+            cancelToken: any(named: 'cancelToken'),
           )).called(1);
     });
 
-    test('getProgress retrieves progress from ApiEndpoints.storyReadingProgress', () async {
+    test('getProgress retrieves progress from ApiEndpoints.storyReadingProgress with writeEpoch', () async {
       const storyId = 'story-1';
       when(() => mockApiClient.get<Map<String, dynamic>>(ApiEndpoints.storyReadingProgress(storyId)))
           .thenAnswer(
@@ -112,6 +122,7 @@ void main() {
             'chapterId': 'ch-2',
             'pageIndex': 8,
             'progressPercentage': 85.0,
+            'writeEpoch': 4,
           },
         ),
       );
@@ -121,6 +132,7 @@ void main() {
       expect(result.chapterId, 'ch-2');
       expect(result.pageIndex, 8);
       expect(result.flutterPageIndex, 7);
+      expect(result.writeEpoch, 4);
       verify(() => mockApiClient.get<Map<String, dynamic>>(ApiEndpoints.storyReadingProgress(storyId)))
           .called(1);
     });

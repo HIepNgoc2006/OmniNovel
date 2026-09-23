@@ -57,5 +57,10 @@ export class UpdateReadingProgressDto {
   @IsOptional()
   @IsUUID('4', { message: 'storyId phải là định dạng UUID hợp lệ' })
   storyId?: string;
+
+  @Type(() => Number)
+  @IsInt({ message: 'writeEpoch phải là số nguyên' })
+  @Min(0, { message: 'writeEpoch không được nhỏ hơn 0' })
+  writeEpoch: number;
 }
 

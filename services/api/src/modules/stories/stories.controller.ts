@@ -4,6 +4,7 @@ import {
   Post,
   Put,
   Patch,
+  Delete,
   Body,
   Param,
   Query,
@@ -16,6 +17,8 @@ import { CreateStoryDto } from './dto/create-story.dto';
 import { FindStoriesQueryDto } from './dto/find-stories-query.dto';
 import { FindManagedStoriesQueryDto } from './dto/find-managed-stories-query.dto';
 import { SetBookmarkDto } from './dto/set-bookmark.dto';
+import { FindBookmarksQueryDto } from './dto/find-bookmarks-query.dto';
+import { LibraryPaginationQueryDto } from './dto/library-pagination-query.dto';
 import { UpdateReadingProgressDto } from './dto/update-reading-progress.dto';
 import { UpdateVisibilityDto } from './dto/update-visibility.dto';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
@@ -63,6 +66,15 @@ export class StoriesController {
   }
 
   // 5. Quản lý Thư viện / Bookmarks (FR-LIB-02)
+  @Get('library/bookmarks')
+  @UseGuards(JwtAuthGuard)
+  getBookmarks(
+    @CurrentUser() user: any,
+    @Query() query: FindBookmarksQueryDto,
+  ) {
+    return this.storiesService.getBookmarks(user, query);
+  }
+
   @Post('library/bookmarks')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -82,7 +94,7 @@ export class StoriesController {
     return this.storiesService.getBookmarkStatus(userId, storyId);
   }
 
-  // 6. Quản lý Tiến độ đọc (Reading Progress)
+  // 6. Quản lý Tiến độ đọc (Reading Progress) & Lịch sử Đọc (Reading History)
   @Put('library/reading-progress')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -100,6 +112,34 @@ export class StoriesController {
     @CurrentUser() user: any,
   ) {
     return this.storiesService.getReadingProgress(user, storyId);
+  }
+
+  @Get('library/history')
+  @UseGuards(JwtAuthGuard)
+  getReadingHistory(
+    @CurrentUser() user: any,
+    @Query() query: LibraryPaginationQueryDto,
+  ) {
+    return this.storiesService.getReadingHistory(user, query);
+  }
+
+  @Delete('library/history')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  clearAllReadingHistory(
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.storiesService.clearAllReadingHistory(userId);
+  }
+
+  @Delete('library/history/:storyId')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  deleteStoryReadingHistory(
+    @CurrentUser('id') userId: string,
+    @Param('storyId') storyId: string,
+  ) {
+    return this.storiesService.deleteStoryReadingHistory(userId, storyId);
   }
 
   // 7. Quản lý bộ truyện trong Studio (Global ADMIN hoặc StoryMember: OWNER/EDITOR/TRANSLATOR)

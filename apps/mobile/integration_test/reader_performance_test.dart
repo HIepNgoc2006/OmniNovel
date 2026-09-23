@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
@@ -58,12 +59,20 @@ class InMemoryProgressRepository implements ReadingProgressRepository {
   }
 
   @override
-  Future<ReadingProgressResponse> getProgress(String storyId) async {
-    return const ReadingProgressResponse(storyId: 'bench-story');
+  Future<void> clearAllLocalCheckpoints() async {
+    savedCheckpoint = null;
   }
 
   @override
-  Future<ReadingProgressResponse> saveProgress(ReadingProgressPayload payload) async {
+  Future<ReadingProgressResponse> getProgress(String storyId) async {
+    return const ReadingProgressResponse(storyId: 'bench-story', writeEpoch: 0);
+  }
+
+  @override
+  Future<ReadingProgressResponse> saveProgress(
+    ReadingProgressPayload payload, {
+    CancelToken? cancelToken,
+  }) async {
     savedServerPayload = payload;
     return ReadingProgressResponse(
       storyId: payload.storyId ?? 'bench-story',
@@ -72,8 +81,29 @@ class InMemoryProgressRepository implements ReadingProgressRepository {
       progressPercentage: payload.progressPercentage,
       scrollPosition: payload.scrollPosition,
       updatedAt: DateTime.now(),
+      writeEpoch: payload.writeEpoch,
     );
   }
+
+  @override
+  Future<int> ensureServerEpoch(String storyId) async {
+    return 0;
+  }
+
+  @override
+  int? getCachedServerEpoch(String storyId) => 0;
+
+  @override
+  int getLocalGeneration(String storyId) => 0;
+
+  @override
+  void setServerEpoch(String storyId, int epoch) {}
+
+  @override
+  void invalidateStory(String storyId) {}
+
+  @override
+  void invalidateAllStories() {}
 }
 
 void main() {

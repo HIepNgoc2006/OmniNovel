@@ -7,7 +7,7 @@ class ResumePointer {
   final String chapterId;
   final String? chapterVersionId;
   final int flutterPageIndex; // 0-based
-  final int serverPageIndex;  // 1-based
+  final int serverPageIndex; // 1-based
   final double progressPercentage;
   final double scrollPosition;
   final String? anchorBlockId;
@@ -28,16 +28,22 @@ class ResumePointer {
 }
 
 /// Bộ điều phối tiến độ đọc truyện (ReadingProgressCoordinator):
-/// 1. Ghi Local Checkpoint tức thì (SharedPreferences) để chống mất dữ liệu khi kill app.
-/// 2. Debounce đồng bộ lên server (1.5s) khi người đọc đang cuộn liên tục.
-/// 3. Khẩn cấp flush lên server khi app vào trạng thái paused / inactive hoặc khi thoát màn hình.
-/// 4. Đối chiếu (Reconciliation) giữa Local Checkpoint và Server Progress để khôi phục chính xác nhất.
+/// 1. Ghi Local Checkpoint tức thì (SharedPreferences) để bảo vệ dữ liệu khi kill app.
+/// 2. Hydration canonical server epoch trước khi enable server write session (Zero-fallback).
+/// 3. Debounce đồng bộ lên server (1.5s) khi người đọc đang cuộn liên tục.
+/// 4. Session generation guard chống stale hydration race.
+/// 5. Phân giải ResumePointer bằng hàm thuần túy resolveResumePointerFrom.
 class ReadingProgressCoordinator with WidgetsBindingObserver {
   final ReadingProgressRepository _repository;
   final Duration debounceDuration;
 
   Timer? _debounceTimer;
-  ReadingProgressPayload? _pendingPayload;
+  PendingReadingProgress? _pendingDraft;
+
+  int _sessionGeneration = 0;
+  String? _activeStoryId;
+  bool _isServerSyncEnabled = false;
+  bool _disposed = false;
 
   ReadingProgressCoordinator({
     required ReadingProgressRepository repository,
@@ -51,8 +57,42 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
       flush();
+    }
+  }
+
+  bool get isServerSyncEnabled => _isServerSyncEnabled;
+  PendingReadingProgress? get pendingDraft => _pendingDraft;
+
+  /// Khởi tạo phiên đọc cho một bộ truyện:
+  /// Hydrate canonical server epoch. Chỉ khi thành công mới bật server sync.
+  Future<void> startSession(String storyId) async {
+    final generation = ++_sessionGeneration;
+    _activeStoryId = storyId;
+    _isServerSyncEnabled = false;
+
+    try {
+      await _repository.ensureServerEpoch(storyId);
+
+      if (_disposed ||
+          generation != _sessionGeneration ||
+          _activeStoryId != storyId) {
+        return;
+      }
+
+      _isServerSyncEnabled = true;
+
+      // Nếu trong lúc chờ hydrate, user đã scroll tạo pending draft -> schedule sync
+      final draft = _pendingDraft;
+      if (draft != null && draft.storyId == storyId) {
+        _scheduleSyncForCurrentGeneration(generation, storyId);
+      }
+    } catch (_) {
+      if (generation == _sessionGeneration) {
+        _isServerSyncEnabled = false;
+      }
     }
   }
 
@@ -68,7 +108,7 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
     String? anchorBlockId,
     int? textOffset,
   }) {
-    final payload = ReadingProgressPayload.fromFlutterIndex(
+    final draft = PendingReadingProgress.fromFlutterIndex(
       storyId: storyId,
       chapterId: chapterId,
       chapterVersionId: chapterVersionId,
@@ -80,15 +120,15 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
       textOffset: textOffset,
     );
 
-    _pendingPayload = payload;
+    _pendingDraft = draft;
 
-    // 1. Ghi tức thì vào Local Checkpoint (không phụ thuộc mạng, an toàn tuyệt đối nếu kill app)
+    // 1. Ghi tức thì vào Local Checkpoint (User-scoped, không phụ thuộc mạng)
     _repository.saveLocalCheckpoint(
       LocalReadingCheckpoint(
         storyId: storyId,
         chapterId: chapterId,
         chapterVersionId: chapterVersionId,
-        pageIndex: payload.pageIndex, // 1-based
+        pageIndex: draft.pageIndex, // 1-based
         progressPercentage: progressPercentage,
         scrollPosition: scrollPosition,
         anchorBlockId: anchorBlockId,
@@ -97,24 +137,52 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
       ),
     );
 
-    // 2. Thiết lập debounce sync lên server
+    // 2. Thiết lập debounce sync lên server nếu write session đã bật
+    if (_isServerSyncEnabled && _activeStoryId == storyId) {
+      _scheduleSyncForCurrentGeneration(_sessionGeneration, storyId);
+    }
+  }
+
+  void _scheduleSyncForCurrentGeneration(int generation, String storyId) {
     _debounceTimer?.cancel();
+    final localGen = _repository.getLocalGeneration(storyId);
+
     _debounceTimer = Timer(debounceDuration, () {
-      _syncToServer();
+      if (_disposed ||
+          generation != _sessionGeneration ||
+          _activeStoryId != storyId) {
+        return;
+      }
+      if (localGen != _repository.getLocalGeneration(storyId)) {
+        return; // Đã bị invalidate
+      }
+      _syncToServer(storyId);
     });
   }
 
-  Future<void> _syncToServer() async {
-    final payload = _pendingPayload;
-    if (payload == null) return;
+  Future<void> _syncToServer(String storyId) async {
+    final draft = _pendingDraft;
+    if (draft == null || draft.storyId != storyId) return;
+
+    final epoch = _repository.getCachedServerEpoch(storyId);
+    if (epoch == null || !_isServerSyncEnabled) return; // Fail closed
+
+    // Materialize draft thành immutable network payload với canonical writeEpoch
+    final payload = ReadingProgressPayload.fromDraft(draft, writeEpoch: epoch);
 
     try {
       await _repository.saveProgress(payload);
-      if (_pendingPayload == payload) {
-        _pendingPayload = null;
+      if (_pendingDraft == draft) {
+        _pendingDraft = null;
       }
+    } on StaleWriteEpochException {
+      // P0.4: Drop stale payload, tắt server sync, không bao giờ promote retry!
+      if (_pendingDraft == draft) {
+        _pendingDraft = null;
+      }
+      _isServerSyncEnabled = false;
     } catch (_) {
-      // Giữ _pendingPayload để lần flush kế tiếp retry
+      // Giữ _pendingDraft để lần flush/retry kế tiếp
     }
   }
 
@@ -122,20 +190,17 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
   Future<void> flush() async {
     _debounceTimer?.cancel();
     _debounceTimer = null;
-    await _syncToServer();
+    final storyId = _activeStoryId;
+    if (storyId != null) {
+      await _syncToServer(storyId);
+    }
   }
 
-  /// Xác định điểm resume tối ưu bằng cách đối chiếu Local Checkpoint vs Server Progress
-  Future<ResumePointer?> resolveResumePointer(String storyId) async {
-    final localFuture = _repository.getLocalCheckpoint(storyId);
-    final serverFuture = _repository.getProgress(storyId).catchError((_) {
-      return const ReadingProgressResponse(storyId: '');
-    });
-
-    final results = await Future.wait([localFuture, serverFuture]);
-    final local = results[0] as LocalReadingCheckpoint?;
-    final server = results[1] as ReadingProgressResponse;
-
+  /// Hàm thuần túy đối chiếu Local Checkpoint vs Server Progress (Khử duplicate GET)
+  ResumePointer? resolveResumePointerFrom({
+    required LocalReadingCheckpoint? local,
+    required ReadingProgressResponse server,
+  }) {
     final hasLocal = local != null && local.chapterId.isNotEmpty;
     final hasServer = server.hasProgress && server.chapterId != null;
 
@@ -173,10 +238,10 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
 
     // Có cả 2: So sánh updatedAt
     final localTime = local!.updatedAt;
-    final serverTime = server.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+    final serverTime =
+        server.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
 
     if (localTime.isAfter(serverTime)) {
-      // Local mới hơn (ví dụ vừa đọc xong thì kill app, request chưa kịp lên server)
       return ResumePointer(
         chapterId: local.chapterId,
         chapterVersionId: local.chapterVersionId,
@@ -203,8 +268,23 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
     }
   }
 
+  /// Tiện ích lấy ResumePointer khi gọi độc lập
+  Future<ResumePointer?> resolveResumePointer(String storyId) async {
+    final localFuture = _repository.getLocalCheckpoint(storyId);
+    final serverFuture = _repository.getProgress(storyId).catchError((_) {
+      return const ReadingProgressResponse(storyId: '');
+    });
+
+    final results = await Future.wait([localFuture, serverFuture]);
+    final local = results[0] as LocalReadingCheckpoint?;
+    final server = results[1] as ReadingProgressResponse;
+
+    return resolveResumePointerFrom(local: local, server: server);
+  }
+
   /// Dọn dẹp listener và huỷ timer
   void dispose() {
+    _disposed = true;
     flush();
     WidgetsBinding.instance.removeObserver(this);
     _debounceTimer?.cancel();

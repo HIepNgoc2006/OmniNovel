@@ -49,9 +49,15 @@ class ApiClient {
     String path, {
     Map<String, dynamic>? queryParameters,
     Options? options,
+    CancelToken? cancelToken,
   }) async {
     try {
-      return await _dio.get<T>(path, queryParameters: queryParameters, options: options);
+      return await _dio.get<T>(
+        path,
+        queryParameters: queryParameters,
+        options: options,
+        cancelToken: cancelToken,
+      );
     } on DioException catch (e) {
       throw ErrorMapper.fromDioException(e);
     }
@@ -62,9 +68,16 @@ class ApiClient {
     dynamic data,
     Map<String, dynamic>? queryParameters,
     Options? options,
+    CancelToken? cancelToken,
   }) async {
     try {
-      return await _dio.post<T>(path, data: data, queryParameters: queryParameters, options: options);
+      return await _dio.post<T>(
+        path,
+        data: data,
+        queryParameters: queryParameters,
+        options: options,
+        cancelToken: cancelToken,
+      );
     } on DioException catch (e) {
       throw ErrorMapper.fromDioException(e);
     }
@@ -75,9 +88,16 @@ class ApiClient {
     dynamic data,
     Map<String, dynamic>? queryParameters,
     Options? options,
+    CancelToken? cancelToken,
   }) async {
     try {
-      return await _dio.put<T>(path, data: data, queryParameters: queryParameters, options: options);
+      return await _dio.put<T>(
+        path,
+        data: data,
+        queryParameters: queryParameters,
+        options: options,
+        cancelToken: cancelToken,
+      );
     } on DioException catch (e) {
       throw ErrorMapper.fromDioException(e);
     }
@@ -88,9 +108,16 @@ class ApiClient {
     dynamic data,
     Map<String, dynamic>? queryParameters,
     Options? options,
+    CancelToken? cancelToken,
   }) async {
     try {
-      return await _dio.delete<T>(path, data: data, queryParameters: queryParameters, options: options);
+      return await _dio.delete<T>(
+        path,
+        data: data,
+        queryParameters: queryParameters,
+        options: options,
+        cancelToken: cancelToken,
+      );
     } on DioException catch (e) {
       throw ErrorMapper.fromDioException(e);
     }

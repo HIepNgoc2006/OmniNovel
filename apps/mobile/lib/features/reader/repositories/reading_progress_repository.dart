@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/api/api_client.dart';
 import '../../../core/api/api_endpoints.dart';
@@ -8,29 +9,124 @@ import '../models/reading_progress_models.dart';
 class ReadingProgressRepository {
   final ApiClient _apiClient;
   final SharedPreferences? _prefs;
+  final String? Function()? _userIdProvider;
 
   static const String _checkpointPrefix = 'omninovel_reading_checkpoint_';
+
+  // Canonical server epoch map (chỉ nạp từ server qua getProgress hoặc echo)
+  final Map<String, int> _storyServerEpochs = {};
+
+  // Local generation counter (dùng để drop debounced writes và cancel tokens)
+  final Map<String, int> _localWriteGenerations = {};
+
+  // Cancel tokens cho request HTTP in-flight
+  final Map<String, CancelToken> _inFlightTokens = {};
 
   ReadingProgressRepository({
     required ApiClient apiClient,
     SharedPreferences? prefs,
+    String? Function()? userIdProvider,
   })  : _apiClient = apiClient,
-        _prefs = prefs;
+        _prefs = prefs,
+        _userIdProvider = userIdProvider;
 
-  /// Lưu tiến độ đọc lên server Core API
+  String _getCheckpointKey(String storyId) {
+    final uid = _userIdProvider?.call() ?? 'anon';
+    return '$_checkpointPrefix${uid}_$storyId';
+  }
+
+  /// Lấy epoch đã cache trong session
+  int? getCachedServerEpoch(String storyId) => _storyServerEpochs[storyId];
+
+  /// Gán canonical server epoch khi nhận response từ server
+  void setServerEpoch(String storyId, int epoch) {
+    _storyServerEpochs[storyId] = epoch;
+  }
+
+  /// Lấy local generation của một truyện
+  int getLocalGeneration(String storyId) => _localWriteGenerations[storyId] ?? 0;
+
+  /// Bắt buộc hydrate canonical server epoch trước khi enable server write session (P0.3 Zero-fallback)
+  Future<int> ensureServerEpoch(String storyId) async {
+    final cached = _storyServerEpochs[storyId];
+    if (cached != null) return cached;
+
+    final progress = await getProgress(storyId);
+    final epoch = progress.writeEpoch;
+    _storyServerEpochs[storyId] = epoch;
+    return epoch;
+  }
+
+  /// Hủy write session của một truyện (chống Zombie Resurrection sau DELETE)
+  void invalidateStory(String storyId) {
+    _localWriteGenerations[storyId] = (_localWriteGenerations[storyId] ?? 0) + 1;
+    _inFlightTokens[storyId]?.cancel('History invalidated');
+    _inFlightTokens.remove(storyId);
+    _storyServerEpochs.remove(storyId);
+  }
+
+  /// Hủy write session của toàn bộ truyện
+  void invalidateAllStories() {
+    for (final token in _inFlightTokens.values) {
+      token.cancel('All history invalidated');
+    }
+    _inFlightTokens.clear();
+    for (final key in _localWriteGenerations.keys.toList()) {
+      _localWriteGenerations[key] = (_localWriteGenerations[key] ?? 0) + 1;
+    }
+    _storyServerEpochs.clear();
+  }
+
+  /// Lưu tiến độ đọc lên server Core API (yêu cầu payload đã materialize với canonical epoch)
   Future<ReadingProgressResponse> saveProgress(
-      ReadingProgressPayload payload) async {
+    ReadingProgressPayload payload, {
+    CancelToken? cancelToken,
+  }) async {
+    final storyKey = payload.storyId;
+    final token = cancelToken ?? CancelToken();
+    if (storyKey != null) {
+      _inFlightTokens[storyKey] = token;
+    }
+
     try {
       final response = await _apiClient.put<Map<String, dynamic>>(
         ApiEndpoints.readingProgress,
         data: payload.toJson(),
+        cancelToken: token,
       );
       final data = response.data ?? <String, dynamic>{};
-      return ReadingProgressResponse.fromJson(data);
+
+      // Xử lý STALE_WRITE_EPOCH từ server (P0.4)
+      if (data['ignored'] == true && data['reason'] == 'STALE_WRITE_EPOCH') {
+        if (storyKey != null) {
+          _storyServerEpochs.remove(storyKey);
+        }
+        throw StaleWriteEpochException(
+          storyId: storyKey ?? '',
+          writeEpoch: payload.writeEpoch,
+          currentEpoch: data['currentEpoch'] as int?,
+        );
+      }
+
+      final result = ReadingProgressResponse.fromJson(data);
+      if (storyKey != null) {
+        _storyServerEpochs[storyKey] = result.writeEpoch;
+      }
+      return result;
+    } on DioException catch (e) {
+      if (CancelToken.isCancel(e)) {
+        throw ErrorMapper.fromGeneric('Request cancelled: ${e.message}');
+      }
+      rethrow;
     } on ApiError {
       rethrow;
     } catch (e) {
+      if (e is StaleWriteEpochException) rethrow;
       throw ErrorMapper.fromGeneric(e);
+    } finally {
+      if (storyKey != null && _inFlightTokens[storyKey] == token) {
+        _inFlightTokens.remove(storyKey);
+      }
     }
   }
 
@@ -41,7 +137,9 @@ class ReadingProgressRepository {
         ApiEndpoints.storyReadingProgress(storyId),
       );
       final data = response.data ?? <String, dynamic>{};
-      return ReadingProgressResponse.fromJson(data);
+      final result = ReadingProgressResponse.fromJson(data);
+      _storyServerEpochs[storyId] = result.writeEpoch;
+      return result;
     } on ApiError {
       rethrow;
     } catch (e) {
@@ -49,17 +147,17 @@ class ReadingProgressRepository {
     }
   }
 
-  /// Lưu checkpoint tức thì vào SharedPreferences để bảo vệ tiến độ khi bị kill app
+  /// Lưu checkpoint tức thì vào SharedPreferences (User-scoped)
   Future<void> saveLocalCheckpoint(LocalReadingCheckpoint checkpoint) async {
     final prefs = _prefs ?? await SharedPreferences.getInstance();
-    final key = '$_checkpointPrefix${checkpoint.storyId}';
+    final key = _getCheckpointKey(checkpoint.storyId);
     await prefs.setString(key, jsonEncode(checkpoint.toJson()));
   }
 
-  /// Đọc checkpoint cục bộ từ SharedPreferences
+  /// Đọc checkpoint cục bộ từ SharedPreferences (User-scoped)
   Future<LocalReadingCheckpoint?> getLocalCheckpoint(String storyId) async {
     final prefs = _prefs ?? await SharedPreferences.getInstance();
-    final key = '$_checkpointPrefix$storyId';
+    final key = _getCheckpointKey(storyId);
     final raw = prefs.getString(key);
     if (raw == null || raw.isEmpty) return null;
 
@@ -71,10 +169,21 @@ class ReadingProgressRepository {
     }
   }
 
-  /// Xóa checkpoint cục bộ của một bộ truyện
+  /// Xóa checkpoint cục bộ của một bộ truyện (User-scoped)
   Future<void> clearLocalCheckpoint(String storyId) async {
     final prefs = _prefs ?? await SharedPreferences.getInstance();
-    final key = '$_checkpointPrefix$storyId';
+    final key = _getCheckpointKey(storyId);
     await prefs.remove(key);
+  }
+
+  /// Xóa toàn bộ checkpoint cục bộ của user hiện tại
+  Future<void> clearAllLocalCheckpoints() async {
+    final prefs = _prefs ?? await SharedPreferences.getInstance();
+    final uid = _userIdProvider?.call() ?? 'anon';
+    final prefix = '$_checkpointPrefix${uid}_';
+    final keys = prefs.getKeys().where((k) => k.startsWith(prefix)).toList();
+    for (final k in keys) {
+      await prefs.remove(k);
+    }
   }
 }

@@ -21,6 +21,7 @@ void main() {
         chapterId: 'c1',
         progressPercentage: 0,
         scrollPosition: 0,
+        writeEpoch: 0,
       ),
     );
     registerFallbackValue(

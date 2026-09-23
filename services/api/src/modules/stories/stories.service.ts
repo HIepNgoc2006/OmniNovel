@@ -19,6 +19,8 @@ import { CreateStoryDto } from './dto/create-story.dto';
 import { FindStoriesQueryDto } from './dto/find-stories-query.dto';
 import { FindManagedStoriesQueryDto } from './dto/find-managed-stories-query.dto';
 import { SetBookmarkDto } from './dto/set-bookmark.dto';
+import { FindBookmarksQueryDto } from './dto/find-bookmarks-query.dto';
+import { LibraryPaginationQueryDto } from './dto/library-pagination-query.dto';
 import { UpdateReadingProgressDto } from './dto/update-reading-progress.dto';
 import {
   GlobalRole,
@@ -526,7 +528,41 @@ export class StoriesService {
     const completedAt = progressPercentage >= 80 ? new Date() : null;
 
     return this.dataSource.transaction(async (manager) => {
-      // 1. Upsert reading_progress (Current resume pointer for user + story)
+      // 1. Đảm bảo dòng counter tồn tại
+      await manager.query(
+        `INSERT INTO reading_history_epoch_counters (user_id, epoch, updated_at)
+         VALUES ($1, 0, NOW())
+         ON CONFLICT (user_id) DO NOTHING`,
+        [userId],
+      );
+
+      // 2. Khóa dòng counter FOR SHARE
+      await manager.query(
+        `SELECT epoch FROM reading_history_epoch_counters WHERE user_id = $1 FOR SHARE`,
+        [userId],
+      );
+
+      // 3. Phân giải currentEpoch (story tombstone hoặc global sentinel)
+      const tombstoneRows = await manager.query(
+        `SELECT COALESCE(MAX(epoch), 0) AS "currentEpoch"
+         FROM reading_history_tombstones
+         WHERE user_id = $1 AND story_id IN ($2, '00000000-0000-0000-0000-000000000000'::uuid)`,
+        [userId, derivedStoryId],
+      );
+      const currentEpoch = Number(tombstoneRows[0]?.currentEpoch ?? 0);
+
+      // 4. Strict Equality Check (P0.1, P0.2, P0.4)
+      if (Number(dto.writeEpoch) !== currentEpoch) {
+        return {
+          ignored: true,
+          reason: 'STALE_WRITE_EPOCH',
+          storyId: derivedStoryId,
+          writeEpoch: dto.writeEpoch,
+          currentEpoch,
+        };
+      }
+
+      // 5. Upsert reading_progress (Current resume pointer for user + story)
       await manager.query(
         `INSERT INTO reading_progress (
           user_id, story_id, chapter_id, chapter_version_id,
@@ -561,7 +597,7 @@ export class StoriesService {
         ],
       );
 
-      // 2. Upsert chapter_read_states (Read history & completion state per chapter)
+      // 6. Upsert chapter_read_states (Read history & completion state per chapter)
       await manager.query(
         `INSERT INTO chapter_read_states (
           user_id, chapter_id, last_version_id, max_progress_percentage, completed_at, last_read_at
@@ -595,6 +631,7 @@ export class StoriesService {
         anchorBlockId: anchorBlockId || null,
         textOffset: Number(textOffset),
         updatedAt: new Date(),
+        writeEpoch: currentEpoch,
       };
     });
   }
@@ -622,6 +659,15 @@ export class StoriesService {
         throw new ForbiddenException('Bạn không có quyền truy cập truyện riêng tư này.');
       }
     }
+
+    // Resolve currentEpoch từ tombstones (story tombstone hoặc global sentinel)
+    const tombstoneRows = await this.dataSource.query(
+      `SELECT COALESCE(MAX(epoch), 0) AS "currentEpoch"
+       FROM reading_history_tombstones
+       WHERE user_id = $1 AND story_id IN ($2, '00000000-0000-0000-0000-000000000000'::uuid)`,
+      [userId, storyId],
+    );
+    const currentEpoch = Number(tombstoneRows[0]?.currentEpoch ?? 0);
 
     const progress = await this.dataSource.query(
       `SELECT
@@ -664,6 +710,7 @@ export class StoriesService {
         textOffset: 0,
         updatedAt: null,
         readChapterIds,
+        writeEpoch: currentEpoch,
       };
     }
 
@@ -680,6 +727,276 @@ export class StoriesService {
       textOffset: Number(p.textOffset) || 0,
       updatedAt: p.updatedAt,
       readChapterIds,
+      writeEpoch: currentEpoch,
+    };
+  }
+
+  async deleteStoryReadingHistory(userId: string, storyId: string) {
+    return this.dataSource.transaction(async (manager) => {
+      // 1. Khóa và tăng monotonic counter cho user
+      const counterRes = await manager.query(
+        `INSERT INTO reading_history_epoch_counters (user_id, epoch, updated_at)
+         VALUES ($1, 1, NOW())
+         ON CONFLICT (user_id) DO UPDATE SET
+           epoch = reading_history_epoch_counters.epoch + 1,
+           updated_at = NOW()
+         RETURNING epoch`,
+        [userId],
+      );
+      const newEpoch = Number(counterRes[0].epoch);
+
+      // 2. Xóa reading_progress của story
+      await manager.query(
+        `DELETE FROM reading_progress WHERE user_id = $1 AND story_id = $2`,
+        [userId, storyId],
+      );
+
+      // 3. Xóa chapter_read_states của story
+      await manager.query(
+        `DELETE FROM chapter_read_states
+         WHERE user_id = $1 AND chapter_id IN (
+           SELECT c.id FROM chapters c
+           JOIN story_editions se ON se.id = c.story_edition_id
+           WHERE se.story_id = $2
+         )`,
+        [userId, storyId],
+      );
+
+      // 4. Upsert tombstone cho story với newEpoch
+      await manager.query(
+        `INSERT INTO reading_history_tombstones (user_id, story_id, epoch, deleted_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (user_id, story_id) DO UPDATE SET
+           epoch = EXCLUDED.epoch,
+           deleted_at = NOW()`,
+        [userId, storyId, newEpoch],
+      );
+    });
+  }
+
+  async clearAllReadingHistory(userId: string) {
+    return this.dataSource.transaction(async (manager) => {
+      // 1. Khóa và tăng monotonic counter cho user
+      const counterRes = await manager.query(
+        `INSERT INTO reading_history_epoch_counters (user_id, epoch, updated_at)
+         VALUES ($1, 1, NOW())
+         ON CONFLICT (user_id) DO UPDATE SET
+           epoch = reading_history_epoch_counters.epoch + 1,
+           updated_at = NOW()
+         RETURNING epoch`,
+        [userId],
+      );
+      const newEpoch = Number(counterRes[0].epoch);
+
+      // 2. Xóa toàn bộ reading_progress của user
+      await manager.query(
+        `DELETE FROM reading_progress WHERE user_id = $1`,
+        [userId],
+      );
+
+      // 3. Xóa toàn bộ chapter_read_states của user
+      await manager.query(
+        `DELETE FROM chapter_read_states WHERE user_id = $1`,
+        [userId],
+      );
+
+      // 4. Upsert global sentinel tombstone với newEpoch
+      await manager.query(
+        `INSERT INTO reading_history_tombstones (user_id, story_id, epoch, deleted_at)
+         VALUES ($1, '00000000-0000-0000-0000-000000000000'::uuid, $2, NOW())
+         ON CONFLICT (user_id, story_id) DO UPDATE SET
+           epoch = EXCLUDED.epoch,
+           deleted_at = NOW()`,
+        [userId, newEpoch],
+      );
+    });
+  }
+
+  async getBookmarks(userOrId: any, query: FindBookmarksQueryDto) {
+    const userId = typeof userOrId === 'string' ? userOrId : userOrId?.id;
+    const isGlobalAdmin =
+      typeof userOrId === 'object' &&
+      (userOrId?.role === GlobalRole.ADMIN || userOrId?.globalRole === GlobalRole.ADMIN);
+
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(50, Math.max(1, Number(query.limit) || 20));
+    const offset = (page - 1) * limit;
+
+    const countSql = `
+      SELECT COUNT(b.story_id) AS "total"
+      FROM bookmarks b
+      JOIN stories s ON s.id = b.story_id
+      WHERE b.user_id = $1
+        AND ($2::boolean = TRUE OR s.visibility = 'PUBLIC' OR EXISTS (
+          SELECT 1 FROM story_members sm WHERE sm.story_id = s.id AND sm.user_id = $1
+        ))
+        AND ($3::varchar IS NULL OR s.status = $3::varchar)
+    `;
+    const countRes = await this.dataSource.query(countSql, [
+      userId,
+      Boolean(isGlobalAdmin),
+      query.status || null,
+    ]);
+    const totalItems = Number(countRes[0]?.total || 0);
+
+    const dataSql = `
+      SELECT
+        s.id AS "id",
+        s.title AS "title",
+        s.slug AS "slug",
+        s.cover_url AS "coverUrl",
+        s.media_format AS "mediaFormat",
+        s.status AS "status",
+        s.total_chapters AS "totalChapters",
+        b.created_at AS "bookmarkedAt",
+        (
+          SELECT COUNT(c.id)
+          FROM chapters c
+          JOIN story_editions se ON se.id = c.story_edition_id
+          LEFT JOIN chapter_read_states crs ON crs.chapter_id = c.id AND crs.user_id = $1
+          WHERE se.story_id = s.id
+            AND c.status = 'PUBLISHED'
+            AND (crs.chapter_id IS NULL OR crs.max_progress_percentage < 80)
+        ) AS "unreadChapterCount"
+      FROM bookmarks b
+      JOIN stories s ON s.id = b.story_id
+      WHERE b.user_id = $1
+        AND ($2::boolean = TRUE OR s.visibility = 'PUBLIC' OR EXISTS (
+          SELECT 1 FROM story_members sm WHERE sm.story_id = s.id AND sm.user_id = $1
+        ))
+        AND ($3::varchar IS NULL OR s.status = $3::varchar)
+      ORDER BY b.created_at DESC
+      LIMIT $4 OFFSET $5
+    `;
+
+    const rows = await this.dataSource.query(dataSql, [
+      userId,
+      Boolean(isGlobalAdmin),
+      query.status || null,
+      limit,
+      offset,
+    ]);
+
+    const data = rows.map((r: any) => ({
+      story: {
+        id: r.id,
+        title: r.title,
+        slug: r.slug,
+        coverUrl: r.coverUrl,
+        mediaFormat: r.mediaFormat,
+        status: r.status,
+        totalChapters: Number(r.totalChapters) || 0,
+      },
+      bookmarkedAt: r.bookmarkedAt,
+      unreadChapterCount: Number(r.unreadChapterCount) || 0,
+    }));
+
+    return {
+      data,
+      pagination: {
+        page,
+        limit,
+        totalItems,
+        totalPages: Math.ceil(totalItems / limit) || 1,
+      },
+    };
+  }
+
+  async getReadingHistory(userOrId: any, query: LibraryPaginationQueryDto) {
+    const userId = typeof userOrId === 'string' ? userOrId : userOrId?.id;
+    const isGlobalAdmin =
+      typeof userOrId === 'object' &&
+      (userOrId?.role === GlobalRole.ADMIN || userOrId?.globalRole === GlobalRole.ADMIN);
+
+    const page = Math.max(1, Number(query.page) || 1);
+    const limit = Math.min(50, Math.max(1, Number(query.limit) || 20));
+    const offset = (page - 1) * limit;
+
+    const countSql = `
+      SELECT COUNT(rp.story_id) AS "total"
+      FROM reading_progress rp
+      JOIN stories s ON s.id = rp.story_id
+      WHERE rp.user_id = $1
+        AND ($2::boolean = TRUE OR s.visibility = 'PUBLIC' OR EXISTS (
+          SELECT 1 FROM story_members sm WHERE sm.story_id = s.id AND sm.user_id = $1
+        ))
+    `;
+    const countRes = await this.dataSource.query(countSql, [userId, Boolean(isGlobalAdmin)]);
+    const totalItems = Number(countRes[0]?.total || 0);
+
+    const dataSql = `
+      SELECT
+        s.id AS "storyId",
+        s.title AS "storyTitle",
+        s.slug AS "storySlug",
+        s.cover_url AS "storyCoverUrl",
+        s.media_format AS "storyMediaFormat",
+        s.status AS "storyStatus",
+        s.total_chapters AS "storyTotalChapters",
+        c.id AS "chapterId",
+        c.title AS "chapterTitle",
+        c.chapter_number AS "chapterNumber",
+        rp.chapter_version_id AS "chapterVersionId",
+        rp.reading_mode AS "readingMode",
+        CAST(rp.progress_percentage AS FLOAT) AS "progressPercentage",
+        CAST(rp.scroll_position AS FLOAT) AS "scrollPosition",
+        COALESCE(rp.page_index, 1) AS "pageIndex",
+        rp.anchor_block_id AS "anchorBlockId",
+        COALESCE(rp.text_offset, 0) AS "textOffset",
+        rp.updated_at AS "updatedAt"
+      FROM reading_progress rp
+      JOIN stories s ON s.id = rp.story_id
+      JOIN chapters c ON c.id = rp.chapter_id
+      WHERE rp.user_id = $1
+        AND ($2::boolean = TRUE OR s.visibility = 'PUBLIC' OR EXISTS (
+          SELECT 1 FROM story_members sm WHERE sm.story_id = s.id AND sm.user_id = $1
+        ))
+      ORDER BY rp.updated_at DESC
+      LIMIT $3 OFFSET $4
+    `;
+
+    const rows = await this.dataSource.query(dataSql, [
+      userId,
+      Boolean(isGlobalAdmin),
+      limit,
+      offset,
+    ]);
+
+    const data = rows.map((r: any) => ({
+      story: {
+        id: r.storyId,
+        title: r.storyTitle,
+        slug: r.storySlug,
+        coverUrl: r.storyCoverUrl,
+        mediaFormat: r.storyMediaFormat,
+        status: r.storyStatus,
+        totalChapters: Number(r.storyTotalChapters) || 0,
+      },
+      chapter: {
+        id: r.chapterId,
+        title: r.chapterTitle,
+        chapterNumber: Number(r.chapterNumber) || 0,
+      },
+      resume: {
+        chapterVersionId: r.chapterVersionId,
+        readingMode: r.readingMode,
+        progressPercentage: Number(r.progressPercentage) || 0,
+        scrollPosition: Number(r.scrollPosition) || 0,
+        pageIndex: Number(r.pageIndex) || 1,
+        anchorBlockId: r.anchorBlockId || null,
+        textOffset: Number(r.textOffset) || 0,
+      },
+      updatedAt: r.updatedAt,
+    }));
+
+    return {
+      data,
+      pagination: {
+        page,
+        limit,
+        totalItems,
+        totalPages: Math.ceil(totalItems / limit) || 1,
+      },
     };
   }
 

@@ -21,6 +21,10 @@ class ApiEndpoints {
   // Library & Reading Progress
   static const String readingProgress = '/library/reading-progress';
   static String storyReadingProgress(String storyId) => '/library/reading-progress/$storyId';
+  static const String libraryBookmarks = '/library/bookmarks';
+  static String storyBookmarkStatus(String storyId) => '/library/bookmarks/$storyId';
+  static const String libraryHistory = '/library/history';
+  static String libraryHistoryStory(String storyId) => '/library/history/$storyId';
 
   // Chapter Reporting (Issue #191)
   static String chapterReport(String chapterId) => '/chapters/$chapterId/reports';

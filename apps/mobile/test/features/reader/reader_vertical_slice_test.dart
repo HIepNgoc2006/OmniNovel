@@ -116,6 +116,7 @@ void main() {
       pageIndex: 1,
       progressPercentage: 0,
       scrollPosition: 0,
+      writeEpoch: 0,
     ));
     registerFallbackValue(LocalReadingCheckpoint(
       storyId: 'story-dummy',
@@ -162,7 +163,12 @@ void main() {
         .thenAnswer((_) async => null);
 
     when(() => mockProgressRepo.getProgress(any()))
-        .thenAnswer((_) async => const ReadingProgressResponse(storyId: ''));
+        .thenAnswer((_) async => const ReadingProgressResponse(storyId: '', writeEpoch: 0));
+
+    when(() => mockProgressRepo.getLocalGeneration(any())).thenReturn(0);
+    when(() => mockProgressRepo.getCachedServerEpoch(any())).thenReturn(0);
+    when(() => mockProgressRepo.ensureServerEpoch(any())).thenAnswer((_) async => 0);
+    when(() => mockProgressRepo.setServerEpoch(any(), any())).thenReturn(null);
 
     when(() => mockProgressRepo.saveLocalCheckpoint(any()))
         .thenAnswer((_) async {});
@@ -175,6 +181,7 @@ void main() {
         progressPercentage: 0,
         scrollPosition: 0,
         updatedAt: DateTime.now(),
+        writeEpoch: 0,
       ),
     );
   });

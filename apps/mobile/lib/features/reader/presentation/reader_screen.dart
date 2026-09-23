@@ -92,6 +92,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       repository: widget.readingProgressRepository,
     );
     _progressCoordinator.init();
+    _progressCoordinator.startSession(widget.storyId);
 
     _sessionController.addListener(_onSessionStateChanged);
     _novelSettingsController.addListener(_onNovelSettingsChanged);

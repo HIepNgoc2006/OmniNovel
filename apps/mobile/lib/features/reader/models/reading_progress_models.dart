@@ -1,3 +1,59 @@
+/// Draft tiến độ đọc cục bộ (Local Only, KHÔNG có writeEpoch)
+/// Được tạo ngay khi user lướt đọc, dùng để lưu local checkpoint tức thì
+class PendingReadingProgress {
+  final String storyId;
+  final String chapterId;
+  final String? chapterVersionId;
+  final String readingMode;
+  final double progressPercentage;
+  final double scrollPosition;
+
+  /// 1-based indexing
+  final int pageIndex;
+  final String? anchorBlockId;
+  final int? textOffset;
+
+  const PendingReadingProgress({
+    required this.storyId,
+    required this.chapterId,
+    this.chapterVersionId,
+    this.readingMode = 'WEBTOON',
+    required this.progressPercentage,
+    required this.scrollPosition,
+    this.pageIndex = 1,
+    this.anchorBlockId,
+    this.textOffset,
+  });
+
+  factory PendingReadingProgress.fromFlutterIndex({
+    required String storyId,
+    required String chapterId,
+    String? chapterVersionId,
+    String readingMode = 'WEBTOON',
+    required double progressPercentage,
+    required double scrollPosition,
+    required int flutterPageIndex,
+    String? anchorBlockId,
+    int? textOffset,
+  }) {
+    return PendingReadingProgress(
+      storyId: storyId,
+      chapterId: chapterId,
+      chapterVersionId: chapterVersionId,
+      readingMode: readingMode,
+      progressPercentage: progressPercentage,
+      scrollPosition: scrollPosition,
+      pageIndex: flutterPageIndex + 1, // 0-based -> 1-based
+      anchorBlockId: anchorBlockId,
+      textOffset: textOffset,
+    );
+  }
+
+  /// Lấy 0-based index dùng nội bộ trong Flutter
+  int get flutterPageIndex => (pageIndex - 1).clamp(0, 99999);
+}
+
+/// Network Payload gửi lên server - Immutable & Bắt buộc có writeEpoch canonical
 class ReadingProgressPayload {
   final String chapterId;
   final String? chapterVersionId;
@@ -11,6 +67,9 @@ class ReadingProgressPayload {
   final int? textOffset;
   final String? storyId;
 
+  /// Required canonical server write epoch (Zero-fallback)
+  final int writeEpoch;
+
   const ReadingProgressPayload({
     required this.chapterId,
     this.chapterVersionId,
@@ -21,7 +80,27 @@ class ReadingProgressPayload {
     this.anchorBlockId,
     this.textOffset,
     this.storyId,
+    required this.writeEpoch,
   });
+
+  /// Materialize draft cục bộ thành network payload với canonical writeEpoch
+  factory ReadingProgressPayload.fromDraft(
+    PendingReadingProgress draft, {
+    required int writeEpoch,
+  }) {
+    return ReadingProgressPayload(
+      storyId: draft.storyId,
+      chapterId: draft.chapterId,
+      chapterVersionId: draft.chapterVersionId,
+      readingMode: draft.readingMode,
+      progressPercentage: draft.progressPercentage,
+      scrollPosition: draft.scrollPosition,
+      pageIndex: draft.pageIndex,
+      anchorBlockId: draft.anchorBlockId,
+      textOffset: draft.textOffset,
+      writeEpoch: writeEpoch,
+    );
+  }
 
   /// Factory helper chuyển từ Flutter 0-based page index sang 1-based server index
   factory ReadingProgressPayload.fromFlutterIndex({
@@ -34,6 +113,7 @@ class ReadingProgressPayload {
     String? anchorBlockId,
     int? textOffset,
     String? storyId,
+    required int writeEpoch,
   }) {
     return ReadingProgressPayload(
       chapterId: chapterId,
@@ -45,6 +125,7 @@ class ReadingProgressPayload {
       anchorBlockId: anchorBlockId,
       textOffset: textOffset,
       storyId: storyId,
+      writeEpoch: writeEpoch,
     );
   }
 
@@ -61,6 +142,7 @@ class ReadingProgressPayload {
         if (anchorBlockId != null) 'anchorBlockId': anchorBlockId,
         if (textOffset != null) 'textOffset': textOffset,
         if (storyId != null) 'storyId': storyId,
+        'writeEpoch': writeEpoch,
       };
 }
 
@@ -79,6 +161,9 @@ class ReadingProgressResponse {
   final DateTime? updatedAt;
   final List<String> readChapterIds;
 
+  /// Canonical server write epoch (Fail-closed nếu thiếu)
+  final int writeEpoch;
+
   const ReadingProgressResponse({
     required this.storyId,
     this.chapterId,
@@ -91,6 +176,7 @@ class ReadingProgressResponse {
     this.textOffset = 0,
     this.updatedAt,
     this.readChapterIds = const [],
+    this.writeEpoch = 0,
   });
 
   /// Lấy 0-based index dùng nội bộ trong Flutter
@@ -100,6 +186,11 @@ class ReadingProgressResponse {
   bool get hasProgress => chapterId != null;
 
   factory ReadingProgressResponse.fromJson(Map<String, dynamic> json) {
+    final rawEpoch = json['writeEpoch'];
+    if (rawEpoch == null) {
+      throw const FormatException('Missing required field "writeEpoch" in ReadingProgressResponse');
+    }
+
     return ReadingProgressResponse(
       storyId: json['storyId'] as String? ?? '',
       chapterId: json['chapterId'] as String?,
@@ -118,6 +209,7 @@ class ReadingProgressResponse {
               ?.map((id) => id.toString())
               .toList() ??
           [],
+      writeEpoch: (rawEpoch as num).toInt(),
     );
   }
 
@@ -133,6 +225,7 @@ class ReadingProgressResponse {
         'textOffset': textOffset,
         'updatedAt': updatedAt?.toIso8601String(),
         'readChapterIds': readChapterIds,
+        'writeEpoch': writeEpoch,
       };
 }
 
@@ -164,25 +257,23 @@ class LocalReadingCheckpoint {
 
   factory LocalReadingCheckpoint.fromJson(Map<String, dynamic> json) {
     return LocalReadingCheckpoint(
-      storyId: json['storyId'] as String? ?? '',
-      chapterId: json['chapterId'] as String? ?? '',
+      storyId: json['storyId'] as String,
+      chapterId: json['chapterId'] as String,
       chapterVersionId: json['chapterVersionId'] as String?,
       pageIndex: (json['pageIndex'] as num?)?.toInt() ?? 1,
       progressPercentage:
           (json['progressPercentage'] as num?)?.toDouble() ?? 0.0,
       scrollPosition: (json['scrollPosition'] as num?)?.toDouble() ?? 0.0,
       anchorBlockId: json['anchorBlockId'] as String?,
-      textOffset: (json['textOffset'] as num?)?.toInt(),
-      updatedAt: json['updatedAt'] != null
-          ? DateTime.parse(json['updatedAt'] as String)
-          : DateTime.now(),
+      textOffset: (json['textOffset'] as num?)?.toInt() ?? 0,
+      updatedAt: DateTime.parse(json['updatedAt'] as String),
     );
   }
 
   Map<String, dynamic> toJson() => {
         'storyId': storyId,
         'chapterId': chapterId,
-        'chapterVersionId': chapterVersionId,
+        if (chapterVersionId != null) 'chapterVersionId': chapterVersionId,
         'pageIndex': pageIndex,
         'progressPercentage': progressPercentage,
         'scrollPosition': scrollPosition,
@@ -190,4 +281,21 @@ class LocalReadingCheckpoint {
         if (textOffset != null) 'textOffset': textOffset,
         'updatedAt': updatedAt.toIso8601String(),
       };
+}
+
+/// Exception khi server từ chối write do epoch không khớp
+class StaleWriteEpochException implements Exception {
+  final String storyId;
+  final int writeEpoch;
+  final int? currentEpoch;
+
+  const StaleWriteEpochException({
+    required this.storyId,
+    required this.writeEpoch,
+    this.currentEpoch,
+  });
+
+  @override
+  String toString() =>
+      'StaleWriteEpochException: storyId=$storyId, writeEpoch=$writeEpoch, currentEpoch=$currentEpoch';
 }

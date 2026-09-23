@@ -65,7 +65,14 @@ describe('StoriesService.ReadingProgress Contract Parity (Phase 5B.0)', () => {
   });
 
   it('saveReadingProgress should persist and return 1-based pageIndex, anchorBlockId and textOffset', async () => {
-    const managerQueryMock = jest.fn().mockResolvedValue([]);
+    const managerQueryMock = jest
+      .fn()
+      .mockResolvedValueOnce([]) // insert counter
+      .mockResolvedValueOnce([{ epoch: '0' }]) // SELECT FOR SHARE
+      .mockResolvedValueOnce([{ currentEpoch: '0' }]) // resolve currentEpoch = 0
+      .mockResolvedValueOnce([]) // upsert reading_progress
+      .mockResolvedValueOnce([]); // upsert chapter_read_states
+
     dataSourceMock.transaction.mockImplementation(async (cb: any) => {
       return cb({ query: managerQueryMock });
     });
@@ -78,6 +85,7 @@ describe('StoriesService.ReadingProgress Contract Parity (Phase 5B.0)', () => {
       anchorBlockId: 'block-anchor-uuid',
       textOffset: 450,
       storyId: 'story-uuid-1',
+      writeEpoch: 0,
     });
 
     expect(result.pageIndex).toBe(12);
@@ -85,6 +93,7 @@ describe('StoriesService.ReadingProgress Contract Parity (Phase 5B.0)', () => {
     expect(result.textOffset).toBe(450);
     expect(result.progressPercentage).toBe(55.5);
     expect(result.storyId).toBe('story-uuid-1');
+    expect(result.writeEpoch).toBe(0);
 
     // Verify SQL parameters in upsert
     expect(managerQueryMock).toHaveBeenCalledWith(
@@ -105,6 +114,7 @@ describe('StoriesService.ReadingProgress Contract Parity (Phase 5B.0)', () => {
   });
 
   it('getReadingProgress should return default pageIndex=1 and null offsets when no progress exists', async () => {
+    dataSourceMock.query.mockResolvedValueOnce([{ currentEpoch: '0' }]); // tombstones
     dataSourceMock.query.mockResolvedValueOnce([]); // no progress
     dataSourceMock.query.mockResolvedValueOnce([]); // no read chapters
 
@@ -114,9 +124,11 @@ describe('StoriesService.ReadingProgress Contract Parity (Phase 5B.0)', () => {
     expect(result.anchorBlockId).toBeNull();
     expect(result.textOffset).toBe(0);
     expect(result.progressPercentage).toBe(0);
+    expect(result.writeEpoch).toBe(0);
   });
 
   it('getReadingProgress should return stored pageIndex, anchorBlockId and textOffset', async () => {
+    dataSourceMock.query.mockResolvedValueOnce([{ currentEpoch: '2' }]); // tombstones
     dataSourceMock.query.mockResolvedValueOnce([
       {
         storyId: 'story-uuid-1',
@@ -140,5 +152,6 @@ describe('StoriesService.ReadingProgress Contract Parity (Phase 5B.0)', () => {
     expect(result.textOffset).toBe(120);
     expect(result.progressPercentage).toBe(75.0);
     expect(result.readChapterIds).toContain('chapter-uuid-1');
+    expect(result.writeEpoch).toBe(2);
   });
 });

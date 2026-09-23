@@ -5,6 +5,8 @@ import '../../core/auth/auth_state.dart';
 import '../../core/api/api_client.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/home/presentation/home_screen.dart';
+import '../../features/library/presentation/library_screen.dart';
+import '../../features/library/repositories/library_repository.dart';
 import '../../features/search/presentation/search_screen.dart';
 import '../../features/story/presentation/story_detail_screen.dart';
 import '../../features/story/repositories/story_repository.dart';
@@ -22,6 +24,7 @@ class AppRouter {
     ChapterRepository? chapterRepository,
     MediaRepository? mediaRepository,
     ReadingProgressRepository? readingProgressRepository,
+    LibraryRepository? libraryRepository,
   }) {
     final effectiveStoryRepo =
         storyRepository ?? StoryRepository(apiClient: apiClient);
@@ -30,7 +33,16 @@ class AppRouter {
     final effectiveMediaRepo =
         mediaRepository ?? MediaRepository(apiClient: apiClient);
     final effectiveProgressRepo = readingProgressRepository ??
-        ReadingProgressRepository(apiClient: apiClient);
+        ReadingProgressRepository(
+          apiClient: apiClient,
+          userIdProvider: () => authService.state.user?.id,
+        );
+    final effectiveLibraryRepo = libraryRepository ??
+        LibraryRepository(
+          apiClient: apiClient,
+          progressRepository: effectiveProgressRepo,
+          userIdProvider: () => authService.state.user?.id,
+        );
 
     return GoRouter(
       initialLocation: '/home',
@@ -66,6 +78,13 @@ class AppRouter {
           builder: (context, state) => HomeScreen(
             authService: authService,
             storyRepository: effectiveStoryRepo,
+            libraryRepository: effectiveLibraryRepo,
+          ),
+        ),
+        GoRoute(
+          path: '/library',
+          builder: (context, state) => LibraryScreen(
+            libraryRepository: effectiveLibraryRepo,
           ),
         ),
         GoRoute(
@@ -93,6 +112,7 @@ class AppRouter {
               slug: slug,
               storyRepository: effectiveStoryRepo,
               readingProgressRepository: effectiveProgressRepo,
+              libraryRepository: effectiveLibraryRepo,
             );
           },
         ),

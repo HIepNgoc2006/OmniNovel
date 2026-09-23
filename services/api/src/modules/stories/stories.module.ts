@@ -11,6 +11,8 @@ import { Creator } from './entities/creator.entity';
 import { Bookmark } from './entities/bookmark.entity';
 import { ReadingProgress } from './entities/reading-progress.entity';
 import { ChapterReadState } from './entities/chapter-read-state.entity';
+import { ReadingHistoryEpochCounter } from './entities/reading-history-epoch-counter.entity';
+import { ReadingHistoryTombstone } from './entities/reading-history-tombstone.entity';
 import { Volume } from '../chapters/entities/volume.entity';
 import { Chapter } from '../chapters/entities/chapter.entity';
 import { StoryMemberGuard } from '../../common/guards/story-member.guard';
@@ -26,6 +28,8 @@ import { StoryMemberGuard } from '../../common/guards/story-member.guard';
       Bookmark,
       ReadingProgress,
       ChapterReadState,
+      ReadingHistoryEpochCounter,
+      ReadingHistoryTombstone,
       Volume,
       Chapter,
     ]),

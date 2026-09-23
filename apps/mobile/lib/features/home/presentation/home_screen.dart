@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/theme/app_colors.dart';
 import '../../../core/auth/auth_service.dart';
+import '../../library/models/library_models.dart';
+import '../../library/repositories/library_repository.dart';
 import '../../story/models/story_models.dart';
 import '../../story/repositories/story_repository.dart';
 import 'widgets/home_carousel_banner.dart';
@@ -11,11 +13,13 @@ import 'widgets/home_ranking_section.dart';
 class HomeScreen extends StatefulWidget {
   final AuthService authService;
   final StoryRepository storyRepository;
+  final LibraryRepository? libraryRepository;
 
   const HomeScreen({
     super.key,
     required this.authService,
     required this.storyRepository,
+    this.libraryRepository,
   });
 
   @override
@@ -26,6 +30,7 @@ class _HomeScreenState extends State<HomeScreen> {
   FeaturedStoriesResponse? _featured;
   StoryRankingsResponse? _rankings;
   List<StorySummary> _latestStories = [];
+  ReadingHistoryItem? _continueReading;
 
   bool _isLoading = true;
   String? _errorMessage;
@@ -33,6 +38,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
+    _continueReading = widget.libraryRepository?.getCachedContinueReading();
     _loadHomeData();
   }
 
@@ -49,6 +55,10 @@ class _HomeScreenState extends State<HomeScreen> {
         widget.storyRepository.getStories(
           const FindStoriesParams(sort: 'LATEST', limit: 10),
         ),
+        if (widget.libraryRepository != null)
+          widget.libraryRepository!.getContinueReading()
+        else
+          Future.value(null),
       ]);
 
       if (mounted) {
@@ -56,6 +66,7 @@ class _HomeScreenState extends State<HomeScreen> {
           _featured = results[0] as FeaturedStoriesResponse;
           _rankings = results[1] as StoryRankingsResponse;
           _latestStories = (results[2] as PaginatedStoriesResponse).data;
+          _continueReading = results[3] as ReadingHistoryItem?;
           _isLoading = false;
         });
       }
@@ -114,6 +125,12 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
         actions: [
           IconButton(
+            key: const Key('home_library_button'),
+            icon: const Icon(Icons.bookmarks_outlined, color: AppColors.textPrimary, size: 24),
+            tooltip: 'Tủ sách của tôi',
+            onPressed: () => context.push('/library'),
+          ),
+          IconButton(
             key: const Key('home_search_button'),
             icon: const Icon(Icons.search, color: AppColors.textPrimary, size: 26),
             tooltip: 'Tìm kiếm truyện',
@@ -129,6 +146,21 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       body: _buildBody(user),
     );
+  }
+
+  void _openContinueReading(ReadingHistoryItem item) {
+    final uri = Uri(
+      path: '/reader/${item.chapter.id}',
+      queryParameters: {
+        'storyId': item.story.id,
+        'pageIndex': '${item.resume.flutterPageIndex}',
+        if (item.resume.anchorBlockId != null)
+          'anchorBlockId': item.resume.anchorBlockId!,
+        'scrollPosition': '${item.resume.scrollPosition}',
+        'progressPercentage': '${item.resume.progressPercentage}',
+      },
+    );
+    context.push(uri.toString());
   }
 
   Widget _buildBody(dynamic user) {
@@ -199,7 +231,16 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
           ),
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
+
+          // Continue Reading Hero Card (Gate 10)
+          if (_continueReading != null) ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: _buildContinueReadingCard(_continueReading!),
+            ),
+            const SizedBox(height: 16),
+          ],
 
           // 2. Hero Banner Carousel
           if (_featured != null && _featured!.banners.isNotEmpty) ...[
@@ -417,4 +458,97 @@ class _HomeScreenState extends State<HomeScreen> {
       ],
     );
   }
+
+  Widget _buildContinueReadingCard(ReadingHistoryItem item) {
+    return Container(
+      key: const Key('home_continue_reading_card'),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            AppColors.primary.withValues(alpha: 0.25),
+            AppColors.darkSurface,
+          ],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.4)),
+      ),
+      padding: const EdgeInsets.all(12),
+      child: Row(
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: Container(
+              width: 48,
+              height: 64,
+              color: AppColors.darkSurfaceElevated,
+              child: item.story.coverUrl != null
+                  ? Image.network(
+                      item.story.coverUrl!,
+                      fit: BoxFit.cover,
+                      errorBuilder: (_, __, ___) => const Icon(
+                        Icons.auto_stories,
+                        color: AppColors.primary,
+                      ),
+                    )
+                  : const Icon(Icons.auto_stories, color: AppColors.primary),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    Icon(Icons.history, color: AppColors.primaryLight, size: 14),
+                    SizedBox(width: 4),
+                    Text(
+                      'ĐỌC TIẾP',
+                      style: TextStyle(
+                        color: AppColors.primaryLight,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 11,
+                        letterSpacing: 1.0,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  item.story.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: AppColors.textPrimary,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 14,
+                  ),
+                ),
+                Text(
+                  'Chương ${item.chapter.chapterNumber} (${item.resume.progressPercentage.toStringAsFixed(0)}%)',
+                  style: const TextStyle(
+                    color: AppColors.textSecondary,
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: AppColors.primary,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              minimumSize: Size.zero,
+              tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            ),
+            onPressed: () => _openContinueReading(item),
+            child: const Text('Tiếp', style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
 }
+

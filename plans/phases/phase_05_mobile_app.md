@@ -1,7 +1,7 @@
 # 📱 Phase 5: Ứng Dụng Di Động (Mobile App - Flutter Android-First)
 
 - **Mục tiêu:** Phát triển Ứng dụng Di động OmniNovel Client chuyên dụng cho Trải nghiệm Đọc (Reader-First UX) bằng Flutter trên nền tảng Android, hỗ trợ tần số quét cao (90Hz / 120Hz / 144Hz), kiểm soát bộ nhớ RAM nghiêm ngặt chống OOM, tích hợp hệ thống Gamification và đọc Offline.
-- **Trạng thái:** `[/] Đang Khởi Động (Arch Baseline & Scaffolding Preparation)`
+- **Trạng thái:** `[/] Phase 5 đang triển khai — 5A & 5B hoàn thành (Performance-Frozen Emulator Baseline), 5C kế tiếp`
 - **Môn học phụ trách:** Môn 2 — *Phát triển Ứng dụng Di động (Mobile Development)* (kết hợp Môn 1 & Môn 4).
 
 ---
@@ -86,7 +86,7 @@ apps/mobile/
 - [x] **P1 — Đóng băng Toolchain Bất biến:** Ghim Flutter 3.44.0 (Dart 3.12.0) qua Docker digest `sha256:217a3d8...` và CI `flutter-version: '3.44.0'`.
 - [x] Tích hợp API đồng bộ tiến độ: Contract parity backend/DB (`pageIndex`, `anchorBlockId`, `textOffset`), Local Checkpoint tức thì (SharedPreferences) chống mất tiến độ khi Kill-App, Debounce 1.5s đẩy server, và Reconciliation đối chiếu `updatedAt`.
 - [x] Tích hợp Presigned Media URL qua `MediaRepository` có in-memory TTL caching chống anti-leech rate limit (60 req/phút).
-- [x] Bộ kiểm thử & Bằng chứng phần cứng: 78/78 tests Mobile Suite GREEN (100%), `flutter analyze` 0 issues, stress fixture 150 trang mixed dimensions, peak RSS 91.5MB (<150MB), 120Hz P90 6.85ms, jank 0.8%, process-death resume chính xác 100% ([Báo cáo chi tiết](file:///e:/Workspace%202/Doctruyen_project/plans/evidence/phase_5b_hardware_evidence.md)).
+- [x] Bộ kiểm thử & Bằng chứng giả lập chuẩn hóa: 78/78 tests Mobile Suite GREEN (100%), `flutter analyze` 0 issues, stress fixture 150 trang mixed dimensions, peak RSS 91.5MB (<150MB), 120Hz P90 6.85ms, jank 0.8%, process-death resume chính xác 100% trên Pixel 7 / Android SDK Emulator API 34 ([Báo cáo chi tiết](file:///e:/Workspace%202/Doctruyen_project/plans/evidence/phase_5b_hardware_evidence.md)).
 
 ### 🎨 Phase 5C: Đa Định Dạng Trình Đọc & Tính Năng Hoàn Chỉnh (MOB-001..MOB-011)
 - [ ] **Manga Paged Reader (MOB-005):** Hỗ trợ lật trang phải sang trái (RTL), phóng to/thu nhỏ cảm ứng (InteractiveViewer/Pinch-zoom).
@@ -99,6 +99,7 @@ apps/mobile/
 - [ ] **Offline Storage (MOB-012):** Tải gói chương truyện (ZIP manifest) và giải mã cục bộ bằng SQLite mã hóa (SQLCipher/sqflite).
 - [ ] Tích hợp tính năng backend đóng gói ngược chương truyện cũ (Issue #190: Canonical Reverse Packaging).
 - [ ] **Popup Action Sheet Studio:** Hỗ trợ thông báo xác nhận duyệt bản dịch AI nhanh cho Editor/Owner khi AI dịch xong.
+- [ ] **Nghiệm Thu Thiết Bị Android Vật Lý (Physical Device Acceptance Gate):** Kiểm thử đo đạc thực địa trên tối thiểu 1 thiết bị Android vật lý Mid-Range (4–6GB RAM) và 1 thiết bị Android vật lý Low-End (2–3GB RAM) để xác nhận working-set RSS < 150MB và Frame Budget trước khi hoàn tất nghiệm thu Phase 5 Final.
 - [ ] Chạy ma trận kiểm thử tương thích Android (Android 7 ➔ Android 16) và đo đạc Frame Budget.
 
 ---

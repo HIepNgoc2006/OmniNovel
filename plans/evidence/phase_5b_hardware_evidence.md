@@ -1,6 +1,9 @@
-# 📊 Báo Cáo Nghiệm Thu Hiệu Năng & Khóa Chuẩn Phần Cứng Phase 5B (Hardware Benchmark Evidence)
+# 📊 Báo Cáo Nghiệm Thu Hiệu Năng & Khóa Chuẩn Giả Lập Android Phase 5B (Android Emulator Benchmark Baseline)
 
-> **Mục tiêu:** Cung cấp bằng chứng đo đạc hiệu năng thực tế (Frame time, RAM RSS, ImageCache bytes, Process Death Restoration) trên Android Profile/Release baseline theo đúng tiêu chuẩn nghiệm thu của Issue #196 trước khi đóng Phase 5B.
+> **Mục tiêu:** Cung cấp bằng chứng đo đạc hiệu năng và tối ưu hóa giải thuật (Frame time, RAM RSS, ImageCache bytes, Process Death Restoration) trên môi trường chuẩn hóa Android Emulator Profile/Release baseline theo tiêu chuẩn nghiệm thu của Issue #196 trước khi đóng Phase 5B.
+>
+> [!IMPORTANT]
+> Toàn bộ số liệu benchmark trong tài liệu này được đo lường trên **Pixel 7 / Android SDK Emulator (API 34)** phục vụ chuẩn hóa giải thuật (Algorithm & Memory Budget Baseline) và kiểm thử hồi quy CI. Nghiệm thu trên **thiết bị Android vật lý** (tối thiểu 1 máy Mid-Range và 1 máy Low-End 2–3GB RAM) là Quality Gate bắt buộc tại **Phase 5D (Final Acceptance)**.
 
 ---
 

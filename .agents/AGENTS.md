@@ -34,4 +34,8 @@
   - Luôn dùng `gh` CLI (đã cài sẵn trên máy) cho mọi thao tác GitHub: Issues (tạo/sửa/đóng/xem), Pull Requests, Branches, Labels, Milestones, Releases, v.v.
   - **Không dùng MCP GitHub tools** trừ khi `gh` CLI gặp lỗi hoặc không hỗ trợ thao tác cần thiết.
   - Lý do: `gh` CLI nhanh hơn đáng kể, output dễ parse, và chạy trực tiếp trong terminal.
+- **Xác minh Đường dẫn & Trạng thái Thực tế (Ground-Truth Verification - Tuyệt đối không suy đoán):**
+  - Tuyệt đối **KHÔNG ĐƯỢC PHÉP** suy đoán hoặc trả lời dựa trên các đường dẫn mặc định (default paths) của phần mềm/công cụ (ví dụ: vị trí Docker data, WSL VHDX, cache SDK, output build...).
+  - Trước khi khẳng định bất kỳ đường dẫn nào với người dùng, **BẮT BUỘC phải chạy lệnh kiểm tra thực tế** (CLI, PowerShell, Registry hoặc hệ thống file) để lấy đúng đường dẫn và trạng thái đang cấu hình trên máy.
+  - Luôn kiểm tra dung lượng và phân biệt rành mạch giữa file dữ liệu nặng thực sự (như `.vhdx`, database volume, binary build) và các thư mục log/metadata tạm thời.
 

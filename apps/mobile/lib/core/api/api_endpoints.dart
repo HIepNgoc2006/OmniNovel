@@ -9,6 +9,8 @@ class ApiEndpoints {
   // Stories & Catalog
   static const String stories = '/stories';
   static const String storiesFeatured = '/stories/featured';
+  static const String storiesRankings = '/stories/rankings';
+  static const String genres = '/genres';
   static String storyDetails(String id) => '/stories/$id';
   static String storyBySlug(String slug) => '/stories/$slug';
   static String chapterDetails(String id) => '/chapters/$id';

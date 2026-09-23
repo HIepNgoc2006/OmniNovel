@@ -5,6 +5,7 @@ import '../../core/auth/auth_state.dart';
 import '../../core/api/api_client.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/home/presentation/home_screen.dart';
+import '../../features/search/presentation/search_screen.dart';
 import '../../features/story/presentation/story_detail_screen.dart';
 import '../../features/story/repositories/story_repository.dart';
 import '../../features/reader/models/manga_reading_mode.dart';
@@ -64,8 +65,25 @@ class AppRouter {
           path: '/home',
           builder: (context, state) => HomeScreen(
             authService: authService,
-            apiClient: apiClient,
+            storyRepository: effectiveStoryRepo,
           ),
+        ),
+        GoRoute(
+          path: '/search',
+          builder: (context, state) {
+            final initialSearch = state.uri.queryParameters['q'] ??
+                state.uri.queryParameters['search'];
+            final initialGenre = state.uri.queryParameters['genre'];
+            final initialFormat = state.uri.queryParameters['format'];
+            final initialSort = state.uri.queryParameters['sort'];
+            return SearchScreen(
+              storyRepository: effectiveStoryRepo,
+              initialSearch: initialSearch,
+              initialGenre: initialGenre,
+              initialFormat: initialFormat,
+              initialSort: initialSort,
+            );
+          },
         ),
         GoRoute(
           path: '/story/:slug',

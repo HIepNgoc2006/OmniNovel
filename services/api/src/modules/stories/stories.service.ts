@@ -10,6 +10,7 @@ import { Story } from './entities/story.entity';
 import { StoryMember } from './entities/story-member.entity';
 import { StoryEdition } from './entities/story-edition.entity';
 import { Bookmark } from './entities/bookmark.entity';
+import { Genre } from './entities/genre.entity';
 import { ReadingProgress } from './entities/reading-progress.entity';
 import { ChapterReadState } from './entities/chapter-read-state.entity';
 import { Volume } from '../chapters/entities/volume.entity';
@@ -373,6 +374,12 @@ export class StoriesService {
     const result = { topComics, topNovels };
     await this.redisService.set(cacheKey, JSON.stringify(result), 300);
     return result;
+  }
+
+  async getGenres() {
+    return this.dataSource.getRepository(Genre).find({
+      order: { name: 'ASC' },
+    });
   }
 
   async setBookmark(userId: string, dto: SetBookmarkDto) {

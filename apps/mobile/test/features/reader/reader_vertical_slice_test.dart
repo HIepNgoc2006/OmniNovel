@@ -43,8 +43,8 @@ void main() {
     summary: 'Hành trình từ thợ săn yếu nhất trở thành thợ săn bóng tối.',
     status: 'COMPLETED',
     genres: [
-      Genre(id: 'g-1', name: 'Action', slug: 'action'),
-      Genre(id: 'g-2', name: 'Fantasy', slug: 'fantasy'),
+      Genre(id: 1, name: 'Action', slug: 'action'),
+      Genre(id: 2, name: 'Fantasy', slug: 'fantasy'),
     ],
     editions: [
       StoryEdition(

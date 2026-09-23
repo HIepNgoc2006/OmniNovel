@@ -1,22 +1,21 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import '../../../core/auth/auth_service.dart';
-import '../../../core/api/api_client.dart';
-import '../../../core/api/api_endpoints.dart';
 import '../../../app/theme/app_colors.dart';
+import '../../../core/auth/auth_service.dart';
 import '../../story/models/story_models.dart';
 import '../../story/repositories/story_repository.dart';
+import 'widgets/home_carousel_banner.dart';
+import 'widgets/home_latest_section.dart';
+import 'widgets/home_ranking_section.dart';
 
 class HomeScreen extends StatefulWidget {
   final AuthService authService;
-  final ApiClient apiClient;
-  final StoryRepository? storyRepository;
+  final StoryRepository storyRepository;
 
   const HomeScreen({
     super.key,
     required this.authService,
-    required this.apiClient,
-    this.storyRepository,
+    required this.storyRepository,
   });
 
   @override
@@ -24,71 +23,54 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  late final StoryRepository _storyRepository;
   FeaturedStoriesResponse? _featured;
-  bool _isLoadingFeatured = true;
+  StoryRankingsResponse? _rankings;
+  List<StorySummary> _latestStories = [];
 
-  String? _authenticatedDataStatus;
-  bool _isLoadingData = false;
+  bool _isLoading = true;
+  String? _errorMessage;
 
   @override
   void initState() {
     super.initState();
-    _storyRepository = widget.storyRepository ??
-        StoryRepository(apiClient: widget.apiClient);
-    _loadFeaturedStories();
+    _loadHomeData();
   }
 
-  Future<void> _loadFeaturedStories() async {
+  Future<void> _loadHomeData() async {
     setState(() {
-      _isLoadingFeatured = true;
+      _isLoading = true;
+      _errorMessage = null;
     });
 
     try {
-      final res = await _storyRepository.getFeaturedStories();
-      if (mounted) {
-        setState(() {
-          _featured = res;
-          _isLoadingFeatured = false;
-        });
-      }
-    } catch (_) {
-      if (mounted) {
-        setState(() {
-          _isLoadingFeatured = false;
-        });
-      }
-    }
-  }
+      final results = await Future.wait([
+        widget.storyRepository.getFeaturedStories(),
+        widget.storyRepository.getRankings(),
+        widget.storyRepository.getStories(
+          const FindStoriesParams(sort: 'LATEST', limit: 10),
+        ),
+      ]);
 
-  Future<void> _fetchMe() async {
-    setState(() {
-      _isLoadingData = true;
-      _authenticatedDataStatus = null;
-    });
-
-    try {
-      final response =
-          await widget.apiClient.get<Map<String, dynamic>>(ApiEndpoints.me);
       if (mounted) {
         setState(() {
-          _authenticatedDataStatus =
-              'Xác thực thành công! ID: ${response.data?['id']}, Role: ${response.data?['role']}';
+          _featured = results[0] as FeaturedStoriesResponse;
+          _rankings = results[1] as StoryRankingsResponse;
+          _latestStories = (results[2] as PaginatedStoriesResponse).data;
+          _isLoading = false;
         });
       }
     } catch (e) {
       if (mounted) {
         setState(() {
-          _authenticatedDataStatus = 'Lỗi truy xuất: $e';
-        });
-      }
-    } finally {
-      if (mounted) {
-        setState(() {
-          _isLoadingData = false;
+          _errorMessage = e.toString();
+          _isLoading = false;
         });
       }
     }
+  }
+
+  void _onStoryTap(StorySummary story) {
+    context.push('/story/${story.slug}');
   }
 
   @override
@@ -96,192 +78,336 @@ class _HomeScreenState extends State<HomeScreen> {
     final user = widget.authService.state.user;
 
     return Scaffold(
+      backgroundColor: AppColors.oledBlack,
       appBar: AppBar(
-        title: const Text('OmniNovel Mobile'),
+        backgroundColor: AppColors.oledBlack,
+        elevation: 0,
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(
+                color: AppColors.primary,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(
+                Icons.auto_stories,
+                color: Colors.white,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 10),
+            const Text(
+              'OmniNovel',
+              style: TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 20,
+                color: AppColors.textPrimary,
+                letterSpacing: 0.5,
+              ),
+            ),
+          ],
+        ),
         actions: [
           IconButton(
-            icon: const Icon(Icons.logout),
-            tooltip: 'Đăng xuất',
-            onPressed: () async {
-              await widget.authService.logout();
-            },
+            key: const Key('home_search_button'),
+            icon: const Icon(Icons.search, color: AppColors.textPrimary, size: 26),
+            tooltip: 'Tìm kiếm truyện',
+            onPressed: () => context.push('/search'),
           ),
+          IconButton(
+            icon: const Icon(Icons.logout, color: AppColors.textSecondary),
+            tooltip: 'Đăng xuất',
+            onPressed: () async => await widget.authService.logout(),
+          ),
+          const SizedBox(width: 8),
         ],
       ),
-      body: RefreshIndicator(
-        onRefresh: _loadFeaturedStories,
-        color: AppColors.primary,
-        child: ListView(
-          padding: const EdgeInsets.all(16),
-          children: [
-            // User Header Card
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(16),
-                child: Row(
+      body: _buildBody(user),
+    );
+  }
+
+  Widget _buildBody(dynamic user) {
+    if (_isLoading) {
+      return _buildLoadingSkeleton();
+    }
+
+    if (_errorMessage != null && _featured == null && _rankings == null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.error_outline, color: AppColors.error, size: 48),
+              const SizedBox(height: 16),
+              Text(
+                _errorMessage!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: AppColors.textPrimary),
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: _loadHomeData,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Thử lại'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return RefreshIndicator(
+      onRefresh: _loadHomeData,
+      color: AppColors.primary,
+      backgroundColor: AppColors.darkSurfaceElevated,
+      child: ListView(
+        physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        children: [
+          // 1. Search Bar Trigger
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: InkWell(
+              onTap: () => context.push('/search'),
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.darkSurface,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppColors.darkBorder),
+                ),
+                child: const Row(
                   children: [
-                    CircleAvatar(
-                      radius: 24,
-                      backgroundColor: AppColors.primary.withValues(alpha: 0.2),
-                      child: Text(
-                        user?.username.isNotEmpty == true
-                            ? user!.username[0].toUpperCase()
-                            : 'U',
-                        style: const TextStyle(
-                          color: AppColors.primary,
-                          fontWeight: FontWeight.bold,
-                          fontSize: 20,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            user?.username ?? 'Độc giả OmniNovel',
-                            style: const TextStyle(
-                              fontSize: 18,
-                              fontWeight: FontWeight.bold,
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
-                          Text(
-                            user?.email ?? '',
-                            style: const TextStyle(
-                              fontSize: 13,
-                              color: AppColors.textSecondary,
-                            ),
-                          ),
-                        ],
-                      ),
+                    Icon(Icons.search, color: AppColors.textMuted, size: 20),
+                    SizedBox(width: 12),
+                    Text(
+                      'Tìm kiếm tên truyện, thể loại, tác giả...',
+                      style: TextStyle(color: AppColors.textMuted, fontSize: 14),
                     ),
                   ],
                 ),
               ),
             ),
-            const SizedBox(height: 24),
+          ),
+          const SizedBox(height: 20),
 
-            // Mục Truyện Đề Cử / Nổi Bật
-            const Text(
-              'Truyện Nổi Bật',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.bold,
-                color: AppColors.textPrimary,
+          // 2. Hero Banner Carousel
+          if (_featured != null && _featured!.banners.isNotEmpty) ...[
+            HomeCarouselBanner(
+              banners: _featured!.banners,
+              onStoryTap: _onStoryTap,
+            ),
+            const SizedBox(height: 24),
+          ],
+
+          // 3. Truyện Mới Cập Nhật
+          if (_latestStories.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: HomeLatestSection(
+                stories: _latestStories,
+                onStoryTap: _onStoryTap,
+                onSeeAllTap: () => context.push('/search?sort=LATEST'),
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 28),
+          ],
 
-            if (_isLoadingFeatured)
-              const Center(
-                child: Padding(
-                  padding: EdgeInsets.all(24.0),
-                  child: CircularProgressIndicator(color: AppColors.primary),
-                ),
-              )
-            else if (_featured == null || _featured!.hotStories.isEmpty)
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: AppColors.darkSurface,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                alignment: Alignment.center,
-                child: const Text(
-                  'Chưa có truyện nào trong danh sách đề cử.',
-                  style: TextStyle(color: AppColors.textMuted),
-                ),
-              )
-            else
-              ListView.separated(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: _featured!.hotStories.length,
-                separatorBuilder: (_, __) => const SizedBox(height: 12),
-                itemBuilder: (context, index) {
-                  final story = _featured!.hotStories[index];
-                  return Card(
-                    clipBehavior: Clip.antiAlias,
-                    child: ListTile(
-                      contentPadding: const EdgeInsets.all(12),
-                      leading: Container(
-                        width: 48,
-                        height: 64,
-                        decoration: BoxDecoration(
-                          color: AppColors.darkSurfaceElevated,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        alignment: Alignment.center,
-                        child: const Icon(Icons.auto_stories,
-                            color: AppColors.primary),
-                      ),
-                      title: Text(
-                        story.title,
-                        style: const TextStyle(
+          // 4. Bảng Xếp Hạng (Rankings)
+          if (_rankings != null) ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: HomeRankingSection(
+                rankings: _rankings!,
+                onStoryTap: _onStoryTap,
+              ),
+            ),
+            const SizedBox(height: 28),
+          ],
+
+          // 5. Truyện Nổi Bật (Hot Stories Grid)
+          if (_featured != null && _featured!.hotStories.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Row(
+                    children: [
+                      Icon(Icons.whatshot, color: Colors.deepOrangeAccent, size: 22),
+                      SizedBox(width: 8),
+                      Text(
+                        'Truyện Nổi Bật Nhất',
+                        style: TextStyle(
+                          fontSize: 20,
                           fontWeight: FontWeight.bold,
                           color: AppColors.textPrimary,
                         ),
                       ),
-                      subtitle: Text(
-                        story.summary ?? '${story.viewsCount} lượt xem',
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: AppColors.textSecondary,
-                          fontSize: 13,
-                        ),
-                      ),
-                      trailing: const Icon(Icons.chevron_right,
-                          color: AppColors.textMuted),
-                      onTap: () {
-                        context.push('/story/${story.slug}');
-                      },
-                    ),
-                  );
-                },
-              ),
-
-            const SizedBox(height: 32),
-
-            // Nút kiểm thử xác thực API Core (Foundation test guarantee)
-            ElevatedButton.icon(
-              onPressed: _isLoadingData ? null : _fetchMe,
-              icon: _isLoadingData
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                  : const Icon(Icons.security),
-              label: const Text('Kiểm tra xác thực Token (GET /auth/me)'),
-            ),
-
-            if (_authenticatedDataStatus != null) ...[
-              const SizedBox(height: 12),
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppColors.darkSurfaceElevated,
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(color: AppColors.darkBorder),
-                ),
-                child: Text(
-                  _authenticatedDataStatus!,
-                  style: const TextStyle(
-                    color: AppColors.textSecondary,
-                    fontSize: 13,
+                    ],
                   ),
+                  const SizedBox(height: 12),
+                  ListView.separated(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: _featured!.hotStories.length.clamp(0, 6),
+                    separatorBuilder: (_, __) => const SizedBox(height: 12),
+                    itemBuilder: (context, index) {
+                      final story = _featured!.hotStories[index];
+                      return InkWell(
+                        onTap: () => _onStoryTap(story),
+                        borderRadius: BorderRadius.circular(10),
+                        child: Container(
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: AppColors.darkSurface,
+                            borderRadius: BorderRadius.circular(10),
+                            border: Border.all(color: AppColors.darkBorder),
+                          ),
+                          child: Row(
+                            children: [
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(6),
+                                child: Container(
+                                  width: 50,
+                                  height: 68,
+                                  color: AppColors.darkSurfaceElevated,
+                                  child: story.coverUrl != null && story.coverUrl!.isNotEmpty
+                                      ? Image.network(
+                                          story.coverUrl!,
+                                          fit: BoxFit.cover,
+                                          errorBuilder: (_, __, ___) => const Icon(
+                                            Icons.auto_stories,
+                                            color: AppColors.primary,
+                                          ),
+                                        )
+                                      : const Icon(
+                                          Icons.auto_stories,
+                                          color: AppColors.primary,
+                                        ),
+                                ),
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      story.title,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: AppColors.textPrimary,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 15,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Text(
+                                      story.summary ?? '${story.viewsCount} lượt xem',
+                                      maxLines: 2,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: AppColors.textSecondary,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 4),
+                                    Row(
+                                      children: [
+                                        Container(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 6,
+                                            vertical: 1,
+                                          ),
+                                          decoration: BoxDecoration(
+                                            color: AppColors.primary.withValues(alpha: 0.2),
+                                            borderRadius: BorderRadius.circular(4),
+                                          ),
+                                          child: Text(
+                                            (story.publicationFormat ?? story.mediaFormat).toUpperCase(),
+                                            style: const TextStyle(
+                                              color: AppColors.primaryLight,
+                                              fontSize: 9,
+                                              fontWeight: FontWeight.bold,
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(width: 8),
+                                        Text(
+                                          '${story.viewsCount} lượt xem',
+                                          style: const TextStyle(
+                                            color: AppColors.textMuted,
+                                            fontSize: 11,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              const Icon(Icons.chevron_right, color: AppColors.textMuted),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 32),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoadingSkeleton() {
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        Container(
+          height: 48,
+          decoration: BoxDecoration(
+            color: AppColors.darkSurface,
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+        const SizedBox(height: 20),
+        Container(
+          height: 190,
+          decoration: BoxDecoration(
+            color: AppColors.darkSurface,
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+        const SizedBox(height: 24),
+        Container(
+          height: 20,
+          width: 150,
+          color: AppColors.darkSurface,
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: List.generate(
+            3,
+            (_) => Expanded(
+              child: Container(
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                height: 180,
+                decoration: BoxDecoration(
+                  color: AppColors.darkSurface,
+                  borderRadius: BorderRadius.circular(10),
                 ),
               ),
-            ],
-          ],
+            ),
+          ),
         ),
-      ),
+      ],
     );
   }
 }

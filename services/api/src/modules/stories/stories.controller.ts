@@ -49,6 +49,12 @@ export class StoriesController {
     return this.storiesService.getRankings();
   }
 
+  // 3b. Danh sách thể loại công khai (Canonical Genres)
+  @Get('genres')
+  getGenres() {
+    return this.storiesService.getGenres();
+  }
+
   // 4. Chi tiết truyện theo slug (Sử dụng OptionalJwtAuthGuard chuẩn xác thực tài khoản)
   @Get('stories/:slug')
   @UseGuards(OptionalJwtAuthGuard)

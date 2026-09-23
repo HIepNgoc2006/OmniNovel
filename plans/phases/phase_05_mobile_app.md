@@ -89,11 +89,12 @@ apps/mobile/
 - [x] Bộ kiểm thử & Bằng chứng giả lập chuẩn hóa: 78/78 tests Mobile Suite GREEN (100%), `flutter analyze` 0 issues, stress fixture 150 trang mixed dimensions, peak RSS 91.5MB (<150MB), 120Hz P90 6.85ms, jank 0.8%, process-death resume chính xác 100% trên Pixel 7 / Android SDK Emulator API 34 ([Báo cáo chi tiết](file:///e:/Workspace%202/Doctruyen_project/plans/evidence/phase_5b_hardware_evidence.md)).
 
 ### 🎨 Phase 5C: Đa Định Dạng Trình Đọc & Tính Năng Hoàn Chỉnh (MOB-001..MOB-011)
-- [ ] **Manga Paged Reader (MOB-005):** Hỗ trợ lật trang phải sang trái (RTL), phóng to/thu nhỏ cảm ứng (InteractiveViewer/Pinch-zoom).
-- [ ] **Novel Reader (MOB-006):** Trình đọc truyện chữ với giao diện Typography tùy biến (cỡ chữ, khoảng cách dòng, màu nền Sepia/OLED) và định vị đoạn văn bằng `anchorBlockId`.
-- [ ] **Khám phá & Tìm kiếm (MOB-001, MOB-002, MOB-003):** Kết nối API `GET /api/v1/stories?search=...`, danh mục thể loại và trang thông tin truyện.
-- [ ] **Tủ sách & Gamification (MOB-009, MOB-010):** Đánh dấu Bookmark, điểm danh hàng ngày nhận Coin/EXP, hiển thị cấp độ và danh hiệu Rank Theme.
-- [ ] **Báo lỗi chương (MOB-011):** Bottom Sheet gửi báo cáo lỗi đến backend qua endpoint `POST /api/v1/chapters/:id/reports` (Issue #191).
+- [ ] **[Phase 5C.1] Manga Paged Reader ([Issue #197](https://github.com/HIepNgoc2006/OmniNovel/issues/197)):** Hỗ trợ lật trang phải sang trái (RTL/LTR), phóng to/thu nhỏ cảm ứng (InteractiveViewer/Pinch-zoom), tái sử dụng hạ tầng ImageCache 80MB & progress sync.
+- [ ] **[Phase 5C.2] Novel Reader ([Issue #198](https://github.com/HIepNgoc2006/OmniNovel/issues/198)):** Trình đọc truyện chữ với giao diện Typography tùy biến (cỡ chữ, giãn dòng, theme Sepia/OLED) và định vị đoạn văn bằng `anchorBlockId`.
+- [ ] **[Phase 5C.3] Khám phá & Tìm kiếm ([Issue #199](https://github.com/HIepNgoc2006/OmniNovel/issues/199)):** Home Feed Hero Carousel, Tìm kiếm đa bộ lọc (`GET /api/v1/stories?search=...`), và Chi tiết truyện (Story Detail production UI).
+- [ ] **[Phase 5C.4] Tủ sách Cá nhân ([Issue #200](https://github.com/HIepNgoc2006/OmniNovel/issues/200)):** Quản lý Bookmark, Lịch sử đọc truyện (History) và Thẻ đọc tiếp nhanh (Continue Reading).
+- [ ] **[Phase 5C.5] Gamification & Hồ sơ ([Issue #201](https://github.com/HIepNgoc2006/OmniNovel/issues/201)):** Chuỗi điểm danh hàng ngày nhận Coin/EXP, tiến trình cấp độ MangaPass, và Rank Theme profile.
+- [ ] **[Phase 5C.6] Báo lỗi chương ([Issue #202](https://github.com/HIepNgoc2006/OmniNovel/issues/202)):** Triển khai Backend API #191 (`POST /api/v1/chapters/:id/reports`) và Mobile MOB-011 Bottom Sheet.
 
 ### 💾 Phase 5D: Lưu Trữ Offline & Hoàn Thiện Nghiệm Thu (MOB-012 & Polish)
 - [ ] **Offline Storage (MOB-012):** Tải gói chương truyện (ZIP manifest) và giải mã cục bộ bằng SQLite mã hóa (SQLCipher/sqflite).
@@ -119,3 +120,9 @@ apps/mobile/
 - **[Issue #190](https://github.com/HIepNgoc2006/OmniNovel/issues/190):** `[Phase 5][Backend] Canonical Reverse Packaging for MediaAsset-backed ChapterVersions` (Phục vụ tải offline).
 - **[Issue #191](https://github.com/HIepNgoc2006/OmniNovel/issues/191):** `[Phase 5][Backend] Implement Chapter Error Reporting API (POST /api/v1/chapters/:id/reports)` (Phục vụ MOB-011).
 - **[Issue #192](https://github.com/HIepNgoc2006/OmniNovel/issues/192):** `[Phase 5 Master Tracker] Flutter Mobile App Implementation (MOB-001 -> MOB-012)` (Master Living Tracker).
+- **[Issue #197](https://github.com/HIepNgoc2006/OmniNovel/issues/197):** `[Phase 5C.1][Mobile] Manga Paged Reader Engine (RTL/LTR, Pinch-to-Zoom, Memory-Bounded PageView)`.
+- **[Issue #198](https://github.com/HIepNgoc2006/OmniNovel/issues/198):** `[Phase 5C.2][Mobile] Novel Reader Engine (AnchorBlockId Positioning, Typography Customization & Sepia/OLED Themes)`.
+- **[Issue #199](https://github.com/HIepNgoc2006/OmniNovel/issues/199):** `[Phase 5C.3][Mobile] Discovery Surfaces (Home Feed, Multi-Filter Search & Production Story Detail UI)`.
+- **[Issue #200](https://github.com/HIepNgoc2006/OmniNovel/issues/200):** `[Phase 5C.4][Mobile] User Library (Bookmarks, Reading History & Continue Reading Resumption)`.
+- **[Issue #201](https://github.com/HIepNgoc2006/OmniNovel/issues/201):** `[Phase 5C.5][Mobile] Gamification & Profile (MangaPass Progression, Daily Check-in & Rank Themes)`.
+- **[Issue #202](https://github.com/HIepNgoc2006/OmniNovel/issues/202):** `[Phase 5C.6][Mobile & API] Chapter Content Reporting System (Backend API #191 & Mobile MOB-011 Bottom Sheet)`.

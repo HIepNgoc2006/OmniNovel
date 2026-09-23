@@ -7,6 +7,7 @@ import '../../features/auth/presentation/login_screen.dart';
 import '../../features/home/presentation/home_screen.dart';
 import '../../features/story/presentation/story_detail_screen.dart';
 import '../../features/story/repositories/story_repository.dart';
+import '../../features/reader/models/manga_reading_mode.dart';
 import '../../features/reader/presentation/reader_screen.dart';
 import '../../features/reader/repositories/chapter_repository.dart';
 import '../../features/reader/repositories/media_repository.dart';
@@ -85,11 +86,14 @@ class AppRouter {
             final pageIndexStr = state.uri.queryParameters['pageIndex'];
             final initialPageIndex =
                 pageIndexStr != null ? (int.tryParse(pageIndexStr) ?? 0) : 0;
+            final modeStr = state.uri.queryParameters['mode'];
+            final initialMode = MangaReadingMode.fromName(modeStr);
             return ReaderScreen(
               key: ValueKey('reader_$chapterId'),
               chapterId: chapterId,
               storyId: storyId,
               initialPageIndex: initialPageIndex,
+              initialMode: initialMode,
               chapterRepository: effectiveChapterRepo,
               mediaRepository: effectiveMediaRepo,
               readingProgressRepository: effectiveProgressRepo,

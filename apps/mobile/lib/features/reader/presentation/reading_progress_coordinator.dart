@@ -57,18 +57,23 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
     required String storyId,
     required String chapterId,
     String? chapterVersionId,
+    String readingMode = 'WEBTOON',
     required int flutterPageIndex,
     required double progressPercentage,
     required double scrollPosition,
+    String? anchorBlockId,
+    int? textOffset,
   }) {
-
     final payload = ReadingProgressPayload.fromFlutterIndex(
       storyId: storyId,
       chapterId: chapterId,
       chapterVersionId: chapterVersionId,
+      readingMode: readingMode,
       flutterPageIndex: flutterPageIndex,
       progressPercentage: progressPercentage,
       scrollPosition: scrollPosition,
+      anchorBlockId: anchorBlockId,
+      textOffset: textOffset,
     );
 
     _pendingPayload = payload;

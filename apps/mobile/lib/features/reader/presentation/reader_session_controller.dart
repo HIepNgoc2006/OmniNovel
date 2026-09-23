@@ -37,12 +37,17 @@ class ReaderSessionController extends ChangeNotifier {
       final clampedInitial = initialPageIndex.clamp(0, totalPages > 0 ? totalPages - 1 : 0);
       final window = policy.calculateSingleFocus(clampedInitial);
 
+      final initialProgress = totalPages <= 1
+          ? 100.0
+          : (((clampedInitial + 1) / totalPages) * 100).clamp(0.0, 100.0);
+
       _state = _state.copyWith(
         status: ReaderStatus.ready,
         chapterDetail: detail,
         focusedPageIndex: clampedInitial,
         visibleStartIndex: clampedInitial,
         visibleEndIndex: clampedInitial,
+        progressPercentage: initialProgress,
         windowResult: window,
       );
       notifyListeners();
@@ -74,9 +79,11 @@ class ReaderSessionController extends ChangeNotifier {
       visibleEndIndex: endIndex,
     );
 
-    final progress = maxScrollOffset > 0
-        ? ((scrollOffset / maxScrollOffset) * 100).clamp(0.0, 100.0)
-        : ((actualFocused / _state.totalPages) * 100).clamp(0.0, 100.0);
+    final progress = _state.totalPages <= 1
+        ? 100.0
+        : (maxScrollOffset > 0
+            ? ((scrollOffset / maxScrollOffset) * 100).clamp(0.0, 100.0)
+            : (((actualFocused + 1) / _state.totalPages) * 100).clamp(0.0, 100.0));
 
     // Evict distant bitmaps ngay lập tức khỏi RAM
     _imageCacheCoordinator.evictDistantBitmaps(

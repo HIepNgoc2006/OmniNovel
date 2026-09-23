@@ -89,7 +89,7 @@ apps/mobile/
 - [x] Bộ kiểm thử & Bằng chứng giả lập chuẩn hóa: 78/78 tests Mobile Suite GREEN (100%), `flutter analyze` 0 issues, stress fixture 150 trang mixed dimensions, peak RSS 91.5MB (<150MB), 120Hz P90 6.85ms, jank 0.8%, process-death resume chính xác 100% trên Pixel 7 / Android SDK Emulator API 34 ([Báo cáo chi tiết](file:///e:/Workspace%202/Doctruyen_project/plans/evidence/phase_5b_hardware_evidence.md)).
 
 ### 🎨 Phase 5C: Đa Định Dạng Trình Đọc & Tính Năng Hoàn Chỉnh (MOB-001..MOB-011)
-- [ ] **[Phase 5C.1] Manga Paged Reader ([Issue #197](https://github.com/HIepNgoc2006/OmniNovel/issues/197)):** Hỗ trợ lật trang phải sang trái (RTL/LTR), phóng to/thu nhỏ cảm ứng (InteractiveViewer/Pinch-zoom), tái sử dụng hạ tầng ImageCache 80MB & progress sync.
+- [x] **[Phase 5C.1] Manga Paged Reader ([Issue #197](https://github.com/HIepNgoc2006/OmniNovel/issues/197)):** Hỗ trợ lật trang phải sang trái (RTL/LTR), phóng to/thu nhỏ cảm ứng (InteractiveViewer/Pinch-zoom), tái sử dụng hạ tầng ImageCache 80MB & progress sync.
 - [ ] **[Phase 5C.2] Novel Reader ([Issue #198](https://github.com/HIepNgoc2006/OmniNovel/issues/198)):** Trình đọc truyện chữ với giao diện Typography tùy biến (cỡ chữ, giãn dòng, theme Sepia/OLED) và định vị đoạn văn bằng `anchorBlockId`.
 - [ ] **[Phase 5C.3] Khám phá & Tìm kiếm ([Issue #199](https://github.com/HIepNgoc2006/OmniNovel/issues/199)):** Home Feed Hero Carousel, Tìm kiếm đa bộ lọc (`GET /api/v1/stories?search=...`), và Chi tiết truyện (Story Detail production UI).
 - [ ] **[Phase 5C.4] Tủ sách Cá nhân ([Issue #200](https://github.com/HIepNgoc2006/OmniNovel/issues/200)):** Quản lý Bookmark, Lịch sử đọc truyện (History) và Thẻ đọc tiếp nhanh (Continue Reading).

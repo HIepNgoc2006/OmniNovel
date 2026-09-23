@@ -11,6 +11,7 @@ class WebtoonReaderView extends StatefulWidget {
   final ReaderImageCacheCoordinator imageCacheCoordinator;
   final ScrollController? scrollController;
   final int initialPageIndex;
+  final VoidCallback? onToggleHud;
   final void Function(int pageIndex, double progressPercentage, double scrollOffset)?
       onProgressChanged;
 
@@ -20,14 +21,15 @@ class WebtoonReaderView extends StatefulWidget {
     required this.imageCacheCoordinator,
     this.scrollController,
     this.initialPageIndex = 0,
+    this.onToggleHud,
     this.onProgressChanged,
   });
 
   @override
-  State<WebtoonReaderView> createState() => _WebtoonReaderViewState();
+  State<WebtoonReaderView> createState() => WebtoonReaderViewState();
 }
 
-class _WebtoonReaderViewState extends State<WebtoonReaderView> {
+class WebtoonReaderViewState extends State<WebtoonReaderView> {
   late final ScrollController _scrollController;
   bool _internalScrollController = false;
 
@@ -53,6 +55,15 @@ class _WebtoonReaderViewState extends State<WebtoonReaderView> {
       _scrollController.dispose();
     }
     super.dispose();
+  }
+
+  /// Điều hướng chương trình đến trang chỉ định (phục vụ Slider / resume)
+  void jumpToPage(int pageIndex) {
+    if (_geometryCalculator == null || !_scrollController.hasClients) return;
+    final offset = _geometryCalculator!.getOffsetForPage(pageIndex);
+    _scrollController.jumpTo(
+      offset.clamp(0.0, _scrollController.position.maxScrollExtent),
+    );
   }
 
   bool _onScrollNotification(
@@ -172,32 +183,36 @@ class _WebtoonReaderViewState extends State<WebtoonReaderView> {
               });
             }
 
-            return NotificationListener<ScrollNotification>(
-              onNotification: (notification) => _onScrollNotification(
-                notification,
-                viewportWidth,
-                viewportHeight,
-                targetWidth,
-              ),
-              child: ListView.builder(
-                controller: _scrollController,
-                physics: const BouncingScrollPhysics(),
-                addAutomaticKeepAlives: false, // Evict widget khi ra khỏi viewport
-                addRepaintBoundaries: true, // Phân tách render tree cho 120/144Hz
-                itemCount: state.pages.length,
-                itemBuilder: (context, index) {
-                  final page = state.pages[index];
-                  final shouldRetain = state.windowResult.shouldRetainBitmap(index);
+            return GestureDetector(
+              behavior: HitTestBehavior.translucent,
+              onTap: widget.onToggleHud,
+              child: NotificationListener<ScrollNotification>(
+                onNotification: (notification) => _onScrollNotification(
+                  notification,
+                  viewportWidth,
+                  viewportHeight,
+                  targetWidth,
+                ),
+                child: ListView.builder(
+                  controller: _scrollController,
+                  physics: const BouncingScrollPhysics(),
+                  addAutomaticKeepAlives: false, // Evict widget khi ra khỏi viewport
+                  addRepaintBoundaries: true, // Phân tách render tree cho 120/144Hz
+                  itemCount: state.pages.length,
+                  itemBuilder: (context, index) {
+                    final page = state.pages[index];
+                    final shouldRetain = state.windowResult.shouldRetainBitmap(index);
 
-                  return _WebtoonPageItem(
-                    key: ValueKey('${page.assetId}_$index'),
-                    page: page,
-                    pageIndex: index,
-                    shouldRetainBitmap: shouldRetain,
-                    coordinator: widget.imageCacheCoordinator,
-                    targetWidth: targetWidth,
-                  );
-                },
+                    return _WebtoonPageItem(
+                      key: ValueKey('${page.assetId}_$index'),
+                      page: page,
+                      pageIndex: index,
+                      shouldRetainBitmap: shouldRetain,
+                      coordinator: widget.imageCacheCoordinator,
+                      targetWidth: targetWidth,
+                    );
+                  },
+                ),
               ),
             );
           },

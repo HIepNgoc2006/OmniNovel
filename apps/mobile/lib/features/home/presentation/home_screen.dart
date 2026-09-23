@@ -82,10 +82,12 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         backgroundColor: AppColors.oledBlack,
         elevation: 0,
+        titleSpacing: 12,
         title: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
             Container(
-              padding: const EdgeInsets.all(6),
+              padding: const EdgeInsets.all(5),
               decoration: BoxDecoration(
                 color: AppColors.primary,
                 borderRadius: BorderRadius.circular(8),
@@ -93,17 +95,19 @@ class _HomeScreenState extends State<HomeScreen> {
               child: const Icon(
                 Icons.auto_stories,
                 color: Colors.white,
-                size: 20,
+                size: 18,
               ),
             ),
-            const SizedBox(width: 10),
-            const Text(
-              'OmniNovel',
-              style: TextStyle(
-                fontWeight: FontWeight.bold,
-                fontSize: 20,
-                color: AppColors.textPrimary,
-                letterSpacing: 0.5,
+            const SizedBox(width: 8),
+            const Flexible(
+              child: Text(
+                'OmniNovel',
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontWeight: FontWeight.bold,
+                  fontSize: 19,
+                  color: AppColors.textPrimary,
+                ),
               ),
             ),
           ],
@@ -183,9 +187,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   children: [
                     Icon(Icons.search, color: AppColors.textMuted, size: 20),
                     SizedBox(width: 12),
-                    Text(
-                      'Tìm kiếm tên truyện, thể loại, tác giả...',
-                      style: TextStyle(color: AppColors.textMuted, fontSize: 14),
+                    Expanded(
+                      child: Text(
+                        'Tìm kiếm tên truyện, thể loại, tác giả...',
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: AppColors.textMuted, fontSize: 14),
+                      ),
                     ),
                   ],
                 ),

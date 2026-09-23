@@ -118,4 +118,26 @@ void main() {
     final searchBtn = find.byKey(const Key('home_search_button'));
     expect(searchBtn, findsOneWidget);
   });
+
+  testWidgets('HomeScreen renders responsively across compact (360dp) and normal (412dp) viewports without overflow', (tester) async {
+    const viewports = [
+      Size(360, 640),  // Compact Android (720p / small phone)
+      Size(412, 915),  // Normal Android (Pixel 7 / 1080p)
+    ];
+
+    for (final size in viewports) {
+      tester.view.physicalSize = size;
+      tester.view.devicePixelRatio = 1.0;
+
+      await tester.pumpWidget(buildWidget());
+      await tester.pumpAndSettle();
+
+      expect(find.byType(HomeScreen), findsOneWidget);
+      expect(tester.takeException(), isNull, reason: 'Không có layout overflow exception trên viewport $size');
+    }
+
+    tester.view.resetPhysicalSize();
+    tester.view.resetDevicePixelRatio();
+  });
 }
+

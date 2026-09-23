@@ -44,10 +44,14 @@ class _HomeRankingSectionState extends State<HomeRankingSection>
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        Wrap(
+          alignment: WrapAlignment.spaceBetween,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 12,
+          runSpacing: 10,
           children: [
             const Row(
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Icon(Icons.emoji_events, color: Colors.amber, size: 22),
                 SizedBox(width: 8),

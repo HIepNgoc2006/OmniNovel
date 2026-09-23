@@ -26,23 +26,30 @@ class HomeLatestSection extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Row(
-              children: [
-                Icon(Icons.auto_awesome, color: AppColors.primaryLight, size: 20),
-                SizedBox(width: 8),
-                Text(
-                  'Mới Cập Nhật',
-                  style: TextStyle(
-                    fontSize: 20,
-                    fontWeight: FontWeight.bold,
-                    color: AppColors.textPrimary,
+            const Expanded(
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.auto_awesome, color: AppColors.primaryLight, size: 20),
+                  SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      'Mới Cập Nhật',
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        color: AppColors.textPrimary,
+                      ),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
             TextButton(
               onPressed: onSeeAllTap,
               child: const Row(
+                mainAxisSize: MainAxisSize.min,
                 children: [
                   Text('Xem tất cả', style: TextStyle(color: AppColors.primaryLight)),
                   Icon(Icons.chevron_right, size: 18, color: AppColors.primaryLight),

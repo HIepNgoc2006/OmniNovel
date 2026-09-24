@@ -134,4 +134,100 @@ void main() {
     expect(find.text('Đã điểm danh hôm nay'), findsOneWidget);
     expect(find.textContaining('01:01:01'), findsOneWidget);
   });
+
+  testWidgets('Gate 4B: DailyCheckinDialog automatically triggers rollover when countdown reaches 0',
+      (WidgetTester tester) async {
+    const expiringProgression = UserProgression(
+      userId: 'user-1',
+      level: 3,
+      totalExp: '250',
+      currentLevelExp: 250,
+      nextLevelExp: 500,
+      omnicoinBalance: '110',
+      currentStreak: 3,
+      maxStreak: 5,
+      lastCheckinDate: '2026-09-24',
+      hasCheckedInToday: true,
+      rankTitle: 'Luyện Khí',
+      activeThemeId: 'DEFAULT',
+      activeThemeName: 'Mặc Định',
+      progressPercent: 50,
+      serverDateVN: '2026-09-24',
+      serverNow: '2026-09-24T23:59:58.000Z',
+      nextCheckinAt: '2026-09-25T00:00:00.000Z',
+      secondsUntilNextCheckin: 1, // Chỉ còn 1 giây đến nửa đêm
+    );
+
+    const refreshedProgression = UserProgression(
+      userId: 'user-1',
+      level: 3,
+      totalExp: '250',
+      currentLevelExp: 250,
+      nextLevelExp: 500,
+      omnicoinBalance: '110',
+      currentStreak: 3,
+      maxStreak: 5,
+      lastCheckinDate: '2026-09-24',
+      hasCheckedInToday: false, // Đã sang ngày mới -> mở khóa!
+      rankTitle: 'Luyện Khí',
+      activeThemeId: 'DEFAULT',
+      activeThemeName: 'Mặc Định',
+      progressPercent: 50,
+      serverDateVN: '2026-09-25',
+      serverNow: '2026-09-25T00:00:00.000Z',
+      nextCheckinAt: '2026-09-26T00:00:00.000Z',
+      secondsUntilNextCheckin: 86400,
+    );
+
+    when(() => mockRepo.getProgression(
+          forceRefresh: true,
+        )).thenAnswer((_) async => refreshedProgression);
+
+    when(() => mockRepo.checkIn(
+          userId: any(named: 'userId'),
+          idempotencyKey: any(named: 'idempotencyKey'),
+        )).thenAnswer(
+      (_) async => const CheckinResult(
+        alreadyCheckedIn: false,
+        message: 'Điểm danh ngày mới thành công!',
+        coinsEarned: 10,
+        expEarned: 50,
+        newStreak: 4,
+        maxStreak: 5,
+        totalExp: '300',
+        omnicoinBalance: '120',
+        level: 3,
+      ),
+    );
+
+    await tester.pumpWidget(buildTestableWidget(progression: expiringProgression));
+    await tester.tap(find.text('Open Dialog'));
+    await tester.pumpAndSettle();
+
+    // Ban đầu: đã điểm danh hôm nay
+    expect(find.text('Đã điểm danh hôm nay'), findsOneWidget);
+
+    // Chờ 2 giây để countdown về 0 và trigger rollover
+    await tester.pump(const Duration(seconds: 2));
+    await tester.pumpAndSettle();
+
+    // Đã gọi getProgression(forceRefresh: true)
+    verify(() => mockRepo.getProgression(
+          forceRefresh: true,
+        )).called(1);
+
+    // Nút check-in đã mở khóa cho ngày mới!
+    final checkinButton = find.byKey(const Key('submit_checkin_button'));
+    expect(checkinButton, findsOneWidget);
+    expect(find.textContaining('Điểm danh ngay'), findsOneWidget);
+
+    // Nhấn điểm danh ngày mới
+    await tester.tap(checkinButton);
+    await tester.pumpAndSettle();
+
+    verify(() => mockRepo.checkIn(
+          userId: any(named: 'userId'),
+          idempotencyKey: any(named: 'idempotencyKey'),
+        )).called(1);
+  });
 }

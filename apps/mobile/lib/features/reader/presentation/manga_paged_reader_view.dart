@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../app/theme/app_colors.dart';
+import '../../../core/theme/theme_tokens.dart';
 import '../models/manga_reading_mode.dart';
 import '../models/reader_models.dart';
 import 'reader_image_cache_coordinator.dart';
@@ -147,8 +148,8 @@ class _MangaPagedReaderViewState extends State<MangaPagedReaderView> {
         final state = widget.sessionController.state;
 
         if (state.status == ReaderStatus.loading || state.status == ReaderStatus.initial) {
-          return const Center(
-            child: CircularProgressIndicator(color: AppColors.primary),
+          return Center(
+            child: CircularProgressIndicator(color: context.primaryColor),
           );
         }
 
@@ -346,12 +347,12 @@ class _MangaPageItemState extends State<_MangaPageItem> {
             return Container(
               color: AppColors.oledBlack,
               alignment: Alignment.center,
-              child: const SizedBox(
+              child: SizedBox(
                 width: 32,
                 height: 32,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
-                  color: AppColors.primaryLight,
+                  color: context.primaryLightColor,
                 ),
               ),
             );
@@ -416,12 +417,12 @@ class _MangaPageItemState extends State<_MangaPageItem> {
                 return Container(
                   color: AppColors.oledBlack,
                   alignment: Alignment.center,
-                  child: const SizedBox(
+                  child: SizedBox(
                     width: 28,
                     height: 28,
                     child: CircularProgressIndicator(
                       strokeWidth: 2,
-                      color: AppColors.primary,
+                      color: context.primaryColor,
                     ),
                   ),
                 );

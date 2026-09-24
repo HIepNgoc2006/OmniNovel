@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../../app/theme/app_colors.dart';
+import '../../../../core/theme/theme_tokens.dart';
 import '../../../story/models/story_models.dart';
 
 class HomeRankingSection extends StatefulWidget {
@@ -78,7 +79,7 @@ class _HomeRankingSectionState extends State<HomeRankingSection>
                 dividerColor: Colors.transparent,
                 indicatorSize: TabBarIndicatorSize.tab,
                 indicator: BoxDecoration(
-                  color: AppColors.primary,
+                  color: context.primaryColor,
                   borderRadius: BorderRadius.circular(16),
                 ),
                 labelColor: Colors.white,
@@ -174,15 +175,15 @@ class _HomeRankingSectionState extends State<HomeRankingSection>
                         ? Image.network(
                             story.coverUrl!,
                             fit: BoxFit.cover,
-                            errorBuilder: (_, __, ___) => const Icon(
+                            errorBuilder: (_, __, ___) => Icon(
                               Icons.auto_stories,
-                              color: AppColors.primary,
+                              color: context.primaryColor,
                               size: 20,
                             ),
                           )
-                        : const Icon(
+                        : Icon(
                             Icons.auto_stories,
-                            color: AppColors.primary,
+                            color: context.primaryColor,
                             size: 20,
                           ),
                   ),

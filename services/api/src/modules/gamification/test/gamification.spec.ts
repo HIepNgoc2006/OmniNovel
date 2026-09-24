@@ -104,8 +104,18 @@ describe('GamificationService — Phase 5C.5 Gates 1, 1B, 2', () => {
       const userId = 'user-uuid-1';
       redisService.setnx.mockResolvedValueOnce(false); // Lock acquisition failed
 
-      await expect(service.checkIn(userId)).rejects.toThrow(BadRequestException);
-      await expect(service.checkIn(userId)).rejects.toThrow('CHECKIN_REQUEST_IN_FLIGHT');
+      try {
+        await service.checkIn(userId);
+        fail('Should throw BadRequestException');
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        expect(err.getResponse()).toEqual(
+          expect.objectContaining({
+            code: 'CHECKIN_REQUEST_IN_FLIGHT',
+            message: expect.stringContaining('CHECKIN_REQUEST_IN_FLIGHT'),
+          }),
+        );
+      }
     });
   });
 
@@ -190,7 +200,18 @@ describe('GamificationService — Phase 5C.5 Gates 1, 1B, 2', () => {
       const userId = 'user-uuid-claim';
       redisService.setnx.mockResolvedValueOnce(false);
 
-      await expect(service.claimLevelReward(userId, 5)).rejects.toThrow('LEVEL_REWARD_REQUEST_IN_FLIGHT');
+      try {
+        await service.claimLevelReward(userId, 5);
+        fail('Should throw BadRequestException');
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        expect(err.getResponse()).toEqual(
+          expect.objectContaining({
+            code: 'LEVEL_REWARD_REQUEST_IN_FLIGHT',
+            message: expect.stringContaining('LEVEL_REWARD_REQUEST_IN_FLIGHT'),
+          }),
+        );
+      }
     });
   });
 

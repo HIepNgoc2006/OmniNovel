@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import '../../../../app/theme/app_colors.dart';
+import '../../../../core/theme/theme_tokens.dart';
 import '../../../story/models/story_models.dart';
 
 class HomeCarouselBanner extends StatefulWidget {
@@ -96,7 +97,7 @@ class _HomeCarouselBannerState extends State<HomeCarouselBanner> {
                         Image.network(
                           story.bannerUrl!,
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => _buildPlaceholder(story),
+                          errorBuilder: (ctx, __, ___) => _buildPlaceholder(story),
                         )
                       else if (story.coverUrl != null && story.coverUrl!.isNotEmpty)
                         Image.network(
@@ -140,7 +141,7 @@ class _HomeCarouselBannerState extends State<HomeCarouselBanner> {
                                     vertical: 3,
                                   ),
                                   decoration: BoxDecoration(
-                                    color: AppColors.primary,
+                                    color: context.primaryColor,
                                     borderRadius: BorderRadius.circular(6),
                                   ),
                                   child: Text(
@@ -231,7 +232,7 @@ class _HomeCarouselBannerState extends State<HomeCarouselBanner> {
                 width: isSelected ? 18 : 6,
                 height: 6,
                 decoration: BoxDecoration(
-                  color: isSelected ? AppColors.primary : AppColors.darkBorder,
+                  color: isSelected ? context.primaryColor : AppColors.darkBorder,
                   borderRadius: BorderRadius.circular(3),
                 ),
               );
@@ -246,9 +247,9 @@ class _HomeCarouselBannerState extends State<HomeCarouselBanner> {
     return Container(
       color: AppColors.darkSurface,
       alignment: Alignment.center,
-      child: const Icon(
+      child: Icon(
         Icons.auto_stories,
-        color: AppColors.primaryLight,
+        color: context.primaryLightColor,
         size: 56,
       ),
     );

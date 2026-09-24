@@ -127,7 +127,10 @@ export class GamificationService {
     const redisLockKey = `gamification:lock:checkin:${userId}:${todayVN}`;
     const acquired = await this.redisService.setnx(redisLockKey, lockToken, 120);
     if (!acquired) {
-      throw new BadRequestException('CHECKIN_REQUEST_IN_FLIGHT: Yêu cầu điểm danh đang được xử lý.');
+      throw new BadRequestException({
+        code: 'CHECKIN_REQUEST_IN_FLIGHT',
+        message: 'CHECKIN_REQUEST_IN_FLIGHT: Yêu cầu điểm danh đang được xử lý.',
+      });
     }
 
     try {
@@ -147,7 +150,10 @@ export class GamificationService {
         });
 
         if (existingCheckin) {
-          throw new BadRequestException('CHECKIN_ALREADY_CLAIMED: Bạn đã điểm danh ngày hôm nay rồi.');
+          throw new BadRequestException({
+            code: 'CHECKIN_ALREADY_CLAIMED',
+            message: 'CHECKIN_ALREADY_CLAIMED: Bạn đã điểm danh ngày hôm nay rồi.',
+          });
         }
 
         // Tính Chuỗi Streak
@@ -484,7 +490,10 @@ export class GamificationService {
     const redisLockKey = `gamification:lock:level-reward:${userId}:${milestoneLevel}`;
     const acquired = await this.redisService.setnx(redisLockKey, lockToken, 120);
     if (!acquired) {
-      throw new BadRequestException('LEVEL_REWARD_REQUEST_IN_FLIGHT: Yêu cầu nhận thưởng cấp độ đang được xử lý.');
+      throw new BadRequestException({
+        code: 'LEVEL_REWARD_REQUEST_IN_FLIGHT',
+        message: 'LEVEL_REWARD_REQUEST_IN_FLIGHT: Yêu cầu nhận thưởng cấp độ đang được xử lý.',
+      });
     }
 
     try {
@@ -508,9 +517,10 @@ export class GamificationService {
         }
 
         if (progression.level < milestoneLevel) {
-          throw new BadRequestException(
-            `Bạn cần đạt cấp độ ${milestoneLevel} để nhận phần thưởng này (Cấp hiện tại: ${progression.level}).`,
-          );
+          throw new BadRequestException({
+            code: 'LEVEL_REWARD_NOT_ELIGIBLE',
+            message: `Bạn cần đạt cấp độ ${milestoneLevel} để nhận phần thưởng này (Cấp hiện tại: ${progression.level}).`,
+          });
         }
 
         const alreadyClaimed = await manager.findOne(UserClaimedLevelReward, {
@@ -518,7 +528,10 @@ export class GamificationService {
         });
 
         if (alreadyClaimed) {
-          throw new BadRequestException('LEVEL_REWARD_ALREADY_CLAIMED: Bạn đã nhận phần thưởng mốc cấp độ này rồi.');
+          throw new BadRequestException({
+            code: 'LEVEL_REWARD_ALREADY_CLAIMED',
+            message: 'LEVEL_REWARD_ALREADY_CLAIMED: Bạn đã nhận phần thưởng mốc cấp độ này rồi.',
+          });
         }
 
         // 1. Ghi nhận claim

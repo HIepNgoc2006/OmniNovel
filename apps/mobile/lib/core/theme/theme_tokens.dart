@@ -29,4 +29,5 @@ extension BuildContextThemeExtension on BuildContext {
   ThemeData get theme => Theme.of(this);
   ColorScheme get colorScheme => Theme.of(this).colorScheme;
   Color get primaryColor => Theme.of(this).colorScheme.primary;
+  Color get primaryLightColor => Color.lerp(primaryColor, Colors.white, 0.25) ?? primaryColor;
 }

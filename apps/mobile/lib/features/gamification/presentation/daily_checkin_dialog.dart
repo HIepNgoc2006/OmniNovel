@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../../../app/theme/app_colors.dart';
 import '../../../core/theme/theme_tokens.dart';
@@ -59,19 +60,26 @@ class _DailyCheckinDialogState extends State<DailyCheckinDialog> {
 
     if (_hasCheckedInToday && _initialSecondsRemaining > 0) {
       _startMonotonicCountdown();
+    } else if (_hasCheckedInToday && _initialSecondsRemaining <= 0) {
+      _handleMidnightRollover();
     }
   }
 
+  int _ticks = 0;
+
   void _startMonotonicCountdown() {
+    _ticks = 0;
     _countdownStopwatch?.stop();
     _countdownStopwatch = Stopwatch()..start();
     _tickerTimer?.cancel();
     _tickerTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) {
-        final elapsed = _countdownStopwatch?.elapsed.inSeconds ?? 0;
+        _ticks++;
+        final stopwatchElapsed = _countdownStopwatch?.elapsed.inSeconds ?? 0;
+        final elapsed = math.max(_ticks, stopwatchElapsed);
         if (elapsed >= _initialSecondsRemaining) {
           _tickerTimer?.cancel();
-          setState(() {});
+          _handleMidnightRollover();
         } else {
           setState(() {});
         }
@@ -79,9 +87,38 @@ class _DailyCheckinDialogState extends State<DailyCheckinDialog> {
     });
   }
 
+  Future<void> _handleMidnightRollover() async {
+    _tickerTimer?.cancel();
+    _countdownStopwatch?.stop();
+    _countdownStopwatch = null;
+    _ticks = 0;
+
+    try {
+      final updatedProg = await widget.repository.getProgression(forceRefresh: true);
+      if (mounted) {
+        setState(() {
+          _hasCheckedInToday = updatedProg.hasCheckedInToday;
+          _currentStreak = updatedProg.currentStreak;
+          _initialSecondsRemaining = updatedProg.secondsUntilNextCheckin;
+          if (_hasCheckedInToday && _initialSecondsRemaining > 0) {
+            _startMonotonicCountdown();
+          }
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _hasCheckedInToday = false;
+          _initialSecondsRemaining = 0;
+        });
+      }
+    }
+  }
+
   int get _currentRemainingSeconds {
-    if (_countdownStopwatch == null) return _initialSecondsRemaining;
-    final remaining = _initialSecondsRemaining - _countdownStopwatch!.elapsed.inSeconds;
+    final stopwatchElapsed = _countdownStopwatch?.elapsed.inSeconds ?? 0;
+    final elapsed = math.max(_ticks, stopwatchElapsed);
+    final remaining = _initialSecondsRemaining - elapsed;
     return remaining > 0 ? remaining : 0;
   }
 

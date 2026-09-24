@@ -56,6 +56,7 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
   final Set<String> _rewardingChapters = {};
   String? _dailyReadCapReachedDate;
   String? _currentServerDateVN;
+  Timer? _midnightTimer;
 
   ReadingProgressCoordinator({
     required ReadingProgressRepository repository,
@@ -64,9 +65,10 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
   })  : _repository = repository,
         _gamificationRepository = gamificationRepository;
 
-  /// Đăng ký lắng nghe vòng đời ứng dụng
+  /// Đăng ký lắng nghe vòng đời ứng dụng và hẹn giờ qua nửa đêm VN
   void init() {
     WidgetsBinding.instance.addObserver(this);
+    _scheduleMidnightCheck();
   }
 
   @override
@@ -79,7 +81,50 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
       if (_isChapterReady) {
         _activeReadingStopwatch?.start();
       }
+      _checkAndHandleDateRollover();
     }
+  }
+
+  void _scheduleMidnightCheck() {
+    _midnightTimer?.cancel();
+    if (_disposed) return;
+
+    final nowUtc = DateTime.now().toUtc();
+    final nowVn = nowUtc.add(const Duration(hours: 7));
+    final tomorrowVn = DateTime.utc(nowVn.year, nowVn.month, nowVn.day + 1);
+    final durationUntilMidnight = tomorrowVn.difference(
+      DateTime.utc(nowVn.year, nowVn.month, nowVn.day, nowVn.hour, nowVn.minute, nowVn.second),
+    );
+    final delay = durationUntilMidnight + const Duration(seconds: 1);
+
+    _midnightTimer = Timer(delay, () {
+      if (!_disposed) {
+        _checkAndHandleDateRollover();
+        _scheduleMidnightCheck();
+      }
+    });
+  }
+
+  Future<void> _checkAndHandleDateRollover() async {
+    final clientDateVN = _computeCurrentDateVN();
+    if (_currentServerDateVN != null && clientDateVN != _currentServerDateVN) {
+      updateServerDateVN(clientDateVN);
+    }
+
+    final gamificationRepo = _gamificationRepository;
+    if (gamificationRepo != null) {
+      try {
+        final prog = await gamificationRepo.getProgression(forceRefresh: true);
+        updateServerDateVN(prog.serverDateVN);
+      } catch (_) {
+        updateServerDateVN(clientDateVN);
+      }
+    }
+  }
+
+  String _computeCurrentDateVN() {
+    final vn = DateTime.now().toUtc().add(const Duration(hours: 7));
+    return '${vn.year}-${vn.month.toString().padLeft(2, '0')}-${vn.day.toString().padLeft(2, '0')}';
   }
 
   bool get isServerSyncEnabled => _isServerSyncEnabled;
@@ -230,7 +275,12 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
     final durationSeconds = _activeReadingStopwatch?.elapsed.inSeconds ?? 0;
     if (durationSeconds < 45 || progressPercentage < 80.0) return;
 
-    // Daily Cap Suppression: Bỏ qua nếu ngày hôm nay đã chạm trần 100 EXP
+    // Daily Cap Suppression: Kiểm tra ngày VN hiện tại trước khi suppress
+    final clientDateVN = _computeCurrentDateVN();
+    if (_dailyReadCapReachedDate != null && clientDateVN != _dailyReadCapReachedDate) {
+      updateServerDateVN(clientDateVN);
+    }
+
     if (_currentServerDateVN != null &&
         _currentServerDateVN == _dailyReadCapReachedDate) {
       return;
@@ -432,6 +482,7 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
     flush();
     WidgetsBinding.instance.removeObserver(this);
     _debounceTimer?.cancel();
+    _midnightTimer?.cancel();
     _activeReadingStopwatch?.stop();
   }
 }

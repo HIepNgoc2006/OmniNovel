@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../../app/theme/app_colors.dart';
+import '../../../core/theme/theme_tokens.dart';
 import '../../story/models/story_models.dart';
 import '../../story/repositories/story_repository.dart';
 
@@ -232,7 +233,7 @@ class _SearchScreenState extends State<SearchScreen> {
           controller: _searchController,
           autofocus: widget.initialSearch == null,
           style: const TextStyle(color: AppColors.textPrimary, fontSize: 16),
-          cursorColor: AppColors.primary,
+          cursorColor: context.primaryColor,
           decoration: InputDecoration(
             hintText: 'Tìm kiếm truyện, tóm tắt...',
             hintStyle: const TextStyle(color: AppColors.textMuted),
@@ -353,12 +354,12 @@ class _SearchScreenState extends State<SearchScreen> {
 
             // Genre Filter Chip (Dynamic from Server)
             if (_isLoadingGenres)
-              const Padding(
-                padding: EdgeInsets.symmetric(horizontal: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
                 child: SizedBox(
                   width: 14,
                   height: 14,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                  child: CircularProgressIndicator(strokeWidth: 2, color: context.primaryColor),
                 ),
               )
             else if (_genres.isNotEmpty)
@@ -417,28 +418,28 @@ class _SearchScreenState extends State<SearchScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: isActive ? AppColors.primary.withValues(alpha: 0.25) : AppColors.darkSurface,
+        color: isActive ? context.primaryColor.withValues(alpha: 0.25) : AppColors.darkSurface,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color: isActive ? AppColors.primary : AppColors.darkBorder,
+          color: isActive ? context.primaryColor : AppColors.darkBorder,
           width: 1,
         ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 14, color: isActive ? AppColors.primaryLight : AppColors.textMuted),
+          Icon(icon, size: 14, color: isActive ? context.primaryLightColor : AppColors.textMuted),
           const SizedBox(width: 6),
           Text(
             label,
             style: TextStyle(
-              color: isActive ? AppColors.primaryLight : AppColors.textPrimary,
+              color: isActive ? context.primaryLightColor : AppColors.textPrimary,
               fontSize: 12,
               fontWeight: isActive ? FontWeight.bold : FontWeight.normal,
             ),
           ),
           const SizedBox(width: 4),
-          Icon(Icons.arrow_drop_down, size: 16, color: isActive ? AppColors.primaryLight : AppColors.textMuted),
+          Icon(Icons.arrow_drop_down, size: 16, color: isActive ? context.primaryLightColor : AppColors.textMuted),
         ],
       ),
     );
@@ -451,7 +452,7 @@ class _SearchScreenState extends State<SearchScreen> {
     }
 
     if (_isLoading) {
-      return const Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return Center(child: CircularProgressIndicator(color: context.primaryColor));
     }
 
     if (_errorMessage != null && _stories.isEmpty) {
@@ -502,7 +503,7 @@ class _SearchScreenState extends State<SearchScreen> {
 
     return RefreshIndicator(
       onRefresh: () => _performSearch(isNewQuery: true),
-      color: AppColors.primary,
+      color: context.primaryColor,
       child: ListView.separated(
         controller: _scrollController,
         padding: const EdgeInsets.all(16),
@@ -510,13 +511,13 @@ class _SearchScreenState extends State<SearchScreen> {
         separatorBuilder: (_, __) => const SizedBox(height: 12),
         itemBuilder: (context, index) {
           if (index == _stories.length) {
-            return const Padding(
-              padding: EdgeInsets.symmetric(vertical: 16),
+            return Padding(
+              padding: const EdgeInsets.symmetric(vertical: 16),
               child: Center(
                 child: SizedBox(
                   width: 24,
                   height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary),
+                  child: CircularProgressIndicator(strokeWidth: 2, color: context.primaryColor),
                 ),
               ),
             );
@@ -548,9 +549,9 @@ class _SearchScreenState extends State<SearchScreen> {
                           ? Image.network(
                               story.coverUrl!,
                               fit: BoxFit.cover,
-                              errorBuilder: (_, __, ___) => const Icon(Icons.auto_stories, color: AppColors.primary),
+                              errorBuilder: (_, __, ___) => Icon(Icons.auto_stories, color: context.primaryColor),
                             )
-                          : const Icon(Icons.auto_stories, color: AppColors.primary),
+                          : Icon(Icons.auto_stories, color: context.primaryColor),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -581,12 +582,12 @@ class _SearchScreenState extends State<SearchScreen> {
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                               decoration: BoxDecoration(
-                                color: AppColors.primary.withValues(alpha: 0.2),
+                                color: context.primaryColor.withValues(alpha: 0.2),
                                 borderRadius: BorderRadius.circular(4),
                               ),
                               child: Text(
                                 format,
-                                style: const TextStyle(color: AppColors.primaryLight, fontSize: 9, fontWeight: FontWeight.bold),
+                                style: TextStyle(color: context.primaryLightColor, fontSize: 9, fontWeight: FontWeight.bold),
                               ),
                             ),
                             const SizedBox(width: 8),

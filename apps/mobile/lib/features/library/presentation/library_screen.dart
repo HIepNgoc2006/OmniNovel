@@ -463,10 +463,10 @@ class _LibraryScreenState extends State<LibraryScreen>
           ],
 
           if (_isLoadingHistory && _history.isEmpty)
-            const Center(
+            Center(
               child: Padding(
-                padding: EdgeInsets.all(32),
-                child: CircularProgressIndicator(color: AppColors.primary),
+                padding: const EdgeInsets.all(32),
+                child: CircularProgressIndicator(color: context.primaryColor),
               ),
             )
           else if (_historyError != null && _history.isEmpty)
@@ -509,32 +509,34 @@ class _LibraryScreenState extends State<LibraryScreen>
   }
 
   Widget _buildContinueReadingHeroCard(ReadingHistoryItem item) {
+    final primary = context.primaryColor;
+    final primaryLight = context.primaryLightColor;
     return Container(
       key: const Key('continue_reading_hero_card'),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
-            AppColors.primary.withValues(alpha: 0.25),
+            primary.withValues(alpha: 0.25),
             AppColors.darkSurface,
           ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.4)),
+        border: Border.all(color: primary.withValues(alpha: 0.4)),
       ),
       padding: const EdgeInsets.all(14),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Row(
+          Row(
             children: [
-              Icon(Icons.history, color: AppColors.primaryLight, size: 16),
-              SizedBox(width: 6),
+              Icon(Icons.history, color: primaryLight, size: 16),
+              const SizedBox(width: 6),
               Text(
                 'TIẾP TỤC ĐỌC',
                 style: TextStyle(
-                  color: AppColors.primaryLight,
+                  color: primaryLight,
                   fontWeight: FontWeight.bold,
                   fontSize: 12,
                   letterSpacing: 1.1,
@@ -555,12 +557,12 @@ class _LibraryScreenState extends State<LibraryScreen>
                       ? Image.network(
                           item.story.coverUrl!,
                           fit: BoxFit.cover,
-                          errorBuilder: (_, __, ___) => const Icon(
+                          errorBuilder: (_, __, ___) => Icon(
                             Icons.auto_stories,
-                            color: AppColors.primary,
+                            color: primary,
                           ),
                         )
-                      : const Icon(Icons.auto_stories, color: AppColors.primary),
+                      : Icon(Icons.auto_stories, color: primary),
                 ),
               ),
               const SizedBox(width: 14),

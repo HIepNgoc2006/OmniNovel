@@ -83,14 +83,39 @@ class GamificationRepository {
 
       return result;
     } on ApiError catch (e) {
-      // Khi gặp CHECKIN_REQUEST_IN_FLIGHT hoặc Timeout -> Revalidate để phục hồi state
-      if (e.message.contains('CHECKIN_REQUEST_IN_FLIGHT') || e.statusCode == 408) {
-        await getProgression(userId: effectiveUserId, forceRefresh: true);
+      if (_isUncertainOutcomeError(e, 'CHECKIN_REQUEST_IN_FLIGHT')) {
+        try {
+          final refreshed = await getProgression(userId: effectiveUserId, forceRefresh: true);
+          if (refreshed.hasCheckedInToday) {
+            // Backend đã COMMIT thành công -> Reconcile thành SUCCESS!
+            return CheckinResult(
+              alreadyCheckedIn: true,
+              message: 'Điểm danh thành công (đã đồng bộ lại dữ liệu).',
+              coinsEarned: 0,
+              expEarned: 0,
+              newStreak: refreshed.currentStreak,
+              maxStreak: refreshed.maxStreak,
+              totalExp: refreshed.totalExp,
+              omnicoinBalance: refreshed.omnicoinBalance,
+              level: refreshed.level,
+            );
+          }
+        } catch (_) {
+          // Revalidation thất bại (mạng đứt) -> Rethrow lỗi gốc
+        }
       }
       rethrow;
     } finally {
       _isCheckingIn = false;
     }
+  }
+
+  bool _isUncertainOutcomeError(ApiError e, String inFlightKey) {
+    return e.code == 'TIMEOUT' ||
+        e.statusCode == 408 ||
+        e.code == 'NETWORK_ERROR' ||
+        e.code == inFlightKey ||
+        e.message.contains(inFlightKey);
   }
 
   /// Lấy danh sách 6 Rank Themes active
@@ -165,11 +190,21 @@ class GamificationRepository {
         getProgression(forceRefresh: true),
       ]);
     } on ApiError catch (e) {
-      if (e.message.contains('LEVEL_REWARD_REQUEST_IN_FLIGHT') || e.statusCode == 408) {
-        await Future.wait([
-          getLevelRewards(forceRefresh: true),
-          getProgression(forceRefresh: true),
-        ]);
+      if (_isUncertainOutcomeError(e, 'LEVEL_REWARD_REQUEST_IN_FLIGHT')) {
+        try {
+          final results = await Future.wait([
+            getLevelRewards(forceRefresh: true),
+            getProgression(forceRefresh: true),
+          ]);
+          final rewards = results[0] as List<MilestoneRewardItem>;
+          final claimed = rewards.any((r) => r.milestoneLevel == milestoneLevel && r.isClaimed);
+          if (claimed) {
+            // Backend đã COMMIT nhận thưởng -> Reconcile thành SUCCESS!
+            return;
+          }
+        } catch (_) {
+          // Revalidation thất bại -> Rethrow lỗi gốc
+        }
       }
       rethrow;
     } finally {

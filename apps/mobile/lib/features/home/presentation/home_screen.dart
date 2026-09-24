@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/theme/app_colors.dart';
 import '../../../core/auth/auth_service.dart';
+import '../../../core/theme/theme_tokens.dart';
 import '../../library/models/library_models.dart';
 import '../../library/repositories/library_repository.dart';
 import '../../story/models/story_models.dart';
@@ -100,7 +101,7 @@ class _HomeScreenState extends State<HomeScreen> {
             Container(
               padding: const EdgeInsets.all(5),
               decoration: BoxDecoration(
-                color: AppColors.primary,
+                color: context.primaryColor,
                 borderRadius: BorderRadius.circular(8),
               ),
               child: const Icon(
@@ -202,7 +203,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return RefreshIndicator(
       onRefresh: _loadHomeData,
-      color: AppColors.primary,
+      color: context.primaryColor,
       backgroundColor: AppColors.darkSurfaceElevated,
       child: ListView(
         physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
@@ -333,15 +334,9 @@ class _HomeScreenState extends State<HomeScreen> {
                                       ? Image.network(
                                           story.coverUrl!,
                                           fit: BoxFit.cover,
-                                          errorBuilder: (_, __, ___) => const Icon(
-                                            Icons.auto_stories,
-                                            color: AppColors.primary,
-                                          ),
+                                          errorBuilder: (_, __, ___) => Icon(Icons.auto_stories, color: context.primaryColor,),
                                         )
-                                      : const Icon(
-                                          Icons.auto_stories,
-                                          color: AppColors.primary,
-                                        ),
+                                      : Icon(Icons.auto_stories, color: context.primaryColor,),
                                 ),
                               ),
                               const SizedBox(width: 12),
@@ -378,13 +373,12 @@ class _HomeScreenState extends State<HomeScreen> {
                                             vertical: 1,
                                           ),
                                           decoration: BoxDecoration(
-                                            color: AppColors.primary.withValues(alpha: 0.2),
+                                            color: context.primaryColor.withValues(alpha: 0.2),
                                             borderRadius: BorderRadius.circular(4),
                                           ),
                                           child: Text(
                                             (story.publicationFormat ?? story.mediaFormat).toUpperCase(),
-                                            style: const TextStyle(
-                                              color: AppColors.primaryLight,
+                                            style: TextStyle(color: context.primaryLightColor,
                                               fontSize: 9,
                                               fontWeight: FontWeight.bold,
                                             ),
@@ -466,19 +460,22 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildContinueReadingCard(ReadingHistoryItem item) {
+    final primary = context.primaryColor;
+    final primaryLight = context.primaryLightColor;
+
     return Container(
       key: const Key('home_continue_reading_card'),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: [
-            AppColors.primary.withValues(alpha: 0.25),
+            primary.withValues(alpha: 0.25),
             AppColors.darkSurface,
           ],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: AppColors.primary.withValues(alpha: 0.4)),
+        border: Border.all(color: primary.withValues(alpha: 0.4)),
       ),
       padding: const EdgeInsets.all(12),
       child: Row(
@@ -493,12 +490,12 @@ class _HomeScreenState extends State<HomeScreen> {
                   ? Image.network(
                       item.story.coverUrl!,
                       fit: BoxFit.cover,
-                      errorBuilder: (_, __, ___) => const Icon(
+                      errorBuilder: (_, __, ___) => Icon(
                         Icons.auto_stories,
-                        color: AppColors.primary,
+                        color: primary,
                       ),
                     )
-                  : const Icon(Icons.auto_stories, color: AppColors.primary),
+                  : Icon(Icons.auto_stories, color: primary),
             ),
           ),
           const SizedBox(width: 12),
@@ -506,14 +503,14 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Row(
+                Row(
                   children: [
-                    Icon(Icons.history, color: AppColors.primaryLight, size: 14),
-                    SizedBox(width: 4),
+                    Icon(Icons.history, color: primaryLight, size: 14),
+                    const SizedBox(width: 4),
                     Text(
                       'ĐỌC TIẾP',
                       style: TextStyle(
-                        color: AppColors.primaryLight,
+                        color: primaryLight,
                         fontWeight: FontWeight.bold,
                         fontSize: 11,
                         letterSpacing: 1.0,
@@ -544,7 +541,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(
-              backgroundColor: AppColors.primary,
+              backgroundColor: primary,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               minimumSize: Size.zero,
               tapTargetSize: MaterialTapTargetSize.shrinkWrap,

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../../app/theme/app_colors.dart';
+import '../../../../core/theme/theme_tokens.dart';
 import '../../../story/models/story_models.dart';
 
 class HomeLatestSection extends StatelessWidget {
@@ -26,13 +27,13 @@ class HomeLatestSection extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            const Expanded(
+            Expanded(
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(Icons.auto_awesome, color: AppColors.primaryLight, size: 20),
-                  SizedBox(width: 8),
-                  Flexible(
+                  Icon(Icons.auto_awesome, color: context.primaryLightColor, size: 20),
+                  const SizedBox(width: 8),
+                  const Flexible(
                     child: Text(
                       'Mới Cập Nhật',
                       overflow: TextOverflow.ellipsis,
@@ -48,11 +49,11 @@ class HomeLatestSection extends StatelessWidget {
             ),
             TextButton(
               onPressed: onSeeAllTap,
-              child: const Row(
+              child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text('Xem tất cả', style: TextStyle(color: AppColors.primaryLight)),
-                  Icon(Icons.chevron_right, size: 18, color: AppColors.primaryLight),
+                  Text('Xem tất cả', style: TextStyle(color: context.primaryLightColor)),
+                  Icon(Icons.chevron_right, size: 18, color: context.primaryLightColor),
                 ],
               ),
             ),
@@ -93,15 +94,15 @@ class HomeLatestSection extends StatelessWidget {
                                   ? Image.network(
                                       story.coverUrl!,
                                       fit: BoxFit.cover,
-                                      errorBuilder: (_, __, ___) => const Icon(
+                                      errorBuilder: (_, __, ___) => Icon(
                                         Icons.auto_stories,
-                                        color: AppColors.primary,
+                                        color: context.primaryColor,
                                         size: 32,
                                       ),
                                     )
-                                  : const Icon(
+                                  : Icon(
                                       Icons.auto_stories,
-                                      color: AppColors.primary,
+                                      color: context.primaryColor,
                                       size: 32,
                                     ),
                             ),
@@ -140,7 +141,7 @@ class HomeLatestSection extends StatelessWidget {
                                   vertical: 2,
                                 ),
                                 decoration: BoxDecoration(
-                                  color: AppColors.primary.withValues(alpha: 0.9),
+                                  color: context.primaryColor.withValues(alpha: 0.9),
                                   borderRadius: BorderRadius.circular(4),
                                 ),
                                 child: Text(

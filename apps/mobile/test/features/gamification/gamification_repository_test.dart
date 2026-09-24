@@ -136,7 +136,7 @@ void main() {
           )).called(1);
     });
 
-    test('checkIn handles CHECKIN_REQUEST_IN_FLIGHT by revalidating progression', () async {
+    test('checkIn reconciles to SUCCESS when uncertain outcome (in-flight/timeout) is confirmed by progression', () async {
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.gamificationCheckin,
             options: any(named: 'options'),
@@ -158,14 +158,37 @@ void main() {
                 data: updatedProgression,
               ));
 
+      final res = await repository.checkIn(userId: 'user-1');
+      expect(res.alreadyCheckedIn, isTrue);
+      expect(res.newStreak, 4);
+      verify(() => mockApiClient.get<Map<String, dynamic>>(ApiEndpoints.gamificationProgression)).called(1);
+    });
+
+    test('checkIn rethrows ApiError when revalidation confirms check-in was NOT committed', () async {
+      when(() => mockApiClient.post<Map<String, dynamic>>(
+            ApiEndpoints.gamificationCheckin,
+            options: any(named: 'options'),
+          )).thenThrow(
+        ApiError.timeout(),
+      );
+
+      final uncommittedProgression = Map<String, dynamic>.from(mockProgressionData);
+      uncommittedProgression['hasCheckedInToday'] = false;
+      when(() => mockApiClient.get<Map<String, dynamic>>(ApiEndpoints.gamificationProgression))
+          .thenAnswer((_) async => Response<Map<String, dynamic>>(
+                requestOptions: RequestOptions(path: ApiEndpoints.gamificationProgression),
+                statusCode: 200,
+                data: uncommittedProgression,
+              ));
+
       expect(
         () => repository.checkIn(userId: 'user-1'),
-        throwsA(isA<ApiError>()),
+        throwsA(isA<ApiError>().having((e) => e.code, 'code', 'TIMEOUT')),
       );
       verify(() => mockApiClient.get<Map<String, dynamic>>(ApiEndpoints.gamificationProgression)).called(1);
     });
 
-    test('claimLevelReward handles LEVEL_REWARD_REQUEST_IN_FLIGHT by revalidating', () async {
+    test('claimLevelReward reconciles to SUCCESS when revalidation confirms reward isClaimed', () async {
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.gamificationRewardsClaim,
             data: any<dynamic>(named: 'data'),
@@ -188,14 +211,61 @@ void main() {
           .thenAnswer((_) async => Response<Map<String, dynamic>>(
                 requestOptions: RequestOptions(path: ApiEndpoints.gamificationRewards),
                 statusCode: 200,
-                data: <String, dynamic>{'rewards': <Map<String, dynamic>>[]},
+                data: <String, dynamic>{
+                  'rewards': <Map<String, dynamic>>[
+                    {
+                      'id': 'reward-5',
+                      'milestoneLevel': 5,
+                      'rewardCoins': 100,
+                      'isClaimed': true,
+                      'canClaim': false,
+                    }
+                  ]
+                },
+              ));
+
+      // Không rethrow vì đã reconcile thành công
+      await repository.claimLevelReward(5);
+      verify(() => mockApiClient.get<Map<String, dynamic>>(ApiEndpoints.gamificationRewards)).called(1);
+    });
+
+    test('claimLevelReward rethrows when revalidation confirms reward was NOT claimed', () async {
+      when(() => mockApiClient.post<Map<String, dynamic>>(
+            ApiEndpoints.gamificationRewardsClaim,
+            data: any<dynamic>(named: 'data'),
+            options: any<Options>(named: 'options'),
+          )).thenThrow(
+        ApiError.timeout(),
+      );
+
+      when(() => mockApiClient.get<Map<String, dynamic>>(ApiEndpoints.gamificationProgression))
+          .thenAnswer((_) async => Response<Map<String, dynamic>>(
+                requestOptions: RequestOptions(path: ApiEndpoints.gamificationProgression),
+                statusCode: 200,
+                data: mockProgressionData,
+              ));
+      when(() => mockApiClient.get<Map<String, dynamic>>(ApiEndpoints.gamificationRewards))
+          .thenAnswer((_) async => Response<Map<String, dynamic>>(
+                requestOptions: RequestOptions(path: ApiEndpoints.gamificationRewards),
+                statusCode: 200,
+                data: <String, dynamic>{
+                  'rewards': <Map<String, dynamic>>[
+                    {
+                      'id': 'reward-5',
+                      'milestoneLevel': 5,
+                      'rewardCoins': 100,
+                      'isClaimed': false,
+                      'canClaim': true,
+                    }
+                  ]
+                },
               ));
 
       expect(
         () => repository.claimLevelReward(5),
-        throwsA(isA<ApiError>()),
+        throwsA(isA<ApiError>().having((e) => e.code, 'code', 'TIMEOUT')),
       );
-      verify(() => mockApiClient.get<Map<String, dynamic>>(ApiEndpoints.gamificationProgression)).called(1);
+      verify(() => mockApiClient.get<Map<String, dynamic>>(ApiEndpoints.gamificationRewards)).called(1);
     });
 
     test('rewardReadChapter passes required serverDateVN for all outcomes', () async {

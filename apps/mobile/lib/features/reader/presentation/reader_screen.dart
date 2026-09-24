@@ -495,8 +495,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                               ),
                               child: Text(
                                 _isNovel ? 'Tiểu thuyết' : _currentMode.displayName,
-                                style: const TextStyle(
-                                  color: AppColors.primaryLight,
+                                style: TextStyle(
+                                  color: context.primaryLightColor,
                                   fontSize: 11,
                                   fontWeight: FontWeight.w500,
                                 ),
@@ -505,8 +505,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
                             if (!_isNovel)
                               Text(
                                 '${state.progressPercentage.toStringAsFixed(1)}%',
-                                style: const TextStyle(
-                                  color: AppColors.primaryLight,
+                                style: TextStyle(
+                                  color: context.primaryLightColor,
                                   fontWeight: FontWeight.bold,
                                   fontSize: 13,
                                 ),

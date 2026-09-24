@@ -318,5 +318,45 @@ void main() {
 
       expect(coordinator.rewardedChapters.contains('c1'), isTrue);
     });
+
+    test('Gate 9C: Production lifecycle resumed and automatic rollover clears daily cap suppression', () async {
+      // Thiết lập ngày cũ đã chạm trần daily cap
+      const yesterday = '2026-09-20';
+      coordinator.setDailyReadCapReachedDateForTesting(yesterday);
+      coordinator.setCurrentServerDateVNForTesting(yesterday);
+      expect(coordinator.dailyReadCapReachedDate, equals(yesterday));
+
+      const newProgression = UserProgression(
+        userId: 'user-1',
+        level: 3,
+        totalExp: '300',
+        currentLevelExp: 300,
+        nextLevelExp: 500,
+        omnicoinBalance: '120',
+        currentStreak: 3,
+        maxStreak: 5,
+        hasCheckedInToday: false,
+        rankTitle: 'Luyện Khí',
+        activeThemeId: 'DEFAULT',
+        activeThemeName: 'Mặc Định',
+        progressPercent: 60,
+        serverDateVN: '2026-09-24', // Ngày mới từ server
+        serverNow: '2026-09-24T08:00:00.000Z',
+        nextCheckinAt: '2026-09-24T17:00:00.000Z',
+        secondsUntilNextCheckin: 32400,
+      );
+
+      when(() => mockGamificationRepo.getProgression(forceRefresh: true))
+          .thenAnswer((_) async => newProgression);
+
+      // Kích hoạt lifecycle event thật (AppLifecycleState.resumed)
+      coordinator.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      // Chứng minh production wiring tự động học ngày mới và xóa suppression
+      verify(() => mockGamificationRepo.getProgression(forceRefresh: true)).called(1);
+      expect(coordinator.dailyReadCapReachedDate, isNull);
+      expect(coordinator.currentServerDateVN, equals('2026-09-24'));
+    });
   });
 }

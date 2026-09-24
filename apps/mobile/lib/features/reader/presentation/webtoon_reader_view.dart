@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../../app/theme/app_colors.dart';
+import '../../../core/theme/theme_tokens.dart';
 import '../models/reader_models.dart';
 import 'reader_image_cache_coordinator.dart';
 import 'reader_session_controller.dart';
@@ -121,8 +122,8 @@ class WebtoonReaderViewState extends State<WebtoonReaderView> {
         final state = widget.controller.state;
 
         if (state.status == ReaderStatus.loading) {
-          return const Center(
-            child: CircularProgressIndicator(color: AppColors.primary),
+          return Center(
+            child: CircularProgressIndicator(color: context.primaryColor),
           );
         }
 
@@ -372,7 +373,7 @@ class _WebtoonPageItemState extends State<_WebtoonPageItem> {
         child: CircularProgressIndicator(
           value: progress,
           strokeWidth: 2,
-          color: AppColors.primary,
+          color: context.primaryColor,
         ),
       ),
     );

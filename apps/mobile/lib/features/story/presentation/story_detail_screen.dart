@@ -289,8 +289,8 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
                     const SizedBox(height: 4),
                     Text(
                       _isSummaryExpanded ? 'Thu gọn ▲' : 'Xem thêm ▼',
-                      style: const TextStyle(
-                        color: AppColors.primaryLight,
+                      style: TextStyle(
+                        color: context.primaryLightColor,
                         fontSize: 12,
                         fontWeight: FontWeight.bold,
                       ),
@@ -374,13 +374,13 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
                       Icon(
                         _isAscending ? Icons.arrow_upward : Icons.arrow_downward,
                         size: 16,
-                        color: AppColors.primaryLight,
+                        color: context.primaryLightColor,
                       ),
                       const SizedBox(width: 4),
                       Text(
                         _isAscending ? 'Cũ nhất' : 'Mới nhất',
-                        style: const TextStyle(
-                          color: AppColors.primaryLight,
+                        style: TextStyle(
+                          color: context.primaryLightColor,
                           fontSize: 13,
                           fontWeight: FontWeight.bold,
                         ),

@@ -9,6 +9,7 @@ import { Volume } from './entities/volume.entity';
 import { MediaAsset } from './entities/media-asset.entity';
 import { StoryEdition } from '../stories/entities/story-edition.entity';
 import { StoryMemberGuard } from '../../common/guards/story-member.guard';
+import { ChapterErrorReport } from './entities/chapter-error-report.entity';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { StoryMemberGuard } from '../../common/guards/story-member.guard';
       Volume,
       MediaAsset,
       StoryEdition,
+      ChapterErrorReport,
     ]),
     JwtModule.register({}),
   ],

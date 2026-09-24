@@ -579,4 +579,41 @@ export const SUGGESTED_GLOSSARY_CATEGORIES = [
   { value: 'OTHER', label: 'Thuật ngữ chung' },
 ] as const;
 
+// ==========================================
+// CHAPTER ERROR REPORT CONTRACTS (#191, #202)
+// ==========================================
+
+export enum ChapterReportErrorType {
+  IMAGE_CORRUPT = 'IMAGE_CORRUPT',
+  WRONG_ORDER = 'WRONG_ORDER',
+  TRANSLATION_ERROR = 'TRANSLATION_ERROR',
+  TYPO = 'TYPO',
+  INAPPROPRIATE_CONTENT = 'INAPPROPRIATE_CONTENT',
+  COPYRIGHT_INFRINGEMENT = 'COPYRIGHT_INFRINGEMENT',
+  OTHER = 'OTHER',
+}
+
+export enum ChapterReportStatus {
+  PENDING = 'PENDING',
+  INVESTIGATING = 'INVESTIGATING',
+  RESOLVED = 'RESOLVED',
+  REJECTED = 'REJECTED',
+}
+
+export interface CreateChapterReportRequest {
+  chapterVersionId: string;
+  errorType: ChapterReportErrorType;
+  pageNumber?: number;
+  anchorBlockId?: string;
+  description?: string;
+}
+
+export interface CreateChapterReportResponse {
+  success: true;
+  reportId: string;
+  status: ChapterReportStatus.PENDING;
+  message: string;
+}
+
+
 

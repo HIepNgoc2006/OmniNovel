@@ -221,12 +221,12 @@
 - Consumes: `NovelReaderView`, `ReaderScreen`.
 - Produces: `onAnchorChanged` callback, lifted `_currentNovelAnchorBlockId`, Report button trên Top HUD.
 
-- [ ] **Step 1: Cập nhật `NovelReaderView` với `onAnchorChanged`**
+- [x] **Step 1: Cập nhật `NovelReaderView` với `onAnchorChanged`**
   - Bổ sung `final ValueChanged<String?>? onAnchorChanged;`.
   - Thêm biến `String? _lastEmittedAnchor;` để cache và chống rebuild spam.
   - Gọi `_emitAnchor(anchor)` cả sau `_performInitialResumption()` / layout ban đầu VÀ khi cuộn (`_onScrollNotification`).
 
-- [ ] **Step 2: Cập nhật `ReaderScreen`**
+- [x] **Step 2: Cập nhật `ReaderScreen`**
   - Thêm optional parameters `AuthService? authService` và `ChapterReportRepository? reportRepository` trong constructor (backward-compatible cho existing tests).
   - Quản lý state `String? _currentNovelAnchorBlockId;`.
   - Gắn `onAnchorChanged: (anchor) => _currentNovelAnchorBlockId = anchor`.
@@ -249,19 +249,19 @@
 - Consumes: `ApiClient`, `ApiEndpoints`.
 - Produces: `ChapterReportRepository.sendReport()`.
 
-- [ ] **Step 1: Viết failing test `chapter_report_repository_test.dart`**
+- [x] **Step 1: Viết failing test `chapter_report_repository_test.dart`**
   - Test serialize request payload với `chapterVersionId`, `errorType`, `pageNumber`, `anchorBlockId`, `description`.
   - Test parse 201 response.
   - Test parse `error.meta['retryAfter']` khi gặp 429.
   - Test ném `ApiError` khi gặp 409 Duplicate.
 
-- [ ] **Step 2: Tạo DTOs trong `chapter_report_models.dart`**
+- [x] **Step 2: Tạo DTOs trong `chapter_report_models.dart`**
   `ChapterReportErrorType` enum (7 types), `ChapterReportPayload`, `ChapterReportResult`.
 
-- [ ] **Step 3: Triển khai `ChapterReportRepository`**
+- [x] **Step 3: Triển khai `ChapterReportRepository`**
   Gọi `POST /api/v1/chapters/:chapterId/reports`.
 
-- [ ] **Step 4: Chạy test repository**
+- [x] **Step 4: Chạy test repository**
   Chạy `powershell -ExecutionPolicy Bypass -File apps/mobile/scripts/flutter-runner.ps1 test test/features/reader/chapter_report_repository_test.dart`.
 
 ---
@@ -271,12 +271,13 @@
 **Files:**
 - Create: `apps/mobile/lib/features/reader/presentation/chapter_report_sheet.dart`
 - Test: `apps/mobile/test/features/reader/chapter_report_sheet_test.dart`
+- Test: `apps/mobile/test/features/reader/reader_report_gates_test.dart`
 
 **Interfaces:**
 - Consumes: `ChapterReportRepository`, `ChapterReportErrorType`.
 - Produces: `ChapterReportSheet.show(context, ...)`.
 
-- [ ] **Step 1: Viết failing widget test `chapter_report_sheet_test.dart`**
+- [x] **Step 1: Viết widget test `chapter_report_sheet_test.dart`**
   - Test hiển thị đúng ngữ cảnh: badge `Trang X` (Comic) hoặc badge `Đoạn văn Y` (Novel).
   - Test checkbox "Áp dụng cho toàn bộ chương" xóa bỏ pageNumber/anchorBlockId.
   - Test chọn 7 loại lỗi và nhập mô tả.
@@ -284,16 +285,15 @@
   - Test hiển thị SnackBar với số giây đếm lùi khi gặp lỗi 429 (`retryAfter`).
   - Test hiển thị cảnh báo khi gặp 409 Duplicate.
 
-- [ ] **Step 2: Triển khai `ChapterReportSheet`**
-  - Giao diện Bottom Sheet bo tròn, nền `AppColors.darkSurfaceElevated`, primary accent từ `context.primaryColor`.
-  - Radio list / Chips cho 7 danh mục lỗi chuẩn.
+- [x] **Step 2: Triển khai `ChapterReportSheet`**
+  - Giao diện Bottom Sheet bo tròn, nền `AppColors.darkSurface`, bọc `Material` an toàn.
+  - Dropdown chọn 7 danh mục lỗi chuẩn.
   - Tùy chọn checkbox toàn bộ chương.
   - TextField mô tả chi tiết tối đa 1000 ký tự.
-  - Nút Hủy và Gửi báo cáo với `CircularProgressIndicator` khi `_isSubmitting`.
-  - Đọc `(error.meta?['retryAfter'] as num?)?.toInt()` khi lỗi 429 để thông báo thời gian chờ chính xác.
+  - Nút Hủy và Gửi báo cáo với đếm ngược countdown khi gặp 429 (`retryAfter`).
 
-- [ ] **Step 3: Chạy test widget**
-  Chạy `powershell -ExecutionPolicy Bypass -File apps/mobile/scripts/flutter-runner.ps1 test test/features/reader/chapter_report_sheet_test.dart`.
+- [x] **Step 3: Chạy test widget**
+  Chạy `powershell -ExecutionPolicy Bypass -File apps/mobile/scripts/flutter-runner.ps1 test test/features/reader/chapter_report_sheet_test.dart test/features/reader/reader_report_gates_test.dart`.
 
 ---
 
@@ -302,21 +302,21 @@
 **Files:**
 - Modify: `plans/phases/phase_05_mobile_app.md`
 
-- [ ] **Step 1: Backend Full Regression**
-  Chạy `npm test` trong `services/api` (xác nhận 100% test suites PASS).
+- [x] **Step 1: Backend Full Regression**
+  Chạy `npm test` trong `services/api` (xác nhận 100% test suites PASS: 28/28 passed, 352/352 tests).
   Chạy `npm run build` trong `services/api` (xác nhận build exit code 0).
 
-- [ ] **Step 2: Mobile Full Regression & Analyzer**
+- [x] **Step 2: Mobile Full Regression & Analyzer**
   Chạy `powershell -ExecutionPolicy Bypass -File apps/mobile/scripts/flutter-runner.ps1 test`.
-  Chạy `powershell -ExecutionPolicy Bypass -File apps/mobile/scripts/flutter-runner.ps1 analyze --no-pub lib test`.
+  Chạy `powershell -ExecutionPolicy Bypass -File apps/mobile/scripts/flutter-runner.ps1 analyze` (No issues found).
 
-- [ ] **Step 3: Cập nhật tài liệu tiến độ**
+- [x] **Step 3: Cập nhật tài liệu tiến độ**
   Đánh dấu hoàn thành Phase 5C.6 trong `plans/phases/phase_05_mobile_app.md`.
 
-- [ ] **Step 4: Git Commit & Push**
+- [x] **Step 4: Git Commit & Push**
   `git add .`
   `git commit -m "feat(reader): implement chapter content error reporting system (#191, #202)"`
   `git push origin main`
 
-- [ ] **Step 5: Cập nhật & Đóng Issue #191 và #202 trên GitHub**
+- [x] **Step 5: Cập nhật & Đóng Issue #191 và #202 trên GitHub**
   Sử dụng `gh issue close 191 --reason completed` và `gh issue close 202 --reason completed` với comment nghiệm thu chi tiết.

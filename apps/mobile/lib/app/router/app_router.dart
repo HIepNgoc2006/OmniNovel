@@ -14,6 +14,7 @@ import '../../features/reader/models/manga_reading_mode.dart';
 import '../../features/reader/presentation/reader_screen.dart';
 import '../../features/gamification/repositories/gamification_repository.dart';
 import '../../features/profile/presentation/profile_screen.dart';
+import '../../features/reader/repositories/chapter_report_repository.dart';
 import '../../features/reader/repositories/chapter_repository.dart';
 import '../../features/reader/repositories/media_repository.dart';
 import '../../features/reader/repositories/reading_progress_repository.dart';
@@ -28,6 +29,7 @@ class AppRouter {
     ReadingProgressRepository? readingProgressRepository,
     LibraryRepository? libraryRepository,
     GamificationRepository? gamificationRepository,
+    ChapterReportRepository? chapterReportRepository,
   }) {
     final effectiveStoryRepo =
         storyRepository ?? StoryRepository(apiClient: apiClient);
@@ -35,6 +37,8 @@ class AppRouter {
         chapterRepository ?? ChapterRepository(apiClient: apiClient);
     final effectiveMediaRepo =
         mediaRepository ?? MediaRepository(apiClient: apiClient);
+    final effectiveReportRepo =
+        chapterReportRepository ?? ChapterReportRepository(apiClient: apiClient);
     final effectiveProgressRepo = readingProgressRepository ??
         ReadingProgressRepository(
           apiClient: apiClient,
@@ -160,6 +164,8 @@ class AppRouter {
               mediaRepository: effectiveMediaRepo,
               readingProgressRepository: effectiveProgressRepo,
               gamificationRepository: effectiveGamificationRepo,
+              authService: authService,
+              reportRepository: effectiveReportRepo,
             );
           },
         ),

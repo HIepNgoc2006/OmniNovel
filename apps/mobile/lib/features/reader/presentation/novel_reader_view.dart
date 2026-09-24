@@ -23,6 +23,7 @@ class NovelReaderView extends StatefulWidget {
   final double? initialScrollPosition;
   final double? initialProgressPercentage;
   final VoidCallback? onTap;
+  final ValueChanged<String?>? onAnchorChanged;
 
   const NovelReaderView({
     super.key,
@@ -36,6 +37,7 @@ class NovelReaderView extends StatefulWidget {
     this.initialScrollPosition,
     this.initialProgressPercentage,
     this.onTap,
+    this.onAnchorChanged,
   });
 
   @override
@@ -49,6 +51,14 @@ class _NovelReaderViewState extends State<NovelReaderView> {
   NovelTypographySettings? _lastSettings;
   double? _lastWidth;
   bool _resumptionCompleted = false;
+  String? _lastEmittedAnchor;
+
+  void _emitAnchor(String? anchor) {
+    if (_lastEmittedAnchor != anchor) {
+      _lastEmittedAnchor = anchor;
+      widget.onAnchorChanged?.call(anchor);
+    }
+  }
 
   @override
   void initState() {
@@ -132,6 +142,12 @@ class _NovelReaderViewState extends State<NovelReaderView> {
       }
 
       // 4. Mặc định: Đầu chương (0.0)
+      final currentOffset = _scrollController.hasClients ? _scrollController.offset : 0.0;
+      final currentIdx = _calculator?.findIndexAtOffset(currentOffset) ?? 0;
+      final currentAnchor = (currentIdx >= 0 && currentIdx < widget.blocks.length)
+          ? widget.blocks[currentIdx].anchorBlockId
+          : null;
+      _emitAnchor(currentAnchor);
     });
   }
 
@@ -141,6 +157,8 @@ class _NovelReaderViewState extends State<NovelReaderView> {
     final offset = notification.metrics.pixels;
     final currentIdx = _calculator!.findIndexAtOffset(offset);
     final currentBlock = widget.blocks[currentIdx];
+
+    _emitAnchor(currentBlock.anchorBlockId);
 
     final maxScroll = notification.metrics.maxScrollExtent;
     final progressPercentage = maxScroll > 0.0 ? (offset / maxScroll * 100.0).clamp(0.0, 100.0) : 0.0;

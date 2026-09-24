@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/theme/app_colors.dart';
+import '../../../core/auth/auth_service.dart';
 import '../../../core/theme/theme_tokens.dart';
 import '../../gamification/repositories/gamification_repository.dart';
 import '../models/manga_reading_mode.dart';
 import '../models/novel_block_models.dart';
 import '../models/reader_models.dart';
+import '../repositories/chapter_report_repository.dart';
 import '../repositories/chapter_repository.dart';
 import '../repositories/media_repository.dart';
 import '../repositories/novel_content_repository.dart';
 import '../repositories/reading_progress_repository.dart';
+import 'chapter_report_sheet.dart';
 import 'manga_paged_reader_view.dart';
 import 'novel_content_parser.dart';
 import 'novel_reader_view.dart';
@@ -35,6 +38,8 @@ class ReaderScreen extends StatefulWidget {
   final GamificationRepository? gamificationRepository;
   final NovelContentRepository? novelContentRepository;
   final NovelSettingsController? novelSettingsController;
+  final AuthService? authService;
+  final ChapterReportRepository? reportRepository;
 
   const ReaderScreen({
     super.key,
@@ -51,6 +56,8 @@ class ReaderScreen extends StatefulWidget {
     this.gamificationRepository,
     this.novelContentRepository,
     this.novelSettingsController,
+    this.authService,
+    this.reportRepository,
   });
 
   @override
@@ -71,6 +78,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   List<NovelBlockItem>? _novelBlocks;
   bool _loadingNovelContent = false;
   String? _novelContentError;
+  String? _currentNovelAnchorBlockId;
 
   bool get _isNovel =>
       _sessionController.state.chapterDetail?.story.mediaFormat == 'NOVEL';
@@ -424,6 +432,12 @@ class _ReaderScreenState extends State<ReaderScreen> {
                           ),
                         ],
                       ),
+                    // Nút Báo lỗi chương truyện (Issue #191 / MOB-011)
+                    IconButton(
+                      icon: const Icon(Icons.flag_outlined, color: AppColors.textPrimary),
+                      tooltip: 'Báo lỗi chương',
+                      onPressed: _openReportSheet,
+                    ),
                   ],
                 ),
               ),
@@ -620,6 +634,78 @@ class _ReaderScreenState extends State<ReaderScreen> {
       initialScrollPosition: widget.initialScrollPosition,
       initialProgressPercentage: widget.initialProgressPercentage,
       onTap: _toggleOverlay,
+      onAnchorChanged: (anchor) {
+        _currentNovelAnchorBlockId = anchor;
+      },
+    );
+  }
+
+  void _openReportSheet() {
+    // 1. Gate 7: Guest Auth Gate - Chưa đăng nhập -> Hiện dialog, ZERO report API calls
+    final isAuthenticated = widget.authService?.state.isAuthenticated ?? false;
+    if (!isAuthenticated) {
+      showDialog<void>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          backgroundColor: AppColors.darkSurface,
+          title: const Text(
+            'Yêu cầu đăng nhập',
+            style: TextStyle(color: AppColors.textPrimary, fontWeight: FontWeight.bold),
+          ),
+          content: const Text(
+            'Bạn cần đăng nhập tài khoản để gửi báo cáo lỗi chương truyện.',
+            style: TextStyle(color: AppColors.textSecondary),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('Đóng', style: TextStyle(color: AppColors.textMuted)),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
+              onPressed: () {
+                Navigator.of(ctx).pop();
+                context.push('/login');
+              },
+              child: const Text('Đăng nhập'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    // 2. Gate 6: Rendered Version Binding Invariant
+    final activeVersion = _sessionController.state.chapterDetail?.activeVersion;
+    if (activeVersion == null || activeVersion.id.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Không thể xác định phiên bản đang đọc để gửi báo cáo.'),
+          backgroundColor: AppColors.error,
+        ),
+      );
+      return;
+    }
+
+    // 3. Location context binding (Manga focused page XOR Novel anchor block)
+    int? pageNumber;
+    String? anchorBlockId;
+
+    if (_isNovel) {
+      anchorBlockId = _currentNovelAnchorBlockId;
+    } else {
+      final focusedPage = _sessionController.state.focusedPageIndex;
+      pageNumber = focusedPage >= 0 ? focusedPage + 1 : 1;
+    }
+
+    ChapterReportSheet.show(
+      context,
+      chapterId: widget.chapterId,
+      chapterVersionId: activeVersion.id,
+      mediaFormat: _isNovel ? 'NOVEL' : 'COMIC',
+      initialPageNumber: pageNumber,
+      initialAnchorBlockId: anchorBlockId,
+      repository: widget.reportRepository,
     );
   }
 

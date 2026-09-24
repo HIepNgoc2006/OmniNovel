@@ -28,13 +28,13 @@
 - [x] Trong `_handleMidnightRollover()`: gọi `repository.getProgression(forceRefresh: true)`, cập nhật `_hasCheckedInToday`, reset stopwatch và cập nhật UI sang trạng thái sẵn sàng điểm danh ngày mới.
 - [x] Viết widget test kiểm tra kịch bản countdown về 0 tự động chuyển đổi UI sang ngày mới.
 
-### Task 3: Production Wiring cho Reader serverDateVN Rollover (Item C)
+### Task 3: Production Wiring & Fail-Closed Rollover cho Reader serverDateVN (Item C)
 - **Mã nguồn:** `apps/mobile/lib/features/reader/presentation/reading_progress_coordinator.dart`
 - **Kiểm thử:** `apps/mobile/test/features/reader/reading_progress_coordinator_reward_test.dart`
-- [x] Bổ sung `_scheduleMidnightCheck()` tính toán thời gian tới 00:00:01 múi giờ Việt Nam (UTC+7) và đặt `Timer` tự động kiểm tra rollover khi đang đọc.
-- [x] Trong `didChangeAppLifecycleState(AppLifecycleState.resumed)`: tự động kiểm tra và gọi `_checkAndHandleDateRollover()`.
-- [x] Trong `_evaluateReadingReward()`: kiểm tra ngày VN hiện tại; nếu khác với `_dailyReadCapReachedDate` thì tự động gọi `updateServerDateVN(clientDateVN)` để xóa suppression ngay lập tức.
-- [x] Viết unit test Gate 9C chứng minh production wiring kích hoạt rollover và xóa daily cap suppression khi qua ngày mới.
+- [x] Bổ sung `_scheduleMidnightCheck()` tính toán thời gian tới 00:00:01 múi giờ Việt Nam (UTC+7) đóng vai trò wake-up hint (không promote local clock thành canonical date).
+- [x] Trong `didChangeAppLifecycleState(AppLifecycleState.resumed)`: kích hoạt `_checkAndHandleDateRollover()` fail-closed (chỉ cập nhật date khi server trả về thành công).
+- [x] Trong `_evaluateReadingReward()`: loại bỏ triệt để mọi fallback về local clock (`_computeCurrentDateVN()`); áp dụng fail-closed suppression thuần túy theo canonical `serverDateVN`.
+- [x] Viết unit test Gate 9C (lifecycle resumed / auto rollover) và Gate 9D (clock-skew fail-closed rollover 3 cases A, B, C chứng minh zero request khi network lỗi hoặc server chưa qua ngày mới).
 
 ### Task 4: Dynamic Theme Tokens Migration cho Acceptance Surfaces (Item D)
 - **Mã nguồn:**

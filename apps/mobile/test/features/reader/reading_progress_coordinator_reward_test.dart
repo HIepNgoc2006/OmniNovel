@@ -358,5 +358,168 @@ void main() {
       expect(coordinator.dailyReadCapReachedDate, isNull);
       expect(coordinator.currentServerDateVN, equals('2026-09-24'));
     });
+
+    test('Gate 9D: Clock-skew fail-closed rollover — local clock never promoted to canonical date', () async {
+      // serverDateVN = 2026-09-24, daily cap = reached
+      const serverDate = '2026-09-24';
+      coordinator.setDailyReadCapReachedDateForTesting(serverDate);
+      coordinator.setCurrentServerDateVNForTesting(serverDate);
+      expect(coordinator.dailyReadCapReachedDate, equals(serverDate));
+      expect(coordinator.currentServerDateVN, equals(serverDate));
+
+      final fakeStopwatch = FakeStopwatch();
+      fakeStopwatch.setElapsed(const Duration(seconds: 60));
+
+      // ---------------------------------------------------------
+      // Case A: Device clock moved to tomorrow, but progression refresh fails (offline / network error)
+      // -> Suppression must REMAIN 2026-09-24, reward HTTP = 0
+      // ---------------------------------------------------------
+      when(() => mockGamificationRepo.getProgression(forceRefresh: true))
+          .thenThrow(Exception('Network timeout or offline'));
+
+      // Device lifecycle resume or timer fires
+      coordinator.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      // Invariant: Fail-closed! Suppression is NOT cleared
+      expect(coordinator.dailyReadCapReachedDate, equals(serverDate));
+      expect(coordinator.currentServerDateVN, equals(serverDate));
+
+      // Attempt to read next chapter c2 with full criteria met
+      coordinator.onChapterReady('c2');
+      coordinator.setActiveReadingStopwatchForTesting(fakeStopwatch);
+      coordinator.recordProgress(
+        storyId: 's1',
+        chapterId: 'c2',
+        flutterPageIndex: 10,
+        scrollPosition: 1000.0,
+        progressPercentage: 90.0,
+      );
+
+      // Verify ZERO HTTP reward requests dispatched
+      verifyNever(() => mockGamificationRepo.rewardReadChapter(
+            chapterId: 'c2',
+            readingDurationSeconds: any(named: 'readingDurationSeconds'),
+            progressPercentage: any(named: 'progressPercentage'),
+          ));
+
+      // ---------------------------------------------------------
+      // Case B: User changed device clock to 2026-09-25, but server progression still returns 2026-09-24
+      // -> Suppression must REMAIN active, reward HTTP = 0
+      // ---------------------------------------------------------
+      const sameDayProgression = UserProgression(
+        userId: 'user-1',
+        level: 3,
+        totalExp: '300',
+        currentLevelExp: 300,
+        nextLevelExp: 500,
+        omnicoinBalance: '120',
+        currentStreak: 3,
+        maxStreak: 5,
+        hasCheckedInToday: true,
+        rankTitle: 'Luyện Khí',
+        activeThemeId: 'DEFAULT',
+        activeThemeName: 'Mặc Định',
+        progressPercent: 60,
+        serverDateVN: '2026-09-24', // Server still at 2026-09-24
+        serverNow: '2026-09-24T16:00:00.000Z',
+        nextCheckinAt: '2026-09-24T17:00:00.000Z',
+        secondsUntilNextCheckin: 3600,
+      );
+
+      when(() => mockGamificationRepo.getProgression(forceRefresh: true))
+          .thenAnswer((_) async => sameDayProgression);
+
+      coordinator.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      // Invariant: Server confirmed old date, suppression is NOT cleared
+      expect(coordinator.dailyReadCapReachedDate, equals(serverDate));
+      expect(coordinator.currentServerDateVN, equals(serverDate));
+
+      // Attempt to read next chapter c3
+      coordinator.onChapterReady('c3');
+      coordinator.setActiveReadingStopwatchForTesting(fakeStopwatch);
+      fakeStopwatch.setElapsed(const Duration(seconds: 60));
+      coordinator.recordProgress(
+        storyId: 's1',
+        chapterId: 'c3',
+        flutterPageIndex: 10,
+        scrollPosition: 1000.0,
+        progressPercentage: 90.0,
+      );
+
+      // Verify ZERO HTTP reward requests dispatched
+      verifyNever(() => mockGamificationRepo.rewardReadChapter(
+            chapterId: 'c3',
+            readingDurationSeconds: any(named: 'readingDurationSeconds'),
+            progressPercentage: any(named: 'progressPercentage'),
+          ));
+
+      // ---------------------------------------------------------
+      // Case C: Server progression officially confirms new day: serverDateVN = 2026-09-25
+      // -> Suppression is cleared -> chapter can be rewarded again!
+      // ---------------------------------------------------------
+      const nextDayProgression = UserProgression(
+        userId: 'user-1',
+        level: 3,
+        totalExp: '300',
+        currentLevelExp: 300,
+        nextLevelExp: 500,
+        omnicoinBalance: '120',
+        currentStreak: 4,
+        maxStreak: 5,
+        hasCheckedInToday: false,
+        rankTitle: 'Luyện Khí',
+        activeThemeId: 'DEFAULT',
+        activeThemeName: 'Mặc Định',
+        progressPercent: 60,
+        serverDateVN: '2026-09-25', // Server confirmed new day!
+        serverNow: '2026-09-25T00:01:00.000Z',
+        nextCheckinAt: '2026-09-25T17:00:00.000Z',
+        secondsUntilNextCheckin: 61140,
+      );
+
+      when(() => mockGamificationRepo.getProgression(forceRefresh: true))
+          .thenAnswer((_) async => nextDayProgression);
+
+      when(() => mockGamificationRepo.rewardReadChapter(
+            chapterId: 'c1',
+            readingDurationSeconds: 60,
+            progressPercentage: 90.0,
+          )).thenAnswer((_) async => const ReadChapterRewardResult(
+            success: true,
+            earnedExp: 10,
+            reason: 'SUCCESS',
+            serverDateVN: '2026-09-25',
+          ));
+
+      coordinator.didChangeAppLifecycleState(AppLifecycleState.resumed);
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+
+      // Invariant: Suppression CLEARED because serverDateVN officially advanced!
+      expect(coordinator.dailyReadCapReachedDate, isNull);
+      expect(coordinator.currentServerDateVN, equals('2026-09-25'));
+
+      // Chapter c1 can now be rewarded successfully
+      coordinator.onChapterReady('c1');
+      coordinator.setActiveReadingStopwatchForTesting(fakeStopwatch);
+      fakeStopwatch.setElapsed(const Duration(seconds: 60));
+      coordinator.recordProgress(
+        storyId: 's1',
+        chapterId: 'c1',
+        flutterPageIndex: 10,
+        scrollPosition: 1000.0,
+        progressPercentage: 90.0,
+      );
+
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      verify(() => mockGamificationRepo.rewardReadChapter(
+            chapterId: 'c1',
+            readingDurationSeconds: 60,
+            progressPercentage: 90.0,
+          )).called(1);
+      expect(coordinator.rewardedChapters.contains('c1'), isTrue);
+    });
   });
 }

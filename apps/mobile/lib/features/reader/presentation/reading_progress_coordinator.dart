@@ -85,17 +85,24 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
     }
   }
 
-  void _scheduleMidnightCheck() {
+  void _scheduleMidnightCheck([int? delaySeconds]) {
     _midnightTimer?.cancel();
     if (_disposed) return;
 
-    final nowUtc = DateTime.now().toUtc();
-    final nowVn = nowUtc.add(const Duration(hours: 7));
-    final tomorrowVn = DateTime.utc(nowVn.year, nowVn.month, nowVn.day + 1);
-    final durationUntilMidnight = tomorrowVn.difference(
-      DateTime.utc(nowVn.year, nowVn.month, nowVn.day, nowVn.hour, nowVn.minute, nowVn.second),
-    );
-    final delay = durationUntilMidnight + const Duration(seconds: 1);
+    Duration delay;
+    if (delaySeconds != null && delaySeconds > 0) {
+      delay = Duration(seconds: delaySeconds + 1);
+    } else {
+      // Local clock được dùng CHỈ NHƯ WAKE-UP HINT để đánh thức timer,
+      // tuyệt đối không được promote thành canonical server date.
+      final nowUtc = DateTime.now().toUtc();
+      final nowVn = nowUtc.add(const Duration(hours: 7));
+      final tomorrowVn = DateTime.utc(nowVn.year, nowVn.month, nowVn.day + 1);
+      final durationUntilMidnight = tomorrowVn.difference(
+        DateTime.utc(nowVn.year, nowVn.month, nowVn.day, nowVn.hour, nowVn.minute, nowVn.second),
+      );
+      delay = durationUntilMidnight + const Duration(seconds: 1);
+    }
 
     _midnightTimer = Timer(delay, () {
       if (!_disposed) {
@@ -105,27 +112,27 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
     });
   }
 
+  /// Fail-closed date rollover: chỉ cập nhật serverDateVN khi server trả về thành công.
+  /// Tuyệt đối KHÔNG fallback về local clock DateTime.now() khi offline hoặc gặp lỗi!
   Future<void> _checkAndHandleDateRollover() async {
-    final clientDateVN = _computeCurrentDateVN();
-    if (_currentServerDateVN != null && clientDateVN != _currentServerDateVN) {
-      updateServerDateVN(clientDateVN);
-    }
-
     final gamificationRepo = _gamificationRepository;
-    if (gamificationRepo != null) {
-      try {
-        final prog = await gamificationRepo.getProgression(forceRefresh: true);
-        updateServerDateVN(prog.serverDateVN);
-      } catch (_) {
-        updateServerDateVN(clientDateVN);
+    if (gamificationRepo == null) return;
+
+    try {
+      final prog = await gamificationRepo.getProgression(forceRefresh: true);
+      updateServerDateVN(prog.serverDateVN);
+      if (prog.secondsUntilNextCheckin > 0) {
+        _scheduleMidnightCheck(prog.secondsUntilNextCheckin);
       }
+    } catch (_) {
+      // Fail-closed: Giữ nguyên canonical state hiện tại.
+      // KHÔNG update từ DateTime.now().
     }
   }
 
-  String _computeCurrentDateVN() {
-    final vn = DateTime.now().toUtc().add(const Duration(hours: 7));
-    return '${vn.year}-${vn.month.toString().padLeft(2, '0')}-${vn.day.toString().padLeft(2, '0')}';
-  }
+  @visibleForTesting
+  Future<void> checkAndHandleDateRolloverForTesting() =>
+      _checkAndHandleDateRollover();
 
   bool get isServerSyncEnabled => _isServerSyncEnabled;
   PendingReadingProgress? get pendingDraft => _pendingDraft;
@@ -275,14 +282,10 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
     final durationSeconds = _activeReadingStopwatch?.elapsed.inSeconds ?? 0;
     if (durationSeconds < 45 || progressPercentage < 80.0) return;
 
-    // Daily Cap Suppression: Kiểm tra ngày VN hiện tại trước khi suppress
-    final clientDateVN = _computeCurrentDateVN();
-    if (_dailyReadCapReachedDate != null && clientDateVN != _dailyReadCapReachedDate) {
-      updateServerDateVN(clientDateVN);
-    }
-
-    if (_currentServerDateVN != null &&
-        _currentServerDateVN == _dailyReadCapReachedDate) {
+    // Daily Cap Suppression: Fail-closed theo canonical server date SSoT
+    // Tuyệt đối không fallback về local clock; suppression chỉ được clear khi server xác nhận ngày mới
+    if (_dailyReadCapReachedDate != null &&
+        _dailyReadCapReachedDate == _currentServerDateVN) {
       return;
     }
 
@@ -317,7 +320,7 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
       );
 
       // Cập nhật SSoT serverDateVN trực tiếp từ API response
-      _currentServerDateVN = res.serverDateVN;
+      updateServerDateVN(res.serverDateVN);
 
       if (res.earnedExp > 0 || res.reason == 'ALREADY_REWARDED') {
         _rewardedChapters.add(chapterId);

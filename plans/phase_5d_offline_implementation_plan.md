@@ -73,6 +73,7 @@ Phase 5D là chặng cuối cùng của **Phase 5: Ứng dụng Di động OmniN
       {
         "path": "pages/001.webp",
         "assetId": "e0c10123-4567-89ab-cdef-0123456789aa",
+        "assetType": "MANGA_PAGE",
         "mimeType": "image/webp",
         "size": 245100,
         "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -81,15 +82,23 @@ Phase 5D là chặng cuối cùng của **Phase 5: Ứng dụng Di động OmniN
         "height": 2400
       }
     ],
-    "novelMetadata": null
+    "novelMetadata": {
+      "contentPath": "content.html"
+    }
   }
   ```
 
 ### Invariant 3: Durable BullMQ Packaging & Concurrency Correctness
 - **Durable BullMQ Work (Không dùng Background Promise):**
   - Tác vụ đóng gói được quản lý qua hàng đợi bền vững: queue name `chapter-packaging` với processor `ChapterPackagingProcessor`.
-  - **Deterministic Job ID:** `jobId = pkg:${chapterVersionId}:${artifactType}`. BullMQ tự động từ chối trùng lặp job đang chờ/đang chạy.
+  - **Deterministic Job ID (Tuân thủ BullMQ key separator):** `jobId = pkg_${chapterVersionId}_${artifactType}`. Tuyệt đối **KHÔNG chứa dấu hai chấm `:`** vì đây là separator nội bộ của Redis key trong BullMQ.
   - Job options: `attempts: 3`, `backoff: { type: 'exponential', delay: 5000 }`, `removeOnComplete: true`.
+- **Chống Deadlock khi Retry Artifact FAILED (BullMQ Auto-Removal Semantics):**
+  - BullMQ mặc định lưu giữ failed jobs. Nếu một artifact bị `FAILED` (sau 3 lần retry kiệt sức) và người dùng hoặc hệ thống kích hoạt đóng gói lại, việc gọi `queue.add()` với cùng `jobId` sẽ bị BullMQ bỏ qua vì coi là duplicate.
+  - Quy trình retry bắt buộc:
+    1. Kiểm tra nếu BullMQ job tồn tại ở trạng thái `failed` hoặc `completed` (`await queue.getJob(jobId)`) $\rightarrow$ gọi `job.remove()` an toàn.
+    2. Chuyển trạng thái CSDL `FAILED ➔ BUILDING` nguyên tử.
+    3. Mới enqueue job mới với `jobId = pkg_${chapterVersionId}_${artifactType}`.
 - **Single-Flight & Ownership-Safe Lock:**
   - Nguồn sự thật duy nhất (SSoT) về tính duy nhất là **DB Unique Constraint `(chapter_version_id, artifact_type)`** kết hợp **BullMQ Deterministic Job ID**.
   - Redis lock (`lock:package:${chapterVersionId}:${artifactType}`) được sử dụng làm early guard với token ngẫu nhiên `uuidv4()`.
@@ -168,12 +177,17 @@ ALTER TABLE translation_jobs
 
 ALTER TABLE translation_jobs
   ADD CONSTRAINT chk_translation_jobs_canonical_source
-  CHECK (
-    (source_upload_session_id IS NOT NULL AND source_artifact_id IS NULL) OR
-    (source_upload_session_id IS NULL AND source_artifact_id IS NOT NULL) OR
-    (source_upload_session_id IS NULL AND source_artifact_id IS NULL) -- Tương thích dữ liệu cũ
-  );
+  CHECK ( num_nonnulls(source_upload_session_id, source_artifact_id) = 1 );
 ```
+
+> [!NOTE]
+> **Quy trình Thực thi Migration 17 An Toàn:**
+> 1. `ADD COLUMN source_artifact_id UUID NULL REFERENCES chapter_artifacts(id) ON DELETE SET NULL;`
+> 2. Preflight / Backfill: Quét các bản ghi `translation_jobs` cũ trong DB; nếu có bản ghi thiếu cả 2 nguồn, tự động resolve về `upload_sessions` tương ứng hoặc tạo `ChapterArtifact` tương đương.
+> 3. Assert: Không còn bất kỳ non-terminal active job nào có cả hai nguồn NULL.
+> 4. `ADD CONSTRAINT chk_translation_jobs_canonical_source CHECK ( num_nonnulls(source_upload_session_id, source_artifact_id) = 1 ) NOT VALID;` để không block các transaction đồng thời.
+> 5. Mọi câu lệnh `INSERT` và `UPDATE` trong tương lai bắt buộc tuân thủ đúng 1 canonical source.
+> 6. `VALIDATE CONSTRAINT chk_translation_jobs_canonical_source;` sau khi hoàn tất kiểm tra.
 
 ### 3.2. Luồng Khởi Tạo Translation Job (`TranslationService.createJob()`)
 ```mermaid
@@ -231,11 +245,7 @@ ALTER TABLE translation_jobs
 
 ALTER TABLE translation_jobs
   ADD CONSTRAINT chk_translation_jobs_canonical_source
-  CHECK (
-    (source_upload_session_id IS NOT NULL AND source_artifact_id IS NULL) OR
-    (source_upload_session_id IS NULL AND source_artifact_id IS NOT NULL) OR
-    (source_upload_session_id IS NULL AND source_artifact_id IS NULL)
-  );
+  CHECK ( num_nonnulls(source_upload_session_id, source_artifact_id) = 1 ) NOT VALID;
 ```
 
 ### 4.2. Mobile SQLite: Lược đồ Lưu Trữ Ngoại Tuyến (Local SQLite Schema v1)
@@ -350,22 +360,23 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 
 ## 6. KẾ HOẠCH TRIỂN KHAI PHÂN RÃ (SUB-PHASES 5D.0 ➔ 5D.8)
 
-### 📌 Phase 5D.0: Contract Freeze & DTO Parity
-- [ ] Cập nhật `packages/shared/src/index.ts`: Bổ sung `ChapterArtifactType`, `ChapterArtifactStatus`, `ChapterArtifactDto`, `manifest.json` TypeScript interfaces.
-- [ ] Bổ sung trường `artifactReady` và `artifactStatus` vào `StudioChapterVersionSummaryDto`.
-- [ ] Định nghĩa mã lỗi chuẩn hóa: `ARTIFACT_NOT_READY`, `ARTIFACT_BUILD_FAILED`, `SOURCE_VERSION_ARTIFACT_BUILDING`, `SOURCE_VERSION_ARTIFACT_UNAVAILABLE`, `CHECKSUM_MISMATCH`, `STORAGE_QUOTA_EXCEEDED`.
+### 📌 Phase 5D.0: Contract Freeze & DTO Parity - [x] HOÀN THÀNH
+- [x] Cập nhật `packages/shared/src/index.ts`: Bổ sung `ChapterArtifactType`, `ChapterArtifactStatus`, `ChapterArtifactDto`, `manifest.json` TypeScript interfaces.
+- [x] Bổ sung trường `artifactReady` và `artifactStatus` vào `StudioChapterVersionSummaryDto`.
+- [x] Định nghĩa mã lỗi chuẩn hóa: `ARTIFACT_NOT_READY`, `ARTIFACT_BUILD_FAILED`, `SOURCE_VERSION_ARTIFACT_BUILDING`, `SOURCE_VERSION_ARTIFACT_UNAVAILABLE`, `CHECKSUM_MISMATCH`, `STORAGE_QUOTA_EXCEEDED`.
+- [x] Định nghĩa typed `OfflineNovelMetadata { contentPath: string }` và `assetType: MediaAssetType` trong `OfflineBundleFileEntry`.
 
 ### 📌 Phase 5D.1: Canonical Reverse Packaging ([Issue #190](https://github.com/HIepNgoc2006/OmniNovel/issues/190) - Core Backend API)
-- [ ] **Migration 17:** Tạo bảng `chapter_artifacts`, cập nhật `translation_jobs` bổ sung `source_artifact_id` và check constraint canonical source.
+- [ ] **Migration 17:** Tạo bảng `chapter_artifacts`, cập nhật `translation_jobs` bổ sung `source_artifact_id` và check constraint canonical source (`num_nonnulls = 1`).
 - [ ] Tạo Entity TypeORM `ChapterArtifact` trong `services/api/src/modules/chapters/entities/chapter-artifact.entity.ts`.
 - [ ] Thiết lập BullMQ Queue `chapter-packaging` và `ChapterPackagingProcessor`:
-  - Deterministic `jobId = pkg:${chapterVersionId}:${artifactType}`.
+  - Deterministic `jobId = pkg_${chapterVersionId}_${artifactType}` (không chứa dấu `:`).
   - Tích hợp `RedisService` atomic lock với ownership token + heartbeat `renewLock` mỗi 30s.
   - Gom các `MediaAsset`s theo thứ tự `sortOrder ASC`.
   - Tải stream qua `StorageService` (resolve đúng manga/novel bucket), đóng gói tệp ZIP chuẩn hóa kèm `manifest.json` (Comic) hoặc `content.html` rewrite relative img src (Novel).
   - Tính SHA-256 hash và kích thước byte. Upload qua `StorageService`.
   - Atomic update trạng thái `READY` trong PostgreSQL.
-  - Cơ chế dọn dẹp `BUILDING` mồ côi (stale recovery > 15 phút).
+  - Cơ chế dọn dẹp `BUILDING` mồ côi (stale recovery > 15 phút) và gỡ bỏ job failed cũ khi retry để chống deadlock.
 - [ ] Cập nhật `TranslationService.createJob()`: Thay thế nguồn fail-closed hợp lệ (UploadSession hoặc READY ChapterArtifact), không bao giờ tạo dead jobs.
 - [ ] Cập nhật `TranslationProcessor`: Hỗ trợ resolve `sourceArtifactId` để sinh `sourceDownloadUrl`.
 
@@ -423,7 +434,7 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 | :--- | :--- | :--- |
 | **Gate 1: Schema & Migration** | Migration 17 chạy up/down không lỗi; bảng `chapter_artifacts` có unique key `(chapter_version_id, artifact_type)` và check constraint canonical source trên `translation_jobs`. | TypeORM Migration CLI + Jest |
 | **Gate 2: Exact-Version Identity** | Bundle bind đúng `chapterVersionId`; khi `activeVersionId` của chapter thay đổi, artifact của version cũ không bị ghi đè hay mất dữ liệu; bucket được resolve đúng qua `StorageService`. | Backend Integration Tests |
-| **Gate 3: Durable BullMQ Single-Flight** | 5 requests đóng gói đồng thời trên cùng 1 version chỉ tạo đúng 1 BullMQ job (`jobId` trùng lặp được deduplicate), cả 5 callers đều nhận phản hồi hợp lệ (200 hoặc 202); không phát sinh 409 Conflict. | BullMQ Test Suite + Supertest |
+| **Gate 3: Durable BullMQ Single-Flight & Retry** | 5 requests đóng gói đồng thời trên cùng 1 version chỉ tạo đúng 1 BullMQ job (`jobId = pkg_${chapterVersionId}_${artifactType}` không chứa dấu hai chấm, trùng lặp được deduplicate), cả 5 callers đều nhận phản hồi hợp lệ (200 hoặc 202); không phát sinh 409 Conflict. Kiểm thử retry: 3 attempts đều fail ➔ ChapterArtifact = FAILED ➔ trigger package lại ➔ old failed job được gỡ bỏ an toàn ➔ thực sự chạy worker mới ➔ chuyển thành READY. | BullMQ Test Suite + Supertest |
 | **Gate 4: Atomic Promotion & Crash Points** | Giả lập crash giữa lúc rename thư mục `staging ➔ installed` và SQLite commit: khi khởi động lại, phục hồi 2 chiều tự động verify và dọn dẹp hoặc sync bản ghi; mã băm SHA-256 sai lệch lập tức bị từ chối; không có trạng thái "READY giả". | Mobile Unit & Isolation Tests |
 | **Gate 5: App-Private Sandbox** | Tệp tải về nằm hoàn toàn trong internal storage (`files/offline`), không lưu bừa bãi ra Public External Storage; phân quyền an toàn `0700`. | Flutter Tests & Android Inspect |
 | **Gate 6: Offline Reader Resolution** | Bật Airplane Mode (ngắt toàn bộ mạng); mở các chương đã tải: Webtoon/Manga/Novel hiển thị 100% nội dung (kể cả ảnh minh họa tiểu thuyết), 0 request mạng; `NovelContentParser` hoạt động chuẩn xác. | Mock Network & Integration Tests |

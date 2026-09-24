@@ -661,9 +661,14 @@ export interface TriggerChapterPackagingResponse {
   sha256?: string | null;
 }
 
+export interface OfflineNovelMetadata {
+  contentPath: string; // canonical: content.html
+}
+
 export interface OfflineBundleFileEntry {
   path: string;
   assetId: string;
+  assetType: MediaAssetType;
   mimeType: string;
   size: number;
   sha256: string;
@@ -688,5 +693,5 @@ export interface OfflineBundleManifest {
   versionType: ChapterVersionType;
   createdAt: string;
   files: OfflineBundleFileEntry[];
-  novelMetadata?: any | null;
+  novelMetadata?: OfflineNovelMetadata | null;
 }

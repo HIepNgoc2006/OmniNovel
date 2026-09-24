@@ -145,10 +145,10 @@
 - Consumes: `CreateChapterReportDto`, `ChapterErrorReport`, `resolveReadableChapterVersion`.
 - Produces: Endpoint `POST /api/v1/chapters/:id/reports`.
 
-- [ ] **Step 1: Tạo DTO `CreateChapterReportDto`**
+- [x] **Step 1: Tạo DTO `CreateChapterReportDto`**
   Validate `@IsUUID('4') chapterVersionId`, `@IsEnum(ChapterReportErrorType) errorType`, `@IsOptional() @IsInt() @Min(1) pageNumber`, `@IsOptional() @IsString() @MaxLength(100) anchorBlockId`, `@IsOptional() @IsString() @MaxLength(1000) description`.
 
-- [ ] **Step 2: Viết test suite `chapter-reports.spec.ts` bao phủ các Gates**
+- [x] **Step 2: Viết test suite `chapter-reports.spec.ts` bao phủ các Gates**
   - **Gate 2 (Access Policy):**
     - PUBLIC story + published version ➔ 201 Created.
     - PRIVATE story + unauthenticated ➔ 401 Unauthorized.
@@ -167,12 +167,12 @@
     - 4 requests với 4 error types khác nhau trên cùng chapter ➔ request #4 nhận 429 kèm `error.meta.retryAfter > 0` và header `Retry-After > 0`.
     - Request tới chapter khác ➔ vẫn thành công 201 (key isolation).
 
-- [ ] **Step 3: Triển khai `resolveReadableChapterVersion(chapterId, chapterVersionId, user, manager)` trong `chapters.service.ts`**
+- [x] **Step 3: Triển khai `resolveReadableChapterVersion(chapterId, chapterVersionId, user, manager)` trong `chapters.service.ts`**
   - Kiểm tra story access (PRIVATE ➔ bắt buộc admin hoặc story member).
   - Kiểm tra `chapterVersionId` thuộc về `chapterId` (nếu không ➔ 400 `CHAPTER_REPORT_VERSION_MISMATCH`).
   - Kiểm tra version `isPublished` (nếu unpublished ➔ chỉ cho phép admin hoặc story staff, người khác ➔ 403 `FORBIDDEN`).
 
-- [ ] **Step 4: Triển khai `createReport(chapterId, dto, user)` trong `chapters.service.ts`**
+- [x] **Step 4: Triển khai `createReport(chapterId, dto, user)` trong `chapters.service.ts`**
   - Structured XOR check: nếu cả 2 tồn tại ➔ `throw new BadRequestException({ code: 'CHAPTER_REPORT_MUTUAL_EXCLUSION', message: 'pageNumber và anchorBlockId không được cùng tồn tại.' })`.
   - Bọc transaction với `lock: { mode: 'pessimistic_write' }` trên dòng `Chapter`.
   - Gọi `resolveReadableChapterVersion(...)`.
@@ -191,7 +191,7 @@
     Nếu tìm thấy ➔ ném `409 CHAPTER_REPORT_DUPLICATE`.
   - Lưu và trả về `CreateChapterReportResponse` (201 Created).
 
-- [ ] **Step 5: Khai báo endpoint trong `chapters.controller.ts`**
+- [x] **Step 5: Khai báo endpoint trong `chapters.controller.ts`**
   ```typescript
   @Post('chapters/:id/reports')
   @UseGuards(JwtAuthGuard, RateLimitGuard)
@@ -206,7 +206,7 @@
   }
   ```
 
-- [ ] **Step 6: Chạy kiểm thử Backend**
+- [x] **Step 6: Chạy kiểm thử Backend**
   Chạy `npm test -- src/modules/chapters/test/chapter-reports.spec.ts` và đảm bảo toàn bộ tests PASS.
 
 ---

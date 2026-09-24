@@ -20,6 +20,7 @@ import { RateLimit } from '../../common/decorators/rate-limit.decorator';
 import { RequireStoryRole } from '../../common/decorators/require-story-role.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
 import { StoryMemberRole, ChapterVersionType } from '@omninovel/shared';
+import { CreateChapterReportDto } from './dto/create-chapter-report.dto';
 
 @Controller()
 export class ChaptersController {
@@ -101,4 +102,24 @@ export class ChaptersController {
   ) {
     return this.chaptersService.activateVersion(chapterId, versionId);
   }
+
+  // 5. Báo cáo lỗi chương truyện (Độc giả đã xác thực, Rate-limited theo chapter)
+  @Post('chapters/:id/reports')
+  @UseGuards(JwtAuthGuard, RateLimitGuard)
+  @RateLimit({
+    limit: 3,
+    ttlSeconds: 60,
+    keyPrefix: 'chapter_report',
+    scope: 'IP_AND_USER',
+    routeParam: 'id',
+  })
+  @HttpCode(HttpStatus.CREATED)
+  createReport(
+    @Param('id', new ParseUUIDPipe({ version: '4' })) chapterId: string,
+    @Body() dto: CreateChapterReportDto,
+    @CurrentUser() user: any,
+  ) {
+    return this.chaptersService.createReport(chapterId, dto, user);
+  }
 }
+

@@ -8,6 +8,7 @@ import { Chapter } from '../entities/chapter.entity';
 import { ChapterVersion } from '../entities/chapter-version.entity';
 import { Volume } from '../entities/volume.entity';
 import { MediaAsset } from '../entities/media-asset.entity';
+import { ChapterErrorReport } from '../entities/chapter-error-report.entity';
 import { StoryEdition } from '../../stories/entities/story-edition.entity';
 import { ChapterVersionType } from '@omninovel/shared';
 
@@ -45,6 +46,10 @@ describe('Studio chapter versions (#146)', () => {
         },
         {
           provide: getRepositoryToken(StoryEdition),
+          useValue: {},
+        },
+        {
+          provide: getRepositoryToken(ChapterErrorReport),
           useValue: {},
         },
         {

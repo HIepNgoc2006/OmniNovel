@@ -3,21 +3,26 @@ import {
   NotFoundException,
   BadRequestException,
   ForbiddenException,
+  ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource } from 'typeorm';
+import { Repository, DataSource, EntityManager } from 'typeorm';
 import { Chapter } from './entities/chapter.entity';
 import { ChapterVersion } from './entities/chapter-version.entity';
 import { Volume } from './entities/volume.entity';
 import { MediaAsset } from './entities/media-asset.entity';
+import { ChapterErrorReport } from './entities/chapter-error-report.entity';
 import { StoryEdition } from '../stories/entities/story-edition.entity';
 import { Story } from '../stories/entities/story.entity';
+import { CreateChapterReportDto } from './dto/create-chapter-report.dto';
 import {
   ChapterVersionType,
   GlobalRole,
   StoryMemberRole,
   StoryVisibility,
   StudioChapterVersionSummaryDto,
+  ChapterReportStatus,
+  ChapterReportErrorType,
 } from '@omninovel/shared';
 
 @Injectable()
@@ -33,6 +38,8 @@ export class ChaptersService {
     private mediaAssetRepository: Repository<MediaAsset>,
     @InjectRepository(StoryEdition)
     private editionRepository: Repository<StoryEdition>,
+    @InjectRepository(ChapterErrorReport)
+    private reportRepository: Repository<ChapterErrorReport>,
     private dataSource: DataSource,
   ) {}
 
@@ -357,4 +364,203 @@ export class ChaptersService {
       versionNumber: version.versionNumber,
     };
   }
+
+  /**
+   * Xác minh tính hợp lệ và quyền đọc của exact rendered version:
+   * 1. Chapter tồn tại và Story tồn tại
+   * 2. Quyền đọc Story (nếu PRIVATE -> yêu cầu ADMIN hoặc Story Member)
+   * 3. Version tồn tại và thuộc đúng Chapter
+   * 4. Version đã published HOẶC user là staff (OWNER/EDITOR/TRANSLATOR/ADMIN)
+   */
+  async resolveReadableChapterVersion(
+    chapterId: string,
+    chapterVersionId: string,
+    user: any,
+    manager?: EntityManager,
+  ) {
+    const chapterRepo = manager ? manager.getRepository(Chapter) : this.chapterRepository;
+    const versionRepo = manager ? manager.getRepository(ChapterVersion) : this.versionRepository;
+
+    const chapter = await chapterRepo.findOne({
+      where: { id: chapterId },
+      relations: ['storyEdition', 'storyEdition.story'],
+    });
+
+    if (!chapter) {
+      throw new NotFoundException('Không tìm thấy chương truyện yêu cầu.');
+    }
+
+    const story = chapter.storyEdition?.story;
+    if (!story) {
+      throw new NotFoundException('Không tìm thấy bộ truyện tương ứng với chương này.');
+    }
+
+    // Lấy role của user trong story
+    let userStoryRole: StoryMemberRole | null = null;
+    if (user && user.id) {
+      const queryRunner = manager || this.dataSource;
+      const memberRes = await queryRunner.query(
+        `SELECT role FROM story_members WHERE story_id = $1 AND user_id = $2`,
+        [story.id, user.id],
+      );
+      if (memberRes && memberRes.length > 0) {
+        userStoryRole = memberRes[0].role as StoryMemberRole;
+      }
+    }
+
+    const hasAdminOrStaffAccess =
+      user?.role === GlobalRole.ADMIN ||
+      userStoryRole === StoryMemberRole.OWNER ||
+      userStoryRole === StoryMemberRole.EDITOR ||
+      userStoryRole === StoryMemberRole.TRANSLATOR;
+
+    // 1. Kiểm tra Story Visibility (nếu PRIVATE)
+    if (story.visibility === StoryVisibility.PRIVATE) {
+      if (!user || !user.id) {
+        throw new ForbiddenException(
+          'Chương truyện này thuộc bộ truyện riêng tư (PRIVATE). Vui lòng đăng nhập.',
+        );
+      }
+
+      if (user.role !== GlobalRole.ADMIN && !userStoryRole) {
+        throw new ForbiddenException(
+          'Bạn không có quyền truy cập chương truyện riêng tư này.',
+        );
+      }
+    }
+
+    // 2. Tìm version theo ID và xác minh thuộc đúng Chapter
+    const candidateVersion = await versionRepo.findOne({
+      where: { id: chapterVersionId },
+    });
+
+    if (!candidateVersion) {
+      throw new NotFoundException('Không tìm thấy phiên bản (chapterVersionId) yêu cầu.');
+    }
+
+    if (candidateVersion.chapterId !== chapter.id) {
+      throw new BadRequestException({
+        code: 'CHAPTER_REPORT_VERSION_MISMATCH',
+        message: 'Phiên bản (chapterVersionId) chỉ định không thuộc về chương truyện này.',
+      });
+    }
+
+    // 3. Kiểm tra chính sách truy cập phiên bản (Version Access Policy)
+    if (!candidateVersion.isPublished) {
+      if (!user || !user.id) {
+        throw new ForbiddenException(
+          'Bản nháp chưa công bố yêu cầu đăng nhập với quyền hợp lệ.',
+        );
+      }
+      if (!hasAdminOrStaffAccess) {
+        throw new ForbiddenException(
+          'Chỉ OWNER, EDITOR, TRANSLATOR hoặc ADMIN mới có quyền truy cập phiên bản chưa công bố này.',
+        );
+      }
+    }
+
+    return { chapter, version: candidateVersion, story };
+  }
+
+  /**
+   * Tạo báo cáo lỗi chương truyện (POST /api/v1/chapters/:id/reports)
+   * Enforces:
+   * - Mutual exclusion: pageNumber XOR anchorBlockId
+   * - Pessimistic write lock trên dòng Chapter
+   * - resolveReadableChapterVersion (Story access + Version hierarchy + Published check)
+   * - NULL-safe duplicate check: reporterId + chapterId + chapterVersionId + errorType + location
+   *   trong 10 phút với status IN ('PENDING', 'INVESTIGATING')
+   */
+  async createReport(
+    chapterId: string,
+    dto: CreateChapterReportDto,
+    user: any,
+  ) {
+    if (!user || !user.id) {
+      throw new ForbiddenException('Bạn cần đăng nhập để gửi báo cáo lỗi.');
+    }
+
+    // Structured XOR validation
+    if (dto.pageNumber != null && dto.anchorBlockId != null) {
+      throw new BadRequestException({
+        code: 'CHAPTER_REPORT_MUTUAL_EXCLUSION',
+        message: 'Báo cáo chỉ được chứa một trong hai: pageNumber hoặc anchorBlockId, không được chứa cả hai.',
+      });
+    }
+
+    if (dto.pageNumber != null && dto.pageNumber < 1) {
+      throw new BadRequestException('pageNumber phải lớn hơn hoặc bằng 1.');
+    }
+
+    return await this.dataSource.transaction(async (manager) => {
+      // 1. Khóa pessimistic_write trên dòng Chapter
+      const chapterLock = await manager.findOne(Chapter, {
+        where: { id: chapterId },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (!chapterLock) {
+        throw new NotFoundException('Không tìm thấy chương truyện yêu cầu.');
+      }
+
+      // 2. Kiểm tra quyền truy cập và version invariant
+      const { chapter, version } = await this.resolveReadableChapterVersion(
+        chapterId,
+        dto.chapterVersionId,
+        user,
+        manager,
+      );
+
+      // 3. NULL-safe SQL Duplicate Check
+      const existingDup = await manager.query(
+        `SELECT id FROM chapter_error_reports
+         WHERE reporter_id = $1
+           AND chapter_id = $2
+           AND chapter_version_id = $3
+           AND error_type = $4
+           AND page_number IS NOT DISTINCT FROM $5
+           AND anchor_block_id IS NOT DISTINCT FROM $6
+           AND status IN ('PENDING', 'INVESTIGATING')
+           AND created_at >= NOW() - INTERVAL '10 minutes'
+         LIMIT 1`,
+        [
+          user.id,
+          chapter.id,
+          version.id,
+          dto.errorType,
+          dto.pageNumber ?? null,
+          dto.anchorBlockId ?? null,
+        ],
+      );
+
+      if (existingDup && existingDup.length > 0) {
+        throw new ConflictException({
+          code: 'CHAPTER_REPORT_DUPLICATE',
+          message: 'Bạn đã gửi một báo cáo tương tự cho phần nội dung này gần đây. Báo cáo đang được xử lý.',
+        });
+      }
+
+      // 4. Lưu báo cáo mới
+      const report = manager.create(ChapterErrorReport, {
+        reporterId: user.id,
+        chapterId: chapter.id,
+        chapterVersionId: version.id,
+        pageNumber: dto.pageNumber ?? null,
+        anchorBlockId: dto.anchorBlockId ?? null,
+        errorType: dto.errorType,
+        description: dto.description?.trim() || '',
+        status: ChapterReportStatus.PENDING,
+      });
+
+      const saved = await manager.save(report);
+
+      return {
+        success: true,
+        reportId: saved.id,
+        status: ChapterReportStatus.PENDING,
+        message: 'Báo cáo lỗi chương truyện đã được ghi nhận thành công.',
+      };
+    });
+  }
 }
+

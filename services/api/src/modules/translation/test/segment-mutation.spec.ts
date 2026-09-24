@@ -19,6 +19,8 @@ import { StoryMember } from '../../stories/entities/story-member.entity';
 import { StorageService } from '../../storage/storage.service';
 import { TranslationGateway } from '../translation.gateway';
 import { TranslationProcessor } from '../translation.processor';
+import { ChapterArtifact } from '../../chapters/entities/chapter-artifact.entity';
+import { CanonicalPackagingService } from '../../chapters/canonical-packaging.service';
 import { TranslationJobStatus, MediaFormat } from '@omninovel/shared';
 
 describe('Segment Mutation & Freshness Gate (#147, #156)', () => {
@@ -55,8 +57,10 @@ describe('Segment Mutation & Freshness Gate (#147, #156)', () => {
         { provide: getRepositoryToken(Chapter), useValue: {} },
         { provide: getRepositoryToken(MediaAsset), useValue: {} },
         { provide: getRepositoryToken(UploadSession), useValue: {} },
+        { provide: getRepositoryToken(ChapterArtifact), useValue: {} },
         { provide: getRepositoryToken(StoryMember), useValue: mockStoryMemberRepo },
         { provide: StorageService, useValue: {} },
+        { provide: CanonicalPackagingService, useValue: {} },
         { provide: TranslationGateway, useValue: { broadcastJobFailed: jest.fn() } },
         { provide: TranslationProcessor, useValue: {} },
         { provide: 'BullQueue_translation', useValue: { add: jest.fn() } },

@@ -12,6 +12,8 @@ import { UploadSession } from '../../storage/entities/upload-session.entity';
 import { StoryMember } from '../../stories/entities/story-member.entity';
 import { TranslationGateway } from '../translation.gateway';
 import { TranslationProcessor } from '../translation.processor';
+import { ChapterArtifact } from '../../chapters/entities/chapter-artifact.entity';
+import { CanonicalPackagingService } from '../../chapters/canonical-packaging.service';
 import { DataSource } from 'typeorm';
 import {
   MediaFormat,
@@ -93,10 +95,12 @@ describe('Clean Base Uploads & Canonical Review Base Protocol (#162)', () => {
         { provide: getRepositoryToken(Chapter), useValue: {} },
         { provide: getRepositoryToken(MediaAsset), useValue: {} },
         { provide: getRepositoryToken(UploadSession), useValue: {} },
+        { provide: getRepositoryToken(ChapterArtifact), useValue: {} },
         { provide: getRepositoryToken(StoryMember), useValue: { findOne: jest.fn().mockResolvedValue({ role: 'OWNER' }) } },
         { provide: 'BullQueue_translation', useValue: {} },
         { provide: 'BullQueue_translation-materialization', useValue: {} },
         { provide: StorageService, useValue: storageService },
+        { provide: CanonicalPackagingService, useValue: {} },
         {
           provide: TranslationGateway,
           useValue: {

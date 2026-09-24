@@ -17,6 +17,7 @@ import { Volume } from '../modules/chapters/entities/volume.entity';
 import { Chapter } from '../modules/chapters/entities/chapter.entity';
 import { ChapterVersion } from '../modules/chapters/entities/chapter-version.entity';
 import { MediaAsset } from '../modules/chapters/entities/media-asset.entity';
+import { ChapterArtifact } from '../modules/chapters/entities/chapter-artifact.entity';
 import { UploadSession } from '../modules/storage/entities/upload-session.entity';
 import { RewardTransaction } from '../modules/gamification/entities/reward-transaction.entity';
 import { DailyCheckin } from '../modules/gamification/entities/daily-checkin.entity';
@@ -57,6 +58,7 @@ import { TranslationSegment } from '../modules/translation/entities/translation-
           Chapter,
           ChapterVersion,
           MediaAsset,
+          ChapterArtifact,
           UploadSession,
           RewardTransaction,
           DailyCheckin,

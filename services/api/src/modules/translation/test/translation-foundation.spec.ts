@@ -14,6 +14,8 @@ import { StoryMember } from '../../stories/entities/story-member.entity';
 import { StorageService } from '../../storage/storage.service';
 import { TranslationGateway } from '../translation.gateway';
 import { TranslationProcessor } from '../translation.processor';
+import { ChapterArtifact } from '../../chapters/entities/chapter-artifact.entity';
+import { CanonicalPackagingService } from '../../chapters/canonical-packaging.service';
 import {
   GlobalRole,
   MediaFormat,
@@ -83,10 +85,12 @@ describe('Translation Foundation (#144, #148, #155 Read-only)', () => {
         { provide: getRepositoryToken(Chapter), useValue: {} },
         { provide: getRepositoryToken(MediaAsset), useValue: {} },
         { provide: getRepositoryToken(UploadSession), useValue: {} },
+        { provide: getRepositoryToken(ChapterArtifact), useValue: {} },
         { provide: getRepositoryToken(StoryMember), useValue: storyMemberRepo },
         { provide: 'BullQueue_translation', useValue: {} },
         { provide: 'BullQueue_translation-materialization', useValue: {} },
         { provide: StorageService, useValue: {} },
+        { provide: CanonicalPackagingService, useValue: {} },
         { provide: DataSource, useValue: dataSource },
         { provide: TranslationGateway, useValue: {} },
         { provide: TranslationProcessor, useValue: {} },

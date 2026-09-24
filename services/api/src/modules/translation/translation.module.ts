@@ -13,6 +13,8 @@ import { Chapter } from '../chapters/entities/chapter.entity';
 import { MediaAsset } from '../chapters/entities/media-asset.entity';
 import { UploadSession } from '../storage/entities/upload-session.entity';
 import { StoryMember } from '../stories/entities/story-member.entity';
+import { ChapterArtifact } from '../chapters/entities/chapter-artifact.entity';
+import { ChaptersModule } from '../chapters/chapters.module';
 import { TranslationService } from './translation.service';
 import { TranslationProcessor } from './translation.processor';
 import { TranslationMaterializationProcessor } from './translation-materialization.processor';
@@ -32,6 +34,7 @@ import { InternalServiceKeyGuard } from '../../common/guards/internal-service-ke
       ChapterVersion,
       Chapter,
       MediaAsset,
+      ChapterArtifact,
       UploadSession,
       StoryMember,
     ]),
@@ -43,6 +46,7 @@ import { InternalServiceKeyGuard } from '../../common/guards/internal-service-ke
         name: 'translation-materialization',
       },
     ),
+    ChaptersModule,
     StorageModule,
     JwtModule.registerAsync({
       inject: [ConfigService],

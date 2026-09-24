@@ -15,6 +15,8 @@ import { StoryMember } from '../../stories/entities/story-member.entity';
 import { StorageService } from '../../storage/storage.service';
 import { TranslationGateway } from '../translation.gateway';
 import { TranslationProcessor } from '../translation.processor';
+import { ChapterArtifact } from '../../chapters/entities/chapter-artifact.entity';
+import { CanonicalPackagingService } from '../../chapters/canonical-packaging.service';
 
 describe('TranslationService.handleJobFailure Post-Commit Ordering & Invariants', () => {
   let service: TranslationService;
@@ -45,10 +47,12 @@ describe('TranslationService.handleJobFailure Post-Commit Ordering & Invariants'
         { provide: getRepositoryToken(Chapter), useValue: {} },
         { provide: getRepositoryToken(MediaAsset), useValue: {} },
         { provide: getRepositoryToken(UploadSession), useValue: {} },
+        { provide: getRepositoryToken(ChapterArtifact), useValue: {} },
         { provide: getRepositoryToken(StoryMember), useValue: {} },
         { provide: 'BullQueue_translation', useValue: {} },
         { provide: 'BullQueue_translation-materialization', useValue: {} },
         { provide: StorageService, useValue: {} },
+        { provide: CanonicalPackagingService, useValue: {} },
         { provide: TranslationGateway, useValue: mockGateway },
         { provide: TranslationProcessor, useValue: {} },
         { provide: DataSource, useValue: mockDataSource },

@@ -9,8 +9,10 @@ import { ChapterVersion } from '../entities/chapter-version.entity';
 import { Volume } from '../entities/volume.entity';
 import { MediaAsset } from '../entities/media-asset.entity';
 import { ChapterErrorReport } from '../entities/chapter-error-report.entity';
+import { ChapterArtifact } from '../entities/chapter-artifact.entity';
+import { CanonicalPackagingService } from '../canonical-packaging.service';
 import { StoryEdition } from '../../stories/entities/story-edition.entity';
-import { ChapterVersionType } from '@omninovel/shared';
+import { ChapterVersionType, ChapterArtifactStatus } from '@omninovel/shared';
 
 describe('Studio chapter versions (#146)', () => {
   let service: ChaptersService;
@@ -51,6 +53,17 @@ describe('Studio chapter versions (#146)', () => {
         {
           provide: getRepositoryToken(ChapterErrorReport),
           useValue: {},
+        },
+        {
+          provide: getRepositoryToken(ChapterArtifact),
+          useValue: { find: jest.fn().mockResolvedValue([]) },
+        },
+        {
+          provide: CanonicalPackagingService,
+          useValue: {
+            getArtifactStatus: jest.fn(),
+            enqueuePackaging: jest.fn(),
+          },
         },
         {
           provide: DataSource,
@@ -110,6 +123,8 @@ describe('Studio chapter versions (#146)', () => {
         isPublished: false,
         sourceVersionId: '22222222-2222-4222-8222-222222222222',
         createdAt: '2026-09-20T01:02:03.000Z',
+        artifactReady: false,
+        artifactStatus: ChapterArtifactStatus.MISSING,
       },
       {
         id: '22222222-2222-4222-8222-222222222222',
@@ -120,6 +135,8 @@ describe('Studio chapter versions (#146)', () => {
         isPublished: true,
         sourceVersionId: null,
         createdAt: '2026-09-19T01:02:03.000Z',
+        artifactReady: false,
+        artifactStatus: ChapterArtifactStatus.MISSING,
       },
     ]);
   });

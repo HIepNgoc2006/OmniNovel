@@ -19,6 +19,7 @@ import { ChapterVersion } from '../../chapters/entities/chapter-version.entity';
 import { UploadSession } from '../../storage/entities/upload-session.entity';
 import { User } from '../../users/entities/user.entity';
 import { TranslationSegment } from './translation-segment.entity';
+import { ChapterArtifact } from '../../chapters/entities/chapter-artifact.entity';
 
 @Entity('translation_jobs')
 @Unique('uq_translation_job_user_idemp', ['createdBy', 'idempotencyKey'])
@@ -53,6 +54,13 @@ export class TranslationJob {
   @ManyToOne(() => UploadSession, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'source_upload_session_id' })
   sourceUploadSession: UploadSession | null;
+
+  @Column({ name: 'source_artifact_id', type: 'uuid', nullable: true })
+  sourceArtifactId: string | null;
+
+  @ManyToOne(() => ChapterArtifact, { onDelete: 'SET NULL', nullable: true })
+  @JoinColumn({ name: 'source_artifact_id' })
+  sourceArtifact: ChapterArtifact | null;
 
   @Column({ name: 'created_by', type: 'uuid', nullable: true })
   createdBy: string | null;

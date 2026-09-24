@@ -6,11 +6,13 @@ import {
   ConflictException,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, DataSource, EntityManager } from 'typeorm';
+import { Repository, DataSource, EntityManager, In } from 'typeorm';
 import { Chapter } from './entities/chapter.entity';
 import { ChapterVersion } from './entities/chapter-version.entity';
 import { Volume } from './entities/volume.entity';
 import { MediaAsset } from './entities/media-asset.entity';
+import { ChapterArtifact } from './entities/chapter-artifact.entity';
+import { CanonicalPackagingService } from './canonical-packaging.service';
 import { ChapterErrorReport } from './entities/chapter-error-report.entity';
 import { StoryEdition } from '../stories/entities/story-edition.entity';
 import { Story } from '../stories/entities/story.entity';
@@ -23,6 +25,10 @@ import {
   StudioChapterVersionSummaryDto,
   ChapterReportStatus,
   ChapterReportErrorType,
+  ChapterArtifactType,
+  ChapterArtifactStatus,
+  ChapterArtifactDto,
+  TriggerChapterPackagingResponse,
 } from '@omninovel/shared';
 
 @Injectable()
@@ -40,6 +46,9 @@ export class ChaptersService {
     private editionRepository: Repository<StoryEdition>,
     @InjectRepository(ChapterErrorReport)
     private reportRepository: Repository<ChapterErrorReport>,
+    @InjectRepository(ChapterArtifact)
+    private artifactRepository: Repository<ChapterArtifact>,
+    private packagingService: CanonicalPackagingService,
     private dataSource: DataSource,
   ) {}
 
@@ -243,16 +252,65 @@ export class ChaptersService {
       order: { versionNumber: 'DESC' },
     });
 
-    return versions.map((version) => ({
-      id: version.id,
-      chapterId: version.chapterId,
-      versionNumber: version.versionNumber,
-      versionType: version.versionType,
-      language: version.language,
-      isPublished: version.isPublished,
-      sourceVersionId: version.sourceVersionId,
-      createdAt: version.createdAt.toISOString(),
-    }));
+    const versionIds = versions.map((v) => v.id);
+    let artifactMap = new Map<string, ChapterArtifact>();
+    if (versionIds.length > 0) {
+      const artifacts = await this.artifactRepository.find({
+        where: {
+          chapterVersionId: In(versionIds),
+          artifactType: ChapterArtifactType.OFFLINE_BUNDLE,
+        },
+      });
+      artifactMap = new Map(artifacts.map((a) => [a.chapterVersionId, a]));
+    }
+
+    return versions.map((version) => {
+      const artifact = artifactMap.get(version.id);
+      return {
+        id: version.id,
+        chapterId: version.chapterId,
+        versionNumber: version.versionNumber,
+        versionType: version.versionType,
+        language: version.language,
+        isPublished: version.isPublished,
+        sourceVersionId: version.sourceVersionId,
+        createdAt: version.createdAt.toISOString(),
+        artifactReady: artifact?.status === ChapterArtifactStatus.READY,
+        artifactStatus: artifact?.status || ChapterArtifactStatus.MISSING,
+      };
+    });
+  }
+
+  async getArtifactStatus(
+    chapterId: string,
+    versionId: string,
+    artifactType: ChapterArtifactType = ChapterArtifactType.OFFLINE_BUNDLE,
+  ): Promise<ChapterArtifactDto> {
+    const version = await this.versionRepository.findOne({
+      where: { id: versionId, chapterId },
+    });
+    if (!version) {
+      throw new NotFoundException('Phiên bản chương truyện không tồn tại.');
+    }
+    return this.packagingService.getArtifactStatus(versionId, artifactType);
+  }
+
+  async triggerPackaging(
+    chapterId: string,
+    versionId: string,
+    artifactType: ChapterArtifactType = ChapterArtifactType.OFFLINE_BUNDLE,
+  ): Promise<TriggerChapterPackagingResponse> {
+    const version = await this.versionRepository.findOne({
+      where: { id: versionId, chapterId },
+    });
+    if (!version) {
+      throw new NotFoundException('Phiên bản chương truyện không tồn tại.');
+    }
+    return this.packagingService.enqueuePackaging({
+      chapterId,
+      chapterVersionId: versionId,
+      artifactType,
+    });
   }
 
   async createChapter(

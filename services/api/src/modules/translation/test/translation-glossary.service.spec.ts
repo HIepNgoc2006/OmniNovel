@@ -15,6 +15,8 @@ import { StoryMember } from '../../stories/entities/story-member.entity';
 import { StorageService } from '../../storage/storage.service';
 import { TranslationGateway } from '../translation.gateway';
 import { TranslationProcessor } from '../translation.processor';
+import { ChapterArtifact } from '../../chapters/entities/chapter-artifact.entity';
+import { CanonicalPackagingService } from '../../chapters/canonical-packaging.service';
 
 describe('TranslationService - Glossary Operations (#189)', () => {
   let service: TranslationService;
@@ -46,10 +48,12 @@ describe('TranslationService - Glossary Operations (#189)', () => {
         { provide: getRepositoryToken(Chapter), useValue: {} },
         { provide: getRepositoryToken(MediaAsset), useValue: {} },
         { provide: getRepositoryToken(UploadSession), useValue: {} },
+        { provide: getRepositoryToken(ChapterArtifact), useValue: {} },
         { provide: getRepositoryToken(StoryMember), useValue: {} },
         { provide: 'BullQueue_translation', useValue: {} },
         { provide: 'BullQueue_translation-materialization', useValue: {} },
         { provide: StorageService, useValue: {} },
+        { provide: CanonicalPackagingService, useValue: {} },
         { provide: DataSource, useValue: {} },
         { provide: TranslationGateway, useValue: {} },
         { provide: TranslationProcessor, useValue: {} },

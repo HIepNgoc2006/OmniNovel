@@ -366,10 +366,10 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 - [x] Định nghĩa mã lỗi chuẩn hóa: `ARTIFACT_NOT_READY`, `ARTIFACT_BUILD_FAILED`, `SOURCE_VERSION_ARTIFACT_BUILDING`, `SOURCE_VERSION_ARTIFACT_UNAVAILABLE`, `CHECKSUM_MISMATCH`, `STORAGE_QUOTA_EXCEEDED`.
 - [x] Định nghĩa typed `OfflineNovelMetadata { contentPath: string }` và `assetType: MediaAssetType` trong `OfflineBundleFileEntry`.
 
-### 📌 Phase 5D.1: Canonical Reverse Packaging ([Issue #190](https://github.com/HIepNgoc2006/OmniNovel/issues/190) - Core Backend API)
-- [ ] **Migration 17:** Tạo bảng `chapter_artifacts`, cập nhật `translation_jobs` bổ sung `source_artifact_id` và check constraint canonical source (`num_nonnulls = 1`).
-- [ ] Tạo Entity TypeORM `ChapterArtifact` trong `services/api/src/modules/chapters/entities/chapter-artifact.entity.ts`.
-- [ ] Thiết lập BullMQ Queue `chapter-packaging` và `ChapterPackagingProcessor`:
+### 📌 Phase 5D.1: Canonical Reverse Packaging ([Issue #190](https://github.com/HIepNgoc2006/OmniNovel/issues/190) - Core Backend API) - [x] HOÀN THÀNH
+- [x] **Migration 17:** Tạo bảng `chapter_artifacts`, cập nhật `translation_jobs` bổ sung `source_artifact_id` và check constraint canonical source (`num_nonnulls = 1`).
+- [x] Tạo Entity TypeORM `ChapterArtifact` trong `services/api/src/modules/chapters/entities/chapter-artifact.entity.ts`.
+- [x] Thiết lập BullMQ Queue `chapter-packaging` và `ChapterPackagingProcessor`:
   - Deterministic `jobId = pkg_${chapterVersionId}_${artifactType}` (không chứa dấu `:`).
   - Tích hợp `RedisService` atomic lock với ownership token + heartbeat `renewLock` mỗi 30s.
   - Gom các `MediaAsset`s theo thứ tự `sortOrder ASC`.
@@ -377,14 +377,14 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
   - Tính SHA-256 hash và kích thước byte. Upload qua `StorageService`.
   - Atomic update trạng thái `READY` trong PostgreSQL.
   - Cơ chế dọn dẹp `BUILDING` mồ côi (stale recovery > 15 phút) và gỡ bỏ job failed cũ khi retry để chống deadlock.
-- [ ] Cập nhật `TranslationService.createJob()`: Thay thế nguồn fail-closed hợp lệ (UploadSession hoặc READY ChapterArtifact), không bao giờ tạo dead jobs.
-- [ ] Cập nhật `TranslationProcessor`: Hỗ trợ resolve `sourceArtifactId` để sinh `sourceDownloadUrl`.
+- [x] Cập nhật `TranslationService.createJob()`: Thay thế nguồn fail-closed hợp lệ (UploadSession hoặc READY ChapterArtifact), không bao giờ tạo dead jobs.
+- [x] Cập nhật `TranslationProcessor`: Hỗ trợ resolve `sourceArtifactId` để sinh `sourceDownloadUrl`.
 
-### 📌 Phase 5D.2: Artifact Download & Readiness API
-- [ ] Bổ sung endpoint `GET /api/v1/chapters/:chapterId/versions/:versionId/artifact` trả về URL presigned có chữ ký bảo mật từ `StorageService`.
-- [ ] Bổ sung endpoint `POST /api/v1/chapters/:chapterId/versions/:versionId/package` enqueue BullMQ job và trả về 200/202 chuẩn hóa.
-- [ ] Cập nhật `findVersionsForStudio` trong `ChaptersService` truy vấn trạng thái `chapter_artifacts` để trả về `artifactReady`.
-- [ ] Bộ kiểm thử Unit & Integration Tests cho Backend Packaging (đạt 100% test coverage cho lifecycle `MISSING -> BUILDING -> READY`).
+### 📌 Phase 5D.2: Artifact Download & Readiness API - [x] HOÀN THÀNH
+- [x] Bổ sung endpoint `GET /api/v1/chapters/:chapterId/versions/:versionId/artifact` trả về URL presigned có chữ ký bảo mật từ `StorageService`.
+- [x] Bổ sung endpoint `POST /api/v1/chapters/:chapterId/versions/:versionId/package` enqueue BullMQ job và trả về 200/202 chuẩn hóa.
+- [x] Cập nhật `findVersionsForStudio` trong `ChaptersService` truy vấn trạng thái `chapter_artifacts` để trả về `artifactReady`.
+- [x] Bộ kiểm thử Unit & Integration Tests cho Backend Packaging (đạt 100% test coverage cho lifecycle `MISSING -> BUILDING -> READY`).
 
 ### 📌 Phase 5D.3: Mobile Durable Download Manager (Flutter Engine)
 - [ ] Cập nhật `apps/mobile/pubspec.yaml`: Bổ sung `sqflite`, `path_provider`, `archive`, `crypto`, `path`.

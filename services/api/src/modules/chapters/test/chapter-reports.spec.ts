@@ -16,6 +16,8 @@ import { ChapterVersion } from '../entities/chapter-version.entity';
 import { Volume } from '../entities/volume.entity';
 import { MediaAsset } from '../entities/media-asset.entity';
 import { ChapterErrorReport } from '../entities/chapter-error-report.entity';
+import { ChapterArtifact } from '../entities/chapter-artifact.entity';
+import { CanonicalPackagingService } from '../canonical-packaging.service';
 import { StoryEdition } from '../../stories/entities/story-edition.entity';
 import { RedisService } from '../../../redis/redis.service';
 import { RATE_LIMIT_KEY } from '../../../common/decorators/rate-limit.decorator';
@@ -137,6 +139,8 @@ describe('Chapter Content Reporting System (Phase 5C.6 Gates 2-5)', () => {
         { provide: getRepositoryToken(MediaAsset), useValue: {} },
         { provide: getRepositoryToken(StoryEdition), useValue: {} },
         { provide: getRepositoryToken(ChapterErrorReport), useValue: mockReportRepo },
+        { provide: getRepositoryToken(ChapterArtifact), useValue: { find: jest.fn().mockResolvedValue([]) } },
+        { provide: CanonicalPackagingService, useValue: { getArtifactStatus: jest.fn(), enqueuePackaging: jest.fn() } },
         { provide: DataSource, useValue: mockDataSource },
         { provide: RedisService, useValue: { checkRateLimit: jest.fn() } },
       ],

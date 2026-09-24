@@ -29,6 +29,8 @@ import { StoryMember } from '../../stories/entities/story-member.entity';
 import { StorageService } from '../../storage/storage.service';
 import { TranslationGateway } from '../translation.gateway';
 import { TranslationProcessor } from '../translation.processor';
+import { ChapterArtifact } from '../../chapters/entities/chapter-artifact.entity';
+import { CanonicalPackagingService } from '../../chapters/canonical-packaging.service';
 import {
   FindJobPreviewsQueryDto,
   normalizePreviewWindow,
@@ -264,11 +266,13 @@ describe('Lazy Bounded Manga Preview API - Unit Tests (#155)', () => {
           { provide: getRepositoryToken(Chapter), useValue: {} },
           { provide: getRepositoryToken(MediaAsset), useValue: mediaAssetRepo },
           { provide: getRepositoryToken(UploadSession), useValue: {} },
+          { provide: getRepositoryToken(ChapterArtifact), useValue: {} },
           {
             provide: getRepositoryToken(StoryMember),
             useValue: storyMemberRepo,
           },
           { provide: StorageService, useValue: storageService },
+          { provide: CanonicalPackagingService, useValue: {} },
           {
             provide: TranslationGateway,
             useValue: { broadcastJobProgress: jest.fn() },

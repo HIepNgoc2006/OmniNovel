@@ -48,6 +48,8 @@ import {
   TranslationJobPreviewsResponse,
   MaterializationRequestResponse,
   ApplyTranslationMode,
+  ChapterArtifactType,
+  ChapterArtifactStatus,
 } from '@omninovel/shared';
 import { TranslationJob } from './entities/translation-job.entity';
 import { TranslationProject } from './entities/translation-project.entity';
@@ -56,6 +58,8 @@ import { TranslationSegment } from './entities/translation-segment.entity';
 import { ChapterVersion } from '../chapters/entities/chapter-version.entity';
 import { Chapter } from '../chapters/entities/chapter.entity';
 import { MediaAsset } from '../chapters/entities/media-asset.entity';
+import { ChapterArtifact } from '../chapters/entities/chapter-artifact.entity';
+import { CanonicalPackagingService } from '../chapters/canonical-packaging.service';
 import {
   UploadSession,
   UploadSessionStatus,
@@ -116,6 +120,8 @@ export class TranslationService {
     private mediaAssetRepo: Repository<MediaAsset>,
     @InjectRepository(UploadSession)
     private uploadSessionRepo: Repository<UploadSession>,
+    @InjectRepository(ChapterArtifact)
+    private chapterArtifactRepo: Repository<ChapterArtifact>,
     @InjectRepository(StoryMember)
     private storyMemberRepo: Repository<StoryMember>,
     @InjectQueue('translation')
@@ -123,6 +129,7 @@ export class TranslationService {
     @InjectQueue('translation-materialization')
     private materializationQueue: Queue,
     private storageService: StorageService,
+    private canonicalPackagingService: CanonicalPackagingService,
     private dataSource: DataSource,
     private gateway: TranslationGateway,
     @Inject(forwardRef(() => TranslationProcessor))
@@ -205,6 +212,8 @@ export class TranslationService {
     });
 
     let sourceUploadSessionId: string | null = null;
+    let sourceArtifactId: string | null = null;
+
     if (promotedSessions.length > 1) {
       throw new ConflictException(
         'SOURCE_ARTIFACT_AMBIGUOUS: Có nhiều upload session đã PROMOTED cho version này. Vui lòng liên hệ Admin hoặc chỉ định chính xác.',
@@ -212,12 +221,41 @@ export class TranslationService {
     } else if (promotedSessions.length === 1) {
       sourceUploadSessionId = promotedSessions[0].id;
     } else {
-      // #165 Short-term Fail-closed Gate: Phiên bản nguồn chưa có canonical upload session package
-      throw new BadRequestException({
-        code: 'SOURCE_VERSION_ARTIFACT_UNAVAILABLE',
-        message:
-          'SOURCE_VERSION_ARTIFACT_UNAVAILABLE: Phiên bản nguồn chưa có gói artifact tải lên hợp lệ để xử lý dịch thuật.',
+      // #190 / #165 Canonical Source Replacement:
+      // Kiểm tra ChapterArtifact loại TRANSLATION_SOURCE
+      const sourceArtifact = await this.chapterArtifactRepo.findOne({
+        where: {
+          chapterVersionId: sourceVersion.id,
+          artifactType: ChapterArtifactType.TRANSLATION_SOURCE,
+        },
       });
+
+      if (sourceArtifact && sourceArtifact.status === ChapterArtifactStatus.READY) {
+        sourceArtifactId = sourceArtifact.id;
+      } else {
+        // Enqueue background packaging qua BullMQ durable queue
+        await this.canonicalPackagingService.enqueuePackaging({
+          chapterId: sourceVersion.chapterId || sourceVersion.chapter?.id,
+          chapterVersionId: sourceVersion.id,
+          artifactType: ChapterArtifactType.TRANSLATION_SOURCE,
+        });
+
+        if (sourceArtifact?.status === ChapterArtifactStatus.BUILDING) {
+          throw new ConflictException({
+            code: 'SOURCE_VERSION_ARTIFACT_BUILDING',
+            message:
+              'SOURCE_VERSION_ARTIFACT_BUILDING: Gói artifact nguồn đang được đóng gói tự động. Vui lòng thử lại sau giây lát.',
+            meta: { retryAfter: 5 },
+          });
+        }
+
+        throw new BadRequestException({
+          code: 'SOURCE_VERSION_ARTIFACT_UNAVAILABLE',
+          message:
+            'SOURCE_VERSION_ARTIFACT_UNAVAILABLE: Phiên bản nguồn chưa có gói artifact tải lên hợp lệ để xử lý dịch thuật. Hệ thống đã kích hoạt tác vụ đóng gói nền.',
+          meta: { retryAfter: 5 },
+        });
+      }
     }
 
     // 5. Resolve/Upsert TranslationProject (Unique theo editionId + sourceLang + targetLang)
@@ -317,6 +355,7 @@ export class TranslationService {
       projectId: project.id,
       sourceVersionId: sourceVersion.id,
       sourceUploadSessionId,
+      sourceArtifactId,
       createdBy: user.id,
       idempotencyKey: idempotencyKey || null,
       status: TranslationJobStatus.VALIDATING,
@@ -2720,6 +2759,17 @@ export class TranslationService {
         if (session?.finalKey) {
           sessionFinalKey = session.finalKey;
           sessionFileType = session.fileType;
+        }
+      } else if (job.sourceArtifactId) {
+        const artifact = await manager.findOne(ChapterArtifact, {
+          where: { id: job.sourceArtifactId },
+        });
+        if (artifact?.storageKey) {
+          sessionFinalKey = artifact.storageKey;
+          sessionFileType =
+            artifact.artifactType === ChapterArtifactType.TRANSLATION_SOURCE
+              ? 'TRANSLATION_SOURCE_ZIP'
+              : 'OFFLINE_BUNDLE_ZIP';
         }
       }
 

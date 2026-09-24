@@ -14,14 +14,23 @@ import { StoryMember } from '../../stories/entities/story-member.entity';
 import { StorageService } from '../../storage/storage.service';
 import { TranslationGateway } from '../translation.gateway';
 import { TranslationProcessor } from '../translation.processor';
+import { ChapterArtifact } from '../../chapters/entities/chapter-artifact.entity';
+import { CanonicalPackagingService } from '../../chapters/canonical-packaging.service';
 import { DataSource } from 'typeorm';
-import { GlobalRole, StoryMemberRole } from '@omninovel/shared';
+import {
+  GlobalRole,
+  StoryMemberRole,
+  ChapterArtifactType,
+  ChapterArtifactStatus,
+} from '@omninovel/shared';
 
 describe('Job Creation Backend Authority Invariants (#146 Task 2)', () => {
   let service: TranslationService;
   let versionRepo: any;
   let jobRepo: any;
   let storyMemberRepo: any;
+  let chapterArtifactRepo: any;
+  let canonicalPackagingService: any;
   let dataSource: any;
 
   const mockUser = { id: 'user-translator-1', role: GlobalRole.TRANSLATOR };
@@ -30,6 +39,7 @@ describe('Job Creation Backend Authority Invariants (#146 Task 2)', () => {
 
   const mockSourceVersion = {
     id: validVersionId,
+    chapterId: 'chap-1',
     language: 'ja',
     chapter: {
       id: 'chap-1',
@@ -60,6 +70,20 @@ describe('Job Creation Backend Authority Invariants (#146 Task 2)', () => {
       }),
     };
 
+    chapterArtifactRepo = {
+      findOne: jest.fn().mockResolvedValue(null),
+      find: jest.fn().mockResolvedValue([]),
+      save: jest.fn(),
+    };
+
+    canonicalPackagingService = {
+      enqueuePackaging: jest.fn().mockResolvedValue({
+        status: ChapterArtifactStatus.BUILDING,
+        artifactReady: false,
+      }),
+      getArtifactStatus: jest.fn(),
+    };
+
     dataSource = {
       query: jest.fn(),
     };
@@ -75,10 +99,12 @@ describe('Job Creation Backend Authority Invariants (#146 Task 2)', () => {
         { provide: getRepositoryToken(Chapter), useValue: {} },
         { provide: getRepositoryToken(MediaAsset), useValue: { count: jest.fn().mockResolvedValue(5) } },
         { provide: getRepositoryToken(UploadSession), useValue: { find: jest.fn().mockResolvedValue([]) } },
+        { provide: getRepositoryToken(ChapterArtifact), useValue: chapterArtifactRepo },
         { provide: getRepositoryToken(StoryMember), useValue: storyMemberRepo },
         { provide: 'BullQueue_translation', useValue: { add: jest.fn() } },
         { provide: 'BullQueue_translation-materialization', useValue: { add: jest.fn() } },
         { provide: StorageService, useValue: {} },
+        { provide: CanonicalPackagingService, useValue: canonicalPackagingService },
         { provide: TranslationGateway, useValue: { emitJobStateChange: jest.fn() } },
         { provide: TranslationProcessor, useValue: {} },
         { provide: DataSource, useValue: dataSource },
@@ -137,7 +163,7 @@ describe('Job Creation Backend Authority Invariants (#146 Task 2)', () => {
     ).rejects.toThrow(NotFoundException);
   });
 
-  it('rejects with BadRequestException and SOURCE_VERSION_ARTIFACT_UNAVAILABLE when source version has no promoted upload session (#165)', async () => {
+  it('rejects with BadRequestException and triggers packaging when source version has no promoted upload session (#165 / #190)', async () => {
     const dto = {
       chapterVersionId: validVersionId,
       sourceLang: 'ja',
@@ -149,9 +175,29 @@ describe('Job Creation Backend Authority Invariants (#146 Task 2)', () => {
       service.createJob(mockUser, dto, idempotencyKey),
     ).rejects.toThrow(BadRequestException);
 
+    expect(canonicalPackagingService.enqueuePackaging).toHaveBeenCalledWith({
+      chapterId: 'chap-1',
+      chapterVersionId: validVersionId,
+      artifactType: ChapterArtifactType.TRANSLATION_SOURCE,
+    });
+  });
+
+  it('rejects with ConflictException when source artifact is actively BUILDING (#190)', async () => {
+    chapterArtifactRepo.findOne.mockResolvedValueOnce({
+      id: 'artifact-1',
+      status: ChapterArtifactStatus.BUILDING,
+    });
+
+    const dto = {
+      chapterVersionId: validVersionId,
+      sourceLang: 'ja',
+      targetLang: 'vi',
+      provider: 'MOCK',
+    };
+
     await expect(
       service.createJob(mockUser, dto, idempotencyKey),
-    ).rejects.toThrow(/SOURCE_VERSION_ARTIFACT_UNAVAILABLE/);
+    ).rejects.toThrow(/SOURCE_VERSION_ARTIFACT_BUILDING/);
   });
 });
 

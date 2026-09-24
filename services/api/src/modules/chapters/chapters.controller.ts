@@ -10,7 +10,9 @@ import {
   HttpCode,
   HttpStatus,
   ParseUUIDPipe,
+  Res,
 } from '@nestjs/common';
+import { Response } from 'express';
 import { ChaptersService } from './chapters.service';
 import { JwtAuthGuard } from '../../common/guards/jwt-auth.guard';
 import { OptionalJwtAuthGuard } from '../../common/guards/optional-jwt-auth.guard';
@@ -19,7 +21,15 @@ import { RateLimitGuard } from '../../common/guards/rate-limit.guard';
 import { RateLimit } from '../../common/decorators/rate-limit.decorator';
 import { RequireStoryRole } from '../../common/decorators/require-story-role.decorator';
 import { CurrentUser } from '../../common/decorators/current-user.decorator';
-import { StoryMemberRole, ChapterVersionType } from '@omninovel/shared';
+import {
+  StoryMemberRole,
+  ChapterVersionType,
+  ChapterArtifactType,
+  ChapterArtifactStatus,
+  ChapterArtifactDto,
+  TriggerChapterPackagingRequest,
+  TriggerChapterPackagingResponse,
+} from '@omninovel/shared';
 import { CreateChapterReportDto } from './dto/create-chapter-report.dto';
 
 @Controller()
@@ -120,6 +130,51 @@ export class ChaptersController {
     @CurrentUser() user: any,
   ) {
     return this.chaptersService.createReport(chapterId, dto, user);
+  }
+
+  // 6. Lấy trạng thái artifact download (Offline Bundle hoặc Translation Source) (#190 / MOB-012)
+  @Get('chapters/:chapterId/versions/:versionId/artifact')
+  @UseGuards(OptionalJwtAuthGuard, RateLimitGuard)
+  @RateLimit({
+    limit: 60,
+    ttlSeconds: 60,
+    keyPrefix: 'artifact_status',
+    scope: 'IP_AND_USER',
+  })
+  async getArtifactStatus(
+    @Param('chapterId', new ParseUUIDPipe({ version: '4' })) chapterId: string,
+    @Param('versionId', new ParseUUIDPipe({ version: '4' })) versionId: string,
+    @Query('type') artifactType?: ChapterArtifactType,
+  ): Promise<ChapterArtifactDto> {
+    return this.chaptersService.getArtifactStatus(chapterId, versionId, artifactType);
+  }
+
+  // 7. Kích hoạt hoặc yêu cầu đóng gói artifact qua BullMQ durable queue (#190 / MOB-012)
+  @Post('chapters/:chapterId/versions/:versionId/package')
+  @UseGuards(JwtAuthGuard, RateLimitGuard)
+  @RateLimit({
+    limit: 30,
+    ttlSeconds: 60,
+    keyPrefix: 'artifact_package',
+    scope: 'USER',
+  })
+  async triggerPackaging(
+    @Param('chapterId', new ParseUUIDPipe({ version: '4' })) chapterId: string,
+    @Param('versionId', new ParseUUIDPipe({ version: '4' })) versionId: string,
+    @Body() body: TriggerChapterPackagingRequest,
+    @Res({ passthrough: true }) res: Response,
+  ): Promise<TriggerChapterPackagingResponse> {
+    const result = await this.chaptersService.triggerPackaging(
+      chapterId,
+      versionId,
+      body?.artifactType,
+    );
+    if (result.status === ChapterArtifactStatus.READY) {
+      res.status(HttpStatus.OK);
+    } else {
+      res.status(HttpStatus.ACCEPTED);
+    }
+    return result;
   }
 }
 

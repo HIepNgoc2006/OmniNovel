@@ -691,6 +691,24 @@ export class StorageService {
     );
   }
 
+  async getInternalObjectBuffer(key: string, isManga = true): Promise<Buffer> {
+    const bucket = this.getInternalBucket(isManga);
+    const res = await this.s3Client.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+      }),
+    );
+    if (!res.Body) {
+      throw new NotFoundException(`Object ${key} không có nội dung dữ liệu.`);
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of res.Body as any) {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    }
+    return Buffer.concat(chunks);
+  }
+
   async getSignedUrlForInternalRead(
     key: string,
     isManga = true,

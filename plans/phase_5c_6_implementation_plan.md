@@ -110,25 +110,26 @@
 - Modify: `services/api/src/common/guards/rate-limit.guard.ts`
 - Modify: `services/api/src/common/filters/http-exception.filter.ts`
 - Test: `services/api/src/common/filters/http-exception.filter.spec.ts`
+- Test: `services/api/src/common/guards/rate-limit.guard.spec.ts`
 
 **Interfaces:**
 - Consumes: `RateLimitOptions`, `GlobalExceptionFilter`.
 - Produces: `error.meta.retryAfter`, per-chapter rate limit keys.
 
-- [ ] **Step 1: Viết failing test trong `http-exception.filter.spec.ts`**
-  Kiểm tra `HttpException` chứa `{ code: 'TOO_MANY_REQUESTS', message: '...', meta: { retryAfter: 45 } }` bảo toàn `error.meta.retryAfter`.
+- [x] **Step 1: Viết failing test trong `http-exception.filter.spec.ts`**
+  Kiểm tra `HttpException` chứa `{ code: 'TOO_MANY_REQUESTS', message: '...', retryAfter: 45 }` bảo toàn `error.meta.retryAfter`.
 
-- [ ] **Step 2: Thêm `'retryAfter'` vào `PUBLIC_ERROR_META_FIELDS` trong `http-exception.filter.ts`**
+- [x] **Step 2: Thêm `'retryAfter'` vào `PUBLIC_ERROR_META_FIELDS` trong `http-exception.filter.ts`**
 
-- [ ] **Step 3: Mở rộng `rate-limit.decorator.ts` với `routeParam?: string`**
+- [x] **Step 3: Mở rộng `rate-limit.decorator.ts` với `routeParam?: string`**
 
-- [ ] **Step 4: Cập nhật `rate-limit.guard.ts` để đọc `options.routeParam`**
+- [x] **Step 4: Cập nhật `rate-limit.guard.ts` để đọc `options.routeParam`**
   - Nếu `options.routeParam` được cấu hình mà `request.params?.[options.routeParam]` không tồn tại: ném `InternalServerErrorException('Rate limit routeParam is missing from request params')` để tránh fallback âm thầm.
   - Ghép `${options.keyPrefix}:${options.routeParam}_${paramValue}` vào key prefix.
-  - Ném `HttpException` chứa `meta: { retryAfter }`.
+  - Ném `HttpException` chứa `retryAfter`.
 
-- [ ] **Step 5: Chạy unit test kiểm tra**
-  Chạy `npm test -- src/common/filters/http-exception.filter.spec.ts`.
+- [x] **Step 5: Chạy unit test kiểm tra**
+  Chạy `npm test -- src/common` (bao gồm `http-exception.filter.spec.ts` và `rate-limit.guard.spec.ts`).
 
 ---
 

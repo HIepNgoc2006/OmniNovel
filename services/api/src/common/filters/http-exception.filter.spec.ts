@@ -1,4 +1,4 @@
-import { BadRequestException, ArgumentsHost, HttpStatus } from '@nestjs/common';
+import { BadRequestException, HttpException, ArgumentsHost, HttpStatus } from '@nestjs/common';
 import { GlobalExceptionFilter } from './http-exception.filter';
 
 describe('GlobalExceptionFilter', () => {
@@ -78,6 +78,33 @@ describe('GlobalExceptionFilter', () => {
           code: 'BAD_REQUEST',
           message: 'Chuỗi thông báo lỗi đơn thuần',
           requestId: 'req-test-1234',
+        }),
+      }),
+    );
+  });
+
+  it('phải trích xuất retryAfter vào error.meta khi ném HttpException TOO_MANY_REQUESTS', () => {
+    const exception = new HttpException(
+      {
+        code: 'TOO_MANY_REQUESTS',
+        message: 'Bạn đã vượt quá giới hạn tần suất yêu cầu.',
+        retryAfter: 45,
+      },
+      HttpStatus.TOO_MANY_REQUESTS,
+    );
+
+    filter.catch(exception, mockArgumentsHost);
+
+    expect(mockResponse.status).toHaveBeenCalledWith(HttpStatus.TOO_MANY_REQUESTS);
+    expect(mockResponse.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        error: expect.objectContaining({
+          code: 'TOO_MANY_REQUESTS',
+          message: 'Bạn đã vượt quá giới hạn tần suất yêu cầu.',
+          requestId: 'req-test-1234',
+          meta: expect.objectContaining({
+            retryAfter: 45,
+          }),
         }),
       }),
     );

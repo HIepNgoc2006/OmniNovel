@@ -54,6 +54,7 @@ export class GlobalExceptionFilter implements ExceptionFilter {
           'expectedVersion',
           'reviewRevision',
           'materializedRevision',
+          'retryAfter',
         ] as const;
 
         let meta: Record<string, any> | undefined;

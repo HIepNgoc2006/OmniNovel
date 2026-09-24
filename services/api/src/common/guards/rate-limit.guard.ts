@@ -4,6 +4,7 @@ import {
   ExecutionContext,
   HttpException,
   HttpStatus,
+  InternalServerErrorException,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { RedisService, RateLimitResult } from '../../redis/redis.service';
@@ -41,7 +42,20 @@ export class RateLimitGuard implements CanActivate {
         '127.0.0.1';
 
     const userId = request.user?.id;
-    const prefix = options.keyPrefix || 'global';
+    let prefix = options.keyPrefix || 'global';
+
+    // Xử lý routeParam để cô lập bucket theo tài nguyên (ví dụ: per-chapter)
+    // Nếu decorator yêu cầu routeParam mà param không tồn tại trong request: fail predictably
+    if (options.routeParam) {
+      const paramVal = request.params?.[options.routeParam];
+      if (!paramVal) {
+        throw new InternalServerErrorException(
+          `Rate limit routeParam '${options.routeParam}' is missing from request params`,
+        );
+      }
+      prefix = `${prefix}:${options.routeParam}_${paramVal}`;
+    }
+
     const scope = options.scope || 'IP_OR_USER';
 
     let primaryResult: RateLimitResult;

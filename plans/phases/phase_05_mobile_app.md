@@ -1,7 +1,7 @@
 # 📱 Phase 5: Ứng Dụng Di Động (Mobile App - Flutter Android-First)
 
 - **Mục tiêu:** Phát triển Ứng dụng Di động OmniNovel Client chuyên dụng cho Trải nghiệm Đọc (Reader-First UX) bằng Flutter trên nền tảng Android, hỗ trợ tần số quét cao (90Hz / 120Hz / 144Hz), kiểm soát bộ nhớ RAM nghiêm ngặt chống OOM, tích hợp hệ thống Gamification và đọc Offline.
-- **Trạng thái:** `[/] Phase 5 đang triển khai — 5A & 5B hoàn thành (Performance-Frozen Emulator Baseline), 5C kế tiếp`
+- **Trạng thái:** `[/] Phase 5 đang triển khai — 5A, 5B & 5C hoàn thành (Frozen Baseline ✅), 5D kế tiếp (Lưu Trữ Offline MOB-012 & Hoàn Thiện)`
 - **Môn học phụ trách:** Môn 2 — *Phát triển Ứng dụng Di động (Mobile Development)* (kết hợp Môn 1 & Môn 4).
 
 ---
@@ -88,7 +88,7 @@ apps/mobile/
 - [x] Tích hợp Presigned Media URL qua `MediaRepository` có in-memory TTL caching chống anti-leech rate limit (60 req/phút).
 - [x] Bộ kiểm thử & Bằng chứng giả lập chuẩn hóa: 78/78 tests Mobile Suite GREEN (100%), `flutter analyze` 0 issues, stress fixture 150 trang mixed dimensions, peak RSS 91.5MB (<150MB), 120Hz P90 6.85ms, jank 0.8%, process-death resume chính xác 100% trên Pixel 7 / Android SDK Emulator API 34 ([Báo cáo chi tiết](file:///e:/Workspace%202/Doctruyen_project/plans/evidence/phase_5b_hardware_evidence.md)).
 
-### 🎨 Phase 5C: Đa Định Dạng Trình Đọc & Tính Năng Hoàn Chỉnh (MOB-001..MOB-011)
+### 🎨 Phase 5C: Đa Định Dạng Trình Đọc & Tính Năng Hoàn Chỉnh (MOB-001..MOB-011) - [x] HOÀN THÀNH (FROZEN BASELINE ✅)
 - [x] **[Phase 5C.1] Manga Paged Reader ([Issue #197](https://github.com/HIepNgoc2006/OmniNovel/issues/197)):** Hỗ trợ lật trang phải sang trái (RTL/LTR), phóng to/thu nhỏ cảm ứng (InteractiveViewer/Pinch-zoom), tái sử dụng hạ tầng ImageCache 80MB & progress sync.
 - [x] **[Phase 5C.2] Novel Reader ([Issue #198](https://github.com/HIepNgoc2006/OmniNovel/issues/198)):** Trình đọc truyện chữ với giao diện Typography tùy biến (cỡ chữ, giãn dòng, theme Sepia/OLED) và định vị đoạn văn bằng `anchorBlockId`.
 - [x] **[Phase 5C.3] Khám phá & Tìm kiếm ([Issue #199](https://github.com/HIepNgoc2006/OmniNovel/issues/199)):** Home Feed Hero Carousel, Bảng xếp hạng Top Comics/Novels, Truyện mới cập nhật, Tìm kiếm đa bộ lọc (Debounce 500ms, Filter Chips genres tải động từ API `GET /api/v1/genres`, infinite scroll, recent searches SharedPreferences, query generation guard chống race condition), Chi tiết truyện (Story Detail production UI với blurred backdrop, volume grouping canonical, numeric chapter sorting `double.tryParse`, read checkmarks, resume reading pointer). SSoT `StoryRepository` khóa tại `AppRouter`. Baseline 121/121 tests GREEN, `flutter analyze` 0 issues.

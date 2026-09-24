@@ -44,7 +44,7 @@ apps/mobile/
 │   │   ├── api/              # Dio Client, JWT Interceptors & Error Mapper
 │   │   ├── auth/             # Token Storage (FlutterSecureStorage) & Auth State
 │   │   ├── cache/            # Local Image & Metadata Cache Manager
-│   │   ├── storage/          # Local Storage (SharedPreferences & Encrypted SQLite)
+│   │   ├── storage/          # Local Storage (SharedPreferences, SQLite metadata & App-Private Storage)
 │   │   └── errors/           # Standard JSON Error Handling Matching Backend
 │   ├── features/             # Feature Modules (Reader-First)
 │   │   ├── auth/             # MOB-008: Đăng nhập, Đăng ký & Tài khoản
@@ -60,8 +60,8 @@ apps/mobile/
 │   │   │   └── progress/     # Đồng bộ tiến độ đọc (PUT & GET /library/reading-progress)
 │   │   ├── gamification/     # MOB-010: Điểm danh, EXP, OmniCoin & Rank Themes
 │   │   ├── report/           # MOB-011: Bottom Sheet báo lỗi chương (Gọi Issue #191)
-│   │   └── offline/          # MOB-012: Quản lý tải và giải mã chương truyện offline
-└── test/                     # Unit, Widget & Golden Tests
+│   │   └── offline/          # MOB-012: Quản lý tải và lưu trữ chương truyện offline
+│   └── test/                 # Unit, Widget & Golden Tests
 ```
 
 ---
@@ -97,11 +97,25 @@ apps/mobile/
 - [x] **[Phase 5C.6] Báo lỗi chương ([Issue #202](https://github.com/HIepNgoc2006/OmniNovel/issues/202)):** Triển khai Backend API #191 (`POST /api/v1/chapters/:id/reports`) và Mobile MOB-011 Bottom Sheet. Kiểm soát quyền truy cập độc giả & unpublished versions, ràng buộc chặt chẽ rendered version ID (`activeVersion.id`), phân lập rate limit per-chapter qua `routeParam: 'id'` (`3 req/60s`) kèm metadata `retryAfter`, chống trùng lặp bằng transaction `pessimistic_write` lock và NULL-safe SQL location equality. Phía Mobile hỗ trợ lifted anchor từ `NovelReaderView`, Top HUD flag action, Bottom Sheet UI chuẩn hóa 7 categories, checkbox báo lỗi toàn chương, đếm ngược cooldown timer và Gate 7 guest auth dialog (zero API calls). Đạt 100% 7 Verification Gates. Backend: 28/28 suites PASS (352/352 tests). Mobile: 100% tests PASS, `flutter analyze` 0 issues.
 
 ### 💾 Phase 5D: Lưu Trữ Offline & Hoàn Thiện Nghiệm Thu (MOB-012 & Polish)
-- [ ] **Offline Storage (MOB-012):** Tải gói chương truyện (ZIP manifest) và giải mã cục bộ bằng SQLite mã hóa (SQLCipher/sqflite).
-- [ ] Tích hợp tính năng backend đóng gói ngược chương truyện cũ (Issue #190: Canonical Reverse Packaging).
-- [ ] **Popup Action Sheet Studio:** Hỗ trợ thông báo xác nhận duyệt bản dịch AI nhanh cho Editor/Owner khi AI dịch xong.
-- [ ] **Nghiệm Thu Thiết Bị Android Vật Lý (Physical Device Acceptance Gate):** Kiểm thử đo đạc thực địa trên tối thiểu 1 thiết bị Android vật lý Mid-Range (4–6GB RAM) và 1 thiết bị Android vật lý Low-End (2–3GB RAM) để xác nhận working-set RSS < 150MB và Frame Budget trước khi hoàn tất nghiệm thu Phase 5 Final.
-- [ ] Chạy ma trận kiểm thử tương thích Android (Android 7 ➔ Android 16) và đo đạc Frame Budget.
+- [x] **Backend Prerequisite ([Issue #190](https://github.com/HIepNgoc2006/OmniNovel/issues/190)):** Triển khai *Canonical Reverse Packaging Service* qua BullMQ bền vững (`chapter-packaging`, deterministic `jobId`), lưu trữ MinIO S3 qua `StorageService`, bảng `chapter_artifacts`, ràng buộc loại trừ nguồn (`chk_translation_jobs_canonical_source`), endpoints `GET .../artifact` và `POST .../package`. *(CLOSED ✅ - Commit 1c82012)*
+- [ ] **Phase 5D.3 — Durable Offline Download Manager & App-Private Storage (MOB-012 / Issue #203):**
+  - Quản lý hàng đợi tải chương với SQLite metadata (`sqflite`), ràng buộc `UNIQUE(chapter_version_id)` chống duplicate tasks.
+  - Tách biệt `ArtifactDownloadClient`/Dio độc lập, không gắn `AuthInterceptor`, không rò rỉ JWT token sang MinIO/S3 storage host.
+  - Fail-closed presigned URL refresh & HTTP Range resume (`206 Partial Content` append vs `200 OK` truncate restart byte 0; 403 storage không trigger auth refresh).
+  - Tải stream tệp `.part` vào App-Private sandbox (`context.filesDir/offline/tmp/`, phân quyền OS `0700` + Android FBE).
+  - State machine bền vững (`QUEUED -> DOWNLOADING -> VERIFYING -> READY`), Crash recovery (`DOWNLOADING/VERIFYING -> PAUSED`).
+- [ ] **Phase 5D.4 — Offline Bundle Installation & Bidirectional Integrity Verification:**
+  - Giải nén trong background Isolate (`compute`), đối chiếu checksum SHA-256 tệp `.part` và manifest.
+  - Thao tác Atomic Promotion (`staging ➔ installed`), transaction commit vào `offline_chapters`.
+  - Phục hồi khởi động 2 chiều (Bidirectional Startup Reconciliation) dọn thư mục mồ côi và loại trừ record rỗng file.
+- [ ] **Phase 5D.5 — Reader Offline Resolution:**
+  - Tích hợp Webtoon, Manga và Novel Reader nạp trực tiếp file trong sandbox `0700` (`FileImage`), 0 request mạng khi ngắt Internet (Airplane Mode), offline checkpoint progress.
+- [ ] **Phase 5D.6 — Quản Lý Dung Lượng & LRU Eviction:**
+  - Storage Quota, LRU Eviction tự động và Manual Delete chương/truyện đã tải.
+- [ ] **Phase 5D.7 — Studio Quick-Approval Action Sheet (Polish - Non-blocking):**
+  - Popup Action Sheet duyệt nhanh bản dịch AI cho Editor/Owner (tách riêng, không thuộc scope MOB-012).
+- [ ] **Phase 5D.8 — Nghiệm Thu Thiết Bị Vật Lý & Hoàn Tất Phase 5:**
+  - Kiểm thử đo đạc thực địa trên thiết bị Android vật lý (Low-End 2–3GB RAM & Mid-Range 4–6GB RAM) xác nhận working-set RSS < 150MB và Frame Budget 120Hz/90Hz/60Hz.
 
 ---
 

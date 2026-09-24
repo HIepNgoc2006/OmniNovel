@@ -141,25 +141,37 @@ Phase 5D là chặng cuối cùng của **Phase 5: Ứng dụng Di động OmniN
 - **Ranh giới CSDL vs Hệ thống Tệp:**
   - **CSDL SQLite (`sqflite`):** Lưu trữ metadata cấu trúc, chỉ mục tìm kiếm offline, lịch sử đọc checkpoint offline, hàng đợi tải (`download_tasks`), và bảng map `(assetId, relativePath)`.
   - **Hệ thống tệp (Filesystem):** Lưu trữ tệp ảnh WebP, tệp JSON manifest, tệp HTML truyện chữ.
-- **Bộ nhớ Sandbox & Chuẩn Bảo Mật:**
-  - Toàn bộ nội dung ngoại tuyến được lưu trữ trong **Internal App-Private Storage Directory** (`context.filesDir` / `data/user/0/<package>/files/offline/`).
+- **Bộ nhớ Sandbox & Chuẩn Bảo Mật (App-Private Sandbox):**
+  - Toàn bộ nội dung ngoại tuyến và tệp tải tạm thời được lưu trữ trong **Internal App-Private Storage Directory** (`context.filesDir` / `data/user/0/<package>/files/offline/`).
   - Phân quyền hệ điều hành `0700` ngăn chặn 100% các ứng dụng khác truy cập.
   - Phân vùng tự động được bảo vệ bởi Hardware File-Based Encryption (FBE) ở cấp OS/Keystore khi thiết bị khóa màn hình.
   - **Zero-CPU Decryption Overhead:** Đọc trực tiếp tệp ảnh từ App-Private Storage qua `FileImage` mà không phải gánh chi phí CPU giải mã AES theo từng frame cuộn, đảm bảo giữ vững **Frame Budget $< 8.33\text{ ms}$** (120Hz) và RAM working-set $< 150\text{ MB}$.
+- **Tách biệt Transport Tải Artifact khỏi Core API Dio (`ArtifactDownloadClient`):**
+  - **Chống rò rỉ Token (Zero JWT Leakage):** Tuyệt đối KHÔNG dùng chung Dio instance của Core API (vốn có `AuthInterceptor` tự động gắn `Authorization: Bearer <jwt>`).
+  - Tải artifact sử dụng một `ArtifactDownloadClient` (hoặc Dio instance riêng biệt) **không đăng ký `AuthInterceptor` và không đính kèm bất kỳ header `Authorization` nào**, ngăn chặn triệt để nguy cơ gửi Bearer JWT sang MinIO/S3 object storage host.
+  - Core API Dio chỉ phục vụ duy nhất việc kiểm tra readiness và lấy presigned download URL (`GET /api/v1/chapters/:chapterId/versions/:versionId/artifact`).
+  - **Xử lý mã lỗi 403 Forbidden từ Storage:** Khi storage host trả về HTTP 403 (presigned URL hết hạn), client tuyệt đối **KHÔNG kích hoạt cơ chế refresh JWT token** của Core API (`/auth/refresh`), mà báo hiệu hết hạn URL để thực hiện luồng làm mới presigned URL qua Core API.
 
-### Invariant 6: Queue State Machine & Crash Recovery
-- Hàng đợi tải chương Mobile quản lý qua State Machine:
+### Invariant 6: Queue State Machine, DB-Level Single-Flight & Fail-Closed Range Resume
+- **Hàng đợi tải chương Mobile quản lý qua State Machine:**
   $$\text{QUEUED} \longrightarrow \text{DOWNLOADING} \longrightarrow \text{VERIFYING} \longrightarrow \text{READY}$$
   Kèm các trạng thái ngắt/kết thúc: $\text{PAUSED}$, $\text{FAILED}$, $\text{CANCELLED}$.
-- **Phục hồi sau Crash/Tắt App:**
-  - Quét CSDL SQLite: các task đang ở `DOWNLOADING` hoặc `VERIFYING` chuyển sang `PAUSED`.
-  - Cho phép tiếp tục tải (resume) qua HTTP `Range` header nếu máy chủ hỗ trợ.
-- **Thao tác Hủy (Cancel):**
-  - Kích hoạt Dio `CancelToken.cancel()`.
-  - Xóa ngay lập tức file `.part` và thư mục staging tương ứng.
-  - Cập nhật bản ghi trong SQLite thành `CANCELLED`.
-- **Thử lại (Retry):**
-  - Tái sử dụng ID task cũ, reset số byte đã tải về 0, chuyển trạng thái về `QUEUED`, không sinh trùng lặp bản ghi.
+- **Ràng Buộc Đơn Nhiệm Cấp CSDL (DB-Level Single-Flight):**
+  - Bảng `download_tasks` bổ sung ràng buộc duy nhất `UNIQUE(chapter_version_id)` (5D.3 chỉ quản lý `OFFLINE_BUNDLE`).
+  - Đảm bảo tính duy nhất ở tầng SQLite schema, ngăn chặn tuyệt đối tình trạng race condition tạo 2 task tải cho cùng một version.
+- **Thao tác Thử lại (Retry) & Hủy (Cancel):**
+  - **Retry:** Tái sử dụng `task_id` cũ, reset `downloaded_bytes = 0`, chuyển trạng thái về `QUEUED`, không sinh trùng lặp bản ghi.
+  - **Cancel:** Kích hoạt Dio `CancelToken.cancel()`, xóa ngay lập tức file `.part` và thư mục staging tương ứng, cập nhật bản ghi trong SQLite thành `CANCELLED`.
+- **Phục hồi sau Crash / Tắt App (Crash Recovery):**
+  - Quét CSDL SQLite khi khởi động: mọi task đang ở trạng thái `DOWNLOADING` hoặc `VERIFYING` tự động chuyển sang `PAUSED`.
+- **Presigned URL Refresh & Fail-Closed HTTP Range Resume:**
+  - `download_url` trong SQLite chỉ là cache tạm thời.
+  - Khi resume sau khi app restart hoặc sau khi pause, hệ thống chủ động gọi Core API để làm mới presigned URL nếu cần.
+  - Nếu URL hết hạn giữa lúc đang tải (nhận 403 từ storage): lấy URL mới từ Core API và tiếp tục resume từ offset hiện tại của `.part`.
+  - Gửi header `Range: bytes=<downloadedBytes>-`.
+  - **Fail-Closed Header Verification:**
+    - Chỉ append vào `.part` nếu response trả về **HTTP `206 Partial Content`** và header `Content-Range` khớp chính xác offset yêu cầu (`bytes <offset>-<total-1>/<total>`).
+    - Nếu object storage trả về **HTTP `200 OK`** (storage không hỗ trợ Range hoặc bỏ qua Range header): lập tức **truncate `.part` về 0 byte** và tải lại từ đầu, ngăn chặn hoàn toàn việc nối file làm hỏng (corrupt) tệp ZIP.
 
 ---
 
@@ -271,7 +283,7 @@ CREATE TABLE offline_chapters (
 -- Quản lý tiến trình hàng đợi tải xuống
 CREATE TABLE download_tasks (
     task_id TEXT PRIMARY KEY,
-    chapter_version_id TEXT NOT NULL,
+    chapter_version_id TEXT NOT NULL UNIQUE,
     chapter_id TEXT NOT NULL,
     story_id TEXT NOT NULL,
     story_title TEXT NOT NULL,
@@ -386,14 +398,24 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 - [x] Cập nhật `findVersionsForStudio` trong `ChaptersService` truy vấn trạng thái `chapter_artifacts` để trả về `artifactReady`.
 - [x] Bộ kiểm thử Unit & Integration Tests cho Backend Packaging (đạt 100% test coverage cho lifecycle `MISSING -> BUILDING -> READY`).
 
-### 📌 Phase 5D.3: Mobile Durable Download Manager (Flutter Engine)
-- [ ] Cập nhật `apps/mobile/pubspec.yaml`: Bổ sung `sqflite`, `path_provider`, `archive`, `crypto`, `path`.
-- [ ] Khởi tạo CSDL SQLite `omninovel_offline.db` trong `core/storage/` với bảng `offline_chapters` và `download_tasks`.
+### 📌 Phase 5D.3: Mobile Durable Download Manager & App-Private Storage (MOB-012)
+- [ ] Cập nhật `apps/mobile/pubspec.yaml`: Bổ sung `sqflite`, `path_provider`, `crypto`, `path`.
+- [ ] Khởi tạo CSDL SQLite `omninovel_offline.db` trong `core/storage/` với bảng `offline_chapters` và `download_tasks` (enforce `UNIQUE(chapter_version_id)` chống duplicate tasks).
+- [ ] Thiết lập App-Private Storage Directory: cấu hình các thư mục chuẩn `files/offline/tmp/`, `files/offline/staging/`, `files/offline/installed/` trong sandbox an toàn `0700` được bảo vệ bởi Android FBE.
+- [ ] Xây dựng `ArtifactRepository`: Tích hợp Core API Dio để kiểm tra readiness và lấy presigned download URL (`GET /api/v1/chapters/:chapterId/versions/:versionId/artifact`).
+- [ ] Xây dựng `ArtifactDownloadClient`:
+  - Dio instance độc lập chuyên dụng để tải artifact payload từ presigned MinIO/S3 URL.
+  - Tuyệt đối không đăng ký `AuthInterceptor` và không đính kèm Bearer JWT header (chống rò rỉ token sang storage host).
+  - Không kích hoạt auth refresh token khi gặp HTTP 403 từ storage; thay vào đó kích hoạt luồng làm mới presigned URL qua Core API.
 - [ ] Xây dựng `DownloadQueueManager`:
-  - Quản lý State Machine (`QUEUED -> DOWNLOADING -> VERIFYING -> READY`).
-  - Hỗ trợ tải nền qua Dio stream tệp `.part`.
-  - Hỗ trợ Pause, Resume, Cancel dọn sạch tệp tạm thời.
-  - Tự động khôi phục hàng đợi khi app khởi động lại sau crash/kill.
+  - Quản lý State Machine (`QUEUED -> DOWNLOADING -> VERIFYING -> READY`, `PAUSED`, `FAILED`, `CANCELLED`).
+  - Single-flight enforce ở cả SQLite layer (`UNIQUE`) và Memory layer.
+  - Tải stream qua `ArtifactDownloadClient` vào tệp tạm `files/offline/tmp/<chapterVersionId>.part`.
+  - Pause, Resume, Cancel (xóa `.part` dọn sạch rác), Retry (reuse `task_id` cũ, reset downloaded_bytes về 0).
+  - Tự động khôi phục hàng đợi khi app khởi động lại sau crash/process-death (`DOWNLOADING` & `VERIFYING` ➔ `PAUSED`).
+  - Fail-closed presigned URL refresh khi resume hoặc khi URL hết hạn.
+  - Fail-closed HTTP Range resume: gửi header `Range: bytes=<downloadedBytes>-`; chỉ append nếu storage trả về `206 Partial Content` và `Content-Range` đúng offset; nếu storage trả về `200 OK` thì lập tức truncate `.part` về 0 byte và tải lại từ đầu.
+- [ ] Bộ kiểm thử Unit & Integration Tests cho `DownloadQueueManager` và `ArtifactDownloadClient` (bao phủ 100% các nhánh invariant trên).
 
 ### 📌 Phase 5D.4: Offline Bundle Installation & Bidirectional Integrity Verification
 - [ ] Xây dựng `BundleInstaller`:

@@ -466,6 +466,8 @@ export interface StudioChapterVersionSummaryDto {
   isPublished: boolean;
   sourceVersionId: string | null;
   createdAt: IsoDateString;
+  artifactReady?: boolean;
+  artifactStatus?: ChapterArtifactStatus;
 }
 
 export interface ApplyTranslationJobRequest {
@@ -615,5 +617,76 @@ export interface CreateChapterReportResponse {
   message: string;
 }
 
+// ==========================================
+// Phase 5D: Offline Artifacts & Packaging
+// ==========================================
 
+export enum ChapterArtifactType {
+  OFFLINE_BUNDLE = 'OFFLINE_BUNDLE',
+  TRANSLATION_SOURCE = 'TRANSLATION_SOURCE',
+}
 
+export enum ChapterArtifactStatus {
+  MISSING = 'MISSING',
+  BUILDING = 'BUILDING',
+  READY = 'READY',
+  FAILED = 'FAILED',
+}
+
+export interface ChapterArtifactDto {
+  status: ChapterArtifactStatus;
+  artifactReady: boolean;
+  artifactType: ChapterArtifactType;
+  chapterVersionId: string;
+  downloadUrl?: string | null;
+  fileSizeBytes?: number | null;
+  sha256?: string | null;
+  expiresAt?: string | null;
+  retryAfter?: number | null;
+  errorMessage?: string | null;
+}
+
+export interface TriggerChapterPackagingRequest {
+  artifactType?: ChapterArtifactType;
+}
+
+export interface TriggerChapterPackagingResponse {
+  status: ChapterArtifactStatus;
+  artifactReady: boolean;
+  artifactType: ChapterArtifactType;
+  chapterVersionId: string;
+  retryAfter?: number | null;
+  downloadUrl?: string | null;
+  fileSizeBytes?: number | null;
+  sha256?: string | null;
+}
+
+export interface OfflineBundleFileEntry {
+  path: string;
+  assetId: string;
+  mimeType: string;
+  size: number;
+  sha256: string;
+  sortOrder: number;
+  width?: number | null;
+  height?: number | null;
+}
+
+export interface OfflineBundleManifest {
+  schemaVersion: number;
+  bundleType: 'OFFLINE_READER';
+  chapterId: string;
+  chapterVersionId: string;
+  storyId: string;
+  storyTitle: string;
+  chapterNumber: string;
+  chapterTitle?: string | null;
+  mediaFormat: 'COMIC' | 'NOVEL';
+  publicationFormat?: string | null;
+  language: string;
+  versionNumber: number;
+  versionType: ChapterVersionType;
+  createdAt: string;
+  files: OfflineBundleFileEntry[];
+  novelMetadata?: any | null;
+}

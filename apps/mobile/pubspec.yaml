@@ -39,6 +39,9 @@ dependencies:
   path: ^1.9.0
   crypto: ^3.0.5
 
+  # Archive & Offline Extraction (Phase 5D.4)
+  archive: ^3.6.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

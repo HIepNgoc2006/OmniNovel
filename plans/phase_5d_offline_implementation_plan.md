@@ -408,15 +408,15 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 - [x] Bộ kiểm thử Unit & Integration Tests cho Backend Packaging (đạt 100% test coverage cho lifecycle `MISSING -> BUILDING -> READY`).
 
 ### 📌 Phase 5D.3: Mobile Durable Download Manager & App-Private Storage (MOB-012)
-- [ ] Cập nhật `apps/mobile/pubspec.yaml`: Bổ sung `sqflite`, `path_provider`, `crypto`, `path`.
-- [ ] Khởi tạo CSDL SQLite `omninovel_offline.db` trong `core/storage/` với bảng `offline_chapters` và `download_tasks` (enforce `UNIQUE(chapter_version_id)` chống duplicate tasks).
-- [ ] Thiết lập App-Private Storage Directory: cấu hình các thư mục chuẩn `files/offline/tmp/`, `files/offline/staging/`, `files/offline/installed/` trong sandbox an toàn `0700` được bảo vệ bởi Android FBE.
-- [ ] Xây dựng `ArtifactRepository`: Tích hợp Core API Dio để kiểm tra readiness và lấy presigned download URL (`GET /api/v1/chapters/:chapterId/versions/:versionId/artifact`).
-- [ ] Xây dựng `ArtifactDownloadClient`:
+- [x] Cập nhật `apps/mobile/pubspec.yaml`: Bổ sung `sqflite`, `path_provider`, `crypto`, `path`, `sqflite_common_ffi`.
+- [x] Khởi tạo CSDL SQLite `omninovel_offline.db` trong `core/storage/` với bảng `offline_chapters` (không có cột status) và `download_tasks` (enforce `UNIQUE(chapter_version_id)` chống duplicate tasks).
+- [x] Thiết lập App-Private Storage Directory: cấu hình các thư mục chuẩn `files/offline/tmp/`, `files/offline/staging/`, `files/offline/installed/` trong sandbox an toàn `0700` được bảo vệ bởi Android FBE.
+- [x] Xây dựng `ArtifactRepository`: Tích hợp Core API Dio để kiểm tra readiness và lấy presigned download URL (`GET /api/v1/chapters/:chapterId/versions/:versionId/artifact`).
+- [x] Xây dựng `ArtifactDownloadClient`:
   - Dio instance độc lập chuyên dụng để tải artifact payload từ presigned MinIO/S3 URL.
   - Tuyệt đối không đăng ký `AuthInterceptor` và không đính kèm Bearer JWT header (chống rò rỉ token sang storage host).
   - Không kích hoạt auth refresh token khi gặp HTTP 403 từ storage; thay vào đó kích hoạt luồng làm mới presigned URL qua Core API.
-- [ ] Xây dựng `DownloadQueueManager`:
+- [x] Xây dựng `DownloadQueueManager`:
   - Quản lý State Machine: 5D.3 CHỈ sở hữu các bước chuyển trạng thái `QUEUED ➔ DOWNLOADING ➔ VERIFYING` (kèm `PAUSED`, `FAILED`, `CANCELLED`). Tuyệt đối không tự ý chuyển sang `READY` để chống phát sinh READY giả khi chưa cài đặt bundle.
   - Single-flight enforce ở cả SQLite layer (`UNIQUE`) và Memory layer.
   - Tải stream qua `ArtifactDownloadClient` vào tệp tạm `files/offline/tmp/<chapterVersionId>.part`.
@@ -429,7 +429,7 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
     - Gửi request với header `Range: bytes=<resumeOffset>-`.
     - Chỉ append nếu storage trả về `206 Partial Content` và `Content-Range` có `start == resumeOffset` (đồng thời kiểm tra `total` khớp với `fileSizeBytes` backend khi có).
     - Nếu storage trả về `200 OK`, lập tức truncate `.part` về 0 byte, reset offset về `0` và tải lại sạch từ đầu.
-- [ ] Bộ kiểm thử Unit & Integration Tests cho `DownloadQueueManager` và `ArtifactDownloadClient` (bao phủ 100% các nhánh invariant trên).
+- [x] Bộ kiểm thử Unit & Integration Tests cho `DownloadQueueManager` và `ArtifactDownloadClient` (11/11 Acceptance Gates PASS 100%, 182/182 Mobile suites PASS, `flutter analyze` 0 issues). *(COMPLETED ✅)*
 
 ### 📌 Phase 5D.4: Offline Bundle Installation & Bidirectional Integrity Verification
 - [ ] Xây dựng `BundleInstaller`:

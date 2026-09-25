@@ -33,6 +33,12 @@ dependencies:
   # HTML DOM Parser for Novel Reader Engine
   html: ^0.15.4
 
+  # Local Offline Storage & Path Resolution (Phase 5D.3)
+  sqflite: ^2.3.3+1
+  path_provider: ^2.1.4
+  path: ^1.9.0
+  crypto: ^3.0.5
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -40,6 +46,7 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^4.0.0
   mocktail: ^1.0.4
+  sqflite_common_ffi: ^2.3.3
 
 flutter:
   uses-material-design: true

@@ -98,12 +98,13 @@ apps/mobile/
 
 ### 💾 Phase 5D: Lưu Trữ Offline & Hoàn Thiện Nghiệm Thu (MOB-012 & Polish)
 - [x] **Backend Prerequisite ([Issue #190](https://github.com/HIepNgoc2006/OmniNovel/issues/190)):** Triển khai *Canonical Reverse Packaging Service* qua BullMQ bền vững (`chapter-packaging`, deterministic `jobId`), lưu trữ MinIO S3 qua `StorageService`, bảng `chapter_artifacts`, ràng buộc loại trừ nguồn (`chk_translation_jobs_canonical_source`), endpoints `GET .../artifact` và `POST .../package`. *(CLOSED ✅ - Commit 1c82012)*
-- [ ] **Phase 5D.3 — Durable Offline Download Manager & App-Private Storage (MOB-012 / Issue #203):**
+- [x] **Phase 5D.3 — Durable Offline Download Manager & App-Private Storage (MOB-012 / Issue #203):**
   - Quản lý hàng đợi tải chương với SQLite metadata (`sqflite`), ràng buộc `UNIQUE(chapter_version_id)` chống duplicate tasks.
   - Tách biệt `ArtifactDownloadClient`/Dio độc lập, không gắn `AuthInterceptor`, không rò rỉ JWT token sang MinIO/S3 storage host.
   - Fail-closed presigned URL refresh & HTTP Range resume từ Filesystem SSoT (`resumeOffset = partFile.length()`; `206 Partial Content` append khi start khớp offset vs `200 OK` truncate restart byte 0; 403 storage không trigger auth refresh).
   - Tải stream tệp `.part` vào App-Private sandbox (`context.filesDir/offline/tmp/`, phân quyền OS `0700` + Android FBE).
   - State machine bền vững: 5D.3 chỉ sở hữu `QUEUED -> DOWNLOADING -> VERIFYING` (chống phát sinh `READY` giả), Crash recovery (`DOWNLOADING/VERIFYING -> PAUSED`).
+  - Toàn bộ 11/11 Verification Acceptance Gates PASS 100%, 182/182 Mobile tests PASS, `flutter analyze` 0 issues. *(CLOSED ✅)*
 - [ ] **Phase 5D.4 — Offline Bundle Installation & Bidirectional Integrity Verification:**
   - 5D.4 `BundleInstaller` là thành phần duy nhất sở hữu chuyển trạng thái `VERIFYING -> READY | FAILED`.
   - Giải nén trong background Isolate (`compute`), đối chiếu checksum SHA-256 tệp `.part` và manifest.

@@ -214,6 +214,7 @@ class OfflineStorageRepository {
         'download_tasks',
         {
           'status': DownloadTaskStatus.ready.value,
+          'error_message': null,
           'updated_at': now,
         },
         where: 'task_id = ?',

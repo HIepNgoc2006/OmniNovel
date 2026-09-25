@@ -327,6 +327,8 @@ class BundleInstaller {
     }
 
     final stagingPath = await _storagePaths.getStagingPathForVersion(task.chapterVersionId);
+    bool isPromoted = false;
+    String? promotedInstalledPath;
 
     try {
       // 1. Gate 1 & Invariant 2: Checksum-before-unzip trong background isolate
@@ -380,6 +382,8 @@ class BundleInstaller {
       }
 
       await stagingDir.rename(installedPath);
+      isPromoted = true;
+      promotedInstalledPath = installedPath;
 
       checkCancelled();
 
@@ -405,6 +409,7 @@ class BundleInstaller {
 
       // Commit DB & Task READY in one atomic SQLite Transaction!
       await _repository.commitInstalledChapterAndReady(offlineChapter, task.taskId);
+      isPromoted = false; // Commit thành công, không rollback installed nữa
 
       // Gate 13: Dọn dẹp tệp tạm .part và staging sau khi cài đặt thành công (Idempotent)
       await _storagePaths.deletePartFile(task.chapterVersionId);
@@ -414,10 +419,26 @@ class BundleInstaller {
     } on OfflineInstallationCancelledException {
       // Invariant 10: Fail-closed cleanup khi bị cancel, KHÔNG ghi status FAILED
       await _storagePaths.deleteStagingDir(task.chapterVersionId);
+      if (isPromoted && promotedInstalledPath != null) {
+        try {
+          final dir = Directory(promotedInstalledPath);
+          if (await dir.exists()) {
+            await dir.delete(recursive: true);
+          }
+        } catch (_) {}
+      }
       rethrow;
     } catch (e) {
       // Invariant 10: Fail-closed cleanup & task FAILED
       await _storagePaths.deleteStagingDir(task.chapterVersionId);
+      if (isPromoted && promotedInstalledPath != null) {
+        try {
+          final dir = Directory(promotedInstalledPath);
+          if (await dir.exists()) {
+            await dir.delete(recursive: true);
+          }
+        } catch (_) {}
+      }
       await _repository.updateTaskStatus(
         task.taskId,
         DownloadTaskStatus.failed,
@@ -709,9 +730,10 @@ class BundleInstaller {
           );
         }
       } else {
-        // Invariant 5/7: Payload 100% hợp lệ + DB row tồn tại -> Normalize task về READY nếu task đang ở PAUSED/VERIFYING do crash recovery
+        // Invariant 5/7: Payload 100% hợp lệ + DB row tồn tại -> Normalize task về READY CHỈ KHI task đang ở PAUSED hoặc VERIFYING do crash recovery
         final task = await _repository.getTaskByVersionId(chapter.chapterVersionId);
-        if (task != null && task.status != DownloadTaskStatus.ready) {
+        if (task != null &&
+            (task.status == DownloadTaskStatus.paused || task.status == DownloadTaskStatus.verifying)) {
           await _repository.updateTaskStatus(task.taskId, DownloadTaskStatus.ready);
         }
       }
@@ -727,8 +749,10 @@ class BundleInstaller {
 
           if (!isInstalledInDb) {
             final task = await _repository.getTaskByVersionId(versionId);
+            final isRecoverable = task != null &&
+                (task.status == DownloadTaskStatus.verifying || task.status == DownloadTaskStatus.paused);
 
-            if (task != null) {
+            if (isRecoverable) {
               final validation = await verifyInstalledPayload(
                 entity,
                 expectedVersionId: task.chapterVersionId,
@@ -769,7 +793,8 @@ class BundleInstaller {
                 } catch (_) {}
               }
             } else {
-              // Gate 11: Thư mục mồ côi không có task tương ứng ➔ Xóa an toàn
+              // Task không ở trạng thái recoverable (CANCELLED, FAILED, QUEUED) hoặc không có task:
+              // Xóa an toàn thư mục orphan trên đĩa, bảo toàn trạng thái hiện tại của task (chống resurrection race)
               try {
                 await entity.delete(recursive: true);
                 removedOrphanDirs++;

@@ -1203,6 +1203,83 @@ void main() {
     });
 
     // =========================================================================
+    // Gate 17b: Cancel After Promotion / Before DB Transaction (Installed Rollback)
+    // =========================================================================
+    test('Gate 17b: Cancel after promotion before DB transaction triggers installed rollback and prevents startup resurrection', () async {
+      const versionId = 'v17b_cancel_after_promote';
+      final pageContent = utf8.encode('page-content-17b');
+      final manifest = {
+        'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
+        'chapterVersionId': versionId,
+        'chapterId': 'c17b',
+        'storyId': 's17b',
+        'mediaFormat': 'COMIC',
+      };
+      final zipBytes = createTestZip(manifest: manifest, files: {'pages/001.webp': pageContent});
+      final realSha = sha256.convert(zipBytes).toString();
+
+      final partFile = await storagePaths.getPartFile(versionId);
+      await partFile.writeAsBytes(zipBytes);
+
+      final task = DownloadTask(
+        taskId: 'task_gate17b',
+        chapterVersionId: versionId,
+        chapterId: 'c17b',
+        storyId: 's17b',
+        storyTitle: 'Cancel After Promote Test',
+        chapterNumber: '17b',
+        mediaFormat: 'COMIC',
+        status: DownloadTaskStatus.verifying,
+        sha256Hash: realSha,
+        createdAt: 17100,
+        updatedAt: 17100,
+      );
+      await storageRepo.insertTask(task);
+
+      final cancelToken = CancelToken();
+
+      // Sử dụng HookedStoragePaths để cancel token ngay sau khi promotion (tại getRootOfflinePath)
+      final hookedStoragePaths = _CancelAfterPromoteStoragePaths(
+        customBasePath: tempDir.path,
+        cancelToken: cancelToken,
+      );
+
+      final installer = BundleInstaller(
+        repository: storageRepo,
+        storagePaths: hookedStoragePaths,
+        computeRunner: <Q, R>(callback, message) async => await callback(message),
+      );
+
+      await expectLater(
+        installer.installBundle(task, cancelToken: cancelToken),
+        throwsA(isA<OfflineInstallationCancelledException>()),
+      );
+
+      // Verify BẤT BIẾN: installed/ ĐÃ ĐƯỢC ROLLBACK XÓA KHỎI ĐĨA!
+      final installedPath = await storagePaths.getInstalledPathForVersion(versionId);
+      expect(Directory(installedPath).existsSync(), isFalse);
+
+      // Staging cũng bị xóa sạch
+      final stagingPath = await storagePaths.getStagingPathForVersion(versionId);
+      expect(Directory(stagingPath).existsSync(), isFalse);
+
+      // DB row chưa tồn tại
+      expect(await storageRepo.isChapterInstalled(versionId), isFalse);
+
+      // Đánh dấu task là CANCELLED (giống hành vi thực tế của queue manager)
+      await storageRepo.updateTaskStatus('task_gate17b', DownloadTaskStatus.cancelled);
+
+      // Chạy startup reconciliation để chứng minh KHÔNG CÓ resurrection
+      final report = await bundleInstaller.reconcileOnStartup();
+      expect(report.reconstructedRows, 0);
+
+      final postReconcileTask = await storageRepo.getTaskById('task_gate17b');
+      expect(postReconcileTask?.status, DownloadTaskStatus.cancelled);
+      expect(await storageRepo.isChapterInstalled(versionId), isFalse);
+    });
+
+    // =========================================================================
     // Gate 18: File Tamper / SHA Mismatch Detection
     // =========================================================================
     test('Gate 18: File modified on disk with same size triggers SHA mismatch and fails validation', () async {
@@ -1414,5 +1491,85 @@ void main() {
       expect(updatedTask?.status, DownloadTaskStatus.failed);
       expect(updatedTask?.errorMessage, contains('Phát hiện tệp lạ không được khai báo'));
     });
+
+    // =========================================================================
+    // Gate 22: Valid Installed Orphan with CANCELLED Task Purged (No Resurrection)
+    // =========================================================================
+    test('Gate 22: Valid installed orphan directory with CANCELLED task is purged and task preserved', () async {
+      const versionId = 'v22_cancelled_orphan';
+      final pageContent = utf8.encode('page-content-22');
+      final pageSha = sha256.convert(pageContent).toString();
+
+      final manifest = {
+        'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
+        'chapterVersionId': versionId,
+        'chapterId': 'c22',
+        'storyId': 's22',
+        'chapterTitle': 'Cancelled Orphan Test',
+        'mediaFormat': 'COMIC',
+        'files': [
+          {'path': 'pages/001.webp', 'size': pageContent.length, 'sha256': pageSha}
+        ]
+      };
+
+      // Tạo thư mục installed hợp lệ trực tiếp trên đĩa (mồ côi)
+      final installedPath = await storagePaths.getInstalledPathForVersion(versionId);
+      final installedDir = Directory(installedPath);
+      await installedDir.create(recursive: true);
+      final manifestFile = File(p.join(installedPath, 'manifest.json'));
+      await manifestFile.writeAsString(jsonEncode(manifest));
+      final pageFile = File(p.join(installedPath, 'pages', '001.webp'));
+      await pageFile.parent.create(recursive: true);
+      await pageFile.writeAsBytes(pageContent);
+
+      // Task tồn tại ở trạng thái CANCELLED
+      const task = DownloadTask(
+        taskId: 'task_gate22',
+        chapterVersionId: versionId,
+        chapterId: 'c22',
+        storyId: 's22',
+        storyTitle: 'Cancelled Orphan Story',
+        chapterNumber: '22',
+        mediaFormat: 'COMIC',
+        status: DownloadTaskStatus.cancelled,
+        createdAt: 22000,
+        updatedAt: 22000,
+      );
+      await storageRepo.insertTask(task);
+
+      // Chạy startup reconciliation
+      final report = await bundleInstaller.reconcileOnStartup();
+
+      // BẤT BIẾN:
+      // 1. Thư mục orphan BỊ XÓA KHỎI ĐĨA
+      expect(installedDir.existsSync(), isFalse);
+      expect(report.removedOrphanDirs, 1);
+      expect(report.reconstructedRows, 0);
+
+      // 2. Task giữ nguyên CANCELLED, TUYỆT ĐỐI KHÔNG BỊ RESURRECT THÀNH READY
+      final updatedTask = await storageRepo.getTaskById('task_gate22');
+      expect(updatedTask?.status, DownloadTaskStatus.cancelled);
+
+      // 3. zero offline_chapters row
+      expect(await storageRepo.isChapterInstalled(versionId), isFalse);
+    });
   });
 }
+
+/// Helper class mô phỏng hủy tác vụ ngay sau khi atomic rename promotion xảy ra
+class _CancelAfterPromoteStoragePaths extends OfflineStoragePaths {
+  final CancelToken cancelToken;
+
+  _CancelAfterPromoteStoragePaths({
+    required super.customBasePath,
+    required this.cancelToken,
+  });
+
+  @override
+  Future<String> getRootOfflinePath() async {
+    cancelToken.cancel('User cancelled download immediately after promotion');
+    throw const OfflineInstallationCancelledException('User cancelled download immediately after promotion');
+  }
+}
+

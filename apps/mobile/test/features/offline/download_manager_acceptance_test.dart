@@ -201,6 +201,10 @@ void main() {
             200,
           );
         }
+      }, onCancel: () {
+        if (!streamCtrl.isClosed) {
+          streamCtrl.close();
+        }
       });
 
       final manager = DownloadQueueManager(
@@ -316,6 +320,10 @@ void main() {
             Stream.value(Uint8List.fromList(List.filled(400, 3))),
             200,
           );
+        }
+      }, onCancel: () {
+        if (!streamCtrl.isClosed) {
+          streamCtrl.close();
         }
       });
 
@@ -1143,16 +1151,23 @@ void main() {
 /// Helper giả lập phản hồi của Dio HttpClientAdapter trong Unit Tests
 class _MockHttpAdapter implements HttpClientAdapter {
   final Future<ResponseBody> Function(RequestOptions options) _handler;
+  final void Function()? onCancel;
 
-  _MockHttpAdapter(this._handler);
+  _MockHttpAdapter(this._handler, {this.onCancel});
 
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
     Stream<Uint8List>? requestStream,
     Future<void>? cancelFuture,
-  ) {
-    return _handler(options);
+  ) async {
+    final response = await _handler(options);
+    if (cancelFuture != null) {
+      unawaited(cancelFuture.then((_) {
+        onCancel?.call();
+      }));
+    }
+    return response;
   }
 
   @override

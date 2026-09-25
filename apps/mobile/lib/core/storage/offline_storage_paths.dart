@@ -115,4 +115,18 @@ class OfflineStoragePaths {
       // Đã được xóa bởi tiến trình khác hoặc không còn tồn tại
     }
   }
+
+  /// Dọn dẹp thư mục installed nếu tồn tại (idempotent)
+  Future<void> deleteInstalledDir(String chapterVersionId) async {
+    final path = await getInstalledPathForVersion(chapterVersionId);
+    final dir = Directory(path);
+    try {
+      if (await dir.exists()) {
+        await dir.delete(recursive: true);
+      }
+    } on FileSystemException {
+      // Đã được xóa bởi tiến trình khác hoặc không còn tồn tại
+    }
+  }
 }
+

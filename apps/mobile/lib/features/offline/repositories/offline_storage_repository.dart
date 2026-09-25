@@ -239,6 +239,15 @@ class OfflineStorageRepository {
     );
   }
 
+  /// Lấy danh sách toàn bộ các chương đã cài đặt ngoại tuyến (phục vụ Reconciliation & Storage Management).
+  Future<List<OfflineChapter>> getAllOfflineChapters() async {
+    final results = await _db.query(
+      'offline_chapters',
+      orderBy: 'installed_at ASC',
+    );
+    return results.map((m) => OfflineChapter.fromMap(m)).toList();
+  }
+
   /// Xóa chương ngoại tuyến khỏi CSDL.
   Future<void> deleteOfflineChapter(String chapterVersionId) async {
     await _db.delete(
@@ -248,3 +257,4 @@ class OfflineStorageRepository {
     );
   }
 }
+

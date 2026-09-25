@@ -6,6 +6,7 @@ import '../models/download_task.dart';
 import '../repositories/artifact_repository.dart';
 import '../repositories/offline_storage_repository.dart';
 import 'artifact_download_client.dart';
+import 'bundle_installer.dart';
 
 /// Quản lý hàng đợi tải ngoại tuyến Durable Offline Download Manager.
 ///
@@ -24,6 +25,7 @@ class DownloadQueueManager {
   final ArtifactRepository _artifactRepository;
   final ArtifactDownloadClient _downloadClient;
   final OfflineStoragePaths _storagePaths;
+  final BundleInstaller? _bundleInstaller;
 
   final Map<String, CancelToken> _activeCancelTokens = {};
   final Map<String, Completer<void>> _activeOperations = {};
@@ -35,10 +37,12 @@ class DownloadQueueManager {
     required ArtifactRepository artifactRepository,
     required ArtifactDownloadClient downloadClient,
     required OfflineStoragePaths storagePaths,
+    BundleInstaller? bundleInstaller,
   })  : _repository = repository,
         _artifactRepository = artifactRepository,
         _downloadClient = downloadClient,
-        _storagePaths = storagePaths;
+        _storagePaths = storagePaths,
+        _bundleInstaller = bundleInstaller;
 
   Stream<DownloadTask> get taskUpdates => _taskUpdateController.stream;
 
@@ -65,6 +69,11 @@ class DownloadQueueManager {
           );
         }
       }
+    }
+
+    // 3. Phase 5D.4: Kích hoạt Bidirectional Startup Reconciliation nếu có BundleInstaller
+    if (_bundleInstaller != null) {
+      await _bundleInstaller.reconcileOnStartup();
     }
   }
 
@@ -649,6 +658,11 @@ class DownloadQueueManager {
       );
       lastTask = currentTask;
       _notifyUpdate(currentTask);
+
+      // Phase 5D.4: Bàn giao tác vụ cài đặt gói offline cho BundleInstaller
+      if (_bundleInstaller != null) {
+        unawaited(_installDownloadedBundle(currentTask));
+      }
     } catch (e) {
       if (cancelToken.isCancelled) {
         // Đã được xử lý bởi pause hoặc cancel
@@ -680,6 +694,19 @@ class DownloadQueueManager {
   void _notifyUpdate(DownloadTask task) {
     if (!_taskUpdateController.isClosed) {
       _taskUpdateController.add(task);
+    }
+  }
+
+  Future<void> _installDownloadedBundle(DownloadTask verifyingTask) async {
+    try {
+      await _bundleInstaller!.installBundle(verifyingTask);
+    } catch (_) {
+      // BundleInstaller đã xử lý updateTaskStatus sang FAILED fail-closed
+    } finally {
+      final updatedTask = await _repository.getTaskById(verifyingTask.taskId);
+      if (updatedTask != null) {
+        _notifyUpdate(updatedTask);
+      }
     }
   }
 

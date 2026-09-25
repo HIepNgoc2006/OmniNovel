@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import '../../../core/storage/offline_storage_paths.dart';
@@ -21,6 +22,11 @@ class OfflineInstallationException implements Exception {
 
   @override
   String toString() => 'OfflineInstallationException: $message';
+}
+
+/// Tác vụ cài đặt bị hủy bởi người dùng trong khi đang giải nén/xác thực.
+class OfflineInstallationCancelledException extends OfflineInstallationException {
+  const OfflineInstallationCancelledException(super.message);
 }
 
 /// Gate 1: Mã băm SHA-256 không khớp với hash đã pin trên download_tasks.
@@ -49,8 +55,33 @@ class ZipBombException extends OfflineInstallationException {
 }
 
 // ==========================================
-// DATA TRANSFER OBJECTS FOR ISOLATE
+// DATA TRANSFER OBJECTS FOR ISOLATE & VALIDATION
 // ==========================================
+
+/// Kết quả xác thực toàn vẹn của payload đã cài đặt hoặc staging.
+class PayloadValidationResult {
+  final bool isValid;
+  final String? errorMessage;
+  final Map<String, dynamic>? manifest;
+  final String? rawManifestJson;
+  final int totalFiles;
+  final int totalBytes;
+
+  const PayloadValidationResult.valid({
+    required this.manifest,
+    required this.rawManifestJson,
+    required this.totalFiles,
+    required this.totalBytes,
+  })  : isValid = true,
+        errorMessage = null;
+
+  const PayloadValidationResult.invalid(this.errorMessage)
+      : isValid = false,
+        manifest = null,
+        rawManifestJson = null,
+        totalFiles = 0,
+        totalBytes = 0;
+}
 
 /// Tham số truyền vào background isolate để giải nén an toàn.
 class SafeExtractionRequest {
@@ -122,11 +153,26 @@ SafeExtractionResult safeExtractArchiveIsolate(SafeExtractionRequest request) {
   }
 
   final bytes = zipFile.readAsBytesSync();
+  final decoder = ZipDecoder();
   Archive archive;
   try {
-    archive = ZipDecoder().decodeBytes(bytes, verify: true);
+    archive = decoder.decodeBytes(bytes, verify: true);
   } catch (e) {
     throw UnsafeArchiveException('Tệp ZIP bị hỏng hoặc sai định dạng: $e');
+  }
+
+  // Quét Central Directory Headers để chặn duplicate paths và symlinks ngay từ header level
+  final seenHeaderPaths = <String>{};
+  for (final header in decoder.directory.fileHeaders) {
+    final mode = (header.externalFileAttributes ?? 0) >> 16;
+    if ((mode & 0xF000) == 0xA000) {
+      throw const UnsafeArchiveException('Phát hiện symlink/hardlink không an toàn trong tệp nén');
+    }
+    final rawHeaderName = header.filename.replaceAll('\\', '/');
+    if (seenHeaderPaths.contains(rawHeaderName)) {
+      throw UnsafeArchiveException('Phát hiện đường dẫn trùng lặp trong tệp nén: ${header.filename}');
+    }
+    seenHeaderPaths.add(rawHeaderName);
   }
 
   final stagingDir = Directory(request.stagingDirPath);
@@ -175,13 +221,16 @@ SafeExtractionResult safeExtractArchiveIsolate(SafeExtractionRequest request) {
       throw ZipSlipException('Đường dẫn giải nén thoát khỏi thư mục staging: ${entry.name}');
     }
 
-    // Chặn duplicate paths
+    // Chặn duplicate paths và xung đột file-vs-directory
     if (seenPaths.contains(destCanonical)) {
       throw UnsafeArchiveException('Phát hiện đường dẫn trùng lặp trong tệp nén: ${entry.name}');
     }
     seenPaths.add(destCanonical);
 
     if (entry.isFile) {
+      if (Directory(destCanonical).existsSync()) {
+        throw UnsafeArchiveException('Xung đột entry tệp đè lên thư mục đã tồn tại: ${entry.name}');
+      }
       final parentDir = Directory(p.dirname(destCanonical));
       if (!parentDir.existsSync()) {
         parentDir.createSync(recursive: true);
@@ -189,6 +238,9 @@ SafeExtractionResult safeExtractArchiveIsolate(SafeExtractionRequest request) {
       final outFile = File(destCanonical);
       outFile.writeAsBytesSync(entry.content as List<int>, flush: true);
     } else {
+      if (File(destCanonical).existsSync()) {
+        throw UnsafeArchiveException('Xung đột entry thư mục đè lên tệp đã tồn tại: ${entry.name}');
+      }
       final outDir = Directory(destCanonical);
       if (!outDir.existsSync()) {
         outDir.createSync(recursive: true);
@@ -220,7 +272,6 @@ typedef ComputeRunner = Future<R> Function<Q, R>(
 /// 6. Canonical READY SSoT: Chỉ đọc offline khi có cả DB row và payload installed hợp lệ.
 /// 7. Deterministic Bidirectional Reconciliation: Startup phục hồi tất định mọi trường hợp lệch trạng thái.
 /// 8. Idempotent installer: Cài đặt lại an toàn không duplicate/corrupt.
-/// 9. Existing-install replacement semantics: Staging biệt lập trước khi atomic swap.
 /// 10. Failure cleanup & isolation: Lỗi xóa sạch staging, không tạo DB row, task FAILED.
 class BundleInstaller {
   final OfflineStorageRepository _repository;
@@ -239,10 +290,22 @@ class BundleInstaller {
   ///
   /// Trả về đối tượng `OfflineChapter` đã được commit vào SQLite thành công.
   /// Thất bại: Ném ngoại lệ `OfflineInstallationException`, cập nhật task `FAILED`, dọn dẹp staging.
-  Future<OfflineChapter> installBundle(DownloadTask task) async {
+  Future<OfflineChapter> installBundle(
+    DownloadTask task, {
+    CancelToken? cancelToken,
+  }) async {
+    void checkCancelled() {
+      if (cancelToken != null && cancelToken.isCancelled) {
+        throw const OfflineInstallationCancelledException('Tác vụ cài đặt bị hủy bởi người dùng');
+      }
+    }
+
+    checkCancelled();
+
     // Invariant 8 & 9: Kiểm tra nếu bản cài đặt hiện có đã hợp lệ (Idempotency)
     final existingValid = await isAlreadyInstalledAndValid(task.chapterVersionId);
     if (existingValid != null) {
+      checkCancelled();
       await _repository.updateTaskStatus(task.taskId, DownloadTaskStatus.ready);
       await _storagePaths.deletePartFile(task.chapterVersionId);
       await _storagePaths.deleteStagingDir(task.chapterVersionId);
@@ -273,6 +336,8 @@ class BundleInstaller {
             'Mã băm SHA-256 không khớp! Kỳ vọng: $expectedHash, Thực tế: $actualHash');
       }
 
+      checkCancelled();
+
       // 2. Dọn sạch staging cũ (nếu có) trước khi giải nén (Gate 5 Staging Isolation)
       await _storagePaths.deleteStagingDir(task.chapterVersionId);
 
@@ -285,21 +350,27 @@ class BundleInstaller {
         ),
       );
 
-      // 4. Gate 2 & Invariant 4: Manifest identity binding & inventory verification
-      final manifestFile = File(p.join(stagingPath, 'manifest.json'));
-      if (!await manifestFile.exists()) {
-        throw const ManifestValidationException('Tệp manifest.json không tồn tại trong gói artifact');
+      checkCancelled();
+
+      // 4. Gate 2 & Invariant 4: Manifest identity binding & canonical payload verification
+      final stagingDir = Directory(stagingPath);
+      final validation = await verifyInstalledPayload(
+        stagingDir,
+        expectedVersionId: task.chapterVersionId,
+        expectedChapterId: task.chapterId,
+        expectedStoryId: task.storyId,
+        expectedMediaFormat: task.mediaFormat,
+        verifyFileHashes: true,
+      );
+
+      if (!validation.isValid) {
+        throw ManifestValidationException(validation.errorMessage ?? 'Payload xác thực không hợp lệ');
       }
 
-      final manifestContent = await manifestFile.readAsString();
-      Map<String, dynamic> manifest;
-      try {
-        manifest = jsonDecode(manifestContent) as Map<String, dynamic>;
-      } catch (e) {
-        throw ManifestValidationException('manifest.json không phải là JSON hợp lệ: $e');
-      }
+      final manifest = validation.manifest!;
+      final manifestContent = validation.rawManifestJson!;
 
-      _validateManifestContract(manifest, task, stagingPath);
+      checkCancelled();
 
       // 5. Gate 6 & Invariant 9: Atomic Promotion (staging ➔ installed)
       final installedPath = await _storagePaths.getInstalledPathForVersion(task.chapterVersionId);
@@ -308,21 +379,11 @@ class BundleInstaller {
         await installedDir.delete(recursive: true);
       }
 
-      final stagingDir = Directory(stagingPath);
       await stagingDir.rename(installedPath);
 
-      // 6. Gate 7 & Invariant 5 & 6: Commit SQLite Transaction
-      // Đếm số tệp và dung lượng thực tế trong thư mục installed
-      int totalFiles = 0;
-      int totalBytes = 0;
-      final targetInstalledDir = Directory(installedPath);
-      for (final entity in targetInstalledDir.listSync(recursive: true)) {
-        if (entity is File) {
-          totalFiles++;
-          totalBytes += entity.lengthSync();
-        }
-      }
+      checkCancelled();
 
+      // 6. Gate 7 & Invariant 5 & 6: Commit SQLite Transaction
       final rootDir = await _storagePaths.getRootOfflinePath();
       final installedDirRelative = p.relative(installedPath, from: rootDir);
 
@@ -336,23 +397,24 @@ class BundleInstaller {
         mediaFormat: task.mediaFormat,
         publicationFormat: manifest['publicationFormat'] as String?,
         installedDir: installedDirRelative,
-        totalFiles: totalFiles,
-        totalBytes: totalBytes,
+        totalFiles: validation.totalFiles,
+        totalBytes: validation.totalBytes,
         installedAt: DateTime.now().millisecondsSinceEpoch,
         manifestJson: manifestContent,
       );
 
-      // Commit DB
-      await _repository.insertOfflineChapter(offlineChapter);
-
-      // Gate 15: Duy nhất BundleInstaller chuyển trạng thái VERIFYING ➔ READY
-      await _repository.updateTaskStatus(task.taskId, DownloadTaskStatus.ready);
+      // Commit DB & Task READY in one atomic SQLite Transaction!
+      await _repository.commitInstalledChapterAndReady(offlineChapter, task.taskId);
 
       // Gate 13: Dọn dẹp tệp tạm .part và staging sau khi cài đặt thành công (Idempotent)
       await _storagePaths.deletePartFile(task.chapterVersionId);
       await _storagePaths.deleteStagingDir(task.chapterVersionId);
 
       return offlineChapter;
+    } on OfflineInstallationCancelledException {
+      // Invariant 10: Fail-closed cleanup khi bị cancel, KHÔNG ghi status FAILED
+      await _storagePaths.deleteStagingDir(task.chapterVersionId);
+      rethrow;
     } catch (e) {
       // Invariant 10: Fail-closed cleanup & task FAILED
       await _storagePaths.deleteStagingDir(task.chapterVersionId);
@@ -371,90 +433,217 @@ class BundleInstaller {
     if (chapter == null) return null;
 
     final installedPath = await _storagePaths.getInstalledPathForVersion(chapterVersionId);
-    final manifestFile = File(p.join(installedPath, 'manifest.json'));
-    if (!await manifestFile.exists()) return null;
+    final installedDir = Directory(installedPath);
 
-    try {
-      final manifest = jsonDecode(await manifestFile.readAsString()) as Map<String, dynamic>;
-      if (manifest['chapterVersionId'] != chapterVersionId) return null;
+    final validation = await verifyInstalledPayload(
+      installedDir,
+      expectedVersionId: chapterVersionId,
+      expectedChapterId: chapter.chapterId,
+      expectedStoryId: chapter.storyId,
+      expectedMediaFormat: chapter.mediaFormat,
+      verifyFileHashes: true,
+    );
+
+    if (validation.isValid) {
       return chapter;
-    } catch (_) {
-      return null;
     }
+    return null;
   }
 
-  /// Xác thực hợp đồng Manifest, định danh phiên bản, và đối chiếu toàn bộ inventory tệp trên đĩa.
-  void _validateManifestContract(
-      Map<String, dynamic> manifest, DownloadTask task, String stagingPath) {
-    final schemaVersion = manifest['schemaVersion'];
-    if (schemaVersion == null || schemaVersion is! int || schemaVersion < 1) {
-      throw const ManifestValidationException('manifest.json thiếu hoặc sai định dạng schemaVersion (yêu cầu >= 1)');
+  /// Hàm xác thực chuẩn Canonical (Single Source of Truth) cho payload đã cài đặt hoặc staging.
+  /// Được dùng chung 100% giữa Fresh Install, Idempotency Check, và Startup Reconciliation.
+  Future<PayloadValidationResult> verifyInstalledPayload(
+    Directory rootDir, {
+    String? expectedVersionId,
+    String? expectedChapterId,
+    String? expectedStoryId,
+    String? expectedMediaFormat,
+    bool verifyFileHashes = true,
+  }) async {
+    if (!await rootDir.exists()) {
+      return const PayloadValidationResult.invalid('Thư mục payload không tồn tại');
     }
 
+    final canonicalRoot = p.canonicalize(rootDir.path);
+    final manifestFile = File(p.join(canonicalRoot, 'manifest.json'));
+    if (!await manifestFile.exists()) {
+      return const PayloadValidationResult.invalid('Tệp manifest.json không tồn tại');
+    }
+
+    final String rawManifest;
+    final Map<String, dynamic> manifest;
+    try {
+      rawManifest = await manifestFile.readAsString();
+      manifest = jsonDecode(rawManifest) as Map<String, dynamic>;
+    } catch (e) {
+      return PayloadValidationResult.invalid('manifest.json không phải JSON hợp lệ: $e');
+    }
+
+    // 1. Schema version
+    final schemaVersion = manifest['schemaVersion'];
+    if (schemaVersion == null || schemaVersion is! int || schemaVersion < 1) {
+      return const PayloadValidationResult.invalid('manifest.json thiếu hoặc sai schemaVersion (yêu cầu >= 1)');
+    }
+
+    // 2. Identity binding
     final chapterVersionId = manifest['chapterVersionId'] as String?;
-    if (chapterVersionId != task.chapterVersionId) {
-      throw ManifestValidationException(
-          'Sai lệch chapterVersionId trong manifest! Kỳ vọng: ${task.chapterVersionId}, Thực tế: $chapterVersionId');
+    if (chapterVersionId == null || chapterVersionId.isEmpty) {
+      return const PayloadValidationResult.invalid('manifest.json thiếu chapterVersionId');
+    }
+    if (expectedVersionId != null && chapterVersionId != expectedVersionId) {
+      return PayloadValidationResult.invalid(
+          'Sai lệch chapterVersionId trong manifest! Kỳ vọng: $expectedVersionId, Thực tế: $chapterVersionId');
     }
 
     final chapterId = manifest['chapterId'] as String?;
-    if (chapterId != task.chapterId) {
-      throw ManifestValidationException(
-          'Sai lệch chapterId trong manifest! Kỳ vọng: ${task.chapterId}, Thực tế: $chapterId');
+    if (expectedChapterId != null && chapterId != expectedChapterId) {
+      return PayloadValidationResult.invalid(
+          'Sai lệch chapterId trong manifest! Kỳ vọng: $expectedChapterId, Thực tế: $chapterId');
     }
 
     final storyId = manifest['storyId'] as String?;
-    if (storyId != task.storyId) {
-      throw ManifestValidationException(
-          'Sai lệch storyId trong manifest! Kỳ vọng: ${task.storyId}, Thực tế: $storyId');
+    if (expectedStoryId != null && storyId != expectedStoryId) {
+      return PayloadValidationResult.invalid(
+          'Sai lệch storyId trong manifest! Kỳ vọng: $expectedStoryId, Thực tế: $storyId');
     }
 
     final mediaFormat = (manifest['mediaFormat'] as String?)?.toUpperCase();
-    if (mediaFormat != task.mediaFormat.toUpperCase()) {
-      throw ManifestValidationException(
-          'Sai lệch mediaFormat trong manifest! Kỳ vọng: ${task.mediaFormat}, Thực tế: $mediaFormat');
+    if (mediaFormat != 'COMIC' && mediaFormat != 'NOVEL') {
+      return PayloadValidationResult.invalid('mediaFormat không hợp lệ trong manifest: $mediaFormat');
+    }
+    if (expectedMediaFormat != null && mediaFormat != expectedMediaFormat.toUpperCase()) {
+      return PayloadValidationResult.invalid(
+          'Sai lệch mediaFormat trong manifest! Kỳ vọng: $expectedMediaFormat, Thực tế: $mediaFormat');
     }
 
-    // Kiểm tra Novel contentPath nếu là tiểu thuyết
+    // 3. Bundle type (OFFLINE_READER)
+    final bundleType = manifest['bundleType'];
+    if (bundleType != null && bundleType != 'OFFLINE_READER') {
+      return PayloadValidationResult.invalid('bundleType không hợp lệ: $bundleType (yêu cầu OFFLINE_READER)');
+    }
+
+    // 4. Novel metadata containment
     if (mediaFormat == 'NOVEL') {
       final novelMeta = manifest['novelMetadata'] as Map<String, dynamic>?;
       final contentPath = novelMeta?['contentPath'] as String?;
       if (contentPath == null || contentPath.trim().isEmpty) {
-        throw const ManifestValidationException('Novel bundle thiếu novelMetadata.contentPath');
+        return const PayloadValidationResult.invalid('Novel bundle thiếu novelMetadata.contentPath');
       }
-      final novelFile = File(p.join(stagingPath, contentPath));
-      if (!novelFile.existsSync()) {
-        throw ManifestValidationException('Tệp nội dung tiểu thuyết không tồn tại trên đĩa: $contentPath');
+
+      // Check containment
+      final rawPath = contentPath.replaceAll('\\', '/');
+      if (rawPath.startsWith('/') || rawPath.contains(':')) {
+        return PayloadValidationResult.invalid('novelMetadata.contentPath là đường dẫn tuyệt đối nguy hại: $contentPath');
+      }
+      final normContentPath = p.normalize(rawPath);
+      if (normContentPath == '..' || normContentPath.startsWith('../') || normContentPath.startsWith('..\\') || p.isAbsolute(normContentPath)) {
+        return PayloadValidationResult.invalid('novelMetadata.contentPath chứa path traversal: $contentPath');
+      }
+      final canonicalContentPath = p.canonicalize(p.join(canonicalRoot, normContentPath));
+      if (!canonicalContentPath.startsWith(canonicalRoot + p.separator) && canonicalContentPath != canonicalRoot) {
+        return PayloadValidationResult.invalid('novelMetadata.contentPath thoát khỏi thư mục root: $contentPath');
+      }
+
+      final novelFile = File(canonicalContentPath);
+      if (!await novelFile.exists()) {
+        return PayloadValidationResult.invalid('Tệp nội dung tiểu thuyết không tồn tại trên đĩa: $contentPath');
       }
     }
 
-    // Kiểm tra danh sách inventory tệp
+    // 5. Files list validation
     final filesList = manifest['files'];
-    if (filesList != null) {
-      if (filesList is! List) {
-        throw const ManifestValidationException('Trường files trong manifest phải là danh sách');
+    if (filesList == null || filesList is! List || filesList.isEmpty) {
+      return const PayloadValidationResult.invalid('manifest.json phải chứa danh sách files không rỗng');
+    }
+
+    final Set<String> declaredCanonicalPaths = {};
+    int countedTotalFiles = 0;
+    int countedTotalBytes = 0;
+
+    for (final item in filesList) {
+      if (item is! Map<String, dynamic>) {
+        return const PayloadValidationResult.invalid('Mỗi entry trong files phải là JSON object');
       }
-      for (final item in filesList) {
-        if (item is! Map<String, dynamic>) {
-          throw const ManifestValidationException('Mỗi entry trong files phải là object');
+
+      final filePath = item['path'] as String?;
+      if (filePath == null || filePath.trim().isEmpty) {
+        return const PayloadValidationResult.invalid('Mỗi entry trong files phải có trường path hợp lệ');
+      }
+
+      // Path containment check
+      final rawPath = filePath.replaceAll('\\', '/');
+      if (rawPath.startsWith('/') || rawPath.contains(':')) {
+        return PayloadValidationResult.invalid('Tệp trong manifest có đường dẫn tuyệt đối nguy hại: $filePath');
+      }
+      final normalized = p.normalize(rawPath);
+      if (normalized == '..' || normalized.startsWith('../') || normalized.startsWith('..\\') || p.isAbsolute(normalized)) {
+        return PayloadValidationResult.invalid('Tệp trong manifest chứa path traversal (Zip Slip): $filePath');
+      }
+      final canonicalFilePath = p.canonicalize(p.join(canonicalRoot, normalized));
+      if (!canonicalFilePath.startsWith(canonicalRoot + p.separator) && canonicalFilePath != canonicalRoot) {
+        return PayloadValidationResult.invalid('Tệp trong manifest thoát khỏi thư mục root: $filePath');
+      }
+
+      if (declaredCanonicalPaths.contains(canonicalFilePath)) {
+        return PayloadValidationResult.invalid('manifest chứa đường dẫn trùng lặp: $filePath');
+      }
+      declaredCanonicalPaths.add(canonicalFilePath);
+
+      final localFile = File(canonicalFilePath);
+      if (!await localFile.exists()) {
+        return PayloadValidationResult.invalid('Tệp khai báo trong manifest không tồn tại trên đĩa: $filePath');
+      }
+
+      final declaredSize = item['size'];
+      if (declaredSize == null || declaredSize is! num || declaredSize < 0) {
+        return PayloadValidationResult.invalid('Tệp $filePath thiếu hoặc sai trường size trong manifest');
+      }
+      final actualLength = await localFile.length();
+      if (actualLength != declaredSize.toInt()) {
+        return PayloadValidationResult.invalid(
+            'Kích thước tệp trên đĩa không khớp manifest cho $filePath (Kỳ vọng: $declaredSize, Thực tế: $actualLength)');
+      }
+
+      if (verifyFileHashes) {
+        final declaredSha256 = item['sha256'] as String?;
+        if (declaredSha256 == null || declaredSha256.trim().isEmpty) {
+          return PayloadValidationResult.invalid('Tệp $filePath thiếu mã băm sha256 trong manifest');
         }
-        final filePath = item['path'] as String?;
-        if (filePath == null || filePath.trim().isEmpty) {
-          throw const ManifestValidationException('Mỗi entry trong files phải có trường path hợp lệ');
+        // Tính SHA-256 thực tế của tệp
+        final stream = localFile.openRead();
+        final digest = await sha256.bind(stream).first;
+        final actualSha = digest.toString().toLowerCase();
+        if (actualSha != declaredSha256.trim().toLowerCase()) {
+          return PayloadValidationResult.invalid(
+              'Mã băm SHA-256 tệp $filePath bị sai lệch! Kỳ vọng: $declaredSha256, Thực tế: $actualSha');
         }
-        final localFile = File(p.join(stagingPath, filePath));
-        if (!localFile.existsSync()) {
-          throw ManifestValidationException('Tệp được khai báo trong manifest không tồn tại trên đĩa: $filePath');
+      }
+
+      countedTotalFiles++;
+      countedTotalBytes += actualLength;
+    }
+
+    // 6. Exact Disk Inventory Check (Reject extra untrusted files)
+    final allDiskEntities = rootDir.listSync(recursive: true);
+    for (final entity in allDiskEntities) {
+      if (entity is File) {
+        final canonicalEntity = p.canonicalize(entity.path);
+        if (canonicalEntity == p.canonicalize(manifestFile.path)) {
+          continue; // manifest.json hợp lệ
         }
-        final declaredSize = item['size'];
-        if (declaredSize != null && declaredSize is num) {
-          if (localFile.lengthSync() != declaredSize.toInt()) {
-            throw ManifestValidationException(
-                'Kích thước tệp trên đĩa không khớp manifest cho $filePath (Kỳ vọng: $declaredSize, Thực tế: ${localFile.lengthSync()})');
-          }
+        if (!declaredCanonicalPaths.contains(canonicalEntity)) {
+          final rel = p.relative(canonicalEntity, from: canonicalRoot);
+          return PayloadValidationResult.invalid('Phát hiện tệp lạ không được khai báo trong manifest: $rel');
         }
       }
     }
+
+    return PayloadValidationResult.valid(
+      manifest: manifest,
+      rawManifestJson: rawManifest,
+      totalFiles: countedTotalFiles,
+      totalBytes: countedTotalBytes,
+    );
   }
 
   // ==========================================
@@ -490,52 +679,40 @@ class BundleInstaller {
       }
     }
 
-    // 2. Gate 10: DB row vs Installed Filesystem (Row có, file mất/corrupt)
+    // 2. Gate 10: DB row vs Installed Filesystem (Row có, file mất/corrupt/tampered)
     final allChapters = await _repository.getAllOfflineChapters();
     for (final chapter in allChapters) {
       final installedPath = await _storagePaths.getInstalledPathForVersion(chapter.chapterVersionId);
       final installedDir = Directory(installedPath);
-      final manifestFile = File(p.join(installedPath, 'manifest.json'));
 
-      bool isValid = true;
-      if (!await installedDir.exists() || !await manifestFile.exists()) {
-        isValid = false;
-      } else {
-        try {
-          final manifest = jsonDecode(await manifestFile.readAsString()) as Map<String, dynamic>;
-          if (manifest['chapterVersionId'] != chapter.chapterVersionId) {
-            isValid = false;
-          } else {
-            // Kiểm tra các files trong manifest có tồn tại đầy đủ không
-            final files = manifest['files'] as List?;
-            if (files != null) {
-              for (final f in files) {
-                final relPath = f['path'] as String?;
-                if (relPath == null || !File(p.join(installedPath, relPath)).existsSync()) {
-                  isValid = false;
-                  break;
-                }
-              }
-            }
-          }
-        } catch (_) {
-          isValid = false;
-        }
-      }
+      final validation = await verifyInstalledPayload(
+        installedDir,
+        expectedVersionId: chapter.chapterVersionId,
+        expectedChapterId: chapter.chapterId,
+        expectedStoryId: chapter.storyId,
+        expectedMediaFormat: chapter.mediaFormat,
+        verifyFileHashes: true,
+      );
 
-      if (!isValid) {
-        // Fail-closed: Xóa bản ghi CSDL mồ côi
+      if (!validation.isValid) {
+        // Fail-closed: Xóa bản ghi CSDL mồ côi hoặc hỏng
         await _repository.deleteOfflineChapter(chapter.chapterVersionId);
         removedCorruptedRows++;
 
         // Cập nhật task tương ứng (nếu có) về FAILED
         final task = await _repository.getTaskByVersionId(chapter.chapterVersionId);
-        if (task != null && task.status == DownloadTaskStatus.ready) {
+        if (task != null && task.status != DownloadTaskStatus.failed) {
           await _repository.updateTaskStatus(
             task.taskId,
             DownloadTaskStatus.failed,
-            errorMessage: 'Tệp nội dung cài đặt bị mất hoặc hỏng trên đĩa (Startup Reconcile)',
+            errorMessage: 'Tệp nội dung cài đặt bị mất hoặc hỏng trên đĩa (Startup Reconcile: ${validation.errorMessage})',
           );
+        }
+      } else {
+        // Invariant 5/7: Payload 100% hợp lệ + DB row tồn tại -> Normalize task về READY nếu task đang ở PAUSED/VERIFYING do crash recovery
+        final task = await _repository.getTaskByVersionId(chapter.chapterVersionId);
+        if (task != null && task.status != DownloadTaskStatus.ready) {
+          await _repository.updateTaskStatus(task.taskId, DownloadTaskStatus.ready);
         }
       }
     }
@@ -549,77 +726,50 @@ class BundleInstaller {
           final isInstalledInDb = await _repository.isChapterInstalled(versionId);
 
           if (!isInstalledInDb) {
-            // Kiểm tra xem có thể tái tạo (reconstruct) được không
-            final manifestFile = File(p.join(entity.path, 'manifest.json'));
             final task = await _repository.getTaskByVersionId(versionId);
 
-            bool canReconstruct = false;
-            Map<String, dynamic>? validManifest;
-            String? rawManifestJson;
-
-            if (task != null && await manifestFile.exists()) {
-              try {
-                rawManifestJson = await manifestFile.readAsString();
-                validManifest = jsonDecode(rawManifestJson) as Map<String, dynamic>;
-                if (validManifest['chapterVersionId'] == task.chapterVersionId &&
-                    validManifest['chapterId'] == task.chapterId &&
-                    validManifest['storyId'] == task.storyId) {
-                  // Kiểm tra files inventory
-                  final files = validManifest['files'] as List?;
-                  bool allFilesOk = true;
-                  if (files != null) {
-                    for (final f in files) {
-                      final relPath = f['path'] as String?;
-                      if (relPath == null || !File(p.join(entity.path, relPath)).existsSync()) {
-                        allFilesOk = false;
-                        break;
-                      }
-                    }
-                  }
-                  if (allFilesOk) {
-                    canReconstruct = true;
-                  }
-                }
-              } catch (_) {
-                canReconstruct = false;
-              }
-            }
-
-            if (canReconstruct && task != null && validManifest != null && rawManifestJson != null) {
-              // Tái tạo row trong offline_chapters (Gate 9 Crash Recovery)
-              int totalFiles = 0;
-              int totalBytes = 0;
-              for (final sub in entity.listSync(recursive: true)) {
-                if (sub is File) {
-                  totalFiles++;
-                  totalBytes += sub.lengthSync();
-                }
-              }
-
-              final rootDir = await _storagePaths.getRootOfflinePath();
-              final installedDirRelative = p.relative(entity.path, from: rootDir);
-
-              final reconstructed = OfflineChapter(
-                chapterVersionId: task.chapterVersionId,
-                chapterId: task.chapterId,
-                storyId: task.storyId,
-                storyTitle: task.storyTitle,
-                chapterNumber: task.chapterNumber,
-                chapterTitle: (validManifest['chapterTitle'] as String?) ?? task.storyTitle,
-                mediaFormat: task.mediaFormat,
-                publicationFormat: validManifest['publicationFormat'] as String?,
-                installedDir: installedDirRelative,
-                totalFiles: totalFiles,
-                totalBytes: totalBytes,
-                installedAt: DateTime.now().millisecondsSinceEpoch,
-                manifestJson: rawManifestJson,
+            if (task != null) {
+              final validation = await verifyInstalledPayload(
+                entity,
+                expectedVersionId: task.chapterVersionId,
+                expectedChapterId: task.chapterId,
+                expectedStoryId: task.storyId,
+                expectedMediaFormat: task.mediaFormat,
+                verifyFileHashes: true,
               );
 
-              await _repository.insertOfflineChapter(reconstructed);
-              await _repository.updateTaskStatus(task.taskId, DownloadTaskStatus.ready);
-              reconstructedRows++;
+              if (validation.isValid) {
+                // Tái tạo row trong offline_chapters (Gate 9 Crash Recovery)
+                final rootDir = await _storagePaths.getRootOfflinePath();
+                final installedDirRelative = p.relative(entity.path, from: rootDir);
+
+                final reconstructed = OfflineChapter(
+                  chapterVersionId: task.chapterVersionId,
+                  chapterId: task.chapterId,
+                  storyId: task.storyId,
+                  storyTitle: task.storyTitle,
+                  chapterNumber: task.chapterNumber,
+                  chapterTitle: (validation.manifest!['chapterTitle'] as String?) ?? task.storyTitle,
+                  mediaFormat: task.mediaFormat,
+                  publicationFormat: validation.manifest!['publicationFormat'] as String?,
+                  installedDir: installedDirRelative,
+                  totalFiles: validation.totalFiles,
+                  totalBytes: validation.totalBytes,
+                  installedAt: DateTime.now().millisecondsSinceEpoch,
+                  manifestJson: validation.rawManifestJson!,
+                );
+
+                await _repository.commitInstalledChapterAndReady(reconstructed, task.taskId);
+                reconstructedRows++;
+              } else {
+                // Gate 11: Hỏng payload ➔ Xóa an toàn
+                try {
+                  await entity.delete(recursive: true);
+                  removedOrphanDirs++;
+                } catch (_) {}
+              }
             } else {
-              // Gate 11: Thư mục mồ côi hoặc tệp hỏng không có task ➔ Xóa an toàn
+              // Gate 11: Thư mục mồ côi không có task tương ứng ➔ Xóa an toàn
               try {
                 await entity.delete(recursive: true);
                 removedOrphanDirs++;

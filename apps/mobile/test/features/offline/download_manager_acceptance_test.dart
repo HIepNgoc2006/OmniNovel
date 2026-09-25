@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -12,6 +13,7 @@ import 'package:omninovel_mobile/features/offline/models/offline_chapter.dart';
 import 'package:omninovel_mobile/features/offline/repositories/artifact_repository.dart';
 import 'package:omninovel_mobile/features/offline/repositories/offline_storage_repository.dart';
 import 'package:omninovel_mobile/features/offline/services/artifact_download_client.dart';
+import 'package:omninovel_mobile/features/offline/services/bundle_installer.dart';
 import 'package:omninovel_mobile/features/offline/services/download_queue_manager.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -1050,6 +1052,90 @@ void main() {
       // Xóa row -> isChapterInstalled lập tức false (SSoT)
       await storageRepo.deleteOfflineChapter('ver_ready_canonical');
       expect(await storageRepo.isChapterInstalled('ver_ready_canonical'), isFalse);
+    });
+
+    // =========================================================================
+    // Gate 12: Cancel / Retry in VERIFYING / Install phase serializes with lifecycle mutex
+    // prevents resurrection race and settles as CANCELLED or QUEUED
+    // =========================================================================
+    test('Gate 12: Cancel while task is in VERIFYING/Installing aborts installer and avoids READY resurrection', () async {
+      const versionId = 'ver_gate_12_cancel_install';
+      final payload = Uint8List.fromList(List.generate(100, (i) => i));
+      final realSha = sha256.convert(payload).toString();
+
+      final mockDio = Dio();
+      mockDio.httpClientAdapter = _MockHttpAdapter((options) async {
+        return ResponseBody(
+          Stream.value(payload),
+          200,
+          headers: {
+            Headers.contentLengthHeader: ['100'],
+          },
+        );
+      });
+
+      // Tạo installer với computeRunner trì hoãn để mô phỏng tác vụ giải nén đang chạy
+      final installStarted = Completer<void>();
+      final installContinue = Completer<void>();
+      final mockInstaller = BundleInstaller(
+        repository: storageRepo,
+        storagePaths: storagePaths,
+        computeRunner: <Q, R>(callback, message) async {
+          if (!installStarted.isCompleted) {
+            installStarted.complete();
+          }
+          await installContinue.future; // Giữ ở đây cho đến khi user Cancel
+          return await callback(message);
+        },
+      );
+
+      final manager = DownloadQueueManager(
+        repository: storageRepo,
+        artifactRepository: artifactRepo,
+        downloadClient: ArtifactDownloadClient(customDio: mockDio),
+        storagePaths: storagePaths,
+        bundleInstaller: mockInstaller,
+      );
+
+      final now = DateTime.now().millisecondsSinceEpoch;
+      final task = DownloadTask(
+        taskId: 'task_gate_12',
+        chapterVersionId: versionId,
+        chapterId: 'chap_12',
+        storyId: 'story_001',
+        storyTitle: 'Story One',
+        chapterNumber: '12',
+        mediaFormat: 'COMIC',
+        status: DownloadTaskStatus.queued,
+        downloadUrl: 'https://storage.local/gate12.zip',
+        totalBytes: 100,
+        sha256Hash: realSha,
+        createdAt: now,
+        updatedAt: now,
+      );
+      await storageRepo.insertTask(task);
+
+      // Bắt đầu download & install
+      final downloadFuture = manager.resumeTask('task_gate_12');
+
+      // Chờ cho installer bắt đầu chạy trong background isolate
+      await installStarted.future;
+      final currentTask = await storageRepo.getTaskById('task_gate_12');
+      expect(currentTask?.status, equals(DownloadTaskStatus.verifying));
+
+      // Gọi cancelTask trong lúc installer đang chạy trong lifecycle mutex
+      final cancelFuture = manager.cancelTask('task_gate_12');
+
+      // Cho phép completer kết thúc (installer sẽ nhận cancelToken và abort)
+      installContinue.complete();
+
+      await cancelFuture;
+      await downloadFuture;
+
+      final finalTask = await storageRepo.getTaskById('task_gate_12');
+      // BẤT BIẾN: Task phải là CANCELLED, TUYỆT ĐỐI KHÔNG BỊ RESURRECT THÀNH READY
+      expect(finalTask?.status, equals(DownloadTaskStatus.cancelled));
+      expect(await storageRepo.isChapterInstalled(versionId), isFalse);
     });
   });
 }

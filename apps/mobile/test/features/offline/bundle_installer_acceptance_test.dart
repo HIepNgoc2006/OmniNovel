@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:archive/archive.dart';
 import 'package:crypto/crypto.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omninovel_mobile/core/storage/offline_database.dart';
 import 'package:omninovel_mobile/core/storage/offline_storage_paths.dart';
@@ -17,11 +18,42 @@ Uint8List createTestZip({
   required Map<String, dynamic> manifest,
   Map<String, List<int>> files = const {},
   List<ArchiveFile> rawEntries = const [],
+  bool autoPopulateFiles = true,
 }) {
+  final Map<String, dynamic> finalManifest = Map<String, dynamic>.from(manifest);
+  finalManifest.putIfAbsent('bundleType', () => 'OFFLINE_READER');
+
+  if (autoPopulateFiles && !finalManifest.containsKey('files')) {
+    final generatedFiles = <Map<String, dynamic>>[];
+    for (final entry in files.entries) {
+      final fileSha = sha256.convert(entry.value).toString();
+      generatedFiles.add({
+        'path': entry.key,
+        'size': entry.value.length,
+        'sha256': fileSha,
+      });
+    }
+    finalManifest['files'] = generatedFiles;
+  } else if (autoPopulateFiles && finalManifest['files'] is List) {
+    final existingList = (finalManifest['files'] as List).map((item) {
+      if (item is Map<String, dynamic>) {
+        final itemMap = Map<String, dynamic>.from(item);
+        final path = itemMap['path'] as String?;
+        if (path != null && files.containsKey(path)) {
+          itemMap.putIfAbsent('sha256', () => sha256.convert(files[path]!).toString());
+          itemMap.putIfAbsent('size', () => files[path]!.length);
+        }
+        return itemMap;
+      }
+      return item;
+    }).toList();
+    finalManifest['files'] = existingList;
+  }
+
   final archive = Archive();
 
   // Thêm manifest.json
-  final manifestBytes = utf8.encode(jsonEncode(manifest));
+  final manifestBytes = utf8.encode(jsonEncode(finalManifest));
   archive.addFile(ArchiveFile('manifest.json', manifestBytes.length, manifestBytes));
 
   // Thêm các tệp dữ liệu
@@ -36,6 +68,70 @@ Uint8List createTestZip({
 
   final zipData = ZipEncoder().encode(archive);
   return Uint8List.fromList(zipData!);
+}
+
+Uint8List createSymlinkZip({
+  required Map<String, dynamic> manifest,
+  required String symlinkPath,
+  required String targetPath,
+}) {
+  final tempDir = Directory.systemTemp.createTempSync('sym_zip_');
+  try {
+    final scriptFile = File(p.join(tempDir.path, 'gen_sym.py'));
+    final zipFile = File(p.join(tempDir.path, 'bundle.zip'));
+    final manifestStr = jsonEncode(manifest);
+    final script = '''
+import zipfile
+zinfo = zipfile.ZipInfo("$symlinkPath")
+zinfo.create_system = 3
+zinfo.external_attr = 0xA1ED0000
+
+with zipfile.ZipFile("${zipFile.path.replaceAll('\\', '/')}", "w") as z:
+    z.writestr("manifest.json", """$manifestStr""")
+    z.writestr(zinfo, "$targetPath")
+''';
+    scriptFile.writeAsStringSync(script);
+    var res = Process.runSync('python3', [scriptFile.path]);
+    if (res.exitCode != 0) {
+      res = Process.runSync('python', [scriptFile.path]);
+    }
+    if (!zipFile.existsSync()) {
+      throw Exception('Không thể tạo symlink zip qua python: ${res.stderr}');
+    }
+    return zipFile.readAsBytesSync();
+  } finally {
+    tempDir.deleteSync(recursive: true);
+  }
+}
+
+Uint8List createDuplicateZip({
+  required Map<String, dynamic> manifest,
+  required String duplicatePath,
+}) {
+  final tempDir = Directory.systemTemp.createTempSync('dup_zip_');
+  try {
+    final scriptFile = File(p.join(tempDir.path, 'gen_dup.py'));
+    final zipFile = File(p.join(tempDir.path, 'bundle.zip'));
+    final manifestStr = jsonEncode(manifest);
+    final script = '''
+import zipfile
+with zipfile.ZipFile("${zipFile.path.replaceAll('\\', '/')}", "w") as z:
+    z.writestr("manifest.json", """$manifestStr""")
+    z.writestr("$duplicatePath", "dup-content-1")
+    z.writestr("$duplicatePath", "dup-content-2")
+''';
+    scriptFile.writeAsStringSync(script);
+    var res = Process.runSync('python3', [scriptFile.path]);
+    if (res.exitCode != 0) {
+      res = Process.runSync('python', [scriptFile.path]);
+    }
+    if (!zipFile.existsSync()) {
+      throw Exception('Không thể tạo duplicate zip qua python: ${res.stderr}');
+    }
+    return zipFile.readAsBytesSync();
+  } finally {
+    tempDir.deleteSync(recursive: true);
+  }
 }
 
 void main() {
@@ -428,15 +524,17 @@ void main() {
     test('Gate 9: Crash after promotion before DB commit reconciles by reconstructing row and setting READY', () async {
       const versionId = 'v9_crash_after_promo';
       final pageContent = utf8.encode('page-content-999');
+      final pageSha = sha256.convert(pageContent).toString();
       final manifest = {
         'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
         'chapterVersionId': versionId,
         'chapterId': 'c9',
         'storyId': 's9',
         'chapterTitle': 'Phục hồi sau Crash',
         'mediaFormat': 'COMIC',
         'files': [
-          {'path': 'pages/001.webp', 'size': pageContent.length}
+          {'path': 'pages/001.webp', 'size': pageContent.length, 'sha256': pageSha}
         ]
       };
 
@@ -610,16 +708,24 @@ void main() {
     // =========================================================================
     test('Gate 13: Dangling .part file for an already installed chapter is cleaned by reconciliation', () async {
       const versionId = 'v13_cleanup';
+      final pageContent = utf8.encode('dummy-page-13');
+      final pageSha = sha256.convert(pageContent).toString();
       final manifest = {
         'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
         'chapterVersionId': versionId,
         'chapterId': 'c13',
         'storyId': 's13',
         'mediaFormat': 'COMIC',
-        'files': <Map<String, dynamic>>[],
+        'files': [
+          {'path': 'pages/001.webp', 'size': pageContent.length, 'sha256': pageSha}
+        ],
       };
       final installedPath = await storagePaths.getInstalledPathForVersion(versionId);
       Directory(installedPath).createSync(recursive: true);
+      final pageFile = File(p.join(installedPath, 'pages/001.webp'));
+      pageFile.parent.createSync(recursive: true);
+      pageFile.writeAsBytesSync(pageContent);
       File(p.join(installedPath, 'manifest.json')).writeAsStringSync(jsonEncode(manifest));
 
       final offlineChapter = OfflineChapter(
@@ -631,7 +737,7 @@ void main() {
         mediaFormat: 'COMIC',
         installedDir: 'installed/$versionId',
         totalFiles: 1,
-        totalBytes: 100,
+        totalBytes: pageContent.length,
         installedAt: 13000,
         manifestJson: jsonEncode(manifest),
       );
@@ -656,15 +762,13 @@ void main() {
       final novelHtml = utf8.encode('<p>Chương 1: Khởi đầu mới</p>');
       final manifest = {
         'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
         'chapterVersionId': versionId,
         'chapterId': 'c14',
         'storyId': 's14',
         'chapterTitle': 'Chương 1: Khởi đầu mới',
         'mediaFormat': 'NOVEL',
         'novelMetadata': {'contentPath': 'content.html'},
-        'files': [
-          {'path': 'content.html', 'size': novelHtml.length}
-        ]
       };
       final zipBytes = createTestZip(
         manifest: manifest,
@@ -702,15 +806,19 @@ void main() {
     // =========================================================================
     test('Gate 15: State transition VERIFYING -> READY occurs exclusively via BundleInstaller', () async {
       const versionId = 'v15_ownership';
+      final pageContent = utf8.encode('ownership page');
       final manifest = {
         'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
         'chapterVersionId': versionId,
         'chapterId': 'c15',
         'storyId': 's15',
         'mediaFormat': 'COMIC',
-        'files': <Map<String, dynamic>>[],
       };
-      final zipBytes = createTestZip(manifest: manifest);
+      final zipBytes = createTestZip(
+        manifest: manifest,
+        files: {'pages/001.webp': pageContent},
+      );
       final realSha256 = sha256.convert(zipBytes).toString();
 
       final partFile = await storagePaths.getPartFile(versionId);
@@ -740,6 +848,571 @@ void main() {
 
       current = await storageRepo.getTaskById('task_gate15');
       expect(current?.status, DownloadTaskStatus.ready);
+    });
+
+    // =========================================================================
+    // Gate 3c: Symlink Rejection Fail-Closed
+    // =========================================================================
+    test('Gate 3c: Symlink entry in zip archive is rejected fail-closed with UnsafeArchiveException', () async {
+      const versionId = 'v3c_symlink';
+      final manifest = {
+        'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
+        'chapterVersionId': versionId,
+        'chapterId': 'c3c',
+        'storyId': 's3c',
+        'mediaFormat': 'COMIC',
+        'files': [
+          {'path': 'pages/symlink.webp', 'size': 11, 'sha256': 'dummy'}
+        ],
+      };
+      final zipBytes = createSymlinkZip(
+        manifest: manifest,
+        symlinkPath: 'pages/symlink.webp',
+        targetPath: '/etc/passwd',
+      );
+      final realSha = sha256.convert(zipBytes).toString();
+
+      final partFile = await storagePaths.getPartFile(versionId);
+      await partFile.writeAsBytes(zipBytes);
+
+      final task = DownloadTask(
+        taskId: 'task_gate3c',
+        chapterVersionId: versionId,
+        chapterId: 'c3c',
+        storyId: 's3c',
+        storyTitle: 'Symlink Story',
+        chapterNumber: '3c',
+        mediaFormat: 'COMIC',
+        status: DownloadTaskStatus.verifying,
+        sha256Hash: realSha,
+        createdAt: 3300,
+        updatedAt: 3300,
+      );
+      await storageRepo.insertTask(task);
+
+      await expectLater(
+        bundleInstaller.installBundle(task),
+        throwsA(isA<UnsafeArchiveException>()),
+      );
+
+      final updatedTask = await storageRepo.getTaskById('task_gate3c');
+      expect(updatedTask?.status, DownloadTaskStatus.failed);
+      expect(updatedTask?.errorMessage, contains('symlink/hardlink'));
+    });
+
+    // =========================================================================
+    // Gate 3d: Duplicate Paths Rejection
+    // =========================================================================
+    test('Gate 3d: Duplicate paths in zip archive is rejected with UnsafeArchiveException', () async {
+      const versionId = 'v3d_duplicate';
+      final manifest = {
+        'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
+        'chapterVersionId': versionId,
+        'chapterId': 'c3d',
+        'storyId': 's3d',
+        'mediaFormat': 'COMIC',
+        'files': [
+          {'path': 'pages/001.webp', 'size': 13, 'sha256': 'dummy'}
+        ],
+      };
+      final zipBytes = createDuplicateZip(
+        manifest: manifest,
+        duplicatePath: 'pages/001.webp',
+      );
+      final realSha = sha256.convert(zipBytes).toString();
+
+      final partFile = await storagePaths.getPartFile(versionId);
+      await partFile.writeAsBytes(zipBytes);
+
+      final task = DownloadTask(
+        taskId: 'task_gate3d',
+        chapterVersionId: versionId,
+        chapterId: 'c3d',
+        storyId: 's3d',
+        storyTitle: 'Duplicate Path Story',
+        chapterNumber: '3d',
+        mediaFormat: 'COMIC',
+        status: DownloadTaskStatus.verifying,
+        sha256Hash: realSha,
+        createdAt: 3400,
+        updatedAt: 3400,
+      );
+      await storageRepo.insertTask(task);
+
+      await expectLater(
+        bundleInstaller.installBundle(task),
+        throwsA(isA<UnsafeArchiveException>()),
+      );
+
+      final updatedTask = await storageRepo.getTaskById('task_gate3d');
+      expect(updatedTask?.status, DownloadTaskStatus.failed);
+      expect(updatedTask?.errorMessage, contains('đường dẫn trùng lặp'));
+    });
+
+    // =========================================================================
+    // Gate 9b: Crash After offline_chapters Insert / Before Task READY Normalization
+    // =========================================================================
+    test('Gate 9b: Crash after offline_chapters insert / before READY commits normalizes PAUSED task to READY on startup', () async {
+      const versionId = 'v9b_crash_before_ready';
+      final pageContent = utf8.encode('page-content-9b');
+      final pageSha = sha256.convert(pageContent).toString();
+      final manifest = {
+        'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
+        'chapterVersionId': versionId,
+        'chapterId': 'c9b',
+        'storyId': 's9b',
+        'chapterTitle': 'Crash Before Ready',
+        'mediaFormat': 'COMIC',
+        'files': [
+          {'path': 'pages/001.webp', 'size': pageContent.length, 'sha256': pageSha}
+        ]
+      };
+      final installedPath = await storagePaths.getInstalledPathForVersion(versionId);
+      final installedDir = Directory(installedPath);
+      installedDir.createSync(recursive: true);
+      File(p.join(installedPath, 'manifest.json')).writeAsStringSync(jsonEncode(manifest));
+      final pageFile = File(p.join(installedPath, 'pages/001.webp'));
+      pageFile.parent.createSync(recursive: true);
+      pageFile.writeAsBytesSync(pageContent);
+
+      final chapter = OfflineChapter(
+        chapterVersionId: versionId,
+        chapterId: 'c9b',
+        storyId: 's9b',
+        storyTitle: 'Story 9b',
+        chapterNumber: '9b',
+        chapterTitle: 'Crash Before Ready',
+        mediaFormat: 'COMIC',
+        installedDir: 'installed/$versionId',
+        totalFiles: 1,
+        totalBytes: pageContent.length,
+        installedAt: 9500,
+        manifestJson: jsonEncode(manifest),
+      );
+      await storageRepo.insertOfflineChapter(chapter);
+
+      const task = DownloadTask(
+        taskId: 'task_gate9b',
+        chapterVersionId: versionId,
+        chapterId: 'c9b',
+        storyId: 's9b',
+        storyTitle: 'Story 9b',
+        chapterNumber: '9b',
+        mediaFormat: 'COMIC',
+        status: DownloadTaskStatus.paused,
+        createdAt: 9500,
+        updatedAt: 9500,
+      );
+      await storageRepo.insertTask(task);
+
+      await bundleInstaller.reconcileOnStartup();
+
+      final updatedTask = await storageRepo.getTaskById('task_gate9b');
+      expect(updatedTask?.status, DownloadTaskStatus.ready);
+    });
+
+    // =========================================================================
+    // Gate 12b: Idempotency Rejects Damaged Install and Forces Clean Reinstall
+    // =========================================================================
+    test('Gate 12b: Idempotency check detects deleted page and returns null, forcing re-installation', () async {
+      const versionId = 'v12b_deleted_page';
+      final pageContent = utf8.encode('page-12b');
+      final pageSha = sha256.convert(pageContent).toString();
+      final manifest = {
+        'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
+        'chapterVersionId': versionId,
+        'chapterId': 'c12b',
+        'storyId': 's12b',
+        'chapterTitle': 'Damaged Payload Test',
+        'mediaFormat': 'COMIC',
+        'files': [
+          {'path': 'pages/001.webp', 'size': pageContent.length, 'sha256': pageSha}
+        ]
+      };
+      final installedPath = await storagePaths.getInstalledPathForVersion(versionId);
+      final installedDir = Directory(installedPath);
+      installedDir.createSync(recursive: true);
+      File(p.join(installedPath, 'manifest.json')).writeAsStringSync(jsonEncode(manifest));
+      final pageFile = File(p.join(installedPath, 'pages/001.webp'));
+      pageFile.parent.createSync(recursive: true);
+      pageFile.writeAsBytesSync(pageContent);
+
+      final chapter = OfflineChapter(
+        chapterVersionId: versionId,
+        chapterId: 'c12b',
+        storyId: 's12b',
+        storyTitle: 'Story 12b',
+        chapterNumber: '12b',
+        chapterTitle: 'Damaged Payload Test',
+        mediaFormat: 'COMIC',
+        installedDir: 'installed/$versionId',
+        totalFiles: 1,
+        totalBytes: pageContent.length,
+        installedAt: 12500,
+        manifestJson: jsonEncode(manifest),
+      );
+      await storageRepo.insertOfflineChapter(chapter);
+
+      // Ban đầu hợp lệ
+      expect(await bundleInstaller.isAlreadyInstalledAndValid(versionId), isNotNull);
+
+      // File bị xóa sau đó
+      pageFile.deleteSync();
+      expect(pageFile.existsSync(), isFalse);
+
+      // Idempotency check bắt buộc trả về null (fail-closed)
+      final validChapter = await bundleInstaller.isAlreadyInstalledAndValid(versionId);
+      expect(validChapter, isNull);
+    });
+
+    // =========================================================================
+    // Gate 14b: Background Extraction Offloaded to ComputeRunner
+    // =========================================================================
+    test('Gate 14b: Background Extraction offloads SHA-256 and unzipping to ComputeRunner isolate', () async {
+      const versionId = 'v14b_isolate';
+      final pageContent = utf8.encode('page-14b');
+      final manifest = {
+        'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
+        'chapterVersionId': versionId,
+        'chapterId': 'c14b',
+        'storyId': 's14b',
+        'chapterTitle': 'Isolate Test',
+        'mediaFormat': 'COMIC',
+      };
+      final zipBytes = createTestZip(
+        manifest: manifest,
+        files: {'pages/001.webp': pageContent},
+      );
+      final realSha256 = sha256.convert(zipBytes).toString();
+
+      final partFile = await storagePaths.getPartFile(versionId);
+      await partFile.writeAsBytes(zipBytes);
+
+      final task = DownloadTask(
+        taskId: 'task_gate14b',
+        chapterVersionId: versionId,
+        chapterId: 'c14b',
+        storyId: 's14b',
+        storyTitle: 'Isolate Story',
+        chapterNumber: '14b',
+        mediaFormat: 'COMIC',
+        status: DownloadTaskStatus.verifying,
+        sha256Hash: realSha256,
+        createdAt: 14500,
+        updatedAt: 14500,
+      );
+      await storageRepo.insertTask(task);
+
+      final computeCalls = <String>[];
+      final monitoredInstaller = BundleInstaller(
+        repository: storageRepo,
+        storagePaths: storagePaths,
+        computeRunner: <Q, R>(callback, message) async {
+          if (message is String) {
+            computeCalls.add('computeFileSha256Isolate');
+          } else if (message is SafeExtractionRequest) {
+            computeCalls.add('safeExtractArchiveIsolate');
+          }
+          return await callback(message);
+        },
+      );
+
+      await monitoredInstaller.installBundle(task);
+
+      // Chứng minh cả SHA-256 lẫn extraction đều được ủy quyền cho ComputeRunner
+      expect(computeCalls, contains('computeFileSha256Isolate'));
+      expect(computeCalls, contains('safeExtractArchiveIsolate'));
+      expect(computeCalls.length, 2);
+    });
+
+    // =========================================================================
+    // Gate 17a: Cancellation During Installation Aborts Safely
+    // =========================================================================
+    test('Gate 17a: Cancel during installBundle aborts before promotion and cleans staging without setting FAILED', () async {
+      const versionId = 'v17a_cancel';
+      final pageContent = utf8.encode('page-17a');
+      final manifest = {
+        'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
+        'chapterVersionId': versionId,
+        'chapterId': 'c17a',
+        'storyId': 's17a',
+        'mediaFormat': 'COMIC',
+      };
+      final zipBytes = createTestZip(manifest: manifest, files: {'pages/001.webp': pageContent});
+      final realSha = sha256.convert(zipBytes).toString();
+
+      final partFile = await storagePaths.getPartFile(versionId);
+      await partFile.writeAsBytes(zipBytes);
+
+      final task = DownloadTask(
+        taskId: 'task_gate17a',
+        chapterVersionId: versionId,
+        chapterId: 'c17a',
+        storyId: 's17a',
+        storyTitle: 'Cancel Test',
+        chapterNumber: '17a',
+        mediaFormat: 'COMIC',
+        status: DownloadTaskStatus.verifying,
+        sha256Hash: realSha,
+        createdAt: 17000,
+        updatedAt: 17000,
+      );
+      await storageRepo.insertTask(task);
+
+      final cancelToken = CancelToken();
+
+      // Giả lập hủy token trong lúc compute runner đang giải nén
+      final cancellableInstaller = BundleInstaller(
+        repository: storageRepo,
+        storagePaths: storagePaths,
+        computeRunner: <Q, R>(callback, message) async {
+          final res = await callback(message);
+          if (message is SafeExtractionRequest) {
+            cancelToken.cancel('User cancelled download');
+          }
+          return res;
+        },
+      );
+
+      await expectLater(
+        cancellableInstaller.installBundle(task, cancelToken: cancelToken),
+        throwsA(isA<OfflineInstallationCancelledException>()),
+      );
+
+      // Verify staging được dọn sạch
+      final stagingPath = await storagePaths.getStagingPathForVersion(versionId);
+      expect(Directory(stagingPath).existsSync(), isFalse);
+
+      // Verify installed/ không tồn tại
+      final installedPath = await storagePaths.getInstalledPathForVersion(versionId);
+      expect(Directory(installedPath).existsSync(), isFalse);
+
+      // Verify zero offline_chapters row
+      expect(await storageRepo.isChapterInstalled(versionId), isFalse);
+
+      // Task KHÔNG bị chuyển thành FAILED (để cancelTask ghi CANCELLED)
+      final currentTask = await storageRepo.getTaskById('task_gate17a');
+      expect(currentTask?.status, isNot(DownloadTaskStatus.failed));
+      expect(currentTask?.status, isNot(DownloadTaskStatus.ready));
+    });
+
+    // =========================================================================
+    // Gate 18: File Tamper / SHA Mismatch Detection
+    // =========================================================================
+    test('Gate 18: File modified on disk with same size triggers SHA mismatch and fails validation', () async {
+      const versionId = 'v18_tampered_file';
+      final originalContent = utf8.encode('original-unaltered-content');
+      final tamperedContent = utf8.encode('tampered-malicious-content'); // same byte length 26
+      assert(originalContent.length == tamperedContent.length);
+
+      final originalSha = sha256.convert(originalContent).toString();
+      final manifest = {
+        'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
+        'chapterVersionId': versionId,
+        'chapterId': 'c18',
+        'storyId': 's18',
+        'chapterTitle': 'Tamper Test',
+        'mediaFormat': 'COMIC',
+        'files': [
+          {'path': 'pages/001.webp', 'size': originalContent.length, 'sha256': originalSha}
+        ]
+      };
+      // Tệp zip chứa nội dung đã bị sửa (tampered)
+      final zipBytes = createTestZip(
+        manifest: manifest,
+        files: {'pages/001.webp': tamperedContent},
+        autoPopulateFiles: false,
+      );
+      final realZipSha = sha256.convert(zipBytes).toString();
+
+      final partFile = await storagePaths.getPartFile(versionId);
+      await partFile.writeAsBytes(zipBytes);
+
+      final task = DownloadTask(
+        taskId: 'task_gate18',
+        chapterVersionId: versionId,
+        chapterId: 'c18',
+        storyId: 's18',
+        storyTitle: 'Tamper Story',
+        chapterNumber: '18',
+        mediaFormat: 'COMIC',
+        status: DownloadTaskStatus.verifying,
+        sha256Hash: realZipSha,
+        createdAt: 18000,
+        updatedAt: 18000,
+      );
+      await storageRepo.insertTask(task);
+
+      await expectLater(
+        bundleInstaller.installBundle(task),
+        throwsA(isA<ManifestValidationException>()),
+      );
+
+      final updatedTask = await storageRepo.getTaskById('task_gate18');
+      expect(updatedTask?.status, DownloadTaskStatus.failed);
+      expect(updatedTask?.errorMessage, contains('Mã băm SHA-256 tệp pages/001.webp bị sai lệch'));
+      expect(await storageRepo.isChapterInstalled(versionId), isFalse);
+    });
+
+    // =========================================================================
+    // Gate 19: Empty or Missing files List Rejection
+    // =========================================================================
+    test('Gate 19: Manifest missing files array or empty files list is rejected fail-closed', () async {
+      const versionId = 'v19_empty_files';
+      final manifest = {
+        'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
+        'chapterVersionId': versionId,
+        'chapterId': 'c19',
+        'storyId': 's19',
+        'mediaFormat': 'COMIC',
+        'files': <Map<String, dynamic>>[], // Rỗng
+      };
+      final zipBytes = createTestZip(manifest: manifest, autoPopulateFiles: false);
+      final realSha = sha256.convert(zipBytes).toString();
+
+      final partFile = await storagePaths.getPartFile(versionId);
+      await partFile.writeAsBytes(zipBytes);
+
+      final task = DownloadTask(
+        taskId: 'task_gate19',
+        chapterVersionId: versionId,
+        chapterId: 'c19',
+        storyId: 's19',
+        storyTitle: 'Empty Files Test',
+        chapterNumber: '19',
+        mediaFormat: 'COMIC',
+        status: DownloadTaskStatus.verifying,
+        sha256Hash: realSha,
+        createdAt: 19000,
+        updatedAt: 19000,
+      );
+      await storageRepo.insertTask(task);
+
+      await expectLater(
+        bundleInstaller.installBundle(task),
+        throwsA(isA<ManifestValidationException>()),
+      );
+
+      final updatedTask = await storageRepo.getTaskById('task_gate19');
+      expect(updatedTask?.status, DownloadTaskStatus.failed);
+      expect(updatedTask?.errorMessage, contains('chứa danh sách files không rỗng'));
+    });
+
+    // =========================================================================
+    // Gate 20: Manifest Path Traversal Rejection
+    // =========================================================================
+    test('Gate 20: Manifest path traversal attempt in files[].path is blocked', () async {
+      const versionId = 'v20_traversal';
+      final pageContent = utf8.encode('page');
+      final pageSha = sha256.convert(pageContent).toString();
+      final manifest = {
+        'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
+        'chapterVersionId': versionId,
+        'chapterId': 'c20',
+        'storyId': 's20',
+        'mediaFormat': 'COMIC',
+        'files': [
+          {'path': '../escaped.txt', 'size': pageContent.length, 'sha256': pageSha}
+        ],
+      };
+      final zipBytes = createTestZip(manifest: manifest, autoPopulateFiles: false);
+      final realSha = sha256.convert(zipBytes).toString();
+
+      final partFile = await storagePaths.getPartFile(versionId);
+      await partFile.writeAsBytes(zipBytes);
+
+      final task = DownloadTask(
+        taskId: 'task_gate20',
+        chapterVersionId: versionId,
+        chapterId: 'c20',
+        storyId: 's20',
+        storyTitle: 'Traversal Story',
+        chapterNumber: '20',
+        mediaFormat: 'COMIC',
+        status: DownloadTaskStatus.verifying,
+        sha256Hash: realSha,
+        createdAt: 20000,
+        updatedAt: 20000,
+      );
+      await storageRepo.insertTask(task);
+
+      await expectLater(
+        bundleInstaller.installBundle(task),
+        throwsA(isA<ManifestValidationException>()),
+      );
+
+      final updatedTask = await storageRepo.getTaskById('task_gate20');
+      expect(updatedTask?.status, DownloadTaskStatus.failed);
+      expect(updatedTask?.errorMessage, contains('path traversal'));
+    });
+
+    // =========================================================================
+    // Gate 21: Extra Untrusted Files on Disk (Exact Inventory Check)
+    // =========================================================================
+    test('Gate 21: Extra untrusted file on disk not declared in manifest fails validation', () async {
+      const versionId = 'v21_extra_file';
+      final pageContent = utf8.encode('page-21');
+      final extraContent = utf8.encode('untrusted extra payload');
+      final manifest = {
+        'schemaVersion': 1,
+        'bundleType': 'OFFLINE_READER',
+        'chapterVersionId': versionId,
+        'chapterId': 'c21',
+        'storyId': 's21',
+        'mediaFormat': 'COMIC',
+        'files': [
+          {
+            'path': 'pages/001.webp',
+            'size': pageContent.length,
+            'sha256': sha256.convert(pageContent).toString(),
+          }
+        ],
+      };
+      final zipBytes = createTestZip(
+        manifest: manifest,
+        files: {
+          'pages/001.webp': pageContent,
+          'extra.sh': extraContent,
+        },
+        autoPopulateFiles: false,
+      );
+      final realSha = sha256.convert(zipBytes).toString();
+
+      final partFile = await storagePaths.getPartFile(versionId);
+      await partFile.writeAsBytes(zipBytes);
+
+      final task = DownloadTask(
+        taskId: 'task_gate21',
+        chapterVersionId: versionId,
+        chapterId: 'c21',
+        storyId: 's21',
+        storyTitle: 'Extra File Story',
+        chapterNumber: '21',
+        mediaFormat: 'COMIC',
+        status: DownloadTaskStatus.verifying,
+        sha256Hash: realSha,
+        createdAt: 21000,
+        updatedAt: 21000,
+      );
+      await storageRepo.insertTask(task);
+
+      await expectLater(
+        bundleInstaller.installBundle(task),
+        throwsA(isA<ManifestValidationException>()),
+      );
+
+      final updatedTask = await storageRepo.getTaskById('task_gate21');
+      expect(updatedTask?.status, DownloadTaskStatus.failed);
+      expect(updatedTask?.errorMessage, contains('Phát hiện tệp lạ không được khai báo'));
     });
   });
 }

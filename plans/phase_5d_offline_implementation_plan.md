@@ -431,39 +431,41 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
     - Nếu storage trả về `200 OK`, lập tức truncate `.part` về 0 byte, reset offset về `0` và tải lại sạch từ đầu.
 - [x] Bộ kiểm thử Unit & Integration Tests cho `DownloadQueueManager` và `ArtifactDownloadClient` (18/18 Acceptance Gates PASS 100%, 189/189 Mobile suites PASS, `flutter analyze` 0 issues). *(FROZEN-FINAL ✅)*
 
-### 📌 Phase 5D.4: Offline Bundle Installation & Bidirectional Integrity Verification (MOB-012 / [Issue #204](https://github.com/HIepNgoc2006/OmniNovel/issues/204)) - [x] HOÀN THÀNH (FROZEN BASELINE ✅)
-- [x] **10 Bất biến Kiến trúc Khóa chặt (10 Core Architectural Invariants):**
-  1. *Ownership tuyệt đối:* Duy nhất `BundleInstaller` ghi `READY` (hoặc `FAILED`) từ `VERIFYING`. Không repo, UI controller, hay queue recovery nào được tự suy diễn `READY` từ việc tồn tại tệp `.part` hay thư mục `installed/`.
-  2. *Checksum-before-unzip:* SHA-256 của `.part` bắt buộc đối chiếu với `sha256_hash` đã pin trên `download_tasks`. Tuyệt đối không lấy SHA mới từ server khi install.
-  3. *Archive extraction fail-closed:* Chặn Zip Slip (`../`, absolute path, entry escape sau normalize), từ chối symlink/hardlink, duplicate/conflicting paths, archive malformed, và giới hạn trần giải nén (Bounded Extraction: tối đa 1,000 files, tối đa 500MB uncompressed) chống Zip Bomb.
-  4. *Manifest identity binding:* `manifest.json` bind chính xác `chapterVersionId == task.chapterVersionId`, `chapterId`, `storyId`, `mediaFormat`; schema version >= 1 hợp lệ; validate toàn bộ inventory files trên đĩa so với manifest.
-  5. *Cross-domain Crash Protocol:* Thao tác rename filesystem và SQLite commit không thể atomic cùng nhau. Thiết kế protocol phục hồi sau crash ở mọi thời điểm (trước promote, giữa promote và commit, sau commit) để startup luôn hội tụ tất định.
-  6. *Canonical READY SSoT:* Chỉ đọc offline khi có đồng thời `offline_chapters` row (không có cột status; row existence là proof) và payload `installed/` hợp lệ. `download_tasks.status = READY` chỉ là trạng thái task.
-  7. *Deterministic Bidirectional Reconciliation Policy:*
-     - DB row có nhưng `installed/` mất hoặc hỏng ➔ Xóa row trong `offline_chapters`, chuyển task tương ứng về `FAILED`.
-     - `installed/<chapterVersionId>` tồn tại nhưng DB row chưa có ➔ Quét & verify tính toàn vẹn `manifest.json` và file inventory. Nếu 100% hợp lệ và có task ➔ tái tạo (reconstruct) row trong `offline_chapters` và chuyển task sang `READY`. Nếu không hợp lệ hoặc orphan không có task ➔ xóa sạch thư mục orphan (fail-closed rollback).
-     - Staging orphan (`offline/staging/*`) ➔ Dọn sạch an toàn khi khởi động lại.
-     - Tệp `.part` còn sót sau successful install ➔ Dọn dẹp an toàn và có tính idempotent.
-  8. *Idempotent installer:* Gọi `installBundle` nhiều lần cho cùng version không tạo duplicate directories, duplicate rows, hoặc phá vỡ bản cài đặt hợp lệ.
-  9. *Existing-install replacement semantics:* Nếu `installed/<versionId>` đã tồn tại: nếu bản hiện có đã hợp lệ ➔ early return idempotent; nếu cài đè ➔ giải nén qua staging biệt lập, verify xong mới atomic promote/swap.
-  10. *Failure cleanup & isolation:* Mọi lỗi checksum, manifest, unzip, promote ➔ task về `FAILED`, zero `offline_chapters` row, dọn sạch staging rác, không để payload nửa cài đặt trở thành dữ liệu đọc được.
-- [x] **16 Tiêu Chuẩn Nghiệm Thu (16 Verification Acceptance Gates):**
+### 📌 Phase 5D.4: Offline Bundle Installation & Bidirectional Integrity Verification (MOB-012 / [Issue #204](https://github.com/HIepNgoc2006/OmniNovel/issues/204)) - [x] HOÀN THÀNH & KHÓA CHẶT (P0 HOTFIX HARDENED & FROZEN BASELINE ✅)
+- [x] **10 Bất biến Kiến trúc Khóa chặt & Đã Khắc Phục Triệt Để 4 Lỗ Hổng P0:**
+  1. *Ownership tuyệt đối & SQLite Transaction (P0 Fix #1):* Cặp thao tác `offline_chapters` insert và `download_tasks.status = READY` được đóng gói trong một SQLite transaction nguyên tử duy nhất `commitInstalledChapterAndReady(chapter, taskId)`. Giao thức phục hồi khởi động `reconcileOnStartup()` tự động chuẩn hóa task `PAUSED` trở lại `READY` nếu bản ghi và payload hợp lệ.
+  2. *Lifecycle Mutex & Loại Trừ Resurrection Race (P0 Fix #2):* `DownloadQueueManager` mở rộng `_activeOperations` và `_activeCancelTokens` bao bọc toàn bộ chu kỳ `DOWNLOADING ➔ VERIFYING ➔ INSTALL SETTLE`. Mọi thao tác `cancelTask()`, `pauseTask()`, `retryTask()` đều chờ installer settle. `BundleInstaller` hỗ trợ `CancelToken` và abort an toàn trước promotion, tuyệt đối không cho phép task bị phục sinh thành `READY`.
+  3. *Canonical Payload Verifier (SSoT) & Exact Inventory (P0 Fix #3):* Hàm duy nhất `verifyInstalledPayload(rootDir, ...)` làm nguồn chân lý duy nhất (SSoT) dùng chung cho Fresh Install, Idempotency Check (`isAlreadyInstalledAndValid`), và Startup Reconciliation (`reconcileOnStartup`). Kiểm tra cryptographic SHA-256 từng file, chặn path traversal cả trong `files[].path` lẫn `novelMetadata.contentPath`, và từ chối mọi tệp lạ không được khai báo trong manifest (Exact Inventory Check).
+  4. *Chống Chấp Nhận Payload Hỏng / Tamper Detection (P0 Fix #4):* Mọi tệp bị sửa đổi nội dung (kể cả giữ nguyên kích thước), bị xóa trang, hoặc sai schema đều bị từ chối; idempotency check trả về null kích hoạt cài lại sạch sẽ, và startup reconciliation loại bỏ triệt để bản ghi stale.
+  5. *Archive extraction fail-closed:* Chặn Zip Slip, từ chối symlink/hardlink (Gate 3c), duplicate/conflicting paths (Gate 3d), archive malformed (Gate 3b), và giới hạn trần giải nén (Gate 4 Zip Bomb).
+  6. *Background Extraction Isolate:* Tác vụ băm SHA-256 và giải nén được offload sang `computeRunner` isolate, giữ UI thread 60fps mượt mà (Gate 14b).
+- [x] **24 Tiêu Chuẩn Nghiệm Thu (24 Verification Acceptance Gates - PASS 100%):**
   - [x] **Gate 1 — SHA-256 Fail-Closed:** Đúng hash mới giải nén; sai hash ➔ `FAILED`, zero `offline_chapters`.
   - [x] **Gate 2 — Exact Version Manifest:** Manifest bind chính xác `chapterVersionId`; mismatch/schema invalid ➔ reject.
   - [x] **Gate 3 — Safe Extraction:** Zip Slip, absolute path, malformed ZIP, unsafe link và extraction escape đều bị chặn.
-  - [x] **Gate 4 — Bounded Extraction:** Archive bất thường về số entry hoặc kích thước giải nén bị fail-closed.
-  - [x] **Gate 5 — Staging Isolation:** Reader không bao giờ nhìn thấy nội dung trong `staging`.
-  - [x] **Gate 6 — Atomic Promotion:** Chỉ payload đã verify hoàn chỉnh mới được promotion sang `installed`.
-  - [x] **Gate 7 — READY SSoT:** `offline_chapters` row + valid installed payload là điều kiện bắt buộc; task không tự tạo READY.
+  - [x] **Gate 3b — Malformed Zip:** Archive hỏng hoặc sai cấu trúc bị từ chối fail-closed.
+  - [x] **Gate 3c — Symlink Rejection:** Entry symlink trong zip bị chặn với `UnsafeArchiveException`.
+  - [x] **Gate 3d — Duplicate Paths Rejection:** Trùng lặp đường dẫn trong zip bị chặn với `UnsafeArchiveException`.
+  - [x] **Gate 4 — Bounded Extraction:** Archive bất thường về số entry (>1000) hoặc dung lượng (>500MB) bị fail-closed.
+  - [x] **Gate 5, 6, 7 — Staging Isolation & Atomic Promotion:** Staging biệt lập, atomic rename sang `installed/`, ghi SQLite row `READY`.
   - [x] **Gate 8 — Crash Before Promotion:** Restart dọn staging, không READY giả.
   - [x] **Gate 9 — Crash After Promotion / Before DB Commit:** Startup reconciliation hội tụ đúng policy (reconstruct row nếu payload hợp lệ).
+  - [x] **Gate 9b — Crash Recovery Task Normalization:** Chuẩn hóa task từ `PAUSED` trở lại `READY` nếu DB row và payload hợp lệ.
   - [x] **Gate 10 — DB Row / Missing Files:** Stale row bị loại bỏ sạch khỏi CSDL.
   - [x] **Gate 11 — Orphan Installed Directory:** Xử lý deterministic theo policy đã chọn.
   - [x] **Gate 12 — Installer Idempotency:** Chạy lại không duplicate/corrupt.
+  - [x] **Gate 12b — Deleted File Detection:** Idempotency check phát hiện trang bị thiếu và buộc cài lại sạch sẽ.
   - [x] **Gate 13 — Cleanup:** Successful install dọn `.part`/staging; cleanup có tính idempotent.
-  - [x] **Gate 14 — Background Extraction:** Unzip/hash workload chạy trong `compute` isolate, 0 frame drop UI.
+  - [x] **Gate 14 — Novel Bundle Resolution:** Novel bundle kiểm tra `content.html` và bind `novelMetadata`.
+  - [x] **Gate 14b — Background Extraction:** Băm SHA-256 và giải nén chạy trong `ComputeRunner` isolate ngoài UI thread.
   - [x] **Gate 15 — State Ownership:** Chỉ 5D.4 có quyền chuyển `VERIFYING ➔ READY | FAILED`.
-  - [x] **Gate 16 — Regression:** Toàn bộ 203/203 mobile tests xanh + `flutter analyze` 0 issues.
+  - [x] **Gate 17a — Cancel During Extraction:** Hủy cài đặt abort trước promotion, dọn staging, không set FAILED.
+  - [x] **Gate 18 — Tamper Detection:** File bị sửa đổi trên đĩa (giữ nguyên size) kích hoạt lỗi SHA mismatch và fail-closed.
+  - [x] **Gate 19 — Manifest Inventory Contract:** Bắt buộc mảng `files` không rỗng; từ chối manifest thiếu tệp.
+  - [x] **Gate 20 — Path Traversal in Manifest:** Chặn đường dẫn thoát khỏi thư mục cài đặt trong `files[].path`.
+  - [x] **Gate 21 — Exact File Inventory:** Phát hiện và từ chối tệp lạ trên đĩa không được khai báo trong manifest.
+  - [x] **Phase 5D.3 Gate 12 — Concurrency Serialization:** Cancel trong lúc task đang `VERIFYING` / installing hủy installer và dừng ở `CANCELLED`, tuyệt đối không phục sinh thành `READY`.
+  - [x] **Kiểm thử Hồi quy Toàn diện:** 24/24 Installer Gates PASS, 19/19 Download Manager Gates PASS, 214/214 Mobile tests PASS, `flutter analyze` 0 issues (Clean 100%).
 
 
 

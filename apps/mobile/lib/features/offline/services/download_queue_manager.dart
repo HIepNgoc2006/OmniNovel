@@ -164,6 +164,9 @@ class DownloadQueueManager {
     final task = await _repository.getTaskById(taskId);
     if (task == null) return;
 
+    // Không chuyển READY sang PAUSED nếu installer đã hoàn tất cài đặt trong lúc chờ
+    if (task.status == DownloadTaskStatus.ready) return;
+
     await _repository.updateTaskStatus(taskId, DownloadTaskStatus.paused);
     final updated = task.copyWith(status: DownloadTaskStatus.paused);
     _notifyUpdate(updated);
@@ -216,8 +219,9 @@ class DownloadQueueManager {
       throw ArgumentError('Task không tồn tại: $taskId');
     }
 
-    // Xóa tệp .part cũ nếu có
+    // Xóa tệp .part và staging cũ nếu có
     await _storagePaths.deletePartFile(task.chapterVersionId);
+    await _storagePaths.deleteStagingDir(task.chapterVersionId);
 
     final now = DateTime.now().millisecondsSinceEpoch;
     final retried = task.copyWith(
@@ -660,8 +664,10 @@ class DownloadQueueManager {
       _notifyUpdate(currentTask);
 
       // Phase 5D.4: Bàn giao tác vụ cài đặt gói offline cho BundleInstaller
+      // BẤT BIẾN: installer được serialize TRONG lifecycle mutex operation (await settle),
+      // ngăn chặn triệt để race condition với cancelTask / pauseTask / retryTask
       if (_bundleInstaller != null) {
-        unawaited(_installDownloadedBundle(currentTask));
+        await _installDownloadedBundle(currentTask, cancelToken);
       }
     } catch (e) {
       if (cancelToken.isCancelled) {
@@ -697,11 +703,14 @@ class DownloadQueueManager {
     }
   }
 
-  Future<void> _installDownloadedBundle(DownloadTask verifyingTask) async {
+  Future<void> _installDownloadedBundle(
+    DownloadTask verifyingTask,
+    CancelToken cancelToken,
+  ) async {
     try {
-      await _bundleInstaller!.installBundle(verifyingTask);
+      await _bundleInstaller!.installBundle(verifyingTask, cancelToken: cancelToken);
     } catch (_) {
-      // BundleInstaller đã xử lý updateTaskStatus sang FAILED fail-closed
+      // BundleInstaller đã xử lý updateTaskStatus sang FAILED fail-closed hoặc abort nếu cancelled
     } finally {
       final updatedTask = await _repository.getTaskById(verifyingTask.taskId);
       if (updatedTask != null) {

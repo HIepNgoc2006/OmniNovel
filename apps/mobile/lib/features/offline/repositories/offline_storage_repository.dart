@@ -197,6 +197,31 @@ class OfflineStorageRepository {
     );
   }
 
+  /// Ghi nhận chương đã cài đặt thành công và cập nhật task sang READY trong một SQLite Transaction nguyên tử.
+  /// Đảm bảo tính toàn vẹn Invariant 5/7: không bao giờ tồn tại trạng thái nửa vời (row tồn tại nhưng task không READY).
+  Future<void> commitInstalledChapterAndReady(
+    OfflineChapter chapter,
+    String taskId,
+  ) async {
+    await _db.transaction((txn) async {
+      await txn.insert(
+        'offline_chapters',
+        chapter.toMap(),
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      final now = DateTime.now().millisecondsSinceEpoch;
+      await txn.update(
+        'download_tasks',
+        {
+          'status': DownloadTaskStatus.ready.value,
+          'updated_at': now,
+        },
+        where: 'task_id = ?',
+        whereArgs: [taskId],
+      );
+    });
+  }
+
   /// Lấy thông tin chương ngoại tuyến theo versionId.
   Future<OfflineChapter?> getOfflineChapter(String chapterVersionId) async {
     final results = await _db.query(

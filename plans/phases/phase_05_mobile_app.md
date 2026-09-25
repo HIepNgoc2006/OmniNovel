@@ -105,11 +105,15 @@ apps/mobile/
   - Tải stream tệp `.part` vào App-Private sandbox (`context.filesDir/offline/tmp/`, phân quyền OS `0700` + Android FBE).
   - State machine bền vững: 5D.3 chỉ sở hữu `QUEUED -> DOWNLOADING -> VERIFYING` (chống phát sinh `READY` giả), Crash recovery (`DOWNLOADING/VERIFYING -> PAUSED`).
   - Toàn bộ 18/18 Verification Acceptance Gates PASS 100% (gồm fail-closed Range parse/mismatch, worker settle concurrency mutex, 403 immutable metadata verification), 189/189 Mobile tests PASS, `flutter analyze` 0 issues. *(FROZEN-FINAL ✅)*
-- [ ] **Phase 5D.4 — Offline Bundle Installation & Bidirectional Integrity Verification:**
-  - 5D.4 `BundleInstaller` là thành phần duy nhất sở hữu chuyển trạng thái `VERIFYING -> READY | FAILED`.
-  - Giải nén trong background Isolate (`compute`), đối chiếu checksum SHA-256 tệp `.part` và manifest.
-  - Thao tác Atomic Promotion (`staging ➔ installed`), transaction commit row vào `offline_chapters` (không có cột `status`, row existence là SSoT cho khả năng đọc offline) và chuyển `download_tasks.status = READY`.
-  - Phục hồi khởi động 2 chiều (Bidirectional Startup Reconciliation) dọn thư mục mồ côi và loại trừ record rỗng file.
+- [ ] **Phase 5D.4 — Offline Bundle Installation & Bidirectional Integrity Verification (MOB-012 / [Issue #204](https://github.com/HIepNgoc2006/OmniNovel/issues/204)):**
+  - **Ownership tuyệt đối:** Duy nhất 5D.4 `BundleInstaller` sở hữu bước chuyển trạng thái `VERIFYING ➔ READY | FAILED`. Tuyệt đối không repo/UI/recovery nào tự suy diễn READY từ `.part` hay `installed/`.
+  - **Checksum-before-unzip:** Đối chiếu SHA-256 từ tệp `.part` trực tiếp với `sha256Hash` đã pin trên `download_tasks` (không fetch hash mới từ server khi install).
+  - **Archive extraction fail-closed:** Chặn Zip Slip (`../`, absolute path, entry thoát staging root), từ chối symlink/hardlink, duplicate paths, archive malformed, và giới hạn trần giải nén (max 1000 files, max 500MB uncompressed) chống Zip Bomb.
+  - **Manifest identity binding:** Bind chính xác `chapterVersionId == task.chapterVersionId`, `chapterId`, `storyId`, `mediaFormat`; validate toàn bộ file inventory trên đĩa.
+  - **Cross-domain Crash Protocol:** Thiết kế giao thức phục hồi lỗi crash giữa rename filesystem và SQLite commit.
+  - **Canonical READY SSoT:** Chỉ đọc offline khi có đồng thời `offline_chapters` row (không có cột `status`, row existence là proof) và payload `installed/` hợp lệ.
+  - **Deterministic Bidirectional Reconciliation:** Row có nhưng file mất ➔ xóa row; folder có nhưng DB row thiếu ➔ verify & reconstruct nếu hợp lệ và có task, hoặc xóa orphan nếu hỏng/vô chủ; dọn sạch staging orphan và `.part` còn sót.
+  - **Idempotency & Clean Isolation:** Cài đặt lại an toàn không duplicate/corrupt; background isolate `compute` không drop frame UI; 16 Verification Acceptance Gates.
 - [ ] **Phase 5D.5 — Reader Offline Resolution:**
   - Tích hợp Webtoon, Manga và Novel Reader nạp trực tiếp file trong sandbox `0700` (`FileImage`), 0 request mạng khi ngắt Internet (Airplane Mode), offline checkpoint progress.
 - [ ] **Phase 5D.6 — Quản Lý Dung Lượng & LRU Eviction:**
@@ -142,3 +146,5 @@ apps/mobile/
 - **[Issue #200](https://github.com/HIepNgoc2006/OmniNovel/issues/200):** `[Phase 5C.4][Mobile] User Library (Bookmarks, Reading History & Continue Reading Resumption)`.
 - **[Issue #201](https://github.com/HIepNgoc2006/OmniNovel/issues/201):** `[Phase 5C.5][Mobile] Gamification & Profile (MangaPass Progression, Daily Check-in & Rank Themes)`.
 - **[Issue #202](https://github.com/HIepNgoc2006/OmniNovel/issues/202):** `[Phase 5C.6][Mobile & API] Chapter Content Reporting System (Backend API #191 & Mobile MOB-011 Bottom Sheet)`.
+- **[Issue #203](https://github.com/HIepNgoc2006/OmniNovel/issues/203):** `[Phase 5D.3][Mobile] Durable Offline Download Manager & App-Private Storage`.
+- **[Issue #204](https://github.com/HIepNgoc2006/OmniNovel/issues/204):** `[Phase 5D.4][Mobile] Offline Bundle Installation & Bidirectional Integrity Verification`.

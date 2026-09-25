@@ -431,15 +431,40 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
     - Nếu storage trả về `200 OK`, lập tức truncate `.part` về 0 byte, reset offset về `0` và tải lại sạch từ đầu.
 - [x] Bộ kiểm thử Unit & Integration Tests cho `DownloadQueueManager` và `ArtifactDownloadClient` (18/18 Acceptance Gates PASS 100%, 189/189 Mobile suites PASS, `flutter analyze` 0 issues). *(FROZEN-FINAL ✅)*
 
-### 📌 Phase 5D.4: Offline Bundle Installation & Bidirectional Integrity Verification
-- [ ] Xây dựng `BundleInstaller`:
-  - 5D.4 là thành phần DUY NHẤT sở hữu chuyển trạng thái `VERIFYING ➔ READY | FAILED`.
-  - Kiểm tra mã băm SHA-256 của tệp `.part` trước khi giải nén.
-  - Giải nén trong background Isolate (`compute`) chống đơ giao diện UI.
-  - Xác thực cấu trúc tệp và `manifest.json`.
-  - Thao tác Atomic Promotion (rename thư mục `staging` sang `installed`).
-  - Ghi nhận row mới vào bảng `offline_chapters` và cập nhật `download_tasks.status = 'READY'` trong SQLite transaction (sự tồn tại của row trong `offline_chapters` là bằng chứng canonical duy nhất chứng minh chapter sẵn sàng đọc offline; bảng `offline_chapters` không có cột `status`).
-  - **Khởi động phục hồi 2 chiều:** Dọn thư mục mồ côi chưa commit và loại bỏ record rỗng file.
+### 📌 Phase 5D.4: Offline Bundle Installation & Bidirectional Integrity Verification (MOB-012 / [Issue #204](https://github.com/HIepNgoc2006/OmniNovel/issues/204))
+- [ ] **10 Bất biến Kiến trúc Khóa chặt (10 Core Architectural Invariants):**
+  1. *Ownership tuyệt đối:* Duy nhất `BundleInstaller` ghi `READY` (hoặc `FAILED`) từ `VERIFYING`. Không repo, UI controller, hay queue recovery nào được tự suy diễn `READY` từ việc tồn tại tệp `.part` hay thư mục `installed/`.
+  2. *Checksum-before-unzip:* SHA-256 của `.part` bắt buộc đối chiếu với `sha256_hash` đã pin trên `download_tasks`. Tuyệt đối không lấy SHA mới từ server khi install.
+  3. *Archive extraction fail-closed:* Chặn Zip Slip (`../`, absolute path, entry escape sau normalize), từ chối symlink/hardlink, duplicate/conflicting paths, archive malformed, và giới hạn trần giải nén (Bounded Extraction: tối đa 1,000 files, tối đa 500MB uncompressed) chống Zip Bomb.
+  4. *Manifest identity binding:* `manifest.json` bind chính xác `chapterVersionId == task.chapterVersionId`, `chapterId`, `storyId`, `mediaFormat`; schema version >= 1 hợp lệ; validate toàn bộ inventory files trên đĩa so với manifest.
+  5. *Cross-domain Crash Protocol:* Thao tác rename filesystem và SQLite commit không thể atomic cùng nhau. Thiết kế protocol phục hồi sau crash ở mọi thời điểm (trước promote, giữa promote và commit, sau commit) để startup luôn hội tụ tất định.
+  6. *Canonical READY SSoT:* Chỉ đọc offline khi có đồng thời `offline_chapters` row (không có cột status; row existence là proof) và payload `installed/` hợp lệ. `download_tasks.status = READY` chỉ là trạng thái task.
+  7. *Deterministic Bidirectional Reconciliation Policy:*
+     - DB row có nhưng `installed/` mất hoặc hỏng ➔ Xóa row trong `offline_chapters`, chuyển task tương ứng về `FAILED`.
+     - `installed/<chapterVersionId>` tồn tại nhưng DB row chưa có ➔ Quét & verify tính toàn vẹn `manifest.json` và file inventory. Nếu 100% hợp lệ và có task ➔ tái tạo (reconstruct) row trong `offline_chapters` và chuyển task sang `READY`. Nếu không hợp lệ hoặc orphan không có task ➔ xóa sạch thư mục orphan (fail-closed rollback).
+     - Staging orphan (`offline/staging/*`) ➔ Dọn sạch an toàn khi khởi động lại.
+     - Tệp `.part` còn sót sau successful install ➔ Dọn dẹp an toàn và có tính idempotent.
+  8. *Idempotent installer:* Gọi `installBundle` nhiều lần cho cùng version không tạo duplicate directories, duplicate rows, hoặc phá vỡ bản cài đặt hợp lệ.
+  9. *Existing-install replacement semantics:* Nếu `installed/<versionId>` đã tồn tại: nếu bản hiện có đã hợp lệ ➔ early return idempotent; nếu cài đè ➔ giải nén qua staging biệt lập, verify xong mới atomic promote/swap.
+  10. *Failure cleanup & isolation:* Mọi lỗi checksum, manifest, unzip, promote ➔ task về `FAILED`, zero `offline_chapters` row, dọn sạch staging rác, không để payload nửa cài đặt trở thành dữ liệu đọc được.
+- [ ] **16 Tiêu Chuẩn Nghiệm Thu (16 Verification Acceptance Gates):**
+  - [ ] **Gate 1 — SHA-256 Fail-Closed:** Đúng hash mới giải nén; sai hash ➔ `FAILED`, zero `offline_chapters`.
+  - [ ] **Gate 2 — Exact Version Manifest:** Manifest bind chính xác `chapterVersionId`; mismatch/schema invalid ➔ reject.
+  - [ ] **Gate 3 — Safe Extraction:** Zip Slip, absolute path, malformed ZIP, unsafe link và extraction escape đều bị chặn.
+  - [ ] **Gate 4 — Bounded Extraction:** Archive bất thường về số entry hoặc kích thước giải nén bị fail-closed.
+  - [ ] **Gate 5 — Staging Isolation:** Reader không bao giờ nhìn thấy nội dung trong `staging`.
+  - [ ] **Gate 6 — Atomic Promotion:** Chỉ payload đã verify hoàn chỉnh mới được promotion sang `installed`.
+  - [ ] **Gate 7 — READY SSoT:** `offline_chapters` row + valid installed payload là điều kiện bắt buộc; task không tự tạo READY.
+  - [ ] **Gate 8 — Crash Before Promotion:** Restart dọn staging, không READY giả.
+  - [ ] **Gate 9 — Crash After Promotion / Before DB Commit:** Startup reconciliation hội tụ đúng policy (reconstruct row nếu payload hợp lệ).
+  - [ ] **Gate 10 — DB Row / Missing Files:** Stale row bị loại bỏ sạch khỏi CSDL.
+  - [ ] **Gate 11 — Orphan Installed Directory:** Xử lý deterministic theo policy đã chọn.
+  - [ ] **Gate 12 — Installer Idempotency:** Chạy lại không duplicate/corrupt.
+  - [ ] **Gate 13 — Cleanup:** Successful install dọn `.part`/staging; cleanup có tính idempotent.
+  - [ ] **Gate 14 — Background Extraction:** Unzip/hash workload chạy trong `compute` isolate, 0 frame drop UI.
+  - [ ] **Gate 15 — State Ownership:** Chỉ 5D.4 có quyền chuyển `VERIFYING ➔ READY | FAILED`.
+  - [ ] **Gate 16 — Regression:** Toàn bộ mobile suite xanh + `flutter analyze` 0 issues.
+
 
 ### 📌 Phase 5D.5: Reader Offline Resolution (Tích Hợp Trình Đọc)
 - [ ] Cập nhật `WebtoonReader`: Khi chapter đã có trong `offline_chapters`, nạp trực tiếp danh sách tệp từ `FileImage(File(pagePath))`, bỏ qua gọi API presigned URL.

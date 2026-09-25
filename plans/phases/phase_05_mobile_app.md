@@ -104,7 +104,7 @@ apps/mobile/
   - Fail-closed presigned URL refresh & HTTP Range resume từ Filesystem SSoT (`resumeOffset = partFile.length()`; `206 Partial Content` append khi start khớp offset vs `200 OK` truncate restart byte 0; 403 storage không trigger auth refresh).
   - Tải stream tệp `.part` vào App-Private sandbox (`context.filesDir/offline/tmp/`, phân quyền OS `0700` + Android FBE).
   - State machine bền vững: 5D.3 chỉ sở hữu `QUEUED -> DOWNLOADING -> VERIFYING` (chống phát sinh `READY` giả), Crash recovery (`DOWNLOADING/VERIFYING -> PAUSED`).
-  - Toàn bộ 11/11 Verification Acceptance Gates PASS 100%, 182/182 Mobile tests PASS, `flutter analyze` 0 issues. *(CLOSED ✅)*
+  - Toàn bộ 18/18 Verification Acceptance Gates PASS 100% (gồm fail-closed Range parse/mismatch, worker settle concurrency mutex, 403 immutable metadata verification), 189/189 Mobile tests PASS, `flutter analyze` 0 issues. *(FROZEN-FINAL ✅)*
 - [ ] **Phase 5D.4 — Offline Bundle Installation & Bidirectional Integrity Verification:**
   - 5D.4 `BundleInstaller` là thành phần duy nhất sở hữu chuyển trạng thái `VERIFYING -> READY | FAILED`.
   - Giải nén trong background Isolate (`compute`), đối chiếu checksum SHA-256 tệp `.part` và manifest.

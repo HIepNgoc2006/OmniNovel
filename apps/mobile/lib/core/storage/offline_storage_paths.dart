@@ -91,20 +91,28 @@ class OfflineStoragePaths {
     }
   }
 
-  /// Dọn dẹp tệp `.part` nếu tồn tại
+  /// Dọn dẹp tệp `.part` nếu tồn tại (idempotent, an toàn khi concurrent cleanup)
   Future<void> deletePartFile(String chapterVersionId) async {
     final file = await getPartFile(chapterVersionId);
-    if (await file.exists()) {
-      await file.delete();
+    try {
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } on FileSystemException {
+      // Đã được xóa bởi tiến trình khác hoặc không còn tồn tại
     }
   }
 
-  /// Dọn dẹp thư mục staging nếu tồn tại
+  /// Dọn dẹp thư mục staging nếu tồn tại (idempotent)
   Future<void> deleteStagingDir(String chapterVersionId) async {
     final path = await getStagingPathForVersion(chapterVersionId);
     final dir = Directory(path);
-    if (await dir.exists()) {
-      await dir.delete(recursive: true);
+    try {
+      if (await dir.exists()) {
+        await dir.delete(recursive: true);
+      }
+    } on FileSystemException {
+      // Đã được xóa bởi tiến trình khác hoặc không còn tồn tại
     }
   }
 }

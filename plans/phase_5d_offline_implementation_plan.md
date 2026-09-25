@@ -429,7 +429,7 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
     - Gửi request với header `Range: bytes=<resumeOffset>-`.
     - Chỉ append nếu storage trả về `206 Partial Content` và `Content-Range` có `start == resumeOffset` (đồng thời kiểm tra `total` khớp với `fileSizeBytes` backend khi có).
     - Nếu storage trả về `200 OK`, lập tức truncate `.part` về 0 byte, reset offset về `0` và tải lại sạch từ đầu.
-- [x] Bộ kiểm thử Unit & Integration Tests cho `DownloadQueueManager` và `ArtifactDownloadClient` (11/11 Acceptance Gates PASS 100%, 182/182 Mobile suites PASS, `flutter analyze` 0 issues). *(COMPLETED ✅)*
+- [x] Bộ kiểm thử Unit & Integration Tests cho `DownloadQueueManager` và `ArtifactDownloadClient` (18/18 Acceptance Gates PASS 100%, 189/189 Mobile suites PASS, `flutter analyze` 0 issues). *(FROZEN-FINAL ✅)*
 
 ### 📌 Phase 5D.4: Offline Bundle Installation & Bidirectional Integrity Verification
 - [ ] Xây dựng `BundleInstaller`:

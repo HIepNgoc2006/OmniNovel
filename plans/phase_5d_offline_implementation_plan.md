@@ -126,14 +126,15 @@ Phase 5D là chặng cuối cùng của **Phase 5: Ứng dụng Di động OmniN
   3. Giải nén vào thư mục staging: `offline/staging/<chapterVersionId>/`.
   4. Kiểm tra tệp `manifest.json` và SHA-256 các tệp con.
   5. **Atomic Rename/Promote:** Đổi tên thư mục staging thành thư mục chính thức `offline/installed/<chapterVersionId>/`.
-  6. Thực thi transaction SQLite ghi nhận chương đã sẵn sàng (`status = 'READY'`).
+  6. Thực thi transaction SQLite ghi nhận row mới vào bảng `offline_chapters` và chuyển `download_tasks.status = 'READY'`.
+     *(Lưu ý: Bảng `offline_chapters` không có cột `status`; sự tồn tại của row trong `offline_chapters` chính là bằng chứng canonical duy nhất cho biết chapter đã sẵn sàng đọc offline).*
   7. Xóa tệp `.part`.
 - **Phục hồi Khởi Động Hai Chiều (Bidirectional Startup Reconciliation):**
   - Để đối phó với trường hợp app bị kill/crash **sau bước Rename nhưng trước khi SQLite commit**:
-    1. *Thư mục `installed/<id>/` tồn tại nhưng SQLite KHÔNG có bản ghi `offline_chapters`:*
-       Quét và verify tính toàn vẹn của `manifest.json` + SHA-256 các file con trong thư mục đó. Nếu hợp lệ $\rightarrow$ tự động phục hồi ghi vào SQLite (`status = 'READY'`); nếu tệp hỏng hoặc thiếu $\rightarrow$ xóa sạch thư mục mồ côi.
-    2. *Bản ghi trong SQLite báo `READY` nhưng thư mục `installed/<id>/` hoặc tệp bên trong bị thiếu:*
-       Thực thi fail-closed $\rightarrow$ lập tức xóa bản ghi `READY` khỏi SQLite để Reader không bị crash khi truy xuất.
+    1. *Thư mục `installed/<id>/` tồn tại nhưng SQLite KHÔNG có bản ghi trong `offline_chapters`:*
+       Quét và verify tính toàn vẹn của `manifest.json` + SHA-256 các file con trong thư mục đó. Nếu hợp lệ $\rightarrow$ tự động phục hồi insert row vào `offline_chapters`; nếu tệp hỏng hoặc thiếu $\rightarrow$ xóa sạch thư mục mồ côi.
+    2. *Bản ghi trong `offline_chapters` tồn tại nhưng thư mục `installed/<id>/` hoặc tệp bên trong bị thiếu:*
+       Thực thi fail-closed $\rightarrow$ lập tức xóa bản ghi khỏi `offline_chapters` để Reader không bị crash khi truy xuất.
     3. *Thư mục `staging/` hoặc tệp `.part` dở dang:*
        Tự động dọn dẹp sạch sẽ khi app khởi động lại.
 
@@ -152,10 +153,12 @@ Phase 5D là chặng cuối cùng của **Phase 5: Ứng dụng Di động OmniN
   - Core API Dio chỉ phục vụ duy nhất việc kiểm tra readiness và lấy presigned download URL (`GET /api/v1/chapters/:chapterId/versions/:versionId/artifact`).
   - **Xử lý mã lỗi 403 Forbidden từ Storage:** Khi storage host trả về HTTP 403 (presigned URL hết hạn), client tuyệt đối **KHÔNG kích hoạt cơ chế refresh JWT token** của Core API (`/auth/refresh`), mà báo hiệu hết hạn URL để thực hiện luồng làm mới presigned URL qua Core API.
 
-### Invariant 6: Queue State Machine, DB-Level Single-Flight & Fail-Closed Range Resume
-- **Hàng đợi tải chương Mobile quản lý qua State Machine:**
-  $$\text{QUEUED} \longrightarrow \text{DOWNLOADING} \longrightarrow \text{VERIFYING} \longrightarrow \text{READY}$$
-  Kèm các trạng thái ngắt/kết thúc: $\text{PAUSED}$, $\text{FAILED}$, $\text{CANCELLED}$.
+### Invariant 6: Queue State Machine Ownership, DB-Level Single-Flight & Filesystem Range Resume
+- **Phân Định Quyền Sở Hữu State Machine (P0.5):**
+  $$\text{QUEUED} \longrightarrow \text{DOWNLOADING} \longrightarrow \text{VERIFYING} \overset{\text{5D.4 BundleInstaller}}{\longrightarrow} \text{READY} \mid \text{FAILED}$$
+  - **Phase 5D.3 (`DownloadQueueManager`):** CHỈ sở hữu các bước chuyển trạng thái `QUEUED ➔ DOWNLOADING ➔ VERIFYING` cùng các trạng thái ngắt `PAUSED`, `FAILED` (do lỗi tải mạng/hết hạn retry), `CANCELLED`. Khi tải xong byte cuối cùng, `DownloadQueueManager` chuyển task sang `VERIFYING` và hoàn tất trách nhiệm của 5D.3.
+  - **Phase 5D.4 (`BundleInstaller`):** Là thành phần DUY NHẤT được phép chuyển `VERIFYING ➔ READY` (hoặc `FAILED`) sau khi đã hoàn thành xác thực SHA-256 mã băm tệp `.part`, giải nén trong background isolate, đối chiếu `manifest.json` và thực hiện atomic promotion thư mục `staging ➔ installed`.
+  - **Chống phát sinh `READY` giả:** 5D.3 tuyệt đối KHÔNG tự ý đánh dấu `READY` khi mới chỉ tải xong tệp ZIP mà chưa qua kiểm định và cài đặt của 5D.4.
 - **Ràng Buộc Đơn Nhiệm Cấp CSDL (DB-Level Single-Flight):**
   - Bảng `download_tasks` bổ sung ràng buộc duy nhất `UNIQUE(chapter_version_id)` (5D.3 chỉ quản lý `OFFLINE_BUNDLE`).
   - Đảm bảo tính duy nhất ở tầng SQLite schema, ngăn chặn tuyệt đối tình trạng race condition tạo 2 task tải cho cùng một version.
@@ -164,14 +167,20 @@ Phase 5D là chặng cuối cùng của **Phase 5: Ứng dụng Di động OmniN
   - **Cancel:** Kích hoạt Dio `CancelToken.cancel()`, xóa ngay lập tức file `.part` và thư mục staging tương ứng, cập nhật bản ghi trong SQLite thành `CANCELLED`.
 - **Phục hồi sau Crash / Tắt App (Crash Recovery):**
   - Quét CSDL SQLite khi khởi động: mọi task đang ở trạng thái `DOWNLOADING` hoặc `VERIFYING` tự động chuyển sang `PAUSED`.
-- **Presigned URL Refresh & Fail-Closed HTTP Range Resume:**
+- **Presigned URL Refresh & Fail-Closed Range Resume từ Filesystem (P0.7):**
   - `download_url` trong SQLite chỉ là cache tạm thời.
   - Khi resume sau khi app restart hoặc sau khi pause, hệ thống chủ động gọi Core API để làm mới presigned URL nếu cần.
   - Nếu URL hết hạn giữa lúc đang tải (nhận 403 từ storage): lấy URL mới từ Core API và tiếp tục resume từ offset hiện tại của `.part`.
-  - Gửi header `Range: bytes=<downloadedBytes>-`.
+  - **Filesystem là SSoT cho Resume Offset:**
+    - `downloaded_bytes` trong SQLite có thể bị lệch so với kích thước thực tế của tệp `.part` trên đĩa nếu app bị kill giữa lúc ghi file và trước lúc commit progress vào DB.
+    - Do đó, khi resume, hệ thống **bắt buộc kiểm tra kích thước thực tế của tệp `.part` trên đĩa**:
+      `resumeOffset = partFile.existsSync() ? await partFile.length() : 0`.
+    - Tự động reconcile `downloaded_bytes` trong SQLite về đúng `resumeOffset` này.
+    - Nếu tệp `.part` không tồn tại, offset bắt buộc về `0`.
+    - Gửi request với header `Range: bytes=<resumeOffset>-`.
   - **Fail-Closed Header Verification:**
-    - Chỉ append vào `.part` nếu response trả về **HTTP `206 Partial Content`** và header `Content-Range` khớp chính xác offset yêu cầu (`bytes <offset>-<total-1>/<total>`).
-    - Nếu object storage trả về **HTTP `200 OK`** (storage không hỗ trợ Range hoặc bỏ qua Range header): lập tức **truncate `.part` về 0 byte** và tải lại từ đầu, ngăn chặn hoàn toàn việc nối file làm hỏng (corrupt) tệp ZIP.
+    - Chỉ append vào `.part` nếu response trả về **HTTP `206 Partial Content`** và header `Content-Range` có `start == resumeOffset` (đồng thời kiểm tra `total` khớp với `fileSizeBytes` nhận từ Backend khi có).
+    - Nếu object storage trả về **HTTP `200 OK`** (storage không hỗ trợ Range hoặc bỏ qua Range header): lập tức **truncate `.part` về 0 byte**, reset offset về `0` và tải lại từ đầu, ngăn chặn hoàn toàn việc nối file làm hỏng (corrupt) tệp ZIP.
 
 ---
 
@@ -408,22 +417,28 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
   - Tuyệt đối không đăng ký `AuthInterceptor` và không đính kèm Bearer JWT header (chống rò rỉ token sang storage host).
   - Không kích hoạt auth refresh token khi gặp HTTP 403 từ storage; thay vào đó kích hoạt luồng làm mới presigned URL qua Core API.
 - [ ] Xây dựng `DownloadQueueManager`:
-  - Quản lý State Machine (`QUEUED -> DOWNLOADING -> VERIFYING -> READY`, `PAUSED`, `FAILED`, `CANCELLED`).
+  - Quản lý State Machine: 5D.3 CHỈ sở hữu các bước chuyển trạng thái `QUEUED ➔ DOWNLOADING ➔ VERIFYING` (kèm `PAUSED`, `FAILED`, `CANCELLED`). Tuyệt đối không tự ý chuyển sang `READY` để chống phát sinh READY giả khi chưa cài đặt bundle.
   - Single-flight enforce ở cả SQLite layer (`UNIQUE`) và Memory layer.
   - Tải stream qua `ArtifactDownloadClient` vào tệp tạm `files/offline/tmp/<chapterVersionId>.part`.
   - Pause, Resume, Cancel (xóa `.part` dọn sạch rác), Retry (reuse `task_id` cũ, reset downloaded_bytes về 0).
   - Tự động khôi phục hàng đợi khi app khởi động lại sau crash/process-death (`DOWNLOADING` & `VERIFYING` ➔ `PAUSED`).
   - Fail-closed presigned URL refresh khi resume hoặc khi URL hết hạn.
-  - Fail-closed HTTP Range resume: gửi header `Range: bytes=<downloadedBytes>-`; chỉ append nếu storage trả về `206 Partial Content` và `Content-Range` đúng offset; nếu storage trả về `200 OK` thì lập tức truncate `.part` về 0 byte và tải lại từ đầu.
+  - Fail-closed HTTP Range resume từ Filesystem:
+    - Lấy `resumeOffset = partFile.existsSync() ? await partFile.length() : 0` từ filesystem (SSoT).
+    - Reconcile `downloaded_bytes` trong SQLite về đúng `resumeOffset` trước khi request.
+    - Gửi request với header `Range: bytes=<resumeOffset>-`.
+    - Chỉ append nếu storage trả về `206 Partial Content` và `Content-Range` có `start == resumeOffset` (đồng thời kiểm tra `total` khớp với `fileSizeBytes` backend khi có).
+    - Nếu storage trả về `200 OK`, lập tức truncate `.part` về 0 byte, reset offset về `0` và tải lại sạch từ đầu.
 - [ ] Bộ kiểm thử Unit & Integration Tests cho `DownloadQueueManager` và `ArtifactDownloadClient` (bao phủ 100% các nhánh invariant trên).
 
 ### 📌 Phase 5D.4: Offline Bundle Installation & Bidirectional Integrity Verification
 - [ ] Xây dựng `BundleInstaller`:
+  - 5D.4 là thành phần DUY NHẤT sở hữu chuyển trạng thái `VERIFYING ➔ READY | FAILED`.
   - Kiểm tra mã băm SHA-256 của tệp `.part` trước khi giải nén.
   - Giải nén trong background Isolate (`compute`) chống đơ giao diện UI.
   - Xác thực cấu trúc tệp và `manifest.json`.
   - Thao tác Atomic Promotion (rename thư mục `staging` sang `installed`).
-  - Ghi nhận trạng thái `READY` vào bảng `offline_chapters` trong SQLite transaction.
+  - Ghi nhận row mới vào bảng `offline_chapters` và cập nhật `download_tasks.status = 'READY'` trong SQLite transaction (sự tồn tại của row trong `offline_chapters` là bằng chứng canonical duy nhất chứng minh chapter sẵn sàng đọc offline; bảng `offline_chapters` không có cột `status`).
   - **Khởi động phục hồi 2 chiều:** Dọn thư mục mồ côi chưa commit và loại bỏ record rỗng file.
 
 ### 📌 Phase 5D.5: Reader Offline Resolution (Tích Hợp Trình Đọc)

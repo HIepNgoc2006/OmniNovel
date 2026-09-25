@@ -101,12 +101,13 @@ apps/mobile/
 - [ ] **Phase 5D.3 — Durable Offline Download Manager & App-Private Storage (MOB-012 / Issue #203):**
   - Quản lý hàng đợi tải chương với SQLite metadata (`sqflite`), ràng buộc `UNIQUE(chapter_version_id)` chống duplicate tasks.
   - Tách biệt `ArtifactDownloadClient`/Dio độc lập, không gắn `AuthInterceptor`, không rò rỉ JWT token sang MinIO/S3 storage host.
-  - Fail-closed presigned URL refresh & HTTP Range resume (`206 Partial Content` append vs `200 OK` truncate restart byte 0; 403 storage không trigger auth refresh).
+  - Fail-closed presigned URL refresh & HTTP Range resume từ Filesystem SSoT (`resumeOffset = partFile.length()`; `206 Partial Content` append khi start khớp offset vs `200 OK` truncate restart byte 0; 403 storage không trigger auth refresh).
   - Tải stream tệp `.part` vào App-Private sandbox (`context.filesDir/offline/tmp/`, phân quyền OS `0700` + Android FBE).
-  - State machine bền vững (`QUEUED -> DOWNLOADING -> VERIFYING -> READY`), Crash recovery (`DOWNLOADING/VERIFYING -> PAUSED`).
+  - State machine bền vững: 5D.3 chỉ sở hữu `QUEUED -> DOWNLOADING -> VERIFYING` (chống phát sinh `READY` giả), Crash recovery (`DOWNLOADING/VERIFYING -> PAUSED`).
 - [ ] **Phase 5D.4 — Offline Bundle Installation & Bidirectional Integrity Verification:**
+  - 5D.4 `BundleInstaller` là thành phần duy nhất sở hữu chuyển trạng thái `VERIFYING -> READY | FAILED`.
   - Giải nén trong background Isolate (`compute`), đối chiếu checksum SHA-256 tệp `.part` và manifest.
-  - Thao tác Atomic Promotion (`staging ➔ installed`), transaction commit vào `offline_chapters`.
+  - Thao tác Atomic Promotion (`staging ➔ installed`), transaction commit row vào `offline_chapters` (không có cột `status`, row existence là SSoT cho khả năng đọc offline) và chuyển `download_tasks.status = READY`.
   - Phục hồi khởi động 2 chiều (Bidirectional Startup Reconciliation) dọn thư mục mồ côi và loại trừ record rỗng file.
 - [ ] **Phase 5D.5 — Reader Offline Resolution:**
   - Tích hợp Webtoon, Manga và Novel Reader nạp trực tiếp file trong sandbox `0700` (`FileImage`), 0 request mạng khi ngắt Internet (Airplane Mode), offline checkpoint progress.

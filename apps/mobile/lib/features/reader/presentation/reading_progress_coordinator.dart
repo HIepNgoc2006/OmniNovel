@@ -206,7 +206,43 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
 
       _isServerSyncEnabled = true;
 
-      // Nếu trong lúc chờ hydrate, user đã scroll tạo pending draft -> schedule sync
+      // P0.3 Durable Replay Protocol (Phase 5D.5):
+      // Nếu RAM chưa có _pendingDraft (ví dụ khi app bị kill đột ngột sau khi đọc offline),
+      // đọc checkpoint cục bộ trên đĩa để replay với canonical epoch vừa hydrate.
+      if (_pendingDraft == null) {
+        try {
+          final localCheckpoint = await _repository.getLocalCheckpoint(storyId);
+          if (localCheckpoint != null) {
+            ReadingProgressResponse? serverProgress;
+            try {
+              serverProgress = _repository.getCachedServerProgress(storyId);
+            } catch (_) {}
+            final serverTime = serverProgress?.updatedAt ?? DateTime.fromMillisecondsSinceEpoch(0);
+            final isLocalNewer = localCheckpoint.updatedAt.isAfter(serverTime);
+            final isDifferentChapterOrPage = serverProgress != null &&
+                (serverProgress.chapterId != localCheckpoint.chapterId ||
+                    serverProgress.pageIndex != localCheckpoint.pageIndex);
+
+            if (isLocalNewer || isDifferentChapterOrPage) {
+              _pendingDraft = PendingReadingProgress(
+                storyId: localCheckpoint.storyId,
+                chapterId: localCheckpoint.chapterId,
+                chapterVersionId: localCheckpoint.chapterVersionId,
+                readingMode: serverProgress?.readingMode ?? 'WEBTOON',
+                pageIndex: localCheckpoint.pageIndex,
+                progressPercentage: localCheckpoint.progressPercentage,
+                scrollPosition: localCheckpoint.scrollPosition,
+                anchorBlockId: localCheckpoint.anchorBlockId,
+                textOffset: localCheckpoint.textOffset,
+              );
+            }
+          }
+        } catch (_) {
+          // Bỏ qua lỗi đọc checkpoint cục bộ để bảo vệ session đã hydrate epoch thành công
+        }
+      }
+
+      // Nếu có pending draft -> schedule sync
       final draft = _pendingDraft;
       if (draft != null && draft.storyId == storyId) {
         _scheduleSyncForCurrentGeneration(generation, storyId);

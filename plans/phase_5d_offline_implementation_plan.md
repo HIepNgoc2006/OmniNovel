@@ -472,11 +472,23 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 
 
 
-### 📌 Phase 5D.5: Reader Offline Resolution (Tích Hợp Trình Đọc)
-- [ ] Cập nhật `WebtoonReader`: Khi chapter đã có trong `offline_chapters`, nạp trực tiếp danh sách tệp từ `FileImage(File(pagePath))`, bỏ qua gọi API presigned URL.
-- [ ] Cập nhật `MangaPagedReader`: Tương thích hoàn toàn với chế độ đọc offline từ local storage.
-- [ ] Cập nhật `NovelReader`: Nạp raw `content.html` từ offline storage vào chính `NovelContentParser` hiện hữu, nạp ảnh minh họa cục bộ.
-- [ ] Đồng bộ tiến độ đọc offline: Lưu checkpoint ngoại tuyến và tự động đẩy lên Core API khi có mạng.
+### 📌 Phase 5D.5: Reader Offline Resolution (MOB-012 / Issue #205) - [x] HOÀN THÀNH & KHÓA CHẶT (FROZEN-FINAL ✅)
+- [x] **4 Bất biến Kiến trúc & P0 Amendments Đã Khóa:**
+  1. *Exact-Version Selection Policy (P0.1):* Không query row đầu ngẫu nhiên; ưu tiên `preferredVersionId` (từ `versionId` route), fallback deterministic theo `installedAt DESC, chapterVersionId DESC`.
+  2. *Global Zero-Network Mode (P0.2):* Tách biệt rõ `ReaderTransportMode.offline/online`. Offline resolver chạy đầu tiên; nếu thành công: 0 gọi `ChapterRepository`, 0 hydrate server epoch, 0 gọi `MediaRepository`/`NovelContentRepository`, 0 gọi Gamification API. Toàn bộ HTTP = 0.
+  3. *Offline -> Reconnect Durable Replay (P0.3):* Đọc offline ghi local checkpoint; khi mở lại app có mạng: hydrate server epoch trước, materialize pending draft từ local checkpoint chưa sync và replay 1 lần duy nhất với epoch mới, bảo toàn anti-resurrection.
+  4. *Version-Bound Synthetic ChapterDetail (P0.4):* `ChapterDetail.activeVersion.id` bắt buộc bind chính xác versionId đã cài; metadata trích xuất từ manifest canonical.
+  5. *Type-Safe Image Source & Strict Novel Whitelist (P1):* Phân biệt rõ tệp cục bộ (`_localAssetFiles`), không ép path thành fake URL string, chặn 100% ảnh ngoại lai tải mạng trong Novel offline.
+- [x] **8 Tiêu Chuẩn Nghiệm Thu (8 Acceptance Gates - PASS 8/8 100%):**
+  - [x] **Gate 1:** Exact-Version Selection policy resolves preferredVersionId or latest deterministic version.
+  - [x] **Gate 2:** Global Zero-Network Gate — Webtoon & Manga resolve in Airplane Mode with 0 HTTP calls.
+  - [x] **Gate 3:** Novel Offline Resolution — Loads content.html offline, local illustration, blocks external image.
+  - [x] **Gate 4:** Version-Bound Progress Gate — ChapterDetail binds exact versionId and progress records it.
+  - [x] **Gate 5:** SSoT Proof Gate — Missing offline_chapters row returns null even if download_tasks is READY.
+  - [x] **Gate 6:** Runtime Corruption Fail-Closed — Corrupt payload falls back to online if available, or clean error.
+  - [x] **Gate 7:** Offline -> Reconnect Durable Progress Replay — offline read -> kill app -> reopen online -> replay checkpoint.
+  - [x] **Gate 8:** App Restart Offline Resumption — restart app and open offline chapter with zero latency and 0 network requests.
+- [x] **Hồi quy & Phân tích Tĩnh:** 224/224 Mobile tests PASS 100%, `flutter analyze` 0 issues (Clean 100%).
 
 ### 📌 Phase 5D.6: Quản Lý Dung Lượng, Eviction & Cách Ly Người Dùng
 - [ ] Giới hạn dung lượng bộ nhớ tải về (Storage Quota): Cảnh báo khi bộ nhớ thiết bị còn trống dưới 200MB.

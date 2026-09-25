@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/widgets.dart';
 import '../models/reader_models.dart';
 import '../repositories/media_repository.dart';
@@ -21,6 +22,7 @@ class _ActiveImageEntry {
 /// 2. Quản lý Provider Key đa chiều (assetId, targetWidth, url), tự động evict và đổi provider khi URL xoay vòng (signed URL rotation).
 /// 3. Hỗ trợ one-shot recovery khi signed URL hết hạn (403).
 /// 4. Kiểm soát ngân sách bộ nhớ (Memory-Budget-Aware Prefetch): Giới hạn tổng RAM bitmap của adjacent pages trong khoảng an toàn (60-90MB).
+/// 5. Hỗ trợ chế độ Offline: Cấp phát FileImage trực tiếp từ App-Private sandbox với 0 network call.
 class ReaderImageCacheCoordinator {
   final MediaRepository _mediaRepository;
 
@@ -30,18 +32,45 @@ class ReaderImageCacheCoordinator {
   // Map lưu trữ thông tin ảnh đang hoạt động theo assetId
   final Map<String, _ActiveImageEntry> _activeEntries = {};
 
+  // Map lưu trữ tệp cục bộ khi hoạt động ở chế độ ngoại tuyến
+  final Map<String, File> _localAssetFiles = {};
+
   ReaderImageCacheCoordinator({
     required MediaRepository mediaRepository,
     this.imageBudgetBytes = 80 * 1024 * 1024, // 80 MB
   }) : _mediaRepository = mediaRepository;
 
-  /// Lấy presigned URL cho trang
+  /// Đăng ký danh sách tệp cục bộ cho các assetId ngoại tuyến
+  void registerLocalAssetFiles(Map<String, File> localFiles) {
+    _localAssetFiles.addAll(localFiles);
+  }
+
+  /// Xóa sạch danh sách tệp cục bộ ngoại tuyến
+  void clearLocalAssetFiles() {
+    _localAssetFiles.clear();
+  }
+
+  /// Kiểm tra assetId có phải là tệp cục bộ hay không
+  bool isAssetLocal(String assetId) => _localAssetFiles.containsKey(assetId);
+
+  /// Lấy đối tượng File cục bộ nếu có
+  File? getLocalAssetFile(String assetId) => _localAssetFiles[assetId];
+
+  /// Lấy URL hoặc đường dẫn ảnh cho trang (0 network request nếu là tệp cục bộ)
   Future<String> getPageUrl(ChapterPage page) async {
+    final local = _localAssetFiles[page.assetId];
+    if (local != null) {
+      return local.path;
+    }
     return _mediaRepository.getMediaDownloadUrl(page.assetId);
   }
 
-  /// Làm mới Presigned URL khi gặp lỗi 403 / hết hạn token và xóa bỏ provider cũ
+  /// Làm mới Presigned URL khi gặp lỗi 403 / hết hạn token và xóa bỏ provider cũ (chỉ online)
   Future<String> refreshPageUrl(ChapterPage page) async {
+    final local = _localAssetFiles[page.assetId];
+    if (local != null) {
+      return local.path;
+    }
     invalidateAndEvict(page.assetId);
     return _mediaRepository.getMediaDownloadUrl(
       page.assetId,
@@ -58,7 +87,7 @@ class ReaderImageCacheCoordinator {
   }
 
   /// Khởi tạo hoặc tái sử dụng ImageProvider có giới hạn kích thước giải mã (ResizeImage).
-  /// Nếu downloadUrl hoặc targetWidth thay đổi, tự động evict provider cũ trước khi tạo mới.
+  /// Cấp phát FileImage cho tệp cục bộ và NetworkImage cho URL online.
   ImageProvider getImageProvider(
     String assetId,
     String downloadUrl, {
@@ -75,10 +104,15 @@ class ReaderImageCacheCoordinator {
       _activeEntries.remove(assetId);
     }
 
-    final netImage = NetworkImage(downloadUrl);
+    final local = _localAssetFiles[assetId];
+    final isLocal = local != null || (!downloadUrl.startsWith('http://') && !downloadUrl.startsWith('https://'));
+    final ImageProvider baseProvider = isLocal
+        ? FileImage(local ?? File(downloadUrl))
+        : NetworkImage(downloadUrl);
+
     final ImageProvider provider = (targetWidth != null && targetWidth > 0)
-        ? ResizeImage(netImage, width: targetWidth, allowUpscaling: false)
-        : netImage;
+        ? ResizeImage(baseProvider, width: targetWidth, allowUpscaling: false)
+        : baseProvider;
 
     final estimatedBytes = (page != null && targetWidth != null)
         ? estimateDecodedBytes(page, targetWidth)
@@ -182,5 +216,6 @@ class ReaderImageCacheCoordinator {
       entry.provider.evict();
     }
     _activeEntries.clear();
+    _localAssetFiles.clear();
   }
 }

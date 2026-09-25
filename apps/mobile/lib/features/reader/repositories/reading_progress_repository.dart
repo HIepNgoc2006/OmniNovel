@@ -16,6 +16,9 @@ class ReadingProgressRepository {
   // Canonical server epoch map (chỉ nạp từ server qua getProgress hoặc echo)
   final Map<String, int> _storyServerEpochs = {};
 
+  // Cache response tiến độ đọc mới nhất từ server
+  final Map<String, ReadingProgressResponse> _cachedServerProgress = {};
+
   // Local generation counter (dùng để drop debounced writes và cancel tokens)
   final Map<String, int> _localWriteGenerations = {};
 
@@ -37,6 +40,9 @@ class ReadingProgressRepository {
 
   /// Lấy epoch đã cache trong session
   int? getCachedServerEpoch(String storyId) => _storyServerEpochs[storyId];
+
+  /// Lấy response tiến độ đọc đã cache từ server
+  ReadingProgressResponse? getCachedServerProgress(String storyId) => _cachedServerProgress[storyId];
 
   /// Gán canonical server epoch khi nhận response từ server
   void setServerEpoch(String storyId, int epoch) {
@@ -63,6 +69,7 @@ class ReadingProgressRepository {
     _inFlightTokens[storyId]?.cancel('History invalidated');
     _inFlightTokens.remove(storyId);
     _storyServerEpochs.remove(storyId);
+    _cachedServerProgress.remove(storyId);
   }
 
   /// Hủy write session của toàn bộ truyện
@@ -75,6 +82,7 @@ class ReadingProgressRepository {
       _localWriteGenerations[key] = (_localWriteGenerations[key] ?? 0) + 1;
     }
     _storyServerEpochs.clear();
+    _cachedServerProgress.clear();
   }
 
   /// Lưu tiến độ đọc lên server Core API (yêu cầu payload đã materialize với canonical epoch)
@@ -100,6 +108,7 @@ class ReadingProgressRepository {
       if (data['ignored'] == true && data['reason'] == 'STALE_WRITE_EPOCH') {
         if (storyKey != null) {
           _storyServerEpochs.remove(storyKey);
+          _cachedServerProgress.remove(storyKey);
         }
         throw StaleWriteEpochException(
           storyId: storyKey ?? '',
@@ -111,6 +120,7 @@ class ReadingProgressRepository {
       final result = ReadingProgressResponse.fromJson(data);
       if (storyKey != null) {
         _storyServerEpochs[storyKey] = result.writeEpoch;
+        _cachedServerProgress[storyKey] = result;
       }
       return result;
     } on DioException catch (e) {
@@ -139,6 +149,7 @@ class ReadingProgressRepository {
       final data = response.data ?? <String, dynamic>{};
       final result = ReadingProgressResponse.fromJson(data);
       _storyServerEpochs[storyId] = result.writeEpoch;
+      _cachedServerProgress[storyId] = result;
       return result;
     } on ApiError {
       rethrow;

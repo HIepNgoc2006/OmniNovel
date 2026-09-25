@@ -4,6 +4,7 @@ import '../../../app/theme/app_colors.dart';
 import '../../../core/auth/auth_service.dart';
 import '../../../core/theme/theme_tokens.dart';
 import '../../gamification/repositories/gamification_repository.dart';
+import '../../offline/services/offline_content_resolver.dart';
 import '../models/manga_reading_mode.dart';
 import '../models/novel_block_models.dart';
 import '../models/reader_models.dart';
@@ -27,6 +28,7 @@ import 'webtoon_reader_view.dart';
 class ReaderScreen extends StatefulWidget {
   final String chapterId;
   final String storyId;
+  final String? versionId;
   final int initialPageIndex;
   final MangaReadingMode initialMode;
   final String? initialAnchorBlockId;
@@ -40,11 +42,13 @@ class ReaderScreen extends StatefulWidget {
   final NovelSettingsController? novelSettingsController;
   final AuthService? authService;
   final ChapterReportRepository? reportRepository;
+  final OfflineContentResolver? offlineContentResolver;
 
   const ReaderScreen({
     super.key,
     required this.chapterId,
     required this.storyId,
+    this.versionId,
     this.initialPageIndex = 0,
     this.initialMode = MangaReadingMode.vertical,
     this.initialAnchorBlockId,
@@ -58,6 +62,7 @@ class ReaderScreen extends StatefulWidget {
     this.novelSettingsController,
     this.authService,
     this.reportRepository,
+    this.offlineContentResolver,
   });
 
   @override
@@ -99,19 +104,20 @@ class _ReaderScreenState extends State<ReaderScreen> {
     _sessionController = ReaderSessionController(
       chapterRepository: widget.chapterRepository,
       imageCacheCoordinator: _imageCacheCoordinator,
+      offlineContentResolver: widget.offlineContentResolver,
     );
     _progressCoordinator = ReadingProgressCoordinator(
       repository: widget.readingProgressRepository,
       gamificationRepository: widget.gamificationRepository,
     );
     _progressCoordinator.init();
-    _progressCoordinator.startSession(widget.storyId);
 
     _sessionController.addListener(_onSessionStateChanged);
     _novelSettingsController.addListener(_onNovelSettingsChanged);
 
     _sessionController.loadChapter(
       widget.chapterId,
+      versionId: widget.versionId,
       initialPageIndex: widget.initialPageIndex,
     );
   }
@@ -126,6 +132,10 @@ class _ReaderScreenState extends State<ReaderScreen> {
       if (currentChapter != null) {
         _progressCoordinator.onChapterReady(currentChapter.chapter.id);
       }
+      // P0.2 Global Zero-Network: Chỉ hydrate server epoch và enable server sync khi ở chế độ online
+      if (_sessionController.state.transportMode == ReaderTransportMode.online) {
+        _progressCoordinator.startSession(widget.storyId);
+      }
       if (_isNovel) {
         _loadNovelIfNeeded();
       } else {
@@ -139,6 +149,19 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
     final detail = _sessionController.state.chapterDetail;
     if (detail == null) return;
+
+    // P0.2 & P1.2: Sử dụng novelHtmlContent đã verify từ offline resolver (0 network request)
+    final offlineHtml = _sessionController.state.resolvedOfflineChapter?.novelHtmlContent;
+    if (offlineHtml != null && offlineHtml.isNotEmpty) {
+      final blocks = NovelContentParser.parseHtml(offlineHtml);
+      if (mounted) {
+        setState(() {
+          _novelBlocks = blocks;
+          _loadingNovelContent = false;
+        });
+      }
+      return;
+    }
 
     final pages = detail.pages;
     final novelAsset = pages.firstWhere(
@@ -195,7 +218,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   @override
   void didUpdateWidget(covariant ReaderScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.chapterId != widget.chapterId) {
+    if (oldWidget.chapterId != widget.chapterId || oldWidget.versionId != widget.versionId) {
       _novelBlocks = null;
       _loadingNovelContent = false;
       _novelContentError = null;
@@ -208,6 +231,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       }
       _sessionController.loadChapter(
         widget.chapterId,
+        versionId: widget.versionId,
         initialPageIndex: widget.initialPageIndex,
       );
     }
@@ -633,6 +657,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       initialAnchorBlockId: widget.initialAnchorBlockId,
       initialScrollPosition: widget.initialScrollPosition,
       initialProgressPercentage: widget.initialProgressPercentage,
+      isOffline: _sessionController.state.isOffline,
       onTap: _toggleOverlay,
       onAnchorChanged: (anchor) {
         _currentNovelAnchorBlockId = anchor;

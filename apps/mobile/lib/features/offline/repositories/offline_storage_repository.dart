@@ -246,6 +246,17 @@ class OfflineStorageRepository {
     return results.map((m) => OfflineChapter.fromMap(m)).toList();
   }
 
+  /// Lấy toàn bộ các phiên bản đã tải của một chương truyện cụ thể (để resolver chọn theo exact policy).
+  Future<List<OfflineChapter>> getOfflineChaptersByChapterId(String chapterId) async {
+    final results = await _db.query(
+      'offline_chapters',
+      where: 'chapter_id = ?',
+      whereArgs: [chapterId],
+      orderBy: 'installed_at DESC',
+    );
+    return results.map((m) => OfflineChapter.fromMap(m)).toList();
+  }
+
   /// Kiểm tra xem chapter version đã được cài đặt hợp lệ trên máy chưa.
   Future<bool> isChapterInstalled(String chapterVersionId) async {
     final count = Sqflite.firstIntValue(await _db.rawQuery(

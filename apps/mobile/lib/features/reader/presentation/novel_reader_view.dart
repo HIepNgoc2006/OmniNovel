@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import '../models/novel_block_models.dart';
 import 'novel_geometry_calculator.dart';
@@ -12,6 +13,7 @@ import 'reading_progress_coordinator.dart';
 /// 2. Capture Before Rebuild: Giữ vững vị trí đọc khi đổi cỡ chữ / giãn dòng.
 /// 3. Báo cáo tiến độ: Tự động tính toán block index đang ở viewport đỉnh và thông báo tới `ReadingProgressCoordinator`.
 /// 4. Đổi Theme màu: Chỉ kích hoạt color repaint (không re-layout hay jump offset).
+/// 5. Offline Resolution (Phase 5D.5): Hỗ trợ Image.file cho ảnh minh họa cục bộ và strict whitelist chặn tải mạng.
 class NovelReaderView extends StatefulWidget {
   final String storyId;
   final String chapterId;
@@ -22,6 +24,7 @@ class NovelReaderView extends StatefulWidget {
   final String? initialAnchorBlockId;
   final double? initialScrollPosition;
   final double? initialProgressPercentage;
+  final bool isOffline;
   final VoidCallback? onTap;
   final ValueChanged<String?>? onAnchorChanged;
 
@@ -36,6 +39,7 @@ class NovelReaderView extends StatefulWidget {
     this.initialAnchorBlockId,
     this.initialScrollPosition,
     this.initialProgressPercentage,
+    this.isOffline = false,
     this.onTap,
     this.onAnchorChanged,
   });
@@ -223,6 +227,7 @@ class _NovelReaderViewState extends State<NovelReaderView> {
                     child: _NovelBlockWidget(
                       block: block,
                       settings: settings,
+                      isOffline: widget.isOffline,
                     ),
                   );
                 },
@@ -239,10 +244,12 @@ class _NovelReaderViewState extends State<NovelReaderView> {
 class _NovelBlockWidget extends StatelessWidget {
   final NovelBlockItem block;
   final NovelTypographySettings settings;
+  final bool isOffline;
 
   const _NovelBlockWidget({
     required this.block,
     required this.settings,
+    this.isOffline = false,
   });
 
   @override
@@ -264,24 +271,54 @@ class _NovelBlockWidget extends StatelessWidget {
     }
 
     if (block.isIllustration) {
+      final src = block.illustrationSrc;
+      final isLocal = src != null && !src.startsWith('http://') && !src.startsWith('https://');
+
+      Widget imageWidget;
+      if (src == null || src.isEmpty) {
+        imageWidget = const SizedBox.shrink();
+      } else if (isLocal) {
+        final filePath = src.startsWith('file://') ? src.replaceFirst('file://', '') : src;
+        imageWidget = Image.file(
+          File(filePath),
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => Container(
+            height: 180.0,
+            color: theme.cardBackgroundColor,
+            child: Center(
+              child: Icon(Icons.broken_image, color: theme.secondaryTextColor),
+            ),
+          ),
+        );
+      } else if (isOffline) {
+        // P1.2 Strict Whitelist: Chặn tuyệt đối tải ảnh ngoại lai qua mạng khi ở chế độ offline
+        imageWidget = Container(
+          height: 180.0,
+          color: theme.cardBackgroundColor,
+          child: Center(
+            child: Icon(Icons.broken_image, color: theme.secondaryTextColor),
+          ),
+        );
+      } else {
+        imageWidget = Image.network(
+          src,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) => Container(
+            height: 180.0,
+            color: theme.cardBackgroundColor,
+            child: Center(
+              child: Icon(Icons.broken_image, color: theme.secondaryTextColor),
+            ),
+          ),
+        );
+      }
+
       return Column(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(8.0),
-            child: block.illustrationSrc != null
-                ? Image.network(
-                    block.illustrationSrc!,
-                    fit: BoxFit.contain,
-                    errorBuilder: (_, __, ___) => Container(
-                      height: 180.0,
-                      color: theme.cardBackgroundColor,
-                      child: Center(
-                        child: Icon(Icons.broken_image, color: theme.secondaryTextColor),
-                      ),
-                    ),
-                  )
-                : const SizedBox.shrink(),
+            child: imageWidget,
           ),
           if (block.illustrationCaption != null && block.illustrationCaption!.isNotEmpty) ...[
             const SizedBox(height: 8.0),

@@ -114,8 +114,10 @@ apps/mobile/
   - **Canonical READY SSoT:** Chỉ đọc offline khi có đồng thời `offline_chapters` row (không có cột `status`, row existence là proof) và payload `installed/` hợp lệ.
   - **Deterministic Bidirectional Reconciliation:** Row có nhưng file mất ➔ xóa row; folder có nhưng DB row thiếu ➔ verify & reconstruct nếu hợp lệ và có task, hoặc xóa orphan nếu hỏng/vô chủ; dọn sạch staging orphan và `.part` còn sót.
   - **Idempotency & Clean Isolation:** Cài đặt lại an toàn không duplicate/corrupt; background isolate `compute` không drop frame UI; khắc phục triệt để 4 lỗ hổng P0 và đóng kín resurrection window tại ranh giới promotion/cancellation (rollback promotion directory, selective crash-recoverable reconstruction, SQLite transactional commit, lifecycle mutex); toàn bộ 26/26 Verification Acceptance Gates PASS 100%, 19/19 Download Manager Gates PASS, 216/216 Mobile tests PASS, `flutter analyze` 0 issues. *(FROZEN-FINAL ✅)*
-- [ ] **Phase 5D.5 — Reader Offline Resolution:**
-  - Tích hợp Webtoon, Manga và Novel Reader nạp trực tiếp file trong sandbox `0700` (`FileImage`), 0 request mạng khi ngắt Internet (Airplane Mode), offline checkpoint progress.
+- [x] **Phase 5D.5 — Reader Offline Resolution (MOB-012 / Issue #205):**
+  - Tích hợp bộ giải quyết ngoại tuyến thống nhất (`OfflineContentResolver` SSoT) cho 3 bộ máy đọc: Webtoon, Manga Paged, và Novel Reader.
+  - **Khóa chặt 4 Bất biến P0 & P1:** Exact-Version Selection Policy (`preferredVersionId` ưu tiên, deterministic fallback), Global Zero-Network Gate (0 gọi ChapterRepository, 0 hydrate server epoch, 0 gọi media/novel/gamification network APIs), Durable Replay Protocol (hydrate canonical server epoch trước khi replay un-synced local checkpoint, bảo toàn anti-resurrection), Synthetic `ChapterDetail` bind chính xác `activeVersion.id == chapterVersionId` từ manifest canonical, và Type-Safe Image Source (`_localAssetFiles` -> `FileImage`).
+  - Toàn bộ 8/8 Verification Acceptance Gates PASS 100%, 224/224 Mobile tests PASS, `flutter analyze` 0 issues (Clean 100%). *(FROZEN-FINAL ✅)*
 - [ ] **Phase 5D.6 — Quản Lý Dung Lượng & LRU Eviction:**
   - Storage Quota, LRU Eviction tự động và Manual Delete chương/truyện đã tải.
 - [ ] **Phase 5D.7 — Studio Quick-Approval Action Sheet (Polish - Non-blocking):**
@@ -148,3 +150,4 @@ apps/mobile/
 - **[Issue #202](https://github.com/HIepNgoc2006/OmniNovel/issues/202):** `[Phase 5C.6][Mobile & API] Chapter Content Reporting System (Backend API #191 & Mobile MOB-011 Bottom Sheet)`.
 - **[Issue #203](https://github.com/HIepNgoc2006/OmniNovel/issues/203):** `[Phase 5D.3][Mobile] Durable Offline Download Manager & App-Private Storage`.
 - **[Issue #204](https://github.com/HIepNgoc2006/OmniNovel/issues/204):** `[Phase 5D.4][Mobile] Offline Bundle Installation & Bidirectional Integrity Verification`.
+- **[Issue #205](https://github.com/HIepNgoc2006/OmniNovel/issues/205):** `[Phase 5D.5][Mobile] Reader Offline Resolution (SSoT Resolver & Engine Integration)`.

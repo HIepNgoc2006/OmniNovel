@@ -94,6 +94,9 @@ class InMemoryProgressRepository implements ReadingProgressRepository {
   int? getCachedServerEpoch(String storyId) => 0;
 
   @override
+  ReadingProgressResponse? getCachedServerProgress(String storyId) => null;
+
+  @override
   int getLocalGeneration(String storyId) => 0;
 
   @override

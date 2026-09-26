@@ -16,7 +16,8 @@
        tombstone_id TEXT PRIMARY KEY,
        user_id TEXT NOT NULL,
        chapter_version_id TEXT NOT NULL,
-       created_at INTEGER NOT NULL
+       created_at INTEGER NOT NULL,
+       UNIQUE(user_id, chapter_version_id)
      );
      ```
    - Giữ nguyên bất biến 5D.4: `offline_chapters` **không có cột `status`**, row tồn tại chính là canonical proof sẵn sàng đọc offline.
@@ -31,17 +32,27 @@
      - **5D.4 Crash Recovery:** Nếu không có tombstone, áp dụng recovery policy của 5D.4 (reconstruct row nếu có READY task và manifest hợp lệ).
      - **Orphan Purge:** Chỉ xóa thư mục vật lý nếu thực sự orphan (không có tombstone, không có task, và không thỏa mãn điều kiện phục hồi 5D.4).
 
-3. **P0.3 — Canonical User Isolation (DB Schema Migration v1 ➔ v2):**
+3. **P0.3 — Canonical User Isolation & Fail-Closed Legacy v1 Migration:**
    - Nâng cấp SQLite database từ version 1 lên version 2:
      - `offline_chapters`: Khóa composite `PRIMARY KEY (user_id, chapter_version_id)`, bổ sung `is_pinned INTEGER NOT NULL DEFAULT 0`.
      - `download_tasks`: Ràng buộc `UNIQUE(user_id, chapter_version_id)`.
-     - Bổ sung bảng `offline_deletion_tombstones`.
-   - Toàn bộ tầng repository (`OfflineStorageRepository`), queue manager (`DownloadQueueManager`), và resolver (`OfflineContentResolver`) đều bắt buộc user-scoped (`userId`).
-   - Chuyển đổi tài khoản (Logout / Switch User) bảo đảm User B không thể xem, đọc hay can thiệp vào inventory của User A. Legacy v1 data được gán về `'anon'` an toàn.
+     - Bổ sung bảng `offline_deletion_tombstones` với `UNIQUE(user_id, chapter_version_id)`.
+   - **Legacy v1 Ownership = UNKNOWN ➔ Fail-Closed:**
+     - Dữ liệu v1 cũ không có bằng chứng canonical về user ownership.
+     - Tuyệt đối **KHÔNG gán về `'anon'`**, không gán về current user.
+     - Các row v1 không có ownership không được promote vào v2 inventory. Legacy unscoped files trên filesystem được purge an toàn qua cleanup; không cho phép cross-account data inheritance.
+   - Toàn bộ tầng repository (`OfflineStorageRepository`), queue manager (`DownloadQueueManager`), và resolver (`OfflineContentResolver`) đều bắt buộc user-scoped (`userId`), không để tồn tại bất kỳ backdoor query toàn cục nào.
 
-4. **P0.4 — Namespace Filesystem Isolation (Cross-User Dedup Out-of-Scope):**
+4. **P0.4 — Namespace Filesystem Isolation 3-Zone (Cross-User Dedup Out-of-Scope):**
    - Loại trừ hoàn toàn cross-user physical deduplication khỏi phạm vi 5D.6 để tránh rủi ro reference-counting đa chủ sở hữu.
-   - Phân vùng cấu trúc thư mục lưu trữ theo user scope: `files/offline/<userScope>/installed/<chapterVersionId>/` và `files/offline/<userScope>/staging/`.
+   - Phân vùng cấu trúc thư mục lưu trữ theo `userScope` bao trùm cả 3 vùng:
+     ```text
+     files/offline/<userScope>/
+       tmp/        # <chapterVersionId>.part
+       staging/    # <chapterVersionId>/
+       installed/  # <chapterVersionId>/
+     ```
+   - `userScope` được tính toán thông qua hàm canonical, stable và path-safe: `userScope = stableSafeScope(userId)` (SHA-256 hex truncated), tránh đưa identifier thô hoặc ký tự đặc biệt vào tên thư mục.
 
 5. **P0.5 — Reader In-Use Lease Protection (Process-Local Ref-Counted Token):**
    - Triển khai cơ chế lease trong bộ nhớ: `acquireLease(chapterVersionId, {required String readerSessionId}) -> ReaderLeaseToken` và `releaseLease(ReaderLeaseToken token)`.
@@ -100,7 +111,7 @@ class StoragePolicyConfig {
 
 | Gate | Tiêu Chí Kiểm Tra (Acceptance Criteria) |
 | :--- | :--- |
-| **Gate 1: DB Schema Migration v1 ➔ v2 & Canonical User Isolation** | Schema upgrade v1 ➔ v2 thành công; `offline_chapters` và `download_tasks` có khóa composite theo `user_id`; cô lập 100% repository, queue và resolver giữa các tài khoản; legacy data v1 fail-closed an toàn. |
+| **Gate 1: DB Schema Migration v1 ➔ v2 & Canonical User Isolation** | **Gate 1A (Schema Migration):** v1 ➔ v2, composite uniqueness `(user_id, chapter_version_id)`, tombstone uniqueness, legacy v1 fail-closed (không promote vào v2 inventory).<br>**Gate 1B (Repository Isolation):** User A/B có cùng `chapterVersionId` nhưng query/update/delete không cross-account.<br>**Gate 1C (Queue/Resolver/Path Isolation):** Cùng version ở A/B có task, `.part`, staging, installed độc lập hoàn toàn trong namespace `files/offline/<userScope>/`. |
 | **Gate 2: Deterministic Deletion Tombstone Protocol & Crash Safety** | Mô phỏng crash tại mọi điểm ranh giới (trước khi purge file, sau khi purge file, trước khi xóa tombstone) $\rightarrow$ startup reconciliation tự động dọn sạch thư mục orphan, ghost row và hoàn tất cleanup. |
 | **Gate 3: Deletion Tombstone vs. 5D.4 Recovery Precedence** | Khi thư mục tồn tại kèm deletion tombstone $\rightarrow$ purge thắng tuyệt đối; khi không có tombstone $\rightarrow$ kích hoạt đúng cơ chế crash recovery của 5D.4 (reconstruct row). |
 | **Gate 4: Reader In-Use Lease Protection (Ref-Counted Token)** | Chương đang có active lease token từ Reader được bảo vệ 100% trước auto-LRU eviction; manual single delete và batch story deletion trả về lỗi `ChapterInUseException` (all-or-nothing). |

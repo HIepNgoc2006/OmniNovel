@@ -94,6 +94,9 @@ class InMemoryProgressRepository implements ReadingProgressRepository {
   int? getCachedServerEpoch(String storyId) => 0;
 
   @override
+  Future<int?> getLastKnownServerEpoch(String storyId) async => 0;
+
+  @override
   ReadingProgressResponse? getCachedServerProgress(String storyId) => null;
 
   @override

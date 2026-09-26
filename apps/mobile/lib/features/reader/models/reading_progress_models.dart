@@ -13,6 +13,7 @@ class PendingReadingProgress {
   final String? anchorBlockId;
   final int? textOffset;
   final int? baseWriteEpoch;
+  final int checkpointRevision;
 
   const PendingReadingProgress({
     required this.storyId,
@@ -25,6 +26,7 @@ class PendingReadingProgress {
     this.anchorBlockId,
     this.textOffset,
     this.baseWriteEpoch,
+    this.checkpointRevision = 1,
   });
 
   factory PendingReadingProgress.fromFlutterIndex({
@@ -38,6 +40,7 @@ class PendingReadingProgress {
     String? anchorBlockId,
     int? textOffset,
     int? baseWriteEpoch,
+    int checkpointRevision = 1,
   }) {
     return PendingReadingProgress(
       storyId: storyId,
@@ -50,6 +53,7 @@ class PendingReadingProgress {
       anchorBlockId: anchorBlockId,
       textOffset: textOffset,
       baseWriteEpoch: baseWriteEpoch,
+      checkpointRevision: checkpointRevision,
     );
   }
 
@@ -246,6 +250,7 @@ class LocalReadingCheckpoint {
   final DateTime updatedAt;
   final bool isDirty;
   final int? baseWriteEpoch;
+  final int checkpointRevision;
 
   const LocalReadingCheckpoint({
     required this.storyId,
@@ -259,6 +264,7 @@ class LocalReadingCheckpoint {
     required this.updatedAt,
     this.isDirty = true,
     this.baseWriteEpoch,
+    this.checkpointRevision = 1,
   });
 
   int get flutterPageIndex => (pageIndex - 1).clamp(0, 99999);
@@ -275,6 +281,7 @@ class LocalReadingCheckpoint {
     DateTime? updatedAt,
     bool? isDirty,
     int? baseWriteEpoch,
+    int? checkpointRevision,
   }) {
     return LocalReadingCheckpoint(
       storyId: storyId ?? this.storyId,
@@ -288,6 +295,7 @@ class LocalReadingCheckpoint {
       updatedAt: updatedAt ?? this.updatedAt,
       isDirty: isDirty ?? this.isDirty,
       baseWriteEpoch: baseWriteEpoch ?? this.baseWriteEpoch,
+      checkpointRevision: checkpointRevision ?? this.checkpointRevision,
     );
   }
 
@@ -305,6 +313,7 @@ class LocalReadingCheckpoint {
       updatedAt: DateTime.parse(json['updatedAt'] as String),
       isDirty: json['isDirty'] as bool? ?? true,
       baseWriteEpoch: (json['baseWriteEpoch'] as num?)?.toInt(),
+      checkpointRevision: (json['checkpointRevision'] as num?)?.toInt() ?? 1,
     );
   }
 
@@ -320,6 +329,7 @@ class LocalReadingCheckpoint {
         'updatedAt': updatedAt.toIso8601String(),
         'isDirty': isDirty,
         if (baseWriteEpoch != null) 'baseWriteEpoch': baseWriteEpoch,
+        'checkpointRevision': checkpointRevision,
       };
 }
 

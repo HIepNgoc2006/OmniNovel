@@ -112,6 +112,7 @@ class CountingMockHttpAdapter implements HttpClientAdapter {
   final List<RequestOptions> requests = [];
   bool allowRequests = false;
   Map<String, dynamic>? mockResponseData;
+  Future<void> Function(RequestOptions options)? onBeforeResponse;
 
   List<RequestOptions> get putProgressRequests =>
       requests.where((r) => r.method == 'PUT' && r.uri.toString().contains('/reading-progress')).toList();
@@ -132,6 +133,10 @@ class CountingMockHttpAdapter implements HttpClientAdapter {
         error: 'Airplane Mode: Network disabled',
         type: DioExceptionType.connectionError,
       );
+    }
+
+    if (onBeforeResponse != null) {
+      await onBeforeResponse!(options);
     }
 
     final data = mockResponseData ?? <String, dynamic>{};
@@ -727,9 +732,15 @@ void main() {
         chapterNumber: '7',
       );
 
-      // 1. User đọc offline trong Airplane Mode
+      // 1. User đã từng đồng bộ/tải truyện khi có mạng (canonical server epoch = 42 được lưu vào đĩa)
+      progressRepo.setServerEpoch('story_replay_7', 42);
+
+      // Chuyển sang đọc offline trong Airplane Mode (ReaderScreen tắt networkSideEffectsEnabled)
       mockHttpAdapter.allowRequests = false;
-      final coordinator = ReadingProgressCoordinator(repository: progressRepo);
+      final coordinator = ReadingProgressCoordinator(
+        repository: progressRepo,
+        networkSideEffectsEnabled: false,
+      );
       coordinator.init();
       coordinator.onChapterReady('ch_replay_7');
 
@@ -745,10 +756,11 @@ void main() {
 
       await Future<void>.delayed(const Duration(milliseconds: 50));
 
-      // Checkpoint được lưu vào SharedPreferences
+      // Checkpoint được lưu vào SharedPreferences với canonical baseWriteEpoch = 42
       final localBeforeKill = await progressRepo.getLocalCheckpoint('story_replay_7');
       expect(localBeforeKill, isNotNull);
       expect(localBeforeKill!.pageIndex, 6); // 1-based
+      expect(localBeforeKill.baseWriteEpoch, 42);
 
       // 2. GIẢ LẬP KILL APP ĐỘT NGỘT: dispose coordinator và giải phóng toàn bộ RAM state
       coordinator.dispose();
@@ -1040,7 +1052,7 @@ void main() {
     test('Gate 12: Durable Replay Exactly Once — Checkpoint is marked clean after sync and not re-sent on subsequent starts', () async {
       final localTime = DateTime.now();
 
-      // 1. Checkpoint offline (dirty)
+      // 1. Checkpoint offline (dirty) ghi dưới epoch 10 đã biết
       await progressRepo.saveLocalCheckpoint(
         LocalReadingCheckpoint(
           storyId: 'story_gate_12',
@@ -1050,6 +1062,7 @@ void main() {
           scrollPosition: 800.0,
           updatedAt: localTime,
           isDirty: true,
+          baseWriteEpoch: 10,
         ),
       );
 
@@ -1113,6 +1126,163 @@ void main() {
 
       // BẤT BIẾN: Replay Exactly-Once! Lần khởi động thứ hai KHÔNG gửi thêm bất kỳ request PUT nào!
       expect(mockHttpAdapter.putProgressRequests, isEmpty);
+
+      restartCoordinator.dispose();
+    });
+
+    // =========================================================================
+    // Gate 13: Unknown Base Epoch Anti-Resurrection Gate (P0)
+    // =========================================================================
+    test('Gate 13: Unknown Base Epoch Anti-Resurrection — offline-from-cold-start (baseWriteEpoch=null) -> remote DELETE raises epoch -> reconnect -> zero PUT', () async {
+      final localTime = DateTime.now();
+
+      // Device A mở hoàn toàn offline từ cold start: chưa từng hydrate epoch -> baseWriteEpoch = null
+      await progressRepo.saveLocalCheckpoint(
+        LocalReadingCheckpoint(
+          storyId: 'story_gate_13',
+          chapterId: 'ch_cold_13',
+          pageIndex: 3,
+          progressPercentage: 45.0,
+          scrollPosition: 600.0,
+          updatedAt: localTime,
+          isDirty: true,
+          baseWriteEpoch: null, // Chưa từng hydrate epoch
+        ),
+      );
+
+      mockHttpAdapter.allowRequests = true;
+      mockHttpAdapter.totalRequests = 0;
+      mockHttpAdapter.requests.clear();
+
+      // Trên remote server: lịch sử đã bị xóa (tombstone) và epoch tăng lên 2
+      mockHttpAdapter.mockResponseData = {
+        'storyId': 'story_gate_13',
+        'chapterId': null,
+        'pageIndex': 1,
+        'progressPercentage': 0.0,
+        'scrollPosition': 0.0,
+        'updatedAt': DateTime.now().subtract(const Duration(minutes: 10)).toIso8601String(),
+        'writeEpoch': 2,
+      };
+
+      final coordinator = ReadingProgressCoordinator(
+        repository: progressRepo,
+        debounceDuration: const Duration(milliseconds: 50),
+      );
+      coordinator.init();
+
+      // Device A reconnect và hydrate epoch 2
+      await coordinator.startSession('story_gate_13');
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await coordinator.flush();
+
+      // BẤT BIẾN (P0): baseWriteEpoch=null tuyệt đối KHÔNG được rebind sang epoch 2!
+      // Không được phát bất kỳ request PUT /reading-progress nào lên server -> 0 PUT!
+      expect(mockHttpAdapter.putProgressRequests, isEmpty);
+
+      // Checkpoint trên đĩa vẫn được giữ để user có thể resume cục bộ (local resume)
+      final localCheckpoint = await progressRepo.getLocalCheckpoint('story_gate_13');
+      expect(localCheckpoint, isNotNull);
+      expect(localCheckpoint!.pageIndex, 3);
+
+      coordinator.dispose();
+    });
+
+    // =========================================================================
+    // Gate 14: Concurrent Same-Page Progress During PUT Gate (P0)
+    // =========================================================================
+    test('Gate 14: Concurrent Same-Page Progress During PUT — in-flight mutation on same page preserves isDirty and replays on restart', () async {
+      mockHttpAdapter.allowRequests = true;
+      mockHttpAdapter.totalRequests = 0;
+      mockHttpAdapter.requests.clear();
+      mockHttpAdapter.mockResponseData = {
+        'storyId': 'story_gate_14',
+        'chapterId': 'ch_gate_14',
+        'pageIndex': 5,
+        'progressPercentage': 50.0,
+        'scrollPosition': 1000.0,
+        'updatedAt': DateTime.now().toIso8601String(),
+        'writeEpoch': 3,
+      };
+
+      final coordinator = ReadingProgressCoordinator(
+        repository: progressRepo,
+        debounceDuration: const Duration(milliseconds: 500),
+      );
+      coordinator.init();
+
+      // 1. Session start và hydrate epoch 3
+      await coordinator.startSession('story_gate_14');
+
+      // 2. Ghi tiến độ A: page 5 / 50%
+      coordinator.recordProgress(
+        storyId: 'story_gate_14',
+        chapterId: 'ch_gate_14',
+        flutterPageIndex: 4, // Page 5
+        progressPercentage: 50.0,
+        scrollPosition: 1000.0,
+      );
+
+      // Trong lúc PUT cho A đang in-flight, người dùng tiếp tục cuộn trên cùng page 5 lên 65% (B)
+      mockHttpAdapter.onBeforeResponse = (options) async {
+        if (options.method == 'PUT' && options.uri.toString().contains('/reading-progress')) {
+          final reqBody = options.data is Map<String, dynamic>
+              ? options.data as Map<String, dynamic>
+              : jsonDecode(options.data.toString()) as Map<String, dynamic>;
+          // Chỉ can thiệp khi request là của A (50%)
+          if (reqBody['progressPercentage'] == 50.0) {
+            coordinator.recordProgress(
+              storyId: 'story_gate_14',
+              chapterId: 'ch_gate_14',
+              flutterPageIndex: 4, // Cùng page 5
+              progressPercentage: 65.0, // Đã đọc thêm lên 65%
+              scrollPosition: 1300.0,
+            );
+          }
+        }
+      };
+
+      // Đẩy khẩn cấp A lên server (kích hoạt PUT A ngay lập tức)
+      await coordinator.flush();
+
+      // BẤT BIẾN: Checkpoint B trên đĩa BẮT BUỘC vẫn giữ isDirty == true!
+      // ACK của A không được phép xóa dirty nhầm của B!
+      final checkpointOnDisk = await progressRepo.getLocalCheckpoint('story_gate_14');
+      expect(checkpointOnDisk, isNotNull);
+      expect(checkpointOnDisk!.progressPercentage, 65.0);
+      expect(checkpointOnDisk.pageIndex, 5);
+      expect(checkpointOnDisk.isDirty, isTrue);
+
+      // 3. GIẢ LẬP APP KILL TRƯỚC LẦN SYNC TIẾP THEO CỦA B (CRASH / RESTART)
+      coordinator.dispose();
+      mockHttpAdapter.onBeforeResponse = null;
+      mockHttpAdapter.requests.clear();
+
+      final restartCoordinator = ReadingProgressCoordinator(
+        repository: progressRepo,
+        debounceDuration: const Duration(milliseconds: 20),
+      );
+      restartCoordinator.init();
+
+      // Mở lại session online
+      await restartCoordinator.startSession('story_gate_14');
+      await Future<void>.delayed(const Duration(milliseconds: 80));
+      await restartCoordinator.flush();
+
+      // BẤT BIẾN: Checkpoint B (65%) được replay bền vững lên server!
+      expect(mockHttpAdapter.putProgressRequests.length, 1);
+      final lastPut = mockHttpAdapter.putProgressRequests.first;
+      final body = lastPut.data is Map<String, dynamic>
+          ? lastPut.data as Map<String, dynamic>
+          : jsonDecode(lastPut.data.toString()) as Map<String, dynamic>;
+      expect(body['progressPercentage'], 65.0);
+      expect(body['pageIndex'], 5);
+
+      // Checkpoint B sau khi replay thành công đã được đánh dấu clean
+      final checkpointAfterReplay = await progressRepo.getLocalCheckpoint('story_gate_14');
+      expect(checkpointAfterReplay, isNotNull);
+      expect(checkpointAfterReplay!.progressPercentage, 65.0);
+      expect(checkpointAfterReplay.isDirty, isFalse);
 
       restartCoordinator.dispose();
     });

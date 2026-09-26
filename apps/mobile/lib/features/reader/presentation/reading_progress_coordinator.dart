@@ -58,6 +58,17 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
   String? _dailyReadCapReachedDate;
   String? _currentServerDateVN;
   Timer? _midnightTimer;
+  int _lastRevision = 0;
+
+  int _generateRevision() {
+    final now = DateTime.now().microsecondsSinceEpoch;
+    if (now <= _lastRevision) {
+      _lastRevision++;
+    } else {
+      _lastRevision = now;
+    }
+    return _lastRevision;
+  }
 
   ReadingProgressCoordinator({
     required ReadingProgressRepository repository,
@@ -241,11 +252,13 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
             // Nếu server đã có tiến độ mới hơn (hoặc bằng), server wins, không ghi đè dù chapter/page khác!
             final isLocalStrictlyNewer = localCheckpoint.updatedAt.isAfter(serverTime);
 
-            // Gate 11: Tombstone Epoch Anti-Resurrection Guard.
-            // Nếu checkpoint được tạo dưới epoch N (baseWriteEpoch == N) nhưng server hiện tại đã là M != N
-            // (ví dụ: lịch sử đã bị xóa trên server hoặc tăng epoch):
-            // TUYỆT ĐỐI KHÔNG auto-promote hay rebind checkpoint cũ sang epoch mới!
-            final isEpochSafe = localCheckpoint.baseWriteEpoch == null ||
+            // Gate 11 & Gate 13: Tombstone Epoch Anti-Resurrection Guard.
+            // - Nếu checkpoint được tạo dưới epoch N (baseWriteEpoch == N) nhưng server hiện tại đã là M != N:
+            //   TUYỆT ĐỐI KHÔNG auto-promote hay rebind checkpoint cũ sang epoch mới!
+            // - Gate 13: Nếu app được mở offline từ cold-start, baseWriteEpoch == null (chưa từng hydrate server):
+            //   TUYỆT ĐỐI KHÔNG auto-promote hay rebind null sang serverEpoch khi server có tombstone/epoch > 0!
+            //   Fail-closed: Giữ checkpoint trên đĩa cho local resume, nhưng KHÔNG tạo _pendingDraft ra mạng!
+            final isEpochSafe = localCheckpoint.baseWriteEpoch != null &&
                 localCheckpoint.baseWriteEpoch == serverEpoch;
 
             if (isLocalStrictlyNewer && isEpochSafe) {
@@ -259,7 +272,8 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
                 scrollPosition: localCheckpoint.scrollPosition,
                 anchorBlockId: localCheckpoint.anchorBlockId,
                 textOffset: localCheckpoint.textOffset,
-                baseWriteEpoch: localCheckpoint.baseWriteEpoch ?? serverEpoch,
+                baseWriteEpoch: localCheckpoint.baseWriteEpoch,
+                checkpointRevision: localCheckpoint.checkpointRevision,
               );
             }
           }
@@ -292,8 +306,10 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
     String? anchorBlockId,
     int? textOffset,
   }) {
-    final currentEpoch =
-        _isServerSyncEnabled ? _repository.getCachedServerEpoch(storyId) : null;
+    final currentEpoch = _isServerSyncEnabled || !_networkSideEffectsEnabled
+        ? _repository.getCachedServerEpoch(storyId)
+        : null;
+    final revision = _generateRevision();
 
     final draft = PendingReadingProgress.fromFlutterIndex(
       storyId: storyId,
@@ -306,6 +322,7 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
       anchorBlockId: anchorBlockId,
       textOffset: textOffset,
       baseWriteEpoch: currentEpoch,
+      checkpointRevision: revision,
     );
 
     _pendingDraft = draft;
@@ -324,6 +341,7 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
         updatedAt: DateTime.now(),
         isDirty: true,
         baseWriteEpoch: currentEpoch,
+        checkpointRevision: revision,
       ),
     );
 
@@ -440,27 +458,29 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
       return;
     }
 
+    final syncedRevision = draft.checkpointRevision;
     // Materialize draft thành immutable network payload với canonical writeEpoch
     final payload = ReadingProgressPayload.fromDraft(draft, writeEpoch: epoch);
 
     try {
       await _repository.saveProgress(payload);
-      if (_pendingDraft == draft) {
+      if (_pendingDraft?.checkpointRevision == syncedRevision) {
         _pendingDraft = null;
       }
-      // Gate 12: Đánh dấu checkpoint cục bộ đã sync (isDirty = false)
-      // Để khi restart app hoặc mở lại không bị duplicate replay
+      // Gate 12 & Gate 14: Đánh dấu checkpoint cục bộ đã sync (isDirty = false)
+      // CHỈ KHI checkpoint trên đĩa có cùng checkpointRevision với draft vừa sync xong.
+      // Nếu user cuộn tiếp (cùng page hoặc khác page) trong lúc PUT đang in-flight,
+      // revision trên đĩa > syncedRevision, TUYỆT ĐỐI giữ isDirty = true để bảo vệ tiến độ bền vững!
       final currentLocal = await _repository.getLocalCheckpoint(storyId);
       if (currentLocal != null &&
-          currentLocal.chapterId == payload.chapterId &&
-          currentLocal.pageIndex == payload.pageIndex) {
+          currentLocal.checkpointRevision == syncedRevision) {
         await _repository.saveLocalCheckpoint(
           currentLocal.copyWith(isDirty: false, baseWriteEpoch: epoch),
         );
       }
     } on StaleWriteEpochException {
       // P0.4: Drop stale payload, tắt server sync, không bao giờ promote retry!
-      if (_pendingDraft == draft) {
+      if (_pendingDraft?.checkpointRevision == syncedRevision) {
         _pendingDraft = null;
       }
       _isServerSyncEnabled = false;
@@ -473,7 +493,7 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
   Future<void> flush() async {
     _debounceTimer?.cancel();
     _debounceTimer = null;
-    if (!_networkSideEffectsEnabled) return;
+    if (_disposed || !_networkSideEffectsEnabled) return;
     final storyId = _activeStoryId;
     if (storyId != null) {
       await _syncToServer(storyId);
@@ -573,7 +593,6 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
   /// Dọn dẹp listener và huỷ timer
   void dispose() {
     _disposed = true;
-    flush();
     WidgetsBinding.instance.removeObserver(this);
     _debounceTimer?.cancel();
     _midnightTimer?.cancel();

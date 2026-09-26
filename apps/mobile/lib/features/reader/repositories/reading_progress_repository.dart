@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -12,6 +13,7 @@ class ReadingProgressRepository {
   final String? Function()? _userIdProvider;
 
   static const String _checkpointPrefix = 'omninovel_reading_checkpoint_';
+  static const String _epochPrefix = 'omninovel_canonical_epoch_';
 
   // Canonical server epoch map (chỉ nạp từ server qua getProgress hoặc echo)
   final Map<String, int> _storyServerEpochs = {};
@@ -38,8 +40,63 @@ class ReadingProgressRepository {
     return '$_checkpointPrefix${uid}_$storyId';
   }
 
-  /// Lấy epoch đã cache trong session
-  int? getCachedServerEpoch(String storyId) => _storyServerEpochs[storyId];
+  String _getEpochKey(String storyId) {
+    final uid = _userIdProvider?.call() ?? 'anon';
+    return '$_epochPrefix${uid}_$storyId';
+  }
+
+  Future<void> _persistEpoch(String storyId, int epoch) async {
+    try {
+      final prefs = _prefs ?? await SharedPreferences.getInstance();
+      final key = _getEpochKey(storyId);
+      await prefs.setInt(key, epoch);
+    } catch (_) {}
+  }
+
+  Future<void> _clearPersistedEpoch(String storyId) async {
+    try {
+      final prefs = _prefs ?? await SharedPreferences.getInstance();
+      final key = _getEpochKey(storyId);
+      await prefs.remove(key);
+    } catch (_) {}
+  }
+
+  Future<void> _clearAllPersistedEpochs() async {
+    try {
+      final prefs = _prefs ?? await SharedPreferences.getInstance();
+      final uid = _userIdProvider?.call() ?? 'anon';
+      final prefix = '$_epochPrefix${uid}_';
+      final keys = prefs.getKeys().where((k) => k.startsWith(prefix)).toList();
+      for (final k in keys) {
+        await prefs.remove(k);
+      }
+    } catch (_) {}
+  }
+
+  /// Lấy epoch đã cache trong session hoặc trên đĩa (disk fallback)
+  int? getCachedServerEpoch(String storyId) {
+    final ram = _storyServerEpochs[storyId];
+    if (ram != null) return ram;
+    final disk = _prefs?.getInt(_getEpochKey(storyId));
+    if (disk != null) {
+      _storyServerEpochs[storyId] = disk;
+      return disk;
+    }
+    return null;
+  }
+
+  /// Đọc canonical server epoch đã persist trên đĩa theo user/story
+  Future<int?> getLastKnownServerEpoch(String storyId) async {
+    final cached = _storyServerEpochs[storyId];
+    if (cached != null) return cached;
+    final prefs = _prefs ?? await SharedPreferences.getInstance();
+    final key = _getEpochKey(storyId);
+    final val = prefs.getInt(key);
+    if (val != null) {
+      _storyServerEpochs[storyId] = val;
+    }
+    return val;
+  }
 
   /// Lấy response tiến độ đọc đã cache từ server
   ReadingProgressResponse? getCachedServerProgress(String storyId) => _cachedServerProgress[storyId];
@@ -47,6 +104,7 @@ class ReadingProgressRepository {
   /// Gán canonical server epoch khi nhận response từ server
   void setServerEpoch(String storyId, int epoch) {
     _storyServerEpochs[storyId] = epoch;
+    unawaited(_persistEpoch(storyId, epoch));
   }
 
   /// Lấy local generation của một truyện
@@ -60,6 +118,7 @@ class ReadingProgressRepository {
     final progress = await getProgress(storyId);
     final epoch = progress.writeEpoch;
     _storyServerEpochs[storyId] = epoch;
+    unawaited(_persistEpoch(storyId, epoch));
     return epoch;
   }
 
@@ -70,6 +129,7 @@ class ReadingProgressRepository {
     _inFlightTokens.remove(storyId);
     _storyServerEpochs.remove(storyId);
     _cachedServerProgress.remove(storyId);
+    unawaited(_clearPersistedEpoch(storyId));
   }
 
   /// Hủy write session của toàn bộ truyện
@@ -83,6 +143,7 @@ class ReadingProgressRepository {
     }
     _storyServerEpochs.clear();
     _cachedServerProgress.clear();
+    unawaited(_clearAllPersistedEpochs());
   }
 
   /// Lưu tiến độ đọc lên server Core API (yêu cầu payload đã materialize với canonical epoch)
@@ -109,6 +170,7 @@ class ReadingProgressRepository {
         if (storyKey != null) {
           _storyServerEpochs.remove(storyKey);
           _cachedServerProgress.remove(storyKey);
+          unawaited(_clearPersistedEpoch(storyKey));
         }
         throw StaleWriteEpochException(
           storyId: storyKey ?? '',
@@ -121,6 +183,7 @@ class ReadingProgressRepository {
       if (storyKey != null) {
         _storyServerEpochs[storyKey] = result.writeEpoch;
         _cachedServerProgress[storyKey] = result;
+        unawaited(_persistEpoch(storyKey, result.writeEpoch));
       }
       return result;
     } on DioException catch (e) {
@@ -150,6 +213,7 @@ class ReadingProgressRepository {
       final result = ReadingProgressResponse.fromJson(data);
       _storyServerEpochs[storyId] = result.writeEpoch;
       _cachedServerProgress[storyId] = result;
+      unawaited(_persistEpoch(storyId, result.writeEpoch));
       return result;
     } on ApiError {
       rethrow;

@@ -19,6 +19,8 @@ class PreferencesService implements IPreferencesService {
 
   PreferencesService(this._prefs);
 
+  SharedPreferences get rawPrefs => _prefs;
+
   static Future<PreferencesService> create() async {
     final prefs = await SharedPreferences.getInstance();
     return PreferencesService(prefs);

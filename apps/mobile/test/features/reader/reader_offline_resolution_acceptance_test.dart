@@ -1348,5 +1348,198 @@ void main() {
       // Đường dẫn lạ không nằm trong allowedIllustrationPaths
       expect(result.allowedIllustrationPaths.contains('/data/user/0/com.app/private.key'), isFalse);
     });
+
+    // =========================================================================
+    // Gate 15: Persisted Epoch Recovery Across Full Process Restart
+    // =========================================================================
+    test('Gate 15: Persisted Epoch Recovery Across Full Process Restart — Branch 1: Hydrates persisted epoch, offline progress records baseWriteEpoch=N, replays once', () async {
+      // 1. ONLINE: Server trả về canonical epoch 42
+      mockHttpAdapter.allowRequests = true;
+      mockHttpAdapter.totalRequests = 0;
+      mockHttpAdapter.requests.clear();
+      mockHttpAdapter.mockResponseData = {
+        'storyId': 'story_gate_15_a',
+        'chapterId': 'ch_gate_15_a',
+        'pageIndex': 1,
+        'progressPercentage': 10.0,
+        'scrollPosition': 100.0,
+        'updatedAt': DateTime.now().subtract(const Duration(minutes: 10)).toIso8601String(),
+        'writeEpoch': 42,
+      };
+
+      final repo1 = ReadingProgressRepository(apiClient: apiClient);
+      final coordinator1 = ReadingProgressCoordinator(repository: repo1);
+      coordinator1.init();
+
+      // Hydrate epoch 42 từ server
+      await coordinator1.startSession('story_gate_15_a');
+      expect(repo1.getCachedServerEpoch('story_gate_15_a'), 42);
+
+      // Xác nhận epoch 42 đã được persist bền vững trên disk (SharedPreferences)
+      final diskEpoch = await repo1.getLastKnownServerEpoch('story_gate_15_a');
+      expect(diskEpoch, 42);
+
+      // 2. FULL PROCESS RESTART / CRASH:
+      // Hủy toàn bộ coordinator1 và repo1 (RAM hoàn toàn rỗng)
+      coordinator1.dispose();
+
+      // Tạo FRESH repository và FRESH coordinator dùng cùng backing SharedPreferences
+      final freshRepo = ReadingProgressRepository(apiClient: apiClient);
+      expect(freshRepo.getCachedServerEpoch('story_gate_15_a'), isNull); // RAM rỗng
+
+      // Bật Airplane Mode (0 network)
+      mockHttpAdapter.allowRequests = false;
+      mockHttpAdapter.totalRequests = 0;
+      mockHttpAdapter.requests.clear();
+
+      final offlineCoordinator = ReadingProgressCoordinator(
+        repository: freshRepo,
+        networkSideEffectsEnabled: false,
+      );
+      offlineCoordinator.init();
+
+      // Khởi tạo offline session (local-only bootstrap)
+      await offlineCoordinator.startOfflineSession('story_gate_15_a');
+
+      // Đọc offline và ghi tiến độ
+      offlineCoordinator.recordProgress(
+        storyId: 'story_gate_15_a',
+        chapterId: 'ch_gate_15_a',
+        flutterPageIndex: 2, // Page 3
+        progressPercentage: 35.0,
+        scrollPosition: 500.0,
+      );
+
+      // BẤT BIẾN 1: Checkpoint offline trên đĩa BẮT BUỘC có baseWriteEpoch == 42 (đã phục hồi thành công từ disk)
+      final checkpointOnDisk = await freshRepo.getLocalCheckpoint('story_gate_15_a');
+      expect(checkpointOnDisk, isNotNull);
+      expect(checkpointOnDisk!.isDirty, isTrue);
+      expect(checkpointOnDisk.pageIndex, 3);
+      expect(checkpointOnDisk.progressPercentage, 35.0);
+      expect(checkpointOnDisk.baseWriteEpoch, 42);
+      expect(mockHttpAdapter.totalRequests, 0); // Tuyệt đối 0 network request
+
+      offlineCoordinator.dispose();
+
+      // 3. RESTART ONLINE: Server vẫn giữ epoch 42, không có DELETE
+      mockHttpAdapter.allowRequests = true;
+      mockHttpAdapter.requests.clear();
+      mockHttpAdapter.mockResponseData = {
+        'storyId': 'story_gate_15_a',
+        'chapterId': 'ch_gate_15_a',
+        'pageIndex': 1,
+        'progressPercentage': 10.0,
+        'scrollPosition': 100.0,
+        'updatedAt': DateTime.now().subtract(const Duration(minutes: 10)).toIso8601String(),
+        'writeEpoch': 42,
+      };
+
+      final onlineCoordinator = ReadingProgressCoordinator(
+        repository: freshRepo,
+        debounceDuration: const Duration(milliseconds: 20),
+      );
+      onlineCoordinator.init();
+
+      await onlineCoordinator.startSession('story_gate_15_a');
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      await onlineCoordinator.flush();
+
+      // BẤT BIẾN 2: Checkpoint offline được replay thành công lên server đúng 1 lần
+      expect(mockHttpAdapter.putProgressRequests.length, 1);
+      final putReq = mockHttpAdapter.putProgressRequests.first;
+      final reqBody = putReq.data is Map<String, dynamic>
+          ? putReq.data as Map<String, dynamic>
+          : jsonDecode(putReq.data.toString()) as Map<String, dynamic>;
+      expect(reqBody['writeEpoch'], 42);
+      expect(reqBody['pageIndex'], 3);
+      expect(reqBody['progressPercentage'], 35.0);
+
+      // Checkpoint trên đĩa được clean sau replay
+      final cleanCheckpoint = await freshRepo.getLocalCheckpoint('story_gate_15_a');
+      expect(cleanCheckpoint, isNotNull);
+      expect(cleanCheckpoint!.isDirty, isFalse);
+
+      onlineCoordinator.dispose();
+    });
+
+    test('Gate 15: Persisted Epoch Recovery Across Full Process Restart — Branch 2: Remote DELETE bumps epoch to N+1 -> Reconnect -> 0 PUT', () async {
+      // 1. ONLINE: Server trả về canonical epoch 50
+      mockHttpAdapter.allowRequests = true;
+      mockHttpAdapter.totalRequests = 0;
+      mockHttpAdapter.requests.clear();
+      mockHttpAdapter.mockResponseData = {
+        'storyId': 'story_gate_15_b',
+        'chapterId': 'ch_gate_15_b',
+        'pageIndex': 1,
+        'progressPercentage': 10.0,
+        'scrollPosition': 100.0,
+        'updatedAt': DateTime.now().subtract(const Duration(minutes: 10)).toIso8601String(),
+        'writeEpoch': 50,
+      };
+
+      final repoB1 = ReadingProgressRepository(apiClient: apiClient);
+      final coordB1 = ReadingProgressCoordinator(repository: repoB1);
+      coordB1.init();
+
+      await coordB1.startSession('story_gate_15_b');
+      expect(await repoB1.getLastKnownServerEpoch('story_gate_15_b'), 50);
+      coordB1.dispose();
+
+      // 2. FULL PROCESS RESTART OFFLINE:
+      final freshRepoB = ReadingProgressRepository(apiClient: apiClient);
+      mockHttpAdapter.allowRequests = false;
+      mockHttpAdapter.totalRequests = 0;
+      mockHttpAdapter.requests.clear();
+
+      final offlineCoordB = ReadingProgressCoordinator(
+        repository: freshRepoB,
+        networkSideEffectsEnabled: false,
+      );
+      offlineCoordB.init();
+
+      await offlineCoordB.startOfflineSession('story_gate_15_b');
+      offlineCoordB.recordProgress(
+        storyId: 'story_gate_15_b',
+        chapterId: 'ch_gate_15_b',
+        flutterPageIndex: 3, // Page 4
+        progressPercentage: 45.0,
+        scrollPosition: 800.0,
+      );
+
+      final cpB = await freshRepoB.getLocalCheckpoint('story_gate_15_b');
+      expect(cpB, isNotNull);
+      expect(cpB!.baseWriteEpoch, 50);
+      offlineCoordB.dispose();
+
+      // 3. TRONG LÚC OFFLINE: Server bị xóa lịch sử (DELETE) -> Epoch tăng lên 51
+      mockHttpAdapter.allowRequests = true;
+      mockHttpAdapter.totalRequests = 0;
+      mockHttpAdapter.requests.clear();
+      mockHttpAdapter.mockResponseData = {
+        'storyId': 'story_gate_15_b',
+        'chapterId': 'ch_gate_15_b_new',
+        'pageIndex': 1,
+        'progressPercentage': 0.0,
+        'scrollPosition': 0.0,
+        'updatedAt': DateTime.now().subtract(const Duration(minutes: 1)).toIso8601String(),
+        'writeEpoch': 51, // Epoch bumped to 51
+      };
+
+      // 4. RECONNECT ONLINE:
+      final onlineCoordB = ReadingProgressCoordinator(
+        repository: freshRepoB,
+        debounceDuration: const Duration(milliseconds: 20),
+      );
+      onlineCoordB.init();
+
+      await onlineCoordB.startSession('story_gate_15_b');
+      await Future<void>.delayed(const Duration(milliseconds: 60));
+      await onlineCoordB.flush();
+
+      // BẤT BIẾN: Gate 13 bảo vệ an toàn — baseWriteEpoch (50) != serverEpoch (51) -> TUYỆT ĐỐI 0 PUT!
+      expect(mockHttpAdapter.putProgressRequests.isEmpty, isTrue);
+
+      onlineCoordB.dispose();
+    });
   });
 }

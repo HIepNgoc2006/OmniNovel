@@ -86,6 +86,7 @@ class AppBootstrap {
     final router = AppRouter.create(
       authService: authService,
       apiClient: apiClient,
+      prefs: preferencesService.rawPrefs,
       gamificationRepository: gamificationRepository,
     );
 

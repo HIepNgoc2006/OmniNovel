@@ -9,7 +9,7 @@ import '../models/reading_progress_models.dart';
 
 class ReadingProgressRepository {
   final ApiClient _apiClient;
-  final SharedPreferences? _prefs;
+  SharedPreferences? _prefs;
   final String? Function()? _userIdProvider;
 
   static const String _checkpointPrefix = 'omninovel_reading_checkpoint_';
@@ -35,6 +35,14 @@ class ReadingProgressRepository {
         _prefs = prefs,
         _userIdProvider = userIdProvider;
 
+  Future<SharedPreferences> _getPrefs() async {
+    final p = _prefs;
+    if (p != null) return p;
+    final instance = await SharedPreferences.getInstance();
+    _prefs = instance;
+    return instance;
+  }
+
   String _getCheckpointKey(String storyId) {
     final uid = _userIdProvider?.call() ?? 'anon';
     return '$_checkpointPrefix${uid}_$storyId';
@@ -47,7 +55,7 @@ class ReadingProgressRepository {
 
   Future<void> _persistEpoch(String storyId, int epoch) async {
     try {
-      final prefs = _prefs ?? await SharedPreferences.getInstance();
+      final prefs = await _getPrefs();
       final key = _getEpochKey(storyId);
       await prefs.setInt(key, epoch);
     } catch (_) {}
@@ -55,7 +63,7 @@ class ReadingProgressRepository {
 
   Future<void> _clearPersistedEpoch(String storyId) async {
     try {
-      final prefs = _prefs ?? await SharedPreferences.getInstance();
+      final prefs = await _getPrefs();
       final key = _getEpochKey(storyId);
       await prefs.remove(key);
     } catch (_) {}
@@ -63,7 +71,7 @@ class ReadingProgressRepository {
 
   Future<void> _clearAllPersistedEpochs() async {
     try {
-      final prefs = _prefs ?? await SharedPreferences.getInstance();
+      final prefs = await _getPrefs();
       final uid = _userIdProvider?.call() ?? 'anon';
       final prefix = '$_epochPrefix${uid}_';
       final keys = prefs.getKeys().where((k) => k.startsWith(prefix)).toList();
@@ -89,7 +97,7 @@ class ReadingProgressRepository {
   Future<int?> getLastKnownServerEpoch(String storyId) async {
     final cached = _storyServerEpochs[storyId];
     if (cached != null) return cached;
-    final prefs = _prefs ?? await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final key = _getEpochKey(storyId);
     final val = prefs.getInt(key);
     if (val != null) {
@@ -112,13 +120,13 @@ class ReadingProgressRepository {
 
   /// Bắt buộc hydrate canonical server epoch trước khi enable server write session (P0.3 Zero-fallback)
   Future<int> ensureServerEpoch(String storyId) async {
-    final cached = _storyServerEpochs[storyId];
+    final cached = _cachedServerProgress[storyId]?.writeEpoch;
     if (cached != null) return cached;
 
     final progress = await getProgress(storyId);
     final epoch = progress.writeEpoch;
     _storyServerEpochs[storyId] = epoch;
-    unawaited(_persistEpoch(storyId, epoch));
+    await _persistEpoch(storyId, epoch);
     return epoch;
   }
 
@@ -170,7 +178,7 @@ class ReadingProgressRepository {
         if (storyKey != null) {
           _storyServerEpochs.remove(storyKey);
           _cachedServerProgress.remove(storyKey);
-          unawaited(_clearPersistedEpoch(storyKey));
+          await _clearPersistedEpoch(storyKey);
         }
         throw StaleWriteEpochException(
           storyId: storyKey ?? '',
@@ -183,7 +191,7 @@ class ReadingProgressRepository {
       if (storyKey != null) {
         _storyServerEpochs[storyKey] = result.writeEpoch;
         _cachedServerProgress[storyKey] = result;
-        unawaited(_persistEpoch(storyKey, result.writeEpoch));
+        await _persistEpoch(storyKey, result.writeEpoch);
       }
       return result;
     } on DioException catch (e) {
@@ -213,7 +221,7 @@ class ReadingProgressRepository {
       final result = ReadingProgressResponse.fromJson(data);
       _storyServerEpochs[storyId] = result.writeEpoch;
       _cachedServerProgress[storyId] = result;
-      unawaited(_persistEpoch(storyId, result.writeEpoch));
+      await _persistEpoch(storyId, result.writeEpoch);
       return result;
     } on ApiError {
       rethrow;
@@ -224,14 +232,14 @@ class ReadingProgressRepository {
 
   /// Lưu checkpoint tức thì vào SharedPreferences (User-scoped)
   Future<void> saveLocalCheckpoint(LocalReadingCheckpoint checkpoint) async {
-    final prefs = _prefs ?? await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final key = _getCheckpointKey(checkpoint.storyId);
     await prefs.setString(key, jsonEncode(checkpoint.toJson()));
   }
 
   /// Đọc checkpoint cục bộ từ SharedPreferences (User-scoped)
   Future<LocalReadingCheckpoint?> getLocalCheckpoint(String storyId) async {
-    final prefs = _prefs ?? await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final key = _getCheckpointKey(storyId);
     final raw = prefs.getString(key);
     if (raw == null || raw.isEmpty) return null;
@@ -246,14 +254,14 @@ class ReadingProgressRepository {
 
   /// Xóa checkpoint cục bộ của một bộ truyện (User-scoped)
   Future<void> clearLocalCheckpoint(String storyId) async {
-    final prefs = _prefs ?? await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final key = _getCheckpointKey(storyId);
     await prefs.remove(key);
   }
 
   /// Xóa toàn bộ checkpoint cục bộ của user hiện tại
   Future<void> clearAllLocalCheckpoints() async {
-    final prefs = _prefs ?? await SharedPreferences.getInstance();
+    final prefs = await _getPrefs();
     final uid = _userIdProvider?.call() ?? 'anon';
     final prefix = '$_checkpointPrefix${uid}_';
     final keys = prefs.getKeys().where((k) => k.startsWith(prefix)).toList();

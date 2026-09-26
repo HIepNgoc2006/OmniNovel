@@ -17,12 +17,14 @@ import '../../features/profile/presentation/profile_screen.dart';
 import '../../features/reader/repositories/chapter_report_repository.dart';
 import '../../features/reader/repositories/chapter_repository.dart';
 import '../../features/reader/repositories/media_repository.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../features/reader/repositories/reading_progress_repository.dart';
 
 class AppRouter {
   static GoRouter create({
     required AuthService authService,
     required ApiClient apiClient,
+    SharedPreferences? prefs,
     StoryRepository? storyRepository,
     ChapterRepository? chapterRepository,
     MediaRepository? mediaRepository,
@@ -42,6 +44,7 @@ class AppRouter {
     final effectiveProgressRepo = readingProgressRepository ??
         ReadingProgressRepository(
           apiClient: apiClient,
+          prefs: prefs,
           userIdProvider: () => authService.state.user?.id,
         );
     final effectiveLibraryRepo = libraryRepository ??

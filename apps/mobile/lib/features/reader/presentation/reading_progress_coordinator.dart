@@ -209,6 +209,27 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
     _dailyReadCapReachedDate = null;
   }
 
+  /// Khởi tạo phiên đọc ngoại tuyến (Local-only bootstrap):
+  /// Nạp canonical server epoch đã persist trên đĩa vào RAM (0 HTTP request).
+  /// Đảm bảo checkpoint ghi ngoại tuyến sau khi restart process vẫn gắn đúng baseWriteEpoch nếu đã từng sync trước đó.
+  Future<void> startOfflineSession(String storyId) async {
+    final generation = ++_sessionGeneration;
+    _activeStoryId = storyId;
+    _isServerSyncEnabled = false;
+
+    try {
+      await _repository.getLastKnownServerEpoch(storyId);
+    } catch (_) {
+      // Ignored
+    }
+
+    if (_disposed ||
+        generation != _sessionGeneration ||
+        _activeStoryId != storyId) {
+      return;
+    }
+  }
+
   /// Khởi tạo phiên đọc cho một bộ truyện:
   /// Hydrate canonical server epoch. Chỉ khi thành công mới bật server sync.
   Future<void> startSession(String storyId) async {

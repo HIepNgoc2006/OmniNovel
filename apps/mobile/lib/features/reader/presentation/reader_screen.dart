@@ -138,6 +138,8 @@ class _ReaderScreenState extends State<ReaderScreen> {
       }
       if (!isOffline) {
         _progressCoordinator.startSession(widget.storyId);
+      } else {
+        _progressCoordinator.startOfflineSession(widget.storyId);
       }
       if (_isNovel) {
         _loadNovelIfNeeded();

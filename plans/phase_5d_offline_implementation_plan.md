@@ -480,10 +480,11 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
   4. *Durable Replay Anti-Resurrection & Exactly-Once Protocol (P0.4):* Checkpoint mang `isDirty` và `baseWriteEpoch`. Newer server progress luôn thắng (không ghi đè chỉ vì khác chapter/page). Không rebind checkpoint cũ sang epoch mới nếu epoch server đã tăng sau DELETE (Anti-Resurrection). Replay thành công đánh dấu `isDirty = false` để tránh duplicate replay (Exactly-Once).
   5. *Version-Bound Synthetic ChapterDetail (P0.5):* `ChapterDetail.activeVersion.id` bắt buộc bind chính xác versionId đã cài; metadata trích xuất từ manifest canonical.
   6. *Unknown Base Epoch Anti-Resurrection Guard (P0.6):* Cold-start offline session (`baseWriteEpoch = null`), server đã xóa lịch sử (tombstone) tăng epoch lên $> 0$ $\rightarrow$ tuyệt đối không promote hay rebind sang epoch mới. Fail-closed: 0 PUT request, giữ checkpoint cho local resume. Persist last-known canonical epoch theo user/story khi tải hoặc có mạng.
-  7. *Mutation Identity & Same-Page Progress Race-Free Protocol (P0.7):* Định danh từng mutation bằng `checkpointRevision` monotonic microsecond. ACK PUT chỉ clear `isDirty` khi `currentLocal.checkpointRevision == syncedDraft.checkpointRevision`. Mutation cùng trang trong lúc PUT in-flight giữ `isDirty = true` và replay đầy đủ khi restart.
-  8. *Strict Canonical Whitelist Cho Ảnh Minh Họa Novel (P1.1):* `ResolvedOfflineChapter` cung cấp canonical `allowedIllustrationPaths`. `_NovelBlockWidget` chỉ render ảnh cục bộ khi nằm trong whitelist từ manifest; mọi đường dẫn lạ ngoài whitelist bị chặn, ngăn chặn tấn công truy xuất tệp trái phép.
-  9. *Type-Safe Image Source & Đính Chính "0 Latency" (P1.2):* Phân biệt rõ tệp cục bộ (`_localAssetFiles`), không ép path thành fake URL string. Xác thực hash toàn vẹn SHA-256 từng tệp trên đĩa lúc mở; ghi nhận là Zero-Network / Local Disk chứ không tự gán "0 latency" trước khi có đo đạc thực tế.
-- [x] **14 Tiêu Chuẩn Nghiệm Thu (14 Acceptance Gates - PASS 14/14 100% + P1.1):**
+  7. *Mutation Identity & Same-Page Progress Race-Free Protocol (P0.7):* Định danh từng mutation bằng `checkpointRevision` monotonic timestamp. ACK PUT chỉ clear `isDirty` khi `currentLocal.checkpointRevision == syncedDraft.checkpointRevision`. Mutation cùng trang trong lúc PUT in-flight giữ `isDirty = true` và replay đầy đủ khi restart.
+  8. *Persisted Epoch Recovery Across Full Process Restart (P0.8):* Inject SharedPreferences vào ReadingProgressRepository tại bootstrap; thêm local-only bootstrap `startOfflineSession` hydrate persisted epoch từ đĩa vào RAM (0 HTTP); await `_persistEpoch()` tại boundaries để đảm bảo tính durable chống mất liveness sau khi kill app.
+  9. *Strict Canonical Whitelist Cho Ảnh Minh Họa Novel (P1.1):* `ResolvedOfflineChapter` cung cấp canonical `allowedIllustrationPaths`. `_NovelBlockWidget` chỉ render ảnh cục bộ khi nằm trong whitelist từ manifest; mọi đường dẫn lạ ngoài whitelist bị chặn, ngăn chặn tấn công truy xuất tệp trái phép.
+  10. *Type-Safe Image Source & Đính Chính "0 Latency" (P1.2):* Phân biệt rõ tệp cục bộ (`_localAssetFiles`), không ép path thành fake URL string. Xác thực hash toàn vẹn SHA-256 từng tệp trên đĩa lúc mở; ghi nhận là Zero-Network / Local Disk chứ không tự gán "0 latency" trước khi có đo đạc thực tế.
+- [x] **15 Tiêu Chuẩn Nghiệm Thu (15 Acceptance Gates - PASS 15/15 100% + P1.1):**
   - [x] **Gate 1:** Exact-Version Selection policy resolves preferredVersionId or latest deterministic version.
   - [x] **Gate 2:** Global Zero-Network Gate — Webtoon & Manga resolve in Airplane Mode with 0 HTTP calls.
   - [x] **Gate 3:** Novel Offline Resolution — Loads content.html offline, local illustration, blocks external image.
@@ -498,8 +499,9 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
   - [x] **Gate 12:** Durable Replay Exactly Once — Checkpoint is marked clean after sync and not re-sent on subsequent starts.
   - [x] **Gate 13:** Unknown Base Epoch Anti-Resurrection — offline-from-cold-start (baseWriteEpoch=null) -> remote DELETE raises epoch -> reconnect -> zero PUT.
   - [x] **Gate 14:** Concurrent Same-Page Progress During PUT — in-flight mutation on same page preserves isDirty and replays on restart.
+  - [x] **Gate 15:** Persisted Epoch Recovery Across Process Restart — Hydrates persisted epoch across full process restart: Branch 1 replays once with server N; Branch 2 rejects with 0 PUT if remote DELETE raised epoch to N+1.
   - [x] **P1.1:** Strict Whitelist Novel Illustrations — Unknown or non-whitelisted illustration paths are blocked.
-- [x] **Hồi quy & Phân tích Tĩnh:** 107/107 Reader tests PASS 100%, 15/15 Acceptance Gates PASS 100%, `flutter analyze` 0 issues (Clean 100%).
+- [x] **Hồi quy & Phân tích Tĩnh:** 109/109 Reader tests PASS 100%, 17/17 Acceptance Gates test cases PASS 100%, `flutter analyze` 0 issues (Clean 100%).
 
 ### 📌 Phase 5D.6: Quản Lý Dung Lượng, Eviction & Cách Ly Người Dùng
 - [ ] Giới hạn dung lượng bộ nhớ tải về (Storage Quota): Cảnh báo khi bộ nhớ thiết bị còn trống dưới 200MB.

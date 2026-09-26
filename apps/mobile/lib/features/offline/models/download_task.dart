@@ -21,6 +21,7 @@ enum DownloadTaskStatus {
 /// Mô hình biểu diễn một tác vụ tải gói chương truyện trong hàng đợi.
 class DownloadTask {
   final String taskId;
+  final String userId;
   final String chapterVersionId;
   final String chapterId;
   final String storyId;
@@ -39,6 +40,7 @@ class DownloadTask {
 
   const DownloadTask({
     required this.taskId,
+    this.userId = 'default_user',
     required this.chapterVersionId,
     required this.chapterId,
     required this.storyId,
@@ -58,6 +60,7 @@ class DownloadTask {
 
   DownloadTask copyWith({
     String? taskId,
+    String? userId,
     String? chapterVersionId,
     String? chapterId,
     String? storyId,
@@ -77,6 +80,7 @@ class DownloadTask {
   }) {
     return DownloadTask(
       taskId: taskId ?? this.taskId,
+      userId: userId ?? this.userId,
       chapterVersionId: chapterVersionId ?? this.chapterVersionId,
       chapterId: chapterId ?? this.chapterId,
       storyId: storyId ?? this.storyId,
@@ -98,6 +102,7 @@ class DownloadTask {
   Map<String, dynamic> toMap() {
     return {
       'task_id': taskId,
+      'user_id': userId,
       'chapter_version_id': chapterVersionId,
       'chapter_id': chapterId,
       'story_id': storyId,
@@ -119,6 +124,7 @@ class DownloadTask {
   factory DownloadTask.fromMap(Map<String, dynamic> map) {
     return DownloadTask(
       taskId: map['task_id'] as String,
+      userId: map['user_id'] as String? ?? 'default_user',
       chapterVersionId: map['chapter_version_id'] as String,
       chapterId: map['chapter_id'] as String,
       storyId: map['story_id'] as String,
@@ -139,6 +145,6 @@ class DownloadTask {
 
   @override
   String toString() {
-    return 'DownloadTask(id: $taskId, versionId: $chapterVersionId, status: ${status.value}, progress: ${(progressFraction * 100).toStringAsFixed(1)}%)';
+    return 'DownloadTask(id: $taskId, user: $userId, versionId: $chapterVersionId, status: ${status.value}, progress: ${(progressFraction * 100).toStringAsFixed(1)}%)';
   }
 }

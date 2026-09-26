@@ -111,7 +111,7 @@ class StoragePolicyConfig {
 
 | Gate | Tiêu Chí Kiểm Tra (Acceptance Criteria) |
 | :--- | :--- |
-| **Gate 1: DB Schema Migration v1 ➔ v2 & Canonical User Isolation** | **Gate 1A (Schema Migration):** v1 ➔ v2, composite uniqueness `(user_id, chapter_version_id)`, tombstone uniqueness, legacy v1 fail-closed (không promote vào v2 inventory).<br>**Gate 1B (Repository Isolation):** User A/B có cùng `chapterVersionId` nhưng query/update/delete không cross-account.<br>**Gate 1C (Queue/Resolver/Path Isolation):** Cùng version ở A/B có task, `.part`, staging, installed độc lập hoàn toàn trong namespace `files/offline/<userScope>/`. |
+| **Gate 1: DB Schema Migration v1 ➔ v2 & Canonical User Isolation** | **PASSED ✅ (10/10 tests)**<br>**Gate 1A (Schema Migration):** v1 ➔ v2, composite uniqueness `(user_id, chapter_version_id)`, tombstone uniqueness, legacy v1 fail-closed (không promote vào v2 inventory).<br>**Gate 1B (Repository Isolation):** User A/B có cùng `chapterVersionId` nhưng query/update/delete không cross-account.<br>**Gate 1C (Queue/Resolver/Path Isolation):** Cùng version ở A/B có task, `.part`, staging, installed độc lập hoàn toàn trong namespace `files/offline/<userScope>/`. |
 | **Gate 2: Deterministic Deletion Tombstone Protocol & Crash Safety** | Mô phỏng crash tại mọi điểm ranh giới (trước khi purge file, sau khi purge file, trước khi xóa tombstone) $\rightarrow$ startup reconciliation tự động dọn sạch thư mục orphan, ghost row và hoàn tất cleanup. |
 | **Gate 3: Deletion Tombstone vs. 5D.4 Recovery Precedence** | Khi thư mục tồn tại kèm deletion tombstone $\rightarrow$ purge thắng tuyệt đối; khi không có tombstone $\rightarrow$ kích hoạt đúng cơ chế crash recovery của 5D.4 (reconstruct row). |
 | **Gate 4: Reader In-Use Lease Protection (Ref-Counted Token)** | Chương đang có active lease token từ Reader được bảo vệ 100% trước auto-LRU eviction; manual single delete và batch story deletion trả về lỗi `ChapterInUseException` (all-or-nothing). |
@@ -125,23 +125,23 @@ class StoragePolicyConfig {
 
 ## 4. Lộ Trình Triển Khai Chi Tiết (TDD Roadmap)
 
-- **Bước 1A (Gate 1A — Schema Migration & Legacy v1 Fail-Closed):**
+- [x] **Bước 1A (Gate 1A — Schema Migration & Legacy v1 Fail-Closed) — HOÀN THÀNH:**
   - Viết Gate 1A RED test: Xác minh migration từ DB v1 sang v2, composite primary key `(user_id, chapter_version_id)` cho `offline_chapters`, uniqueness `(user_id, chapter_version_id)` cho `download_tasks` và `offline_deletion_tombstones`, và loại bỏ toàn bộ dữ liệu legacy v1 không có owner (fail-closed, không promote vào v2 inventory).
   - Nâng cấp `databaseVersion = 2` trong `OfflineDatabase`.
   - Viết migration script v1 ➔ v2 và v2 `onCreate` schema.
   - Cập nhật model: `OfflineChapter` (`userId`, `isPinned`), `DownloadTask` (`userId`), và model `OfflineDeletionTombstone`.
-  - Đạt Gate 1A GREEN.
-- **Bước 1B (Gate 1B — Repository User Isolation):**
+  - Đạt Gate 1A GREEN (4/4 tests passed).
+- [x] **Bước 1B (Gate 1B — Repository User Isolation) — HOÀN THÀNH:**
   - Viết Gate 1B RED test: Xác minh User A và User B tải cùng `chapterVersionId` nhưng độc lập hoàn toàn về query, update, delete, isChapterInstalled, lastReadAt.
   - Bổ sung `userId` vào mọi method trong `OfflineStorageRepository` (`getOfflineChapter`, `getTaskById`, `updateTask`, `deleteTask`, `isChapterInstalled`, `updateLastReadAt`, `getOfflineChaptersByChapterId`...). Loại bỏ hoàn toàn mọi backdoor query toàn cục không có ownership.
-  - Đạt Gate 1B GREEN.
-- **Bước 1C (Gate 1C — Namespace Paths, Queue & Resolver Isolation):**
+  - Đạt Gate 1B GREEN (3/3 tests passed).
+- [x] **Bước 1C (Gate 1C — Namespace Paths, Queue & Resolver Isolation) — HOÀN THÀNH:**
   - Viết Gate 1C RED test: Cùng version ở A và B có task riêng, file `.part` trong `tmp/` riêng, `staging/` riêng, và `installed/` riêng; resolver của User A không bao giờ giải quyết sang file của User B.
   - Cập nhật `OfflineStoragePaths` với hàm deterministic, path-safe `userScope = stableSafeScope(userId)`.
   - Phân vùng cấu trúc thư mục 3 vùng: `files/offline/<userScope>/{tmp, staging, installed}/`.
   - Cập nhật `DownloadQueueManager`, `BundleInstaller`, và `OfflineContentResolver` bind theo `userId` / `userScope`.
-  - Đạt Gate 1C GREEN.
-- **Bước 2 (DiskSpaceProvider & StoragePolicyConfig):** Xây dựng `DiskSpaceProvider` interface (kèm mock provider cho test) và `StoragePolicyConfig`.
+  - Đạt Gate 1C GREEN (3/3 tests passed).
+- [ ] **Bước 2 (DiskSpaceProvider & StoragePolicyConfig):** Xây dựng `DiskSpaceProvider` interface (kèm mock provider cho test) và `StoragePolicyConfig`.
 - **Bước 3 (Reader In-Use Lease Manager):** Xây dựng `ReaderLeaseManager` quản lý ref-counted token in-memory (Gate 4).
 - **Bước 4 (Deterministic Deletion Protocol):** Xây dựng `OfflineStorageManager` / `OfflineDeletionService` thực thi giao thức 3 bước (tombstone ➔ purge ➔ finalize) cho cả single chapter và batch story (Gate 2, Gate 8).
 - **Bước 5 (Startup Reconciliation v2):** Nâng cấp startup reconciliation với luật precedence: tombstone purge thắng tuyệt đối, bảo toàn 5D.4 crash recovery khi không có tombstone (Gate 3).

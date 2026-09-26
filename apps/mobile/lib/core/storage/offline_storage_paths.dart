@@ -1,9 +1,16 @@
+import 'dart:convert';
 import 'dart:io';
+import 'package:crypto/crypto.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 /// Quản lý phân vùng lưu trữ ngoại tuyến trong App-Private Sandbox (Internal Storage).
 /// Đảm bảo phân quyền bảo mật 0700 và tương thích với Android File-Based Encryption (FBE).
+/// Phân vùng 3 vùng theo userScope (SHA-256 deterministic hash):
+///   files/offline/<userScope>/
+///     tmp/        # <chapterVersionId>.part
+///     staging/    # <chapterVersionId>/
+///     installed/  # <chapterVersionId>/
 class OfflineStoragePaths {
   static const String offlineDirName = 'offline';
   static const String tmpDirName = 'tmp';
@@ -11,12 +18,38 @@ class OfflineStoragePaths {
   static const String installedDirName = 'installed';
 
   final String? _customBasePath;
+  final String? _userId;
   String? _resolvedBasePath;
 
-  OfflineStoragePaths({String? customBasePath})
-      : _customBasePath = customBasePath;
+  OfflineStoragePaths({
+    String? customBasePath,
+    String? userId,
+  })  : _customBasePath = customBasePath,
+        _userId = userId;
 
-  /// Đường dẫn gốc của phân vùng offline: `<app-files-dir>/offline`
+  /// Tạo instance mới bind với userId cụ thể.
+  OfflineStoragePaths forUser(String newUserId) {
+    return OfflineStoragePaths(
+      customBasePath: _customBasePath,
+      userId: newUserId,
+    );
+  }
+
+  /// Hàm canonical, stable và path-safe để chuyển đổi userId thành userScope.
+  /// Sử dụng 16 ký tự hex đầu tiên của SHA-256 để:
+  /// - Không chứa path separator ('/' hoặc '\')
+  /// - Không chứa ký tự lạ filesystem ('..', ':', spaces)
+  /// - Hoàn toàn deterministic (cùng userId cho ra cùng userScope).
+  static String stableSafeScope(String userId) {
+    final bytes = utf8.encode(userId);
+    final digest = sha256.convert(bytes);
+    return digest.toString().substring(0, 16);
+  }
+
+  /// userScope của instance hiện tại. Nếu userId null -> fallback 'default'.
+  String get userScope => _userId != null ? stableSafeScope(_userId) : 'default';
+
+  /// Đường dẫn gốc của toàn bộ phân vùng offline: `<app-files-dir>/offline`
   Future<String> getRootOfflinePath() async {
     if (_resolvedBasePath != null) {
       return _resolvedBasePath!;
@@ -32,25 +65,31 @@ class OfflineStoragePaths {
     return _resolvedBasePath!;
   }
 
-  /// Đường dẫn thư mục chứa tệp tải tạm thời `.part`
+  /// Đường dẫn phân vùng riêng của user: `<root>/<userScope>`
+  Future<String> getUserOfflinePath() async {
+    final root = await getRootOfflinePath();
+    return p.join(root, userScope);
+  }
+
+  /// Đường dẫn thư mục chứa tệp tải tạm thời `.part` của user: `<root>/<userScope>/tmp`
   Future<String> getTmpDirPath() async {
-    final root = await getRootOfflinePath();
-    return p.join(root, tmpDirName);
+    final userRoot = await getUserOfflinePath();
+    return p.join(userRoot, tmpDirName);
   }
 
-  /// Đường dẫn thư mục giải nén trung gian để xác thực toàn vẹn
+  /// Đường dẫn thư mục giải nén trung gian để xác thực toàn vẹn của user: `<root>/<userScope>/staging`
   Future<String> getStagingDirPath() async {
-    final root = await getRootOfflinePath();
-    return p.join(root, stagingDirName);
+    final userRoot = await getUserOfflinePath();
+    return p.join(userRoot, stagingDirName);
   }
 
-  /// Đường dẫn thư mục lưu trữ các gói chương truyện đã cài đặt chính thức
+  /// Đường dẫn thư mục lưu trữ các gói chương truyện đã cài đặt chính thức của user: `<root>/<userScope>/installed`
   Future<String> getInstalledDirPath() async {
-    final root = await getRootOfflinePath();
-    return p.join(root, installedDirName);
+    final userRoot = await getUserOfflinePath();
+    return p.join(userRoot, installedDirName);
   }
 
-  /// Đường dẫn tệp `.part` cho một chapter version cụ thể
+  /// Đường dẫn tệp `.part` cho một chapter version cụ thể của user
   Future<String> getPartFilePath(String chapterVersionId) async {
     final tmpDir = await getTmpDirPath();
     return p.join(tmpDir, '$chapterVersionId.part');
@@ -62,19 +101,19 @@ class OfflineStoragePaths {
     return File(path);
   }
 
-  /// Đường dẫn thư mục staging cho một chapter version cụ thể
+  /// Đường dẫn thư mục staging cho một chapter version cụ thể của user
   Future<String> getStagingPathForVersion(String chapterVersionId) async {
     final stagingDir = await getStagingDirPath();
     return p.join(stagingDir, chapterVersionId);
   }
 
-  /// Đường dẫn thư mục cài đặt chính thức cho một chapter version cụ thể
+  /// Đường dẫn thư mục cài đặt chính thức cho một chapter version cụ thể của user
   Future<String> getInstalledPathForVersion(String chapterVersionId) async {
     final installedDir = await getInstalledDirPath();
     return p.join(installedDir, chapterVersionId);
   }
 
-  /// Khởi tạo và đảm bảo toàn bộ cây thư mục sandbox tồn tại trên đĩa
+  /// Khởi tạo và đảm bảo toàn bộ cây thư mục sandbox 3 vùng của user tồn tại trên đĩa
   Future<void> ensureDirectoriesExist() async {
     final tmp = Directory(await getTmpDirPath());
     final staging = Directory(await getStagingDirPath());
@@ -129,4 +168,3 @@ class OfflineStoragePaths {
     }
   }
 }
-

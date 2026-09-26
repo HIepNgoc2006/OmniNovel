@@ -5,7 +5,7 @@ import 'package:sqflite/sqflite.dart';
 /// Quản lý SQLite schema v1 gồm bảng `download_tasks` và `offline_chapters`.
 class OfflineDatabase {
   static const String databaseName = 'omninovel_offline.db';
-  static const int databaseVersion = 1;
+  static const int databaseVersion = 2;
 
   Database? _db;
 
@@ -50,6 +50,7 @@ class OfflineDatabase {
           version: databaseVersion,
           onConfigure: _onConfigure,
           onCreate: _onCreate,
+          onUpgrade: _onUpgrade,
         ),
       );
     } else {
@@ -58,6 +59,7 @@ class OfflineDatabase {
         version: databaseVersion,
         onConfigure: _onConfigure,
         onCreate: _onCreate,
+        onUpgrade: _onUpgrade,
       );
     }
 
@@ -70,11 +72,30 @@ class OfflineDatabase {
   }
 
   Future<void> _onCreate(Database db, int version) async {
-    // 1. Bảng quản lý metadata các chương đã cài đặt thành công (Canonical Proof)
-    // Lưu ý P0.6: Bảng này KHÔNG CÓ cột status. Row tồn tại <=> chapter sẵn sàng đọc offline.
+    await _createV2Tables(db);
+  }
+
+  Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
+    if (oldVersion < 2) {
+      // Migration v1 ➔ v2:
+      // Invariant: Legacy v1 ownership = UNKNOWN -> fail-closed an toàn.
+      // Tuyệt đối không gán về 'anon', không gán về current user.
+      // Dữ liệu v1 không có owner phải bị loại bỏ khỏi inventory có thể đọc (không promote vào v2).
+      // Xóa các bảng v1 unowned và tạo mới schema v2.
+      await db.execute('DROP TABLE IF EXISTS offline_chapters;');
+      await db.execute('DROP TABLE IF EXISTS download_tasks;');
+      await _createV2Tables(db);
+    }
+  }
+
+  Future<void> _createV2Tables(Database db) async {
+    // 1. Bảng quản lý metadata các chương đã cài đặt thành công (Canonical Proof / SSoT)
+    // Invariant: PRIMARY KEY (user_id, chapter_version_id), bổ sung is_pinned.
+    // Bảng KHÔNG CÓ cột status. Row tồn tại <=> chapter sẵn sàng đọc offline.
     await db.execute('''
       CREATE TABLE offline_chapters (
-        chapter_version_id TEXT PRIMARY KEY,
+        chapter_version_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
         chapter_id TEXT NOT NULL,
         story_id TEXT NOT NULL,
         story_title TEXT NOT NULL,
@@ -87,16 +108,19 @@ class OfflineDatabase {
         total_bytes INTEGER NOT NULL,
         installed_at INTEGER NOT NULL,
         last_read_at INTEGER,
-        manifest_json TEXT NOT NULL
+        manifest_json TEXT NOT NULL,
+        is_pinned INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (user_id, chapter_version_id)
       );
     ''');
 
     // 2. Bảng quản lý hàng đợi tải xuống
-    // Lưu ý P0.3: UNIQUE(chapter_version_id) enforce DB-level single-flight.
+    // Invariant: UNIQUE(user_id, chapter_version_id) enforce DB-level single-flight per user.
     await db.execute('''
       CREATE TABLE download_tasks (
         task_id TEXT PRIMARY KEY,
-        chapter_version_id TEXT NOT NULL UNIQUE,
+        user_id TEXT NOT NULL,
+        chapter_version_id TEXT NOT NULL,
         chapter_id TEXT NOT NULL,
         story_id TEXT NOT NULL,
         story_title TEXT NOT NULL,
@@ -110,19 +134,35 @@ class OfflineDatabase {
         sha256_hash TEXT,
         error_message TEXT,
         created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
+        updated_at INTEGER NOT NULL,
+        UNIQUE(user_id, chapter_version_id)
+      );
+    ''');
+
+    // 3. Bảng quản lý Deletion Tombstones (3-Step Deletion Protocol & Crash Recovery)
+    // Invariant: UNIQUE(user_id, chapter_version_id) ngăn duplicate tombstones.
+    await db.execute('''
+      CREATE TABLE offline_deletion_tombstones (
+        tombstone_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        chapter_version_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(user_id, chapter_version_id)
       );
     ''');
 
     // Chỉ mục tối ưu truy vấn
     await db.execute(
-      'CREATE INDEX idx_offline_chapters_story ON offline_chapters(story_id);',
+      'CREATE INDEX idx_offline_chapters_user_story ON offline_chapters(user_id, story_id);',
     );
     await db.execute(
-      'CREATE INDEX idx_offline_chapters_last_read ON offline_chapters(last_read_at);',
+      'CREATE INDEX idx_offline_chapters_user_last_read ON offline_chapters(user_id, last_read_at);',
     );
     await db.execute(
-      'CREATE INDEX idx_download_tasks_status ON download_tasks(status);',
+      'CREATE INDEX idx_download_tasks_user_status ON download_tasks(user_id, status);',
+    );
+    await db.execute(
+      'CREATE INDEX idx_tombstones_user_version ON offline_deletion_tombstones(user_id, chapter_version_id);',
     );
   }
 

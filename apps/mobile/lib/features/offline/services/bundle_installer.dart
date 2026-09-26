@@ -392,6 +392,7 @@ class BundleInstaller {
       final installedDirRelative = p.relative(installedPath, from: rootDir);
 
       final offlineChapter = OfflineChapter(
+        userId: task.userId,
         chapterVersionId: task.chapterVersionId,
         chapterId: task.chapterId,
         storyId: task.storyId,
@@ -768,6 +769,7 @@ class BundleInstaller {
                 final installedDirRelative = p.relative(entity.path, from: rootDir);
 
                 final reconstructed = OfflineChapter(
+                  userId: task.userId,
                   chapterVersionId: task.chapterVersionId,
                   chapterId: task.chapterId,
                   storyId: task.storyId,

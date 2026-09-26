@@ -103,6 +103,7 @@ class DownloadQueueManager {
     final now = DateTime.now().millisecondsSinceEpoch;
     final task = DownloadTask(
       taskId: 'task_${chapterVersionId}_$now',
+      userId: _repository.userId,
       chapterVersionId: chapterVersionId,
       chapterId: chapterId,
       storyId: storyId,

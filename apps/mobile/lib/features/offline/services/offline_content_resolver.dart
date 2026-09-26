@@ -79,6 +79,12 @@ class OfflineContentResolver {
       offlineChapter = candidates.first;
     }
 
+    // P0.1: Fail-closed ngay lập tức nếu chapter có deletion tombstone
+    final tombstone = await _repository.getTombstone(offlineChapter.chapterVersionId);
+    if (tombstone != null) {
+      return null;
+    }
+
     // 2. Kiểm tra thư mục cài đặt trên đĩa
     final installedPath = await _storagePaths.getInstalledPathForVersion(offlineChapter.chapterVersionId);
     final installedDir = Directory(installedPath);

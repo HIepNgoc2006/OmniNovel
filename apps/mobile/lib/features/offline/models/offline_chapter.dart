@@ -2,6 +2,7 @@
 /// LƯU Ý P0.6: Mô hình này KHÔNG CÓ trường `status`. Sự tồn tại của bản ghi trong CSDL
 /// chính là bằng chứng xác thực duy nhất (Canonical Proof / SSoT) rằng chương có thể đọc offline.
 class OfflineChapter {
+  final String userId;
   final String chapterVersionId;
   final String chapterId;
   final String storyId;
@@ -16,8 +17,10 @@ class OfflineChapter {
   final int installedAt; // epoch ms
   final int? lastReadAt; // epoch ms
   final String manifestJson; // Backup raw manifest json string
+  final bool isPinned;
 
   const OfflineChapter({
+    this.userId = 'default_user',
     required this.chapterVersionId,
     required this.chapterId,
     required this.storyId,
@@ -32,9 +35,11 @@ class OfflineChapter {
     required this.installedAt,
     this.lastReadAt,
     required this.manifestJson,
+    this.isPinned = false,
   });
 
   OfflineChapter copyWith({
+    String? userId,
     String? chapterVersionId,
     String? chapterId,
     String? storyId,
@@ -49,8 +54,10 @@ class OfflineChapter {
     int? installedAt,
     int? lastReadAt,
     String? manifestJson,
+    bool? isPinned,
   }) {
     return OfflineChapter(
+      userId: userId ?? this.userId,
       chapterVersionId: chapterVersionId ?? this.chapterVersionId,
       chapterId: chapterId ?? this.chapterId,
       storyId: storyId ?? this.storyId,
@@ -65,11 +72,13 @@ class OfflineChapter {
       installedAt: installedAt ?? this.installedAt,
       lastReadAt: lastReadAt ?? this.lastReadAt,
       manifestJson: manifestJson ?? this.manifestJson,
+      isPinned: isPinned ?? this.isPinned,
     );
   }
 
   Map<String, dynamic> toMap() {
     return {
+      'user_id': userId,
       'chapter_version_id': chapterVersionId,
       'chapter_id': chapterId,
       'story_id': storyId,
@@ -84,11 +93,13 @@ class OfflineChapter {
       'installed_at': installedAt,
       'last_read_at': lastReadAt,
       'manifest_json': manifestJson,
+      'is_pinned': isPinned ? 1 : 0,
     };
   }
 
   factory OfflineChapter.fromMap(Map<String, dynamic> map) {
     return OfflineChapter(
+      userId: map['user_id'] as String? ?? 'default_user',
       chapterVersionId: map['chapter_version_id'] as String,
       chapterId: map['chapter_id'] as String,
       storyId: map['story_id'] as String,
@@ -103,11 +114,12 @@ class OfflineChapter {
       installedAt: (map['installed_at'] as num).toInt(),
       lastReadAt: (map['last_read_at'] as num?)?.toInt(),
       manifestJson: map['manifest_json'] as String,
+      isPinned: (map['is_pinned'] as num?)?.toInt() == 1,
     );
   }
 
   @override
   String toString() {
-    return 'OfflineChapter(versionId: $chapterVersionId, story: $storyTitle, chapter: $chapterNumber, installedAt: $installedAt)';
+    return 'OfflineChapter(userId: $userId, versionId: $chapterVersionId, story: $storyTitle, chapter: $chapterNumber, installedAt: $installedAt, pinned: $isPinned)';
   }
 }

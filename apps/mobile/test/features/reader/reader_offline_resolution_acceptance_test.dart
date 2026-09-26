@@ -20,13 +20,57 @@ import 'package:omninovel_mobile/features/reader/presentation/novel_content_pars
 import 'package:omninovel_mobile/features/reader/presentation/reader_image_cache_coordinator.dart';
 import 'package:omninovel_mobile/features/reader/presentation/reader_session_controller.dart';
 import 'package:omninovel_mobile/features/reader/presentation/reader_session_state.dart';
+import 'package:omninovel_mobile/features/reader/models/reading_progress_models.dart';
 import 'package:omninovel_mobile/features/reader/presentation/reading_progress_coordinator.dart';
 import 'package:omninovel_mobile/features/reader/repositories/chapter_repository.dart';
+import 'package:omninovel_mobile/features/gamification/repositories/gamification_repository.dart';
 import 'package:omninovel_mobile/features/reader/repositories/media_repository.dart';
 import 'package:omninovel_mobile/features/reader/repositories/reading_progress_repository.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+class FakeStopwatch implements Stopwatch {
+  Duration _elapsed = Duration.zero;
+  bool _isRunning = false;
+
+  void setElapsed(Duration duration) {
+    _elapsed = duration;
+  }
+
+  @override
+  Duration get elapsed => _elapsed;
+
+  @override
+  int get elapsedMicroseconds => _elapsed.inMicroseconds;
+
+  @override
+  int get elapsedMilliseconds => _elapsed.inMilliseconds;
+
+  @override
+  int get elapsedTicks => _elapsed.inMicroseconds;
+
+  @override
+  int get frequency => 1000000;
+
+  @override
+  bool get isRunning => _isRunning;
+
+  @override
+  void reset() {
+    _elapsed = Duration.zero;
+  }
+
+  @override
+  void start() {
+    _isRunning = true;
+  }
+
+  @override
+  void stop() {
+    _isRunning = false;
+  }
+}
 
 /// Helper tạo tệp ZIP kiểm thử tuân thủ contract của backend canonical-packaging
 Uint8List createTestZip({
@@ -65,8 +109,12 @@ Uint8List createTestZip({
 class CountingMockHttpAdapter implements HttpClientAdapter {
   int totalRequests = 0;
   final List<String> requestedUrls = [];
+  final List<RequestOptions> requests = [];
   bool allowRequests = false;
   Map<String, dynamic>? mockResponseData;
+
+  List<RequestOptions> get putProgressRequests =>
+      requests.where((r) => r.method == 'PUT' && r.uri.toString().contains('/reading-progress')).toList();
 
   @override
   Future<ResponseBody> fetch(
@@ -76,6 +124,7 @@ class CountingMockHttpAdapter implements HttpClientAdapter {
   ) async {
     totalRequests++;
     requestedUrls.add(options.uri.toString());
+    requests.add(options);
 
     if (!allowRequests) {
       throw DioException(
@@ -835,6 +884,299 @@ void main() {
 
       freshCoordinator.dispose();
       await freshDb.close();
+    });
+
+    // =========================================================================
+    // Gate 9: Offline Gamification Zero-Network Gate (P0.1)
+    // =========================================================================
+    test('Gate 9: Offline Gamification Zero-Network — Fake elapsed > 45s + 85% progress triggers 0 HTTP calls in offline mode', () async {
+      final gamificationRepo = GamificationRepository(apiClient: apiClient);
+      final coordinator = ReadingProgressCoordinator(
+        repository: progressRepo,
+        gamificationRepository: gamificationRepo,
+        networkSideEffectsEnabled: false, // ReaderScreen tắt khi offline
+      );
+      coordinator.init();
+      coordinator.onChapterReady('ch_offline_gamification');
+
+      final fakeStopwatch = FakeStopwatch();
+      fakeStopwatch.setElapsed(const Duration(seconds: 50)); // > 45s
+      coordinator.setActiveReadingStopwatchForTesting(fakeStopwatch);
+
+      // NGẮT MẠNG HOÀN TOÀN
+      mockHttpAdapter.allowRequests = false;
+      mockHttpAdapter.totalRequests = 0;
+
+      // Người dùng đọc đến 85% (> 80%) sau hơn 45 giây
+      coordinator.recordProgress(
+        storyId: 'story_gamification',
+        chapterId: 'ch_offline_gamification',
+        flutterPageIndex: 10,
+        progressPercentage: 85.0,
+        scrollPosition: 2000.0,
+      );
+
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+      await coordinator.flush();
+
+      // BẤT BIẾN: Tuyệt đối 0 HTTP request ra mạng (không rewardReadChapter, không getProgression)!
+      expect(mockHttpAdapter.totalRequests, 0);
+
+      // Vẫn ghi thành công local checkpoint để bảo vệ tiến độ đọc
+      final checkpoint = await progressRepo.getLocalCheckpoint('story_gamification');
+      expect(checkpoint, isNotNull);
+      expect(checkpoint!.chapterId, 'ch_offline_gamification');
+      expect(checkpoint.progressPercentage, 85.0);
+      expect(checkpoint.isDirty, isTrue);
+
+      coordinator.dispose();
+    });
+
+    // =========================================================================
+    // Gate 10: Newer Server Progress Wins Gate (P0.2)
+    // =========================================================================
+    test('Gate 10: Newer Server Progress Wins — Older local checkpoint does not overwrite newer server progress', () async {
+      final localTime = DateTime.now().subtract(const Duration(hours: 5));
+      final serverTime = DateTime.now().subtract(const Duration(hours: 1)); // Server mới hơn
+
+      // Giả lập checkpoint cũ trên máy (chương 3)
+      await progressRepo.saveLocalCheckpoint(
+        LocalReadingCheckpoint(
+          storyId: 'story_gate_10',
+          chapterId: 'ch_3_old',
+          pageIndex: 1,
+          progressPercentage: 10.0,
+          scrollPosition: 100.0,
+          updatedAt: localTime,
+          isDirty: true,
+          baseWriteEpoch: 1,
+        ),
+      );
+
+      mockHttpAdapter.allowRequests = true;
+      mockHttpAdapter.totalRequests = 0;
+      mockHttpAdapter.mockResponseData = {
+        'storyId': 'story_gate_10',
+        'chapterId': 'ch_10_new', // Server đã đọc tới chương 10 từ thiết bị khác
+        'pageIndex': 15,
+        'progressPercentage': 90.0,
+        'scrollPosition': 5000.0,
+        'updatedAt': serverTime.toIso8601String(),
+        'writeEpoch': 1,
+      };
+
+      final coordinator = ReadingProgressCoordinator(
+        repository: progressRepo,
+        debounceDuration: const Duration(milliseconds: 50),
+      );
+      coordinator.init();
+
+      // Kết nối và khởi tạo session (hydration GET là bắt buộc để nạp server state)
+      await coordinator.startSession('story_gate_10');
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await coordinator.flush();
+
+      // BẤT BIẾN: Server mới hơn luôn thắng! KHÔNG gửi request PUT /reading-progress ghi đè chương cũ
+      expect(mockHttpAdapter.putProgressRequests, isEmpty);
+
+      coordinator.dispose();
+    });
+
+    // =========================================================================
+    // Gate 11: Tombstone Epoch Anti-Resurrection Gate (P0.2)
+    // =========================================================================
+    test('Gate 11: Tombstone Epoch Anti-Resurrection — Checkpoint with baseWriteEpoch N does not rebind or replay when server is at N+1', () async {
+      final localTime = DateTime.now();
+
+      // Device A có local checkpoint tạo dưới epoch 1
+      await progressRepo.saveLocalCheckpoint(
+        LocalReadingCheckpoint(
+          storyId: 'story_gate_11',
+          chapterId: 'ch_stale',
+          pageIndex: 5,
+          progressPercentage: 50.0,
+          scrollPosition: 500.0,
+          updatedAt: localTime,
+          isDirty: true,
+          baseWriteEpoch: 1, // Snapshot lúc ghi là epoch 1
+        ),
+      );
+
+      mockHttpAdapter.allowRequests = true;
+      mockHttpAdapter.totalRequests = 0;
+      mockHttpAdapter.requests.clear();
+      // Server đã bị DELETE hoặc xóa lịch sử trên thiết bị khác -> epoch tăng lên 2, chapterId null (tombstone)
+      mockHttpAdapter.mockResponseData = {
+        'storyId': 'story_gate_11',
+        'chapterId': null,
+        'pageIndex': 1,
+        'progressPercentage': 0.0,
+        'scrollPosition': 0.0,
+        'updatedAt': DateTime.now().subtract(const Duration(minutes: 5)).toIso8601String(),
+        'writeEpoch': 2, // Epoch mới sau khi DELETE
+      };
+
+      final coordinator = ReadingProgressCoordinator(
+        repository: progressRepo,
+        debounceDuration: const Duration(milliseconds: 50),
+      );
+      coordinator.init();
+
+      // Device A reconnect và hydrate epoch 2
+      await coordinator.startSession('story_gate_11');
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await coordinator.flush();
+
+      // BẤT BIẾN: Tuyệt đối không rebind checkpoint cũ sang epoch 2 để phục sinh lịch sử đã xóa!
+      // Không có bất kỳ HTTP PUT request nào được phát đi.
+      expect(mockHttpAdapter.putProgressRequests, isEmpty);
+
+      coordinator.dispose();
+    });
+
+    // =========================================================================
+    // Gate 12: Durable Replay Exactly Once Gate (P0.2)
+    // =========================================================================
+    test('Gate 12: Durable Replay Exactly Once — Checkpoint is marked clean after sync and not re-sent on subsequent starts', () async {
+      final localTime = DateTime.now();
+
+      // 1. Checkpoint offline (dirty)
+      await progressRepo.saveLocalCheckpoint(
+        LocalReadingCheckpoint(
+          storyId: 'story_gate_12',
+          chapterId: 'ch_durable_12',
+          pageIndex: 4,
+          progressPercentage: 60.0,
+          scrollPosition: 800.0,
+          updatedAt: localTime,
+          isDirty: true,
+        ),
+      );
+
+      mockHttpAdapter.allowRequests = true;
+      mockHttpAdapter.totalRequests = 0;
+      mockHttpAdapter.requests.clear();
+      mockHttpAdapter.mockResponseData = {
+        'storyId': 'story_gate_12',
+        'chapterId': 'ch_old_12',
+        'pageIndex': 1,
+        'progressPercentage': 10.0,
+        'scrollPosition': 100.0,
+        'updatedAt': DateTime.now().subtract(const Duration(hours: 1)).toIso8601String(),
+        'writeEpoch': 10,
+      };
+
+      final coordinator = ReadingProgressCoordinator(
+        repository: progressRepo,
+        debounceDuration: const Duration(milliseconds: 50),
+      );
+      coordinator.init();
+
+      // Session 1: Reconnect và replay
+      await coordinator.startSession('story_gate_12');
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await coordinator.flush();
+
+      // Lần đầu: Có 1 request PUT /reading-progress
+      expect(mockHttpAdapter.putProgressRequests.length, 1);
+
+      // Checkpoint trên đĩa đã được chuyển thành isDirty == false
+      final localAfterSync = await progressRepo.getLocalCheckpoint('story_gate_12');
+      expect(localAfterSync, isNotNull);
+      expect(localAfterSync!.isDirty, isFalse);
+      expect(localAfterSync.baseWriteEpoch, 10);
+
+      // 2. KHỞI ĐỘNG LẠI HOẶC MỞ LẠI SESSION (Mô phỏng app restart)
+      coordinator.dispose();
+      mockHttpAdapter.requests.clear();
+
+      final restartCoordinator = ReadingProgressCoordinator(
+        repository: progressRepo,
+        debounceDuration: const Duration(milliseconds: 50),
+      );
+      restartCoordinator.init();
+
+      // Server trả về tiến độ đã cập nhật
+      mockHttpAdapter.mockResponseData = {
+        'storyId': 'story_gate_12',
+        'chapterId': 'ch_durable_12',
+        'pageIndex': 4,
+        'progressPercentage': 60.0,
+        'scrollPosition': 800.0,
+        'updatedAt': localTime.toIso8601String(),
+        'writeEpoch': 10,
+      };
+
+      await restartCoordinator.startSession('story_gate_12');
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await restartCoordinator.flush();
+
+      // BẤT BIẾN: Replay Exactly-Once! Lần khởi động thứ hai KHÔNG gửi thêm bất kỳ request PUT nào!
+      expect(mockHttpAdapter.putProgressRequests, isEmpty);
+
+      restartCoordinator.dispose();
+    });
+
+    // =========================================================================
+    // P1.1: Strict Whitelist Novel Illustrations Verification
+    // =========================================================================
+    test('P1.1: Strict Whitelist Novel Illustrations — Unknown or non-whitelisted illustration paths are blocked', () async {
+      final imgBytes = utf8.encode('canonical-novel-img');
+      final manifestFiles = [
+        {
+          'path': 'content.html',
+          'size': 100,
+          'sha256': sha256.convert(utf8.encode('content')).toString(),
+          'assetType': 'NOVEL_HTML',
+        },
+        {
+          'path': 'illustrations/canon_01.webp',
+          'size': imgBytes.length,
+          'sha256': sha256.convert(imgBytes).toString(),
+          'assetType': 'NOVEL_ILLUSTRATION',
+          'assetId': 'canon_01',
+        },
+      ];
+
+      const rawHtml = '<p>Intro</p><img src="illustrations/canon_01.webp"><img src="/data/user/0/com.app/private.key">';
+      final htmlBytes = utf8.encode(rawHtml);
+      manifestFiles[0]['size'] = htmlBytes.length;
+      manifestFiles[0]['sha256'] = sha256.convert(htmlBytes).toString();
+
+      await installTestChapter(
+        chapterVersionId: 'v_novel_whitelist',
+        chapterId: 'ch_novel_whitelist',
+        storyId: 'story_novel_whitelist',
+        storyTitle: 'Novel Whitelist Story',
+        chapterNumber: '1',
+        mediaFormat: 'NOVEL',
+        publicationFormat: 'NOVEL',
+        files: {
+          'content.html': htmlBytes,
+          'illustrations/canon_01.webp': imgBytes,
+        },
+        customManifest: {
+          'schemaVersion': 1,
+          'bundleType': 'OFFLINE_READER',
+          'chapterVersionId': 'v_novel_whitelist',
+          'chapterId': 'ch_novel_whitelist',
+          'storyId': 'story_novel_whitelist',
+          'storyTitle': 'Novel Whitelist Story',
+          'chapterNumber': '1',
+          'mediaFormat': 'NOVEL',
+          'publicationFormat': 'NOVEL',
+          'novelMetadata': {'contentPath': 'content.html'},
+          'files': manifestFiles,
+        },
+      );
+
+      final result = await offlineResolver.resolveChapter(chapterId: 'ch_novel_whitelist');
+      expect(result, isNotNull);
+      expect(result!.allowedIllustrationPaths.length, 1);
+      final allowedPath = result.allowedIllustrationPaths.first;
+      expect(allowedPath.replaceAll(r'\', '/').endsWith('illustrations/canon_01.webp'), isTrue);
+      // Đường dẫn lạ không nằm trong allowedIllustrationPaths
+      expect(result.allowedIllustrationPaths.contains('/data/user/0/com.app/private.key'), isFalse);
     });
   });
 }

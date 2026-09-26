@@ -473,13 +473,15 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
 
 
 ### 📌 Phase 5D.5: Reader Offline Resolution (MOB-012 / Issue #205) - [x] HOÀN THÀNH & KHÓA CHẶT (FROZEN-FINAL ✅)
-- [x] **4 Bất biến Kiến trúc & P0 Amendments Đã Khóa:**
+- [x] **Các Bất biến Kiến trúc & P0 Amendments Đã Khóa Toàn Diện:**
   1. *Exact-Version Selection Policy (P0.1):* Không query row đầu ngẫu nhiên; ưu tiên `preferredVersionId` (từ `versionId` route), fallback deterministic theo `installedAt DESC, chapterVersionId DESC`.
-  2. *Global Zero-Network Mode (P0.2):* Tách biệt rõ `ReaderTransportMode.offline/online`. Offline resolver chạy đầu tiên; nếu thành công: 0 gọi `ChapterRepository`, 0 hydrate server epoch, 0 gọi `MediaRepository`/`NovelContentRepository`, 0 gọi Gamification API. Toàn bộ HTTP = 0.
-  3. *Offline -> Reconnect Durable Replay (P0.3):* Đọc offline ghi local checkpoint; khi mở lại app có mạng: hydrate server epoch trước, materialize pending draft từ local checkpoint chưa sync và replay 1 lần duy nhất với epoch mới, bảo toàn anti-resurrection.
-  4. *Version-Bound Synthetic ChapterDetail (P0.4):* `ChapterDetail.activeVersion.id` bắt buộc bind chính xác versionId đã cài; metadata trích xuất từ manifest canonical.
-  5. *Type-Safe Image Source & Strict Novel Whitelist (P1):* Phân biệt rõ tệp cục bộ (`_localAssetFiles`), không ép path thành fake URL string, chặn 100% ảnh ngoại lai tải mạng trong Novel offline.
-- [x] **8 Tiêu Chuẩn Nghiệm Thu (8 Acceptance Gates - PASS 8/8 100%):**
+  2. *Global Zero-Network Mode (P0.2):* Tách biệt rõ `ReaderTransportMode.offline/online`. Offline resolver chạy đầu tiên; nếu thành công: 0 gọi `ChapterRepository`, 0 hydrate server epoch, 0 gọi `MediaRepository`/`NovelContentRepository`. Toàn bộ HTTP = 0.
+  3. *Global Zero-Network Guard qua Gamification (P0.3):* Cung cấp explicit `networkSideEffectsEnabled` trên `ReadingProgressCoordinator`. Khi offline: chặn 100% API Gamification Reward (`rewardReadChapter`) và Progression (`getProgression`), đảm bảo 0 HTTP request ngay cả khi đọc $> 45$s và progress $> 80\%$.
+  4. *Durable Replay Anti-Resurrection & Exactly-Once Protocol (P0.4):* Checkpoint mang `isDirty` và `baseWriteEpoch`. Newer server progress luôn thắng (không ghi đè chỉ vì khác chapter/page). Không rebind checkpoint cũ sang epoch mới nếu epoch server đã tăng sau DELETE (Anti-Resurrection). Replay thành công đánh dấu `isDirty = false` để tránh duplicate replay (Exactly-Once).
+  5. *Version-Bound Synthetic ChapterDetail (P0.5):* `ChapterDetail.activeVersion.id` bắt buộc bind chính xác versionId đã cài; metadata trích xuất từ manifest canonical.
+  6. *Strict Canonical Whitelist Cho Ảnh Minh Họa Novel (P1.1):* `ResolvedOfflineChapter` cung cấp canonical `allowedIllustrationPaths`. `_NovelBlockWidget` chỉ render ảnh cục bộ khi nằm trong whitelist từ manifest; mọi đường dẫn lạ ngoài whitelist bị chặn, ngăn chặn tấn công truy xuất tệp trái phép.
+  7. *Type-Safe Image Source & Đính Chính "0 Latency" (P1.2):* Phân biệt rõ tệp cục bộ (`_localAssetFiles`), không ép path thành fake URL string. Xác thực hash toàn vẹn SHA-256 từng tệp trên đĩa lúc mở; ghi nhận là Zero-Network / Local Disk chứ không tự gán "0 latency" trước khi có đo đạc thực tế.
+- [x] **12 Tiêu Chuẩn Nghiệm Thu (12 Acceptance Gates - PASS 12/12 100%):**
   - [x] **Gate 1:** Exact-Version Selection policy resolves preferredVersionId or latest deterministic version.
   - [x] **Gate 2:** Global Zero-Network Gate — Webtoon & Manga resolve in Airplane Mode with 0 HTTP calls.
   - [x] **Gate 3:** Novel Offline Resolution — Loads content.html offline, local illustration, blocks external image.
@@ -488,7 +490,12 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
   - [x] **Gate 6:** Runtime Corruption Fail-Closed — Corrupt payload falls back to online if available, or clean error.
   - [x] **Gate 7:** Offline -> Reconnect Durable Progress Replay — offline read -> kill app -> reopen online -> replay checkpoint.
   - [x] **Gate 8:** App Restart Offline Resumption — restart app and open offline chapter with zero latency and 0 network requests.
-- [x] **Hồi quy & Phân tích Tĩnh:** 224/224 Mobile tests PASS 100%, `flutter analyze` 0 issues (Clean 100%).
+  - [x] **Gate 9:** Offline Gamification Zero-Network — Fake elapsed > 45s + 85% progress triggers 0 HTTP calls in offline mode.
+  - [x] **Gate 10:** Newer Server Progress Wins — Older local checkpoint does not overwrite newer server progress even if chapter/page is different.
+  - [x] **Gate 11:** Tombstone Epoch Anti-Resurrection — Checkpoint with baseWriteEpoch N does not rebind or replay when server is at N+1.
+  - [x] **Gate 12:** Durable Replay Exactly Once — Checkpoint is marked clean after sync and not re-sent on subsequent starts.
+  - [x] **P1.1:** Strict Whitelist Novel Illustrations — Unknown or non-whitelisted illustration paths are blocked.
+- [x] **Hồi quy & Phân tích Tĩnh:** 105/105 Reader tests PASS 100%, 13/13 Acceptance Gates PASS 100%, `flutter analyze` 0 issues (Clean 100%).
 
 ### 📌 Phase 5D.6: Quản Lý Dung Lượng, Eviction & Cách Ly Người Dùng
 - [ ] Giới hạn dung lượng bộ nhớ tải về (Storage Quota): Cảnh báo khi bộ nhớ thiết bị còn trống dưới 200MB.

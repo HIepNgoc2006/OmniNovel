@@ -14,6 +14,7 @@ class ResolvedOfflineChapter {
   final ChapterDetail chapterDetail;
   final Map<String, File> localAssetFiles; // assetId -> File
   final String? novelHtmlContent; // Nội dung HTML đã resolve đường dẫn minh họa cục bộ
+  final Set<String> allowedIllustrationPaths; // P1.1 Canonical Whitelist ảnh minh họa
 
   const ResolvedOfflineChapter({
     required this.offlineChapter,
@@ -22,6 +23,7 @@ class ResolvedOfflineChapter {
     required this.chapterDetail,
     required this.localAssetFiles,
     this.novelHtmlContent,
+    this.allowedIllustrationPaths = const {},
   });
 }
 
@@ -111,8 +113,9 @@ class OfflineContentResolver {
 
       var rawHtml = await htmlFile.readAsString();
 
-      // P1.2 Strict Whitelist cho ảnh minh họa trong manifest
+      // P1.1 Strict Whitelist cho ảnh minh họa trong manifest
       final localAssetFiles = <String, File>{};
+      final allowedIllustrationPaths = <String>{};
       for (final f in files) {
         if (f is Map<String, dynamic>) {
           final relPath = f['path'] as String?;
@@ -120,6 +123,7 @@ class OfflineContentResolver {
           if (relPath != null && assetId != null && relPath != contentPath) {
             final absFile = File(p.join(installedPath, relPath));
             localAssetFiles[assetId] = absFile;
+            allowedIllustrationPaths.add(absFile.path);
             // Rewrite đường dẫn tương đối trong HTML sang đường dẫn tuyệt đối cục bộ
             rawHtml = rawHtml.replaceAll(relPath, absFile.path);
           }
@@ -139,6 +143,7 @@ class OfflineContentResolver {
         chapterDetail: chapterDetail,
         localAssetFiles: localAssetFiles,
         novelHtmlContent: rawHtml,
+        allowedIllustrationPaths: allowedIllustrationPaths,
       );
     } else {
       // COMIC / WEBTOON / MANGA:

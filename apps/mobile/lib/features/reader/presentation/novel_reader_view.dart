@@ -25,6 +25,7 @@ class NovelReaderView extends StatefulWidget {
   final double? initialScrollPosition;
   final double? initialProgressPercentage;
   final bool isOffline;
+  final Set<String>? allowedIllustrationPaths;
   final VoidCallback? onTap;
   final ValueChanged<String?>? onAnchorChanged;
 
@@ -40,6 +41,7 @@ class NovelReaderView extends StatefulWidget {
     this.initialScrollPosition,
     this.initialProgressPercentage,
     this.isOffline = false,
+    this.allowedIllustrationPaths,
     this.onTap,
     this.onAnchorChanged,
   });
@@ -228,6 +230,7 @@ class _NovelReaderViewState extends State<NovelReaderView> {
                       block: block,
                       settings: settings,
                       isOffline: widget.isOffline,
+                      allowedIllustrationPaths: widget.allowedIllustrationPaths,
                     ),
                   );
                 },
@@ -245,11 +248,13 @@ class _NovelBlockWidget extends StatelessWidget {
   final NovelBlockItem block;
   final NovelTypographySettings settings;
   final bool isOffline;
+  final Set<String>? allowedIllustrationPaths;
 
   const _NovelBlockWidget({
     required this.block,
     required this.settings,
     this.isOffline = false,
+    this.allowedIllustrationPaths,
   });
 
   @override
@@ -279,17 +284,35 @@ class _NovelBlockWidget extends StatelessWidget {
         imageWidget = const SizedBox.shrink();
       } else if (isLocal) {
         final filePath = src.startsWith('file://') ? src.replaceFirst('file://', '') : src;
-        imageWidget = Image.file(
-          File(filePath),
-          fit: BoxFit.contain,
-          errorBuilder: (_, __, ___) => Container(
+        // P1.1 Strict Canonical Whitelist:
+        // Ở chế độ offline (hoặc khi có allowedIllustrationPaths), CHỈ render ảnh cục bộ
+        // nếu đường dẫn tuyệt đối nằm chính xác trong allowedIllustrationPaths từ manifest.
+        // Mọi đường dẫn lạ (/data/..., relative, file:///etc/...) ngoài whitelist đều bị chặn!
+        final isAllowed = !isOffline ||
+            (allowedIllustrationPaths != null && allowedIllustrationPaths!.contains(filePath));
+
+        if (isAllowed) {
+          imageWidget = Image.file(
+            File(filePath),
+            fit: BoxFit.contain,
+            errorBuilder: (_, __, ___) => Container(
+              height: 180.0,
+              color: theme.cardBackgroundColor,
+              child: Center(
+                child: Icon(Icons.broken_image, color: theme.secondaryTextColor),
+              ),
+            ),
+          );
+        } else {
+          // Chặn các đường dẫn local không hợp lệ nằm ngoài whitelist
+          imageWidget = Container(
             height: 180.0,
             color: theme.cardBackgroundColor,
             child: Center(
               child: Icon(Icons.broken_image, color: theme.secondaryTextColor),
             ),
-          ),
-        );
+          );
+        }
       } else if (isOffline) {
         // P1.2 Strict Whitelist: Chặn tuyệt đối tải ảnh ngoại lai qua mạng khi ở chế độ offline
         imageWidget = Container(

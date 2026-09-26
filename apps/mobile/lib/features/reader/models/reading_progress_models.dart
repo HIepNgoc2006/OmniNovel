@@ -12,6 +12,7 @@ class PendingReadingProgress {
   final int pageIndex;
   final String? anchorBlockId;
   final int? textOffset;
+  final int? baseWriteEpoch;
 
   const PendingReadingProgress({
     required this.storyId,
@@ -23,6 +24,7 @@ class PendingReadingProgress {
     this.pageIndex = 1,
     this.anchorBlockId,
     this.textOffset,
+    this.baseWriteEpoch,
   });
 
   factory PendingReadingProgress.fromFlutterIndex({
@@ -35,6 +37,7 @@ class PendingReadingProgress {
     required int flutterPageIndex,
     String? anchorBlockId,
     int? textOffset,
+    int? baseWriteEpoch,
   }) {
     return PendingReadingProgress(
       storyId: storyId,
@@ -46,6 +49,7 @@ class PendingReadingProgress {
       pageIndex: flutterPageIndex + 1, // 0-based -> 1-based
       anchorBlockId: anchorBlockId,
       textOffset: textOffset,
+      baseWriteEpoch: baseWriteEpoch,
     );
   }
 
@@ -240,6 +244,8 @@ class LocalReadingCheckpoint {
   final String? anchorBlockId;
   final int? textOffset;
   final DateTime updatedAt;
+  final bool isDirty;
+  final int? baseWriteEpoch;
 
   const LocalReadingCheckpoint({
     required this.storyId,
@@ -251,9 +257,39 @@ class LocalReadingCheckpoint {
     this.anchorBlockId,
     this.textOffset,
     required this.updatedAt,
+    this.isDirty = true,
+    this.baseWriteEpoch,
   });
 
   int get flutterPageIndex => (pageIndex - 1).clamp(0, 99999);
+
+  LocalReadingCheckpoint copyWith({
+    String? storyId,
+    String? chapterId,
+    String? chapterVersionId,
+    int? pageIndex,
+    double? progressPercentage,
+    double? scrollPosition,
+    String? anchorBlockId,
+    int? textOffset,
+    DateTime? updatedAt,
+    bool? isDirty,
+    int? baseWriteEpoch,
+  }) {
+    return LocalReadingCheckpoint(
+      storyId: storyId ?? this.storyId,
+      chapterId: chapterId ?? this.chapterId,
+      chapterVersionId: chapterVersionId ?? this.chapterVersionId,
+      pageIndex: pageIndex ?? this.pageIndex,
+      progressPercentage: progressPercentage ?? this.progressPercentage,
+      scrollPosition: scrollPosition ?? this.scrollPosition,
+      anchorBlockId: anchorBlockId ?? this.anchorBlockId,
+      textOffset: textOffset ?? this.textOffset,
+      updatedAt: updatedAt ?? this.updatedAt,
+      isDirty: isDirty ?? this.isDirty,
+      baseWriteEpoch: baseWriteEpoch ?? this.baseWriteEpoch,
+    );
+  }
 
   factory LocalReadingCheckpoint.fromJson(Map<String, dynamic> json) {
     return LocalReadingCheckpoint(
@@ -267,6 +303,8 @@ class LocalReadingCheckpoint {
       anchorBlockId: json['anchorBlockId'] as String?,
       textOffset: (json['textOffset'] as num?)?.toInt() ?? 0,
       updatedAt: DateTime.parse(json['updatedAt'] as String),
+      isDirty: json['isDirty'] as bool? ?? true,
+      baseWriteEpoch: (json['baseWriteEpoch'] as num?)?.toInt(),
     );
   }
 
@@ -280,6 +318,8 @@ class LocalReadingCheckpoint {
         if (anchorBlockId != null) 'anchorBlockId': anchorBlockId,
         if (textOffset != null) 'textOffset': textOffset,
         'updatedAt': updatedAt.toIso8601String(),
+        'isDirty': isDirty,
+        if (baseWriteEpoch != null) 'baseWriteEpoch': baseWriteEpoch,
       };
 }
 

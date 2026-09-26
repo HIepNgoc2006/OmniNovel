@@ -128,12 +128,15 @@ class _ReaderScreenState extends State<ReaderScreen> {
 
   void _onSessionStateChanged() {
     if (_sessionController.state.status == ReaderStatus.ready) {
+      final isOffline = _sessionController.state.isOffline;
+      // P0.1 Global Zero-Network: Tắt hoàn toàn network side effects (gamification, sync, epoch) khi offline
+      _progressCoordinator.setNetworkSideEffectsEnabled(!isOffline);
+
       final currentChapter = _sessionController.state.chapterDetail;
       if (currentChapter != null) {
         _progressCoordinator.onChapterReady(currentChapter.chapter.id);
       }
-      // P0.2 Global Zero-Network: Chỉ hydrate server epoch và enable server sync khi ở chế độ online
-      if (_sessionController.state.transportMode == ReaderTransportMode.online) {
+      if (!isOffline) {
         _progressCoordinator.startSession(widget.storyId);
       }
       if (_isNovel) {
@@ -658,6 +661,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       initialScrollPosition: widget.initialScrollPosition,
       initialProgressPercentage: widget.initialProgressPercentage,
       isOffline: _sessionController.state.isOffline,
+      allowedIllustrationPaths: _sessionController.state.resolvedOfflineChapter?.allowedIllustrationPaths,
       onTap: _toggleOverlay,
       onAnchorChanged: (anchor) {
         _currentNovelAnchorBlockId = anchor;

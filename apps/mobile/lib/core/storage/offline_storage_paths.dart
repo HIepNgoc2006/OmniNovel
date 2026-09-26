@@ -18,14 +18,17 @@ class OfflineStoragePaths {
   static const String installedDirName = 'installed';
 
   final String? _customBasePath;
-  final String? _userId;
+  final String userId;
   String? _resolvedBasePath;
 
   OfflineStoragePaths({
     String? customBasePath,
-    String? userId,
-  })  : _customBasePath = customBasePath,
-        _userId = userId;
+    required this.userId,
+  })  : _customBasePath = customBasePath {
+    if (userId.trim().isEmpty) {
+      throw ArgumentError('userId không được rỗng hoặc chỉ chứa khoảng trắng');
+    }
+  }
 
   /// Tạo instance mới bind với userId cụ thể.
   OfflineStoragePaths forUser(String newUserId) {
@@ -36,18 +39,21 @@ class OfflineStoragePaths {
   }
 
   /// Hàm canonical, stable và path-safe để chuyển đổi userId thành userScope.
-  /// Sử dụng 16 ký tự hex đầu tiên của SHA-256 để:
+  /// Sử dụng toàn bộ 64 ký tự hex của SHA-256 (256-bit) để:
   /// - Không chứa path separator ('/' hoặc '\')
   /// - Không chứa ký tự lạ filesystem ('..', ':', spaces)
-  /// - Hoàn toàn deterministic (cùng userId cho ra cùng userScope).
+  /// - Triệt tiêu nguy cơ birthday collision (collision-free namespace isolation)
+  /// - Hoàn toàn deterministic (cùng userId luôn cho ra cùng userScope).
   static String stableSafeScope(String userId) {
+    if (userId.trim().isEmpty) {
+      throw ArgumentError('userId không được rỗng hoặc chỉ chứa khoảng trắng');
+    }
     final bytes = utf8.encode(userId);
-    final digest = sha256.convert(bytes);
-    return digest.toString().substring(0, 16);
+    return sha256.convert(bytes).toString();
   }
 
-  /// userScope của instance hiện tại. Nếu userId null -> fallback 'default'.
-  String get userScope => _userId != null ? stableSafeScope(_userId) : 'default';
+  /// userScope của instance hiện tại dựa trên userId.
+  String get userScope => stableSafeScope(userId);
 
   /// Đường dẫn gốc của toàn bộ phân vùng offline: `<app-files-dir>/offline`
   Future<String> getRootOfflinePath() async {
@@ -111,6 +117,18 @@ class OfflineStoragePaths {
   Future<String> getInstalledPathForVersion(String chapterVersionId) async {
     final installedDir = await getInstalledDirPath();
     return p.join(installedDir, chapterVersionId);
+  }
+
+  /// Lấy đối tượng Directory cho thư mục staging của một chapter version cụ thể
+  Future<Directory> getStagingDir(String chapterVersionId) async {
+    final path = await getStagingPathForVersion(chapterVersionId);
+    return Directory(path);
+  }
+
+  /// Lấy đối tượng Directory cho thư mục cài đặt chính thức của một chapter version cụ thể
+  Future<Directory> getInstalledDir(String chapterVersionId) async {
+    final path = await getInstalledPathForVersion(chapterVersionId);
+    return Directory(path);
   }
 
   /// Khởi tạo và đảm bảo toàn bộ cây thư mục sandbox 3 vùng của user tồn tại trên đĩa

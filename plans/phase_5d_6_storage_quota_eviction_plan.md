@@ -111,10 +111,10 @@ class StoragePolicyConfig {
 
 | Gate | Tiêu Chí Kiểm Tra (Acceptance Criteria) |
 | :--- | :--- |
-| **Gate 1: DB Schema Migration v1 ➔ v2 & Canonical User Isolation** | **PASSED ✅ (10/10 tests)**<br>**Gate 1A (Schema Migration):** v1 ➔ v2, composite uniqueness `(user_id, chapter_version_id)`, tombstone uniqueness, legacy v1 fail-closed (không promote vào v2 inventory).<br>**Gate 1B (Repository Isolation):** User A/B có cùng `chapterVersionId` nhưng query/update/delete không cross-account.<br>**Gate 1C (Queue/Resolver/Path Isolation):** Cùng version ở A/B có task, `.part`, staging, installed độc lập hoàn toàn trong namespace `files/offline/<userScope>/`. |
+| **Gate 1: DB Schema Migration v1 ➔ v2 & Canonical User Isolation** | **PASSED ✅ (14/14 tests)**<br>**Gate 1A (Schema Migration):** v1 ➔ v2, composite uniqueness `(user_id, chapter_version_id)`, tombstone uniqueness, legacy v1 fail-closed (không promote vào v2 inventory).<br>**Gate 1B (Repository Isolation):** User A/B có cùng `chapterVersionId` nhưng query/update/delete không cross-account.<br>**Gate 1C (Queue/Resolver/Path Isolation):** Cùng version ở A/B có task, `.part`, staging, installed độc lập hoàn toàn trong namespace `files/offline/<userScope>/`.<br>**Gate 1D (User Context Binding & Identifier Safety):** Loại bỏ hoàn toàn fallback anonymous/default user; khóa identity matching giữa Repository, Paths, Queue, Resolver, Installer; 64-hex SHA-256 `stableSafeScope`; `task_id` user-scoped `task_<userScope>_<versionId>_<micros>`. |
 | **Gate 2: Deterministic Deletion Tombstone Protocol & Crash Safety** | Mô phỏng crash tại mọi điểm ranh giới (trước khi purge file, sau khi purge file, trước khi xóa tombstone) $\rightarrow$ startup reconciliation tự động dọn sạch thư mục orphan, ghost row và hoàn tất cleanup. |
 | **Gate 3: Deletion Tombstone vs. 5D.4 Recovery Precedence** | Khi thư mục tồn tại kèm deletion tombstone $\rightarrow$ purge thắng tuyệt đối; khi không có tombstone $\rightarrow$ kích hoạt đúng cơ chế crash recovery của 5D.4 (reconstruct row). |
-| **Gate 4: Reader In-Use Lease Protection (Ref-Counted Token)** | Chương đang có active lease token từ Reader được bảo vệ 100% trước auto-LRU eviction; manual single delete và batch story deletion trả về lỗi `ChapterInUseException` (all-or-nothing). |
+| **Gate 4: Reader In-Use Lease Protection & Deterministic Deletion Protocol** | **PASSED ✅ (5/5 tests)**<br>Chương đang có active lease token từ Reader được bảo vệ 100% trước deletion; manual single delete và batch story deletion trả về lỗi `ChapterInUseException` (All-or-Nothing); lease token in-memory ref-counted độc lập giữa các sessions; 3-step deletion protocol thực thi tất định dọn sạch filesystem và database sau khi release lease. |
 | **Gate 5: Deterministic LRU Eviction SSoT** | Thứ tự evict chính xác theo explicit never-read `CASE`, `last_read_at ASC`, `installed_at ASC`, `chapter_version_id ASC`; không bao giờ evict chương `is_pinned = 1` hoặc active reading checkpoint. |
 | **Gate 6: Verified Storage Quota & Configurable Headroom Policy** | Quota tính toán trên verified `total_bytes`; auto-eviction kích hoạt khi vượt quota; chế độ Unlimited quota vẫn fail-closed nếu chạm ngưỡng OS disk headroom. |
 | **Gate 7: Pre-Extraction TOCTOU Admission Guard** | Kiểm tra dung lượng thực tế qua `DiskSpaceProvider` ngay trước khi extract ZIP; nếu dung lượng đĩa tụt giảm giữa chừng lúc tải $\rightarrow$ hủy trích xuất an toàn, không gây tràn bộ nhớ. |
@@ -141,12 +141,25 @@ class StoragePolicyConfig {
   - Phân vùng cấu trúc thư mục 3 vùng: `files/offline/<userScope>/{tmp, staging, installed}/`.
   - Cập nhật `DownloadQueueManager`, `BundleInstaller`, và `OfflineContentResolver` bind theo `userId` / `userScope`.
   - Đạt Gate 1C GREEN (3/3 tests passed).
-- [ ] **Bước 2 (DiskSpaceProvider & StoragePolicyConfig):** Xây dựng `DiskSpaceProvider` interface (kèm mock provider cho test) và `StoragePolicyConfig`.
-- **Bước 3 (Reader In-Use Lease Manager):** Xây dựng `ReaderLeaseManager` quản lý ref-counted token in-memory (Gate 4).
-- **Bước 4 (Deterministic Deletion Protocol):** Xây dựng `OfflineStorageManager` / `OfflineDeletionService` thực thi giao thức 3 bước (tombstone ➔ purge ➔ finalize) cho cả single chapter và batch story (Gate 2, Gate 8).
-- **Bước 5 (Startup Reconciliation v2):** Nâng cấp startup reconciliation với luật precedence: tombstone purge thắng tuyệt đối, bảo toàn 5D.4 crash recovery khi không có tombstone (Gate 3).
-- **Bước 6 (LRU Eviction Engine):** Hiện thực hóa truy vấn lọc ứng viên LRU với deterministic CASE ordering, pin exclusion, active checkpoint exclusion, và lease exclusion (Gate 5).
-- **Bước 7 (Admission Guards):** Tích hợp kiểm tra quota/headroom tại `DownloadQueueManager.enqueueDownload` và pre-extraction recheck tại `BundleInstaller.installBundle` (Gate 6, Gate 7).
-- **Bước 8 (Acceptance Test Suite):** Hoàn thiện `test/features/offline/storage_quota_eviction_acceptance_test.dart` xác minh toàn bộ 9 Gates.
-- **Bước 9 (Zero-Regression & Code Quality):** Chạy `flutter test`, `flutter analyze`, kiểm tra tính toàn vẹn với các phase 5D.3–5D.5 (Gate 9).
-- **Bước 10 (Verification & Review):** Commit & push git, cập nhật Living Tracker #192, đóng Issue #206.
+- [x] **Bước 1D (Gate 1D — User Context Binding & Identifier Safety) — HOÀN THÀNH:**
+  - Loại bỏ hoàn toàn fallback anonymous `userId`: `OfflineStorageRepository` và `OfflineStoragePaths` bắt buộc `required String userId`, ném `ArgumentError` nếu empty/whitespace.
+  - Khóa identity context giữa Repository, StoragePaths, QueueManager, Resolver và Installer (ném `ArgumentError` nếu mismatch).
+  - Tăng cường `stableSafeScope` lên full 64-hex SHA-256 (256-bit hash) triệt tiêu hoàn toàn rủi ro collision.
+  - Định dạng lại `task_id` thành `task_<userScope>_<versionId>_<micros>` ngăn chặn race collision chéo user.
+  - Đạt Gate 1D GREEN (4/4 tests passed).
+- [x] **Bước 2 (DiskSpaceProvider & StoragePolicyConfig) — HOÀN THÀNH:**
+  - Xây dựng thin interface `DiskSpaceProvider` (`Future<int> getFreeBytes(String path)`).
+  - Xây dựng data-only injectable model `StoragePolicyConfig` (headroom 500MB, default unlimited quota, low disk fraction 0.10).
+- [x] **Bước 3 (Reader In-Use Lease Manager) — HOÀN THÀNH:**
+  - Xây dựng `ReaderLeaseManager` quản lý ref-counted token in-memory: token chứa `userId + chapterVersionId + readerSessionId + leaseId + acquiredAt`.
+  - Hỗ trợ đa reader/đa session đồng thời, release idempotent, cách ly theo user, 100% in-memory không persist SQLite.
+- [x] **Bước 4 (Deterministic Deletion Protocol & Lease Guard) — HOÀN THÀNH:**
+  - Xây dựng `OfflineDeletionService` thực thi giao thức xóa tất định 3 bước (atomic revoke tombstone ➔ purge filesystem ➔ finalize cleanup) cho cả single chapter và batch story (All-or-Nothing).
+  - Tích hợp lease guard: ném `ChapterInUseException` fail-closed nếu chapter đang có active lease.
+  - Đạt Gate 4 GREEN (5/5 tests passed).
+- [ ] **Bước 5 (Startup Reconciliation v2):** Nâng cấp startup reconciliation với luật precedence: tombstone purge thắng tuyệt đối, bảo toàn 5D.4 crash recovery khi không có tombstone (Gate 2, Gate 3).
+- [ ] **Bước 6 (LRU Eviction Engine):** Hiện thực hóa truy vấn lọc ứng viên LRU với deterministic CASE ordering, pin exclusion, active checkpoint exclusion, và lease exclusion (Gate 5).
+- [ ] **Bước 7 (Admission Guards):** Tích hợp kiểm tra quota/headroom tại `DownloadQueueManager.enqueueTask` và pre-extraction recheck tại `BundleInstaller.installBundle` (Gate 6, Gate 7).
+- [ ] **Bước 8 (Acceptance Test Suite):** Hoàn thiện `test/features/offline/storage_quota_eviction_acceptance_test.dart` xác minh toàn bộ 9 Gates.
+- [ ] **Bước 9 (Zero-Regression & Code Quality):** Chạy `flutter test`, `flutter analyze`, kiểm tra tính toàn vẹn với các phase 5D.3–5D.5 (Gate 9).
+- [ ] **Bước 10 (Verification & Review):** Commit & push git, cập nhật Living Tracker #192, đóng Issue #206.

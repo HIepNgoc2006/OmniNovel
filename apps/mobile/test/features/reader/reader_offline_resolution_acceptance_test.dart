@@ -203,8 +203,8 @@ void main() {
       databaseFactory: databaseFactoryFfi,
     );
 
-    storageRepo = OfflineStorageRepository(database: offlineDb);
-    storagePaths = OfflineStoragePaths(customBasePath: tempDir.path);
+    storageRepo = OfflineStorageRepository(database: offlineDb, userId: 'test_user');
+    storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: 'test_user');
     await storagePaths.ensureDirectoriesExist();
 
     bundleInstaller = BundleInstaller(
@@ -817,7 +817,7 @@ void main() {
         customPath: inMemoryDatabasePath,
         databaseFactory: databaseFactoryFfi,
       );
-      final freshRepo = OfflineStorageRepository(database: freshDb);
+      final freshRepo = OfflineStorageRepository(database: freshDb, userId: 'test_user');
 
       // Copy lại các bản ghi từ storageRepo cũ nếu dùng in-memory (hoặc test trên đĩa)
       // Ở đây với inMemoryDatabasePath mới, ta cài lại chapter

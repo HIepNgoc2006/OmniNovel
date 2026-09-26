@@ -13,8 +13,12 @@ class OfflineStorageRepository {
 
   OfflineStorageRepository({
     required OfflineDatabase database,
-    this.userId = 'default_user',
-  }) : _database = database;
+    required this.userId,
+  }) : _database = database {
+    if (userId.trim().isEmpty) {
+      throw ArgumentError('userId không được rỗng hoặc chỉ chứa khoảng trắng');
+    }
+  }
 
   Database get _db => _database.database;
 
@@ -380,5 +384,93 @@ class OfflineStorageRepository {
       orderBy: 'created_at ASC',
     );
     return results.map((m) => OfflineDeletionTombstone.fromMap(m)).toList();
+  }
+
+  /// Bước 1 của Giao thức Xóa Tất định (Deterministic Deletion Protocol):
+  /// Nguyên tử ghi nhận tombstone và xóa row offline_chapters trong cùng một SQLite transaction.
+  Future<void> atomicRevokeChapter(
+    String chapterVersionId, {
+    required String tombstoneId,
+  }) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await _db.transaction((txn) async {
+      await txn.insert(
+        'offline_deletion_tombstones',
+        {
+          'tombstone_id': tombstoneId,
+          'user_id': userId,
+          'chapter_version_id': chapterVersionId,
+          'created_at': now,
+        },
+        conflictAlgorithm: ConflictAlgorithm.abort,
+      );
+      await txn.delete(
+        'offline_chapters',
+        where: 'chapter_version_id = ? AND user_id = ?',
+        whereArgs: [chapterVersionId, userId],
+      );
+    });
+  }
+
+  /// Bước 3 của Giao thức Xóa Tất định (Deterministic Deletion Protocol):
+  /// Nguyên tử dọn dẹp tombstone và bản ghi download_tasks tương ứng sau khi filesystem đã được purge sạch.
+  Future<void> atomicFinalizeChapterDeletion(String chapterVersionId) async {
+    await _db.transaction((txn) async {
+      await txn.delete(
+        'offline_deletion_tombstones',
+        where: 'chapter_version_id = ? AND user_id = ?',
+        whereArgs: [chapterVersionId, userId],
+      );
+      await txn.delete(
+        'download_tasks',
+        where: 'chapter_version_id = ? AND user_id = ?',
+        whereArgs: [chapterVersionId, userId],
+      );
+    });
+  }
+
+  /// Nguyên tử thu hồi quyền đọc của hàng loạt chương (Batch Revocation).
+  Future<void> atomicRevokeChapters(
+    List<String> chapterVersionIds, {
+    required String Function(String versionId) tombstoneIdGenerator,
+  }) async {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    await _db.transaction((txn) async {
+      for (final versionId in chapterVersionIds) {
+        await txn.insert(
+          'offline_deletion_tombstones',
+          {
+            'tombstone_id': tombstoneIdGenerator(versionId),
+            'user_id': userId,
+            'chapter_version_id': versionId,
+            'created_at': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.abort,
+        );
+        await txn.delete(
+          'offline_chapters',
+          where: 'chapter_version_id = ? AND user_id = ?',
+          whereArgs: [versionId, userId],
+        );
+      }
+    });
+  }
+
+  /// Nguyên tử hoàn tất xóa sạch tombstones và tasks của danh sách chương (Batch Finalize).
+  Future<void> atomicFinalizeChaptersDeletion(List<String> chapterVersionIds) async {
+    await _db.transaction((txn) async {
+      for (final versionId in chapterVersionIds) {
+        await txn.delete(
+          'offline_deletion_tombstones',
+          where: 'chapter_version_id = ? AND user_id = ?',
+          whereArgs: [versionId, userId],
+        );
+        await txn.delete(
+          'download_tasks',
+          where: 'chapter_version_id = ? AND user_id = ?',
+          whereArgs: [versionId, userId],
+        );
+      }
+    });
   }
 }

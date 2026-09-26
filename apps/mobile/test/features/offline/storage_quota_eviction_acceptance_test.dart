@@ -2,17 +2,29 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
+import 'package:omninovel_mobile/core/api/api_client.dart';
 import 'package:omninovel_mobile/core/storage/offline_database.dart';
 import 'package:omninovel_mobile/core/storage/offline_storage_paths.dart';
 import 'package:omninovel_mobile/features/offline/models/download_task.dart';
 import 'package:omninovel_mobile/features/offline/models/offline_chapter.dart';
 import 'package:omninovel_mobile/features/offline/models/offline_deletion_tombstone.dart';
+import 'package:omninovel_mobile/features/offline/repositories/artifact_repository.dart';
 import 'package:omninovel_mobile/features/offline/repositories/offline_storage_repository.dart';
+import 'package:omninovel_mobile/features/offline/services/artifact_download_client.dart';
+import 'package:omninovel_mobile/features/offline/models/storage_policy_config.dart';
 import 'package:omninovel_mobile/features/offline/services/bundle_installer.dart';
+import 'package:omninovel_mobile/features/offline/services/disk_space_provider.dart';
+import 'package:omninovel_mobile/features/offline/services/download_queue_manager.dart';
 import 'package:omninovel_mobile/features/offline/services/offline_content_resolver.dart';
+import 'package:omninovel_mobile/features/offline/services/offline_deletion_service.dart';
+import 'package:omninovel_mobile/features/offline/services/reader_lease_manager.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+class MockApiClient extends Mock implements ApiClient {}
+class MockDiskSpaceProvider extends Mock implements DiskSpaceProvider {}
 
 void main() {
   setUpAll(() {
@@ -653,8 +665,8 @@ void main() {
         expect(scopeWithSymbols, isNot(contains('..')));
         expect(scopeWithSymbols, isNot(contains(':')));
         expect(scopeWithSymbols, isNot(contains(' ')));
-        // 16 hex chars
-        expect(RegExp(r'^[a-f0-9]{16}$').hasMatch(scope1), isTrue);
+        // 64 hex chars
+        expect(RegExp(r'^[a-f0-9]{64}$').hasMatch(scope1), isTrue);
       });
 
       test('Gate 1C.2: 3-Zone filesystem paths isolation across userScopes', () async {
@@ -831,6 +843,442 @@ void main() {
         expect(resolvedAAfterTombstone, isNull, reason: 'Resolver must fail-closed if chapter has an active deletion tombstone');
 
         await offlineDb.close();
+      });
+    });
+
+    group('Gate 1D — User Context Binding & Identifier Safety', () {
+      test('Gate 1D.1: Rejection of empty/blank userId in OfflineStorageRepository and OfflineStoragePaths', () {
+        final offlineDb = OfflineDatabase();
+        expect(
+          () => OfflineStorageRepository(database: offlineDb, userId: ''),
+          throwsA(isA<ArgumentError>()),
+        );
+        expect(
+          () => OfflineStorageRepository(database: offlineDb, userId: '   '),
+          throwsA(isA<ArgumentError>()),
+        );
+        expect(
+          () => OfflineStoragePaths(userId: ''),
+          throwsA(isA<ArgumentError>()),
+        );
+        expect(
+          () => OfflineStoragePaths(userId: '   '),
+          throwsA(isA<ArgumentError>()),
+        );
+      });
+
+      test('Gate 1D.2: Cross-context identity mismatch guard throws ArgumentError', () {
+        final offlineDb = OfflineDatabase();
+        final repoA = OfflineStorageRepository(database: offlineDb, userId: 'user_a');
+        final pathsB = OfflineStoragePaths(userId: 'user_b');
+        final pathsA = OfflineStoragePaths(userId: 'user_a');
+
+        // BundleInstaller mismatch
+        expect(
+          () => BundleInstaller(repository: repoA, storagePaths: pathsB),
+          throwsA(isA<ArgumentError>()),
+        );
+
+        // OfflineContentResolver mismatch (storagePaths mismatch)
+        final installerA = BundleInstaller(repository: repoA, storagePaths: pathsA);
+        expect(
+          () => OfflineContentResolver(
+            repository: repoA,
+            storagePaths: pathsB,
+            bundleInstaller: installerA,
+          ),
+          throwsA(isA<ArgumentError>()),
+        );
+
+        // OfflineContentResolver mismatch (bundleInstaller mismatch)
+        final repoB = OfflineStorageRepository(database: offlineDb, userId: 'user_b');
+        final installerB = BundleInstaller(repository: repoB, storagePaths: pathsB);
+        expect(
+          () => OfflineContentResolver(
+            repository: repoA,
+            storagePaths: pathsA,
+            bundleInstaller: installerB,
+          ),
+          throwsA(isA<ArgumentError>()),
+        );
+
+        // DownloadQueueManager mismatch
+        final mockApiClient = MockApiClient();
+        final artifactRepo = ArtifactRepository(apiClient: mockApiClient);
+        final downloadClient = ArtifactDownloadClient();
+
+        expect(
+          () => DownloadQueueManager(
+            repository: repoA,
+            artifactRepository: artifactRepo,
+            downloadClient: downloadClient,
+            storagePaths: pathsB,
+          ),
+          throwsA(isA<ArgumentError>()),
+        );
+
+        expect(
+          () => DownloadQueueManager(
+            repository: repoA,
+            artifactRepository: artifactRepo,
+            downloadClient: downloadClient,
+            storagePaths: pathsA,
+            bundleInstaller: installerB,
+          ),
+          throwsA(isA<ArgumentError>()),
+        );
+      });
+
+      test('Gate 1D.3: stableSafeScope produces full 64-hex SHA-256 hash', () {
+        final scope = OfflineStoragePaths.stableSafeScope('user_secure_test');
+        expect(scope.length, equals(64));
+        expect(RegExp(r'^[a-f0-9]{64}$').hasMatch(scope), isTrue);
+      });
+
+      test('Gate 1D.4: DownloadTask generated taskId scopes userScope and timestamp in microseconds', () async {
+        final dbPath = p.join(tempDir.path, 'task_id_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(
+          customPath: dbPath,
+          databaseFactory: databaseFactoryFfi,
+        );
+
+        final pathsA = OfflineStoragePaths(customBasePath: tempDir.path, userId: 'user_alpha');
+        final repoA = OfflineStorageRepository(database: offlineDb, userId: 'user_alpha');
+
+        final mockApiClient = MockApiClient();
+        final artifactRepo = ArtifactRepository(apiClient: mockApiClient);
+        final downloadClient = ArtifactDownloadClient();
+
+        final queue = DownloadQueueManager(
+          repository: repoA,
+          artifactRepository: artifactRepo,
+          downloadClient: downloadClient,
+          storagePaths: pathsA,
+        );
+
+        final task = await queue.enqueueTask(
+          chapterVersionId: 'ver_race_check',
+          chapterId: 'chap_race',
+          storyId: 'story_race',
+          storyTitle: 'Race Story',
+          chapterNumber: '1',
+          mediaFormat: 'COMIC',
+          autoStart: false,
+        );
+
+        // taskId phải chứa userScope và versionId
+        final expectedScope = pathsA.userScope;
+        expect(task.taskId, startsWith('task_${expectedScope}_ver_race_check_'));
+        expect(task.userId, equals('user_alpha'));
+
+        await offlineDb.close();
+      });
+    });
+
+    group('Gate 4: Reader In-Use Lease Protection & Deterministic Deletion Protocol', () {
+      test('Gate 4.1: ReaderLeaseManager token semantics, ref-counting, and idempotent release', () {
+        final leaseManager = ReaderLeaseManager();
+        const userId = 'user_reader_1';
+        const versionId = 'ver_novel_001';
+
+        expect(leaseManager.isLeased(userId, versionId), isFalse);
+        expect(leaseManager.getActiveLeaseCount(userId, versionId), equals(0));
+
+        // 1. Acquire first lease
+        final token1 = leaseManager.acquireLease(
+          userId: userId,
+          chapterVersionId: versionId,
+          readerSessionId: 'session_alpha',
+        );
+
+        expect(token1.userId, equals(userId));
+        expect(token1.chapterVersionId, equals(versionId));
+        expect(token1.readerSessionId, equals('session_alpha'));
+        expect(token1.leaseId, isNotEmpty);
+        expect(token1.acquiredAt, isPositive);
+
+        expect(leaseManager.isLeased(userId, versionId), isTrue);
+        expect(leaseManager.getActiveLeaseCount(userId, versionId), equals(1));
+
+        // 2. Acquire second lease on same chapter (different reader/session)
+        final token2 = leaseManager.acquireLease(
+          userId: userId,
+          chapterVersionId: versionId,
+          readerSessionId: 'session_beta',
+        );
+
+        expect(token2.leaseId, isNot(equals(token1.leaseId)));
+        expect(leaseManager.getActiveLeaseCount(userId, versionId), equals(2));
+        expect(leaseManager.isLeased(userId, versionId), isTrue);
+
+        // 3. User isolation check: User B has no lease on the same version
+        expect(leaseManager.isLeased('user_reader_2', versionId), isFalse);
+        expect(leaseManager.getActiveLeaseCount('user_reader_2', versionId), equals(0));
+
+        // 4. Release token 1: token 2 remains active, ref-count drops to 1, still leased
+        final released1 = leaseManager.releaseLease(token1);
+        expect(released1, isTrue);
+        expect(leaseManager.getActiveLeaseCount(userId, versionId), equals(1));
+        expect(leaseManager.isLeased(userId, versionId), isTrue);
+
+        // 5. Idempotent release of token 1: returns false, does not throw, does not affect token 2
+        final reReleased1 = leaseManager.releaseLease(token1);
+        expect(reReleased1, isFalse);
+        expect(leaseManager.getActiveLeaseCount(userId, versionId), equals(1));
+        expect(leaseManager.isLeased(userId, versionId), isTrue);
+
+        // 6. Release token 2: ref-count drops to 0, isLeased becomes false
+        final released2 = leaseManager.releaseLease(token2);
+        expect(released2, isTrue);
+        expect(leaseManager.getActiveLeaseCount(userId, versionId), equals(0));
+        expect(leaseManager.isLeased(userId, versionId), isFalse);
+
+        // 7. Clear all leases
+        leaseManager.acquireLease(
+          userId: userId,
+          chapterVersionId: versionId,
+          readerSessionId: 'session_gamma',
+        );
+        expect(leaseManager.isLeased(userId, versionId), isTrue);
+        leaseManager.clearAll();
+        expect(leaseManager.isLeased(userId, versionId), isFalse);
+      });
+
+      test('Gate 4.2: DiskSpaceProvider thin interface & StoragePolicyConfig data model', () async {
+        final mockDisk = MockDiskSpaceProvider();
+        when(() => mockDisk.getFreeBytes(any())).thenAnswer((_) async => 1073741824); // 1GB
+
+        final freeBytes = await mockDisk.getFreeBytes('/data/user/0');
+        expect(freeBytes, equals(1073741824));
+
+        // StoragePolicyConfig defaults and copyWith
+        const defaultConfig = StoragePolicyConfig();
+        expect(defaultConfig.minFreeDiskHeadroomBytes, equals(524288000)); // 500MB
+        expect(defaultConfig.maxOfflineStorageBytes, isNull); // unlimited by default
+        expect(defaultConfig.lowDiskWarningFraction, equals(0.10));
+
+        final customConfig = defaultConfig.copyWith(
+          maxOfflineStorageBytes: 104857600, // 100MB
+          minFreeDiskHeadroomBytes: 209715200, // 200MB
+        );
+        expect(customConfig.maxOfflineStorageBytes, equals(104857600));
+        expect(customConfig.minFreeDiskHeadroomBytes, equals(209715200));
+        expect(customConfig.lowDiskWarningFraction, equals(0.10));
+      });
+
+      test('Gate 4.3: Single Chapter Deletion blocked fail-closed when leased; purges cleanly after lease release', () async {
+        final dbPath = p.join(tempDir.path, 'gate4_single_del_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(
+          customPath: dbPath,
+          databaseFactory: databaseFactoryFfi,
+        );
+
+        const userId = 'user_del_single';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+
+        const versionId = 'ver_del_001';
+        final installedDir = await storagePaths.getInstalledDir(versionId);
+        await installedDir.create(recursive: true);
+        final payloadFile = File(p.join(installedDir.path, 'page_001.webp'));
+        await payloadFile.writeAsBytes([1, 2, 3, 4]);
+
+        const chapter = OfflineChapter(
+          userId: userId,
+          chapterVersionId: versionId,
+          chapterId: 'chap_del_001',
+          storyId: 'story_del_001',
+          storyTitle: 'Deletion Test Story',
+          chapterNumber: '1',
+          mediaFormat: 'COMIC',
+          installedDir: 'files/offline/scope/installed/$versionId',
+          totalFiles: 1,
+          totalBytes: 4,
+          installedAt: 123456,
+          manifestJson: '{}',
+        );
+        await storageRepo.insertOfflineChapter(chapter);
+
+        const task = DownloadTask(
+          taskId: 'task_del_001',
+          userId: userId,
+          chapterVersionId: versionId,
+          chapterId: 'chap_del_001',
+          storyId: 'story_del_001',
+          storyTitle: 'Deletion Test Story',
+          chapterNumber: '1',
+          mediaFormat: 'COMIC',
+          status: DownloadTaskStatus.ready,
+          createdAt: 123456,
+          updatedAt: 123456,
+        );
+        await storageRepo.insertTask(task);
+
+        // 1. Acquire Lease -> Reader is currently reading
+        final token = leaseManager.acquireLease(
+          userId: userId,
+          chapterVersionId: versionId,
+          readerSessionId: 'reader_session_1',
+        );
+
+        // 2. Attempt deletion -> MUST throw ChapterInUseException
+        expect(
+          () => deletionService.deleteChapter(versionId),
+          throwsA(isA<ChapterInUseException>()),
+        );
+
+        // Verify fail-closed: DB row and filesystem payload remain intact
+        expect(await storageRepo.isChapterInstalled(versionId), isTrue);
+        expect(await payloadFile.exists(), isTrue);
+        expect(await storageRepo.getTombstone(versionId), isNull);
+
+        // 3. Release lease
+        leaseManager.releaseLease(token);
+
+        // 4. Retry deletion -> MUST succeed
+        await deletionService.deleteChapter(versionId);
+
+        // Verify 3-step protocol execution:
+        // - Row deleted from offline_chapters
+        expect(await storageRepo.isChapterInstalled(versionId), isFalse);
+        expect(await storageRepo.getOfflineChapter(versionId), isNull);
+        // - Task deleted from download_tasks
+        expect(await storageRepo.getTaskByVersionId(versionId), isNull);
+        // - Tombstone deleted from offline_deletion_tombstones
+        expect(await storageRepo.getTombstone(versionId), isNull);
+        // - Filesystem payload purged
+        expect(await installedDir.exists(), isFalse);
+
+        await offlineDb.close();
+      });
+
+      test('Gate 4.4: Batch Story Deletion (All-or-Nothing) fail-closed if any chapter in story is leased', () async {
+        final dbPath = p.join(tempDir.path, 'gate4_batch_del_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(
+          customPath: dbPath,
+          databaseFactory: databaseFactoryFfi,
+        );
+
+        const userId = 'user_del_batch';
+        const storyId = 'story_batch_target';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+
+        // Tạo 3 chapters cho bộ truyện
+        final versionIds = ['ver_b1', 'ver_b2', 'ver_b3'];
+        final payloadFiles = <File>[];
+
+        for (var i = 0; i < 3; i++) {
+          final vId = versionIds[i];
+          final dir = await storagePaths.getInstalledDir(vId);
+          await dir.create(recursive: true);
+          final file = File(p.join(dir.path, 'content.txt'));
+          await file.writeAsString('content $i');
+          payloadFiles.add(file);
+
+          await storageRepo.insertOfflineChapter(OfflineChapter(
+            userId: userId,
+            chapterVersionId: vId,
+            chapterId: 'chap_b$i',
+            storyId: storyId,
+            storyTitle: 'Batch Story',
+            chapterNumber: '${i + 1}',
+            mediaFormat: 'COMIC',
+            installedDir: 'files/offline/scope/installed/$vId',
+            totalFiles: 1,
+            totalBytes: 10,
+            installedAt: 1000 + i,
+            manifestJson: '{}',
+          ));
+
+          await storageRepo.insertTask(DownloadTask(
+            taskId: 'task_$vId',
+            userId: userId,
+            chapterVersionId: vId,
+            chapterId: 'chap_b$i',
+            storyId: storyId,
+            storyTitle: 'Batch Story',
+            chapterNumber: '${i + 1}',
+            mediaFormat: 'COMIC',
+            status: DownloadTaskStatus.ready,
+            createdAt: 1000 + i,
+            updatedAt: 1000 + i,
+          ));
+        }
+
+        // 1. Lease ONLY chapter 2 (ver_b2)
+        final token = leaseManager.acquireLease(
+          userId: userId,
+          chapterVersionId: 'ver_b2',
+          readerSessionId: 'reader_session_batch',
+        );
+
+        // 2. Attempt batch deletion of the whole story -> MUST FAIL CLOSED (All-or-Nothing)
+        expect(
+          () => deletionService.deleteStory(storyId),
+          throwsA(isA<ChapterInUseException>()),
+        );
+
+        // Verify All-or-Nothing invariant: ALL 3 chapters remain completely untouched
+        for (final vId in versionIds) {
+          expect(await storageRepo.isChapterInstalled(vId), isTrue,
+              reason: 'Chapter $vId must NOT be deleted when batch is aborted');
+          expect(await storageRepo.getTaskByVersionId(vId), isNotNull);
+          expect(await storageRepo.getTombstone(vId), isNull);
+        }
+        for (final file in payloadFiles) {
+          expect(await file.exists(), isTrue);
+        }
+
+        // 3. Release lease on ver_b2
+        leaseManager.releaseLease(token);
+
+        // 4. Retry batch deletion -> MUST succeed cleanly for all chapters
+        await deletionService.deleteStory(storyId);
+
+        // Verify all 3 chapters purged completely
+        for (final vId in versionIds) {
+          expect(await storageRepo.isChapterInstalled(vId), isFalse);
+          expect(await storageRepo.getTaskByVersionId(vId), isNull);
+          expect(await storageRepo.getTombstone(vId), isNull);
+          final dir = await storagePaths.getInstalledDir(vId);
+          expect(await dir.exists(), isFalse);
+        }
+
+        await offlineDb.close();
+      });
+
+      test('Gate 4.5: Identity binding check in OfflineDeletionService', () {
+        final offlineDb = OfflineDatabase();
+        final repoA = OfflineStorageRepository(database: offlineDb, userId: 'user_a');
+        final pathsB = OfflineStoragePaths(userId: 'user_b');
+        final leaseManager = ReaderLeaseManager();
+
+        expect(
+          () => OfflineDeletionService(
+            repository: repoA,
+            storagePaths: pathsB,
+            readerLeaseManager: leaseManager,
+          ),
+          throwsA(isA<ArgumentError>()),
+        );
       });
     });
   });

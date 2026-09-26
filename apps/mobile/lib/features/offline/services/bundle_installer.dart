@@ -278,13 +278,21 @@ class BundleInstaller {
   final OfflineStoragePaths _storagePaths;
   final ComputeRunner _computeRunner;
 
+  String get userId => _repository.userId;
+
   BundleInstaller({
     required OfflineStorageRepository repository,
     required OfflineStoragePaths storagePaths,
     ComputeRunner? computeRunner,
   })  : _repository = repository,
         _storagePaths = storagePaths,
-        _computeRunner = computeRunner ?? compute;
+        _computeRunner = computeRunner ?? compute {
+    if (repository.userId != storagePaths.userId) {
+      throw ArgumentError(
+        'Identity Mismatch: repository.userId (${repository.userId}) != storagePaths.userId (${storagePaths.userId})',
+      );
+    }
+  }
 
   /// Cài đặt gói offline hoàn chỉnh từ tệp `.part` đã tải xong (trạng thái VERIFYING).
   ///

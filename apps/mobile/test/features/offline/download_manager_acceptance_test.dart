@@ -40,8 +40,8 @@ void main() {
       databaseFactory: databaseFactoryFfi,
     );
 
-    storageRepo = OfflineStorageRepository(database: offlineDb);
-    storagePaths = OfflineStoragePaths(customBasePath: tempDir.path);
+    storageRepo = OfflineStorageRepository(database: offlineDb, userId: 'test_user');
+    storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: 'test_user');
     await storagePaths.ensureDirectoriesExist();
 
     mockApiClient = MockApiClient();

@@ -42,7 +42,20 @@ class DownloadQueueManager {
         _artifactRepository = artifactRepository,
         _downloadClient = downloadClient,
         _storagePaths = storagePaths,
-        _bundleInstaller = bundleInstaller;
+        _bundleInstaller = bundleInstaller {
+    if (repository.userId != storagePaths.userId) {
+      throw ArgumentError(
+        'Identity mismatch in DownloadQueueManager: repository (${repository.userId}) != storagePaths (${storagePaths.userId})',
+      );
+    }
+    if (bundleInstaller != null && bundleInstaller.userId != repository.userId) {
+      throw ArgumentError(
+        'Identity mismatch in DownloadQueueManager: bundleInstaller (${bundleInstaller.userId}) != repository (${repository.userId})',
+      );
+    }
+  }
+
+  String get userId => _repository.userId;
 
   Stream<DownloadTask> get taskUpdates => _taskUpdateController.stream;
 
@@ -100,9 +113,10 @@ class DownloadQueueManager {
       return await retryTask(existingTask.taskId, autoStart: autoStart);
     }
 
+    final micros = DateTime.now().microsecondsSinceEpoch;
     final now = DateTime.now().millisecondsSinceEpoch;
     final task = DownloadTask(
-      taskId: 'task_${chapterVersionId}_$now',
+      taskId: 'task_${_storagePaths.userScope}_${chapterVersionId}_$micros',
       userId: _repository.userId,
       chapterVersionId: chapterVersionId,
       chapterId: chapterId,

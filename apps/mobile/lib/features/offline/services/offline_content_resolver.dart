@@ -47,7 +47,16 @@ class OfflineContentResolver {
     required BundleInstaller bundleInstaller,
   })  : _repository = repository,
         _storagePaths = storagePaths,
-        _bundleInstaller = bundleInstaller;
+        _bundleInstaller = bundleInstaller {
+    if (repository.userId != storagePaths.userId || repository.userId != bundleInstaller.userId) {
+      throw ArgumentError(
+        'Identity mismatch in OfflineContentResolver: repository (${repository.userId}), storagePaths (${storagePaths.userId}), bundleInstaller (${bundleInstaller.userId})',
+      );
+    }
+  }
+
+  String get userId => _repository.userId;
+
 
   /// Giải quyết nội dung chương truyện ngoại tuyến.
   /// Trả về null nếu chưa được cài đặt, hoặc payload bị hỏng / không toàn vẹn.

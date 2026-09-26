@@ -91,8 +91,13 @@ with zipfile.ZipFile("${zipFile.path.replaceAll('\\', '/')}", "w") as z:
     z.writestr(zinfo, "$targetPath")
 ''';
     scriptFile.writeAsStringSync(script);
-    var res = Process.runSync('python3', [scriptFile.path]);
-    if (res.exitCode != 0) {
+    ProcessResult res;
+    try {
+      res = Process.runSync('python3', [scriptFile.path]);
+      if (res.exitCode != 0) {
+        res = Process.runSync('python', [scriptFile.path]);
+      }
+    } catch (_) {
       res = Process.runSync('python', [scriptFile.path]);
     }
     if (!zipFile.existsSync()) {
@@ -121,8 +126,13 @@ with zipfile.ZipFile("${zipFile.path.replaceAll('\\', '/')}", "w") as z:
     z.writestr("$duplicatePath", "dup-content-2")
 ''';
     scriptFile.writeAsStringSync(script);
-    var res = Process.runSync('python3', [scriptFile.path]);
-    if (res.exitCode != 0) {
+    ProcessResult res;
+    try {
+      res = Process.runSync('python3', [scriptFile.path]);
+      if (res.exitCode != 0) {
+        res = Process.runSync('python', [scriptFile.path]);
+      }
+    } catch (_) {
       res = Process.runSync('python', [scriptFile.path]);
     }
     if (!zipFile.existsSync()) {
@@ -153,8 +163,8 @@ void main() {
       databaseFactory: databaseFactoryFfi,
     );
 
-    storageRepo = OfflineStorageRepository(database: offlineDb);
-    storagePaths = OfflineStoragePaths(customBasePath: tempDir.path);
+    storageRepo = OfflineStorageRepository(database: offlineDb, userId: 'test_user');
+    storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: 'test_user');
     await storagePaths.ensureDirectoriesExist();
 
     // Dùng computeRunner đồng bộ trong môi trường test ffi để deterministic
@@ -1564,6 +1574,7 @@ class _CancelAfterPromoteStoragePaths extends OfflineStoragePaths {
   _CancelAfterPromoteStoragePaths({
     required super.customBasePath,
     required this.cancelToken,
+    super.userId = 'test_user',
   });
 
   @override

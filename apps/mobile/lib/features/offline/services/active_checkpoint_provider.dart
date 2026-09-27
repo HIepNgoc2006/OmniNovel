@@ -17,15 +17,22 @@ class SharedPreferencesCheckpointProvider implements ActiveCheckpointProvider {
   final SharedPreferences? _prefs;
   final String _userId;
 
+  final Duration _protectionWindow;
+  final double _completedProgressThreshold;
+
   static const String _checkpointPrefix = 'omninovel_reading_checkpoint_';
 
   SharedPreferencesCheckpointProvider({
     required String userId,
     SharedPreferences? prefs,
     Future<SharedPreferences> Function()? prefsProvider,
+    Duration protectionWindow = const Duration(days: 7),
+    double completedProgressThreshold = 100.0,
   })  : _userId = userId,
         _prefs = prefs,
-        _prefsProvider = prefsProvider;
+        _prefsProvider = prefsProvider,
+        _protectionWindow = protectionWindow,
+        _completedProgressThreshold = completedProgressThreshold;
 
   Future<SharedPreferences> _getPrefs() async {
     if (_prefs != null) return _prefs;
@@ -38,6 +45,7 @@ class SharedPreferencesCheckpointProvider implements ActiveCheckpointProvider {
     final prefs = await _getPrefs();
     final userPrefix = '$_checkpointPrefix${_userId}_';
     final protectedIds = <String>{};
+    final now = DateTime.now();
 
     final allKeys = prefs.getKeys().where((k) => k.startsWith(userPrefix));
     for (final key in allKeys) {
@@ -48,7 +56,13 @@ class SharedPreferencesCheckpointProvider implements ActiveCheckpointProvider {
         final json = jsonDecode(raw) as Map<String, dynamic>;
         final checkpoint = LocalReadingCheckpoint.fromJson(json);
         final vId = checkpoint.chapterVersionId;
-        if (vId != null && vId.trim().isNotEmpty) {
+        if (vId == null || vId.trim().isEmpty) continue;
+
+        // P1 Invariant: Chỉ bảo vệ khi chưa hoàn thành 100% VÀ còn trong cửa sổ bảo vệ
+        final isCompleted = checkpoint.progressPercentage >= _completedProgressThreshold;
+        final isExpired = now.difference(checkpoint.updatedAt) > _protectionWindow;
+
+        if (!isCompleted && !isExpired) {
           protectedIds.add(vId.trim());
         }
       } catch (_) {

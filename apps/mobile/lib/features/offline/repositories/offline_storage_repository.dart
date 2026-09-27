@@ -368,6 +368,27 @@ class OfflineStorageRepository {
     return result ?? 0;
   }
 
+  /// Lấy danh sách candidate cho LRU Eviction được sắp xếp tất định:
+  /// 1. Chương chưa đọc (last_read_at IS NULL) lên đầu
+  /// 2. Chương chưa đọc sắp theo installed_at ASC, tie-breaker chapter_version_id ASC
+  /// 3. Chương đã đọc sắp theo last_read_at ASC, installed_at ASC, chapter_version_id ASC
+  /// Loại trừ ngay lập tức các chương đã ghim (is_pinned = 1).
+  Future<List<OfflineChapter>> getEvictionCandidates() async {
+    final results = await _db.rawQuery(
+      '''
+      SELECT * FROM offline_chapters
+      WHERE user_id = ? AND is_pinned = 0
+      ORDER BY
+        CASE WHEN last_read_at IS NULL THEN 0 ELSE 1 END ASC,
+        last_read_at ASC,
+        installed_at ASC,
+        chapter_version_id ASC
+      ''',
+      [userId],
+    );
+    return results.map((m) => OfflineChapter.fromMap(m)).toList();
+  }
+
   // ==========================================
   // DELETION TOMBSTONES OPERATIONS (USER-SCOPED)
   // ==========================================

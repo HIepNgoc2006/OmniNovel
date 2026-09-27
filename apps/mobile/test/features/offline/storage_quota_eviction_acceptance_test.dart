@@ -19,6 +19,7 @@ import 'package:omninovel_mobile/features/offline/services/download_queue_manage
 import 'package:omninovel_mobile/features/offline/services/offline_content_resolver.dart';
 import 'package:omninovel_mobile/features/offline/services/offline_deletion_service.dart';
 import 'package:omninovel_mobile/features/offline/services/reader_lease_manager.dart';
+import 'package:omninovel_mobile/features/offline/services/storage_quota_manager.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -1691,6 +1692,363 @@ void main() {
         // 5D.4 recovery tái tạo thành công
         expect(report.reconstructedRows, equals(1));
         expect(await storageRepo.isChapterInstalled(versionId), isTrue);
+
+        await offlineDb.close();
+      });
+    });
+
+    // =========================================================================
+    // Gate 5: Deterministic LRU Eviction Engine & Quota Management
+    // =========================================================================
+    group('Gate 5: Deterministic LRU Eviction Engine & Quota Management', () {
+      test('Gate 5.1: Deterministic Candidate Selection & Ordering', () async {
+        final dbPath = p.join(tempDir.path, 'gate5_ordering_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_lru_order';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+        final diskProvider = MockDiskSpaceProvider();
+
+        final quotaManager = StorageQuotaManager(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          deletionService: deletionService,
+          readerLeaseManager: leaseManager,
+          diskSpaceProvider: diskProvider,
+        );
+
+        // Chèn 5 chapters với các tiêu chí khác nhau
+        Future<void> insertChapterHelper({
+          required String versionId,
+          required int installedAt,
+          int? lastReadAt,
+        }) async {
+          await storageRepo.insertOfflineChapter(OfflineChapter(
+            userId: userId,
+            chapterVersionId: versionId,
+            chapterId: 'c_$versionId',
+            storyId: 's1',
+            storyTitle: 'Story 1',
+            chapterNumber: '1',
+            chapterTitle: 'Chap',
+            mediaFormat: 'COMIC',
+            installedDir: 'installed/$versionId',
+            totalFiles: 1,
+            totalBytes: 1000,
+            installedAt: installedAt,
+            lastReadAt: lastReadAt,
+            manifestJson: '{}',
+          ));
+        }
+
+        // 1. Chưa đọc, installed 100, id 'ver_unread_b'
+        await insertChapterHelper(versionId: 'ver_unread_b', installedAt: 100, lastReadAt: null);
+        // 2. Chưa đọc, installed 100, id 'ver_unread_a' (tie-breaker: ver_unread_a < ver_unread_b)
+        await insertChapterHelper(versionId: 'ver_unread_a', installedAt: 100, lastReadAt: null);
+        // 3. Chưa đọc, installed 200, id 'ver_unread_c' (cài sau A & B)
+        await insertChapterHelper(versionId: 'ver_unread_c', installedAt: 200, lastReadAt: null);
+        // 4. Đã đọc lúc 500, installed 50
+        await insertChapterHelper(versionId: 'ver_read_old', installedAt: 50, lastReadAt: 500);
+        // 5. Đã đọc lúc 1500, installed 50
+        await insertChapterHelper(versionId: 'ver_read_new', installedAt: 50, lastReadAt: 1500);
+
+        final candidates = await quotaManager.getCandidates();
+        final candidateIds = candidates.map((c) => c.chapterVersionId).toList();
+
+        // Thứ tự tất định kỳ vọng:
+        // 1. ver_unread_a (chưa đọc, installed 100, id 'a')
+        // 2. ver_unread_b (chưa đọc, installed 100, id 'b')
+        // 3. ver_unread_c (chưa đọc, installed 200)
+        // 4. ver_read_old (đã đọc 500)
+        // 5. ver_read_new (đã đọc 1500)
+        expect(candidateIds, equals([
+          'ver_unread_a',
+          'ver_unread_b',
+          'ver_unread_c',
+          'ver_read_old',
+          'ver_read_new',
+        ]));
+
+        await offlineDb.close();
+      });
+
+      test('Gate 5.2: Multi-layer Exclusions (Pinned, Leased, Deleting, Custom Excluded)', () async {
+        final dbPath = p.join(tempDir.path, 'gate5_exclusions_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_lru_excl';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+        final diskProvider = MockDiskSpaceProvider();
+
+        final quotaManager = StorageQuotaManager(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          deletionService: deletionService,
+          readerLeaseManager: leaseManager,
+          diskSpaceProvider: diskProvider,
+        );
+
+        Future<void> insertChapterHelper({
+          required String versionId,
+          bool isPinned = false,
+        }) async {
+          await storageRepo.insertOfflineChapter(OfflineChapter(
+            userId: userId,
+            chapterVersionId: versionId,
+            chapterId: 'c_$versionId',
+            storyId: 's1',
+            storyTitle: 'Story 1',
+            chapterNumber: '1',
+            chapterTitle: 'Chap',
+            mediaFormat: 'COMIC',
+            installedDir: 'installed/$versionId',
+            totalFiles: 1,
+            totalBytes: 1000,
+            installedAt: 100,
+            isPinned: isPinned,
+            manifestJson: '{}',
+          ));
+        }
+
+        await insertChapterHelper(versionId: 'ver_pinned', isPinned: true);
+        await insertChapterHelper(versionId: 'ver_leased');
+        await insertChapterHelper(versionId: 'ver_deleting');
+        await insertChapterHelper(versionId: 'ver_checkpoint_excluded');
+        await insertChapterHelper(versionId: 'ver_valid_candidate');
+
+        // Setup active lease cho ver_leased
+        leaseManager.acquireLease(
+          userId: userId,
+          chapterVersionId: 'ver_leased',
+          readerSessionId: 'session_1',
+        );
+
+        // Setup deletion reservation cho ver_deleting
+        leaseManager.reserveDeletion(
+          userId: userId,
+          chapterVersionId: 'ver_deleting',
+        );
+
+        // Kiểm tra danh sách candidates với excludedVersionIds chứa ver_checkpoint_excluded
+        final candidates = await quotaManager.getCandidates(
+          excludedVersionIds: {'ver_checkpoint_excluded'},
+        );
+
+        expect(candidates.length, equals(1));
+        expect(candidates.first.chapterVersionId, equals('ver_valid_candidate'));
+
+        await offlineDb.close();
+      });
+
+      test('Gate 5.3: Eviction Delegation via OfflineDeletionService (Zero Direct File Purge)', () async {
+        final dbPath = p.join(tempDir.path, 'gate5_delegation_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_lru_delegate';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+        final diskProvider = MockDiskSpaceProvider();
+
+        // Cấu hình: Headroom 500 MB (524,288,000 bytes)
+        final quotaManager = StorageQuotaManager(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          deletionService: deletionService,
+          readerLeaseManager: leaseManager,
+          diskSpaceProvider: diskProvider,
+          config: const StoragePolicyConfig(
+            minFreeDiskHeadroomBytes: 500000000,
+          ),
+        );
+
+        const versionId1 = 'ver_evict_1';
+        const versionId2 = 'ver_evict_2';
+        const bytesPerChap = 10000000; // 10 MB
+
+        // Tạo 2 chapter trên đĩa và trong DB
+        for (final vId in [versionId1, versionId2]) {
+          final installedDir = await storagePaths.getInstalledDir(vId);
+          await installedDir.create(recursive: true);
+          await File(p.join(installedDir.path, 'test.dat')).writeAsString('content_$vId');
+
+          await storageRepo.insertOfflineChapter(OfflineChapter(
+            userId: userId,
+            chapterVersionId: vId,
+            chapterId: 'c_$vId',
+            storyId: 's1',
+            storyTitle: 'S',
+            chapterNumber: '1',
+            chapterTitle: 'Chap',
+            mediaFormat: 'COMIC',
+            installedDir: 'installed/$vId',
+            totalFiles: 1,
+            totalBytes: bytesPerChap,
+            installedAt: 100,
+            manifestJson: '{}',
+          ));
+        }
+
+        // Mock: Free bytes hiện tại là 505,000,000.
+        // Gói tải mới incomingBytes = 10,000,000 (10 MB).
+        // Sau khi tải, projectedFree = 495,000,000 < 500,000,000 (thiếu 5,000,000 bytes).
+        // LRU cần evict 1 chapter (10 MB >= 5 MB cần thiết).
+        when(() => diskProvider.getFreeBytes(any())).thenAnswer((_) async => 505000000);
+
+        final result = await quotaManager.evictToFit(incomingBytes: 10000000);
+
+        expect(result.evictedChapters.length, equals(1));
+        expect(result.evictedChapters.first.chapterVersionId, equals(versionId1));
+        expect(result.evictedBytes, equals(bytesPerChap));
+
+        // Xác minh 3-step deletion protocol được hoàn tất đầy đủ:
+        // 1. Row DB đã bị xóa
+        expect(await storageRepo.isChapterInstalled(versionId1), isFalse);
+        // 2. Filesystem đã bị purge sạch sẽ
+        expect(await (await storagePaths.getInstalledDir(versionId1)).exists(), isFalse);
+        // 3. Tombstone không còn tồn tại
+        expect(await storageRepo.getTombstone(versionId1), isNull);
+
+        // Chapter 2 vẫn an toàn nguyên vẹn
+        expect(await storageRepo.isChapterInstalled(versionId2), isTrue);
+
+        await offlineDb.close();
+      });
+
+      test('Gate 5.4: InsufficientStorageException when candidates cannot fulfill eviction requirement (fail-closed)', () async {
+        final dbPath = p.join(tempDir.path, 'gate5_insufficient_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_lru_insufficient';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+        final diskProvider = MockDiskSpaceProvider();
+
+        // Quota = 30 MB (30,000,000 bytes), Headroom = 100 MB
+        final quotaManager = StorageQuotaManager(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          deletionService: deletionService,
+          readerLeaseManager: leaseManager,
+          diskSpaceProvider: diskProvider,
+          config: const StoragePolicyConfig(
+            minFreeDiskHeadroomBytes: 100000000,
+            maxOfflineStorageBytes: 30000000,
+          ),
+        );
+
+        const vId = 'ver_quota_only';
+        await storageRepo.insertOfflineChapter(OfflineChapter(
+          userId: userId,
+          chapterVersionId: vId,
+          chapterId: 'c1',
+          storyId: 's1',
+          storyTitle: 'S',
+          chapterNumber: '1',
+          chapterTitle: 'Chap',
+          mediaFormat: 'COMIC',
+          installedDir: 'installed/$vId',
+          totalFiles: 1,
+          totalBytes: 10000000, // 10 MB
+          installedAt: 100,
+          manifestJson: '{}',
+        ));
+
+        // Free bytes = 200 MB (dư dả so với headroom 100 MB)
+        when(() => diskProvider.getFreeBytes(any())).thenAnswer((_) async => 200000000);
+
+        // Tải thêm 50 MB -> tổng used = 60 MB > maxQuota 30 MB -> cần evict 30 MB.
+        // Nhưng candidates chỉ có 1 chapter (10 MB) -> không đủ giải phóng 30 MB!
+        // Kỳ vọng ném InsufficientStorageException (fail-closed)
+        await expectLater(
+          () => quotaManager.evictToFit(incomingBytes: 50000000),
+          throwsA(isA<InsufficientStorageException>()),
+        );
+
+        await offlineDb.close();
+      });
+
+      test('Gate 5.5: evictToQuota cleans storage down to maxOfflineStorageBytes', () async {
+        final dbPath = p.join(tempDir.path, 'gate5_evict_to_quota_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_lru_quota_clean';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+        final diskProvider = MockDiskSpaceProvider();
+
+        final quotaManager = StorageQuotaManager(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          deletionService: deletionService,
+          readerLeaseManager: leaseManager,
+          diskSpaceProvider: diskProvider,
+          config: const StoragePolicyConfig(
+            minFreeDiskHeadroomBytes: 100000000,
+            maxOfflineStorageBytes: 30000000,
+          ),
+        );
+
+        // Thêm 4 chapters x 10 MB (tổng cộng 40 MB > quota 30 MB -> cần giải phóng ít nhất 10 MB)
+        for (int i = 1; i <= 4; i++) {
+          await storageRepo.insertOfflineChapter(OfflineChapter(
+            userId: userId,
+            chapterVersionId: 'ver_batch_$i',
+            chapterId: 'c$i',
+            storyId: 's1',
+            storyTitle: 'S',
+            chapterNumber: '$i',
+            chapterTitle: 'Chap',
+            mediaFormat: 'COMIC',
+            installedDir: 'installed/ver_batch_$i',
+            totalFiles: 1,
+            totalBytes: 10000000,
+            installedAt: 100 * i,
+            manifestJson: '{}',
+          ));
+        }
+
+        expect(await storageRepo.getTotalStorageBytes(), equals(40000000));
+
+        final quotaResult = await quotaManager.evictToQuota();
+        expect(quotaResult.evictedBytes, greaterThanOrEqualTo(10000000));
+        expect(await storageRepo.getTotalStorageBytes(), lessThanOrEqualTo(30000000));
 
         await offlineDb.close();
       });

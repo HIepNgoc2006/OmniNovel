@@ -19,8 +19,10 @@ import 'package:omninovel_mobile/features/offline/services/download_queue_manage
 import 'package:omninovel_mobile/features/offline/services/offline_content_resolver.dart';
 import 'package:omninovel_mobile/features/offline/services/offline_deletion_service.dart';
 import 'package:omninovel_mobile/features/offline/services/reader_lease_manager.dart';
+import 'package:omninovel_mobile/features/offline/services/active_checkpoint_provider.dart';
 import 'package:omninovel_mobile/features/offline/services/storage_quota_manager.dart';
 import 'package:path/path.dart' as p;
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
@@ -2051,6 +2053,204 @@ void main() {
         expect(await storageRepo.getTotalStorageBytes(), lessThanOrEqualTo(30000000));
 
         await offlineDb.close();
+      });
+
+      // =======================================================================
+      // Gate 5B: LRU Production Semantics Hardening
+      // =======================================================================
+      test('Gate 5B.1: StorageQuotaManager automatically excludes active checkpoints from ActiveCheckpointProvider', () async {
+        final dbPath = p.join(tempDir.path, 'gate5b_cp_exclusion_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_lru_5b_cp';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+        final diskProvider = MockDiskSpaceProvider();
+        final checkpointProvider = InMemoryCheckpointProvider({'ver_protected_by_cp'});
+
+        final quotaManager = StorageQuotaManager(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          deletionService: deletionService,
+          readerLeaseManager: leaseManager,
+          diskSpaceProvider: diskProvider,
+          checkpointProvider: checkpointProvider,
+        );
+
+        // Chèn 2 chapters
+        await storageRepo.insertOfflineChapter(OfflineChapter(
+          userId: userId,
+          chapterVersionId: 'ver_protected_by_cp',
+          chapterId: 'c1',
+          storyId: 's1',
+          storyTitle: 'S',
+          chapterNumber: '1',
+          chapterTitle: 'Chap 1',
+          mediaFormat: 'COMIC',
+          installedDir: 'installed/ver_protected_by_cp',
+          totalFiles: 1,
+          totalBytes: 1000,
+          installedAt: 100,
+          manifestJson: '{}',
+        ));
+
+        await storageRepo.insertOfflineChapter(OfflineChapter(
+          userId: userId,
+          chapterVersionId: 'ver_freely_evictable',
+          chapterId: 'c2',
+          storyId: 's1',
+          storyTitle: 'S',
+          chapterNumber: '2',
+          chapterTitle: 'Chap 2',
+          mediaFormat: 'COMIC',
+          installedDir: 'installed/ver_freely_evictable',
+          totalFiles: 1,
+          totalBytes: 1000,
+          installedAt: 200,
+          manifestJson: '{}',
+        ));
+
+        // Caller KHÔNG truyền excludedVersionIds nhưng quotaManager vẫn tự động loại trừ ver_protected_by_cp
+        final candidates = await quotaManager.getCandidates();
+        expect(candidates.length, equals(1));
+        expect(candidates.first.chapterVersionId, equals('ver_freely_evictable'));
+
+        await offlineDb.close();
+      });
+
+      test('Gate 5B.2: evictToQuota reports explicit isSatisfied = false and throws in strict mode', () async {
+        final dbPath = p.join(tempDir.path, 'gate5b_unsatisfied_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_lru_5b_unsatisfied';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+        final diskProvider = MockDiskSpaceProvider();
+
+        // Quota = 10 MB, current used = 20 MB -> cần evict 10 MB
+        final quotaManager = StorageQuotaManager(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          deletionService: deletionService,
+          readerLeaseManager: leaseManager,
+          diskSpaceProvider: diskProvider,
+          config: const StoragePolicyConfig(
+            maxOfflineStorageBytes: 10000000,
+          ),
+        );
+
+        // Chèn 2 chapters x 10 MB
+        const vId1 = 'ver_leased_cannot_evict';
+        const vId2 = 'ver_pinned_cannot_evict';
+        await storageRepo.insertOfflineChapter(OfflineChapter(
+          userId: userId,
+          chapterVersionId: vId1,
+          chapterId: 'c1',
+          storyId: 's1',
+          storyTitle: 'S',
+          chapterNumber: '1',
+          chapterTitle: 'Chap 1',
+          mediaFormat: 'COMIC',
+          installedDir: 'installed/$vId1',
+          totalFiles: 1,
+          totalBytes: 10000000,
+          installedAt: 100,
+          manifestJson: '{}',
+        ));
+        await storageRepo.insertOfflineChapter(OfflineChapter(
+          userId: userId,
+          chapterVersionId: vId2,
+          chapterId: 'c2',
+          storyId: 's1',
+          storyTitle: 'S',
+          chapterNumber: '2',
+          chapterTitle: 'Chap 2',
+          mediaFormat: 'COMIC',
+          installedDir: 'installed/$vId2',
+          totalFiles: 1,
+          totalBytes: 10000000,
+          installedAt: 200,
+          isPinned: true, // Pinned -> loại trừ
+          manifestJson: '{}',
+        ));
+
+        // Lease vId1
+        leaseManager.acquireLease(
+          userId: userId,
+          chapterVersionId: vId1,
+          readerSessionId: 'session_active',
+        );
+
+        // 1. Chế độ non-strict: Không ném lỗi nhưng trả isSatisfied = false (không silent success)
+        final nonStrictResult = await quotaManager.evictToQuota(strict: false);
+        expect(nonStrictResult.isSatisfied, isFalse);
+        expect(nonStrictResult.evictedBytes, equals(0));
+        expect(nonStrictResult.requiredBytes, equals(10000000));
+
+        // 2. Chế độ strict: Ném InsufficientStorageException (fail-closed)
+        await expectLater(
+          () => quotaManager.evictToQuota(strict: true),
+          throwsA(isA<InsufficientStorageException>()),
+        );
+
+        await offlineDb.close();
+      });
+
+      test('Gate 5B.3: SharedPreferencesCheckpointProvider extracts all valid chapterVersionIds scoped to current user', () async {
+        const userId = 'user_target';
+        SharedPreferences.setMockInitialValues({
+          'omninovel_reading_checkpoint_${userId}_story1': jsonEncode({
+            'storyId': 'story1',
+            'chapterId': 'c1',
+            'chapterVersionId': 'ver_cp_story1',
+            'pageIndex': 5,
+            'progressPercentage': 50.0,
+            'scrollPosition': 100.0,
+            'updatedAt': DateTime.now().toIso8601String(),
+            'isDirty': false,
+          }),
+          'omninovel_reading_checkpoint_${userId}_story2': jsonEncode({
+            'storyId': 'story2',
+            'chapterId': 'c2',
+            'chapterVersionId': 'ver_cp_story2',
+            'pageIndex': 1,
+            'progressPercentage': 10.0,
+            'scrollPosition': 0.0,
+            'updatedAt': DateTime.now().toIso8601String(),
+            'isDirty': false,
+          }),
+          // Checkpoint của user KHÁC -> không được phép lọt vào
+          'omninovel_reading_checkpoint_other_user_story3': jsonEncode({
+            'storyId': 'story3',
+            'chapterId': 'c3',
+            'chapterVersionId': 'ver_cp_other_user',
+            'pageIndex': 2,
+            'progressPercentage': 20.0,
+            'scrollPosition': 0.0,
+            'updatedAt': DateTime.now().toIso8601String(),
+            'isDirty': false,
+          }),
+        });
+
+        final provider = SharedPreferencesCheckpointProvider(userId: userId);
+        final protectedIds = await provider.getProtectedVersionIds();
+
+        expect(protectedIds, containsAll(['ver_cp_story1', 'ver_cp_story2']));
+        expect(protectedIds.contains('ver_cp_other_user'), isFalse);
       });
     });
   });

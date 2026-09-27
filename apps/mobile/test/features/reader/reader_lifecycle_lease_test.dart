@@ -209,4 +209,46 @@ void main() {
 
     onlineController.dispose();
   });
+
+  test('Gate 5B: Reader offline READY updates last_read_at on exact chapterVersionId', () async {
+    const userId = 'user_reader_lease';
+    const versionId = 'ver_lru_wired';
+    const chapterId = 'chap_lru';
+
+    final resolved = createDummyResolved(
+      userId: userId,
+      chapterVersionId: versionId,
+      chapterId: chapterId,
+    );
+
+    when(() => offlineResolver.resolveChapter(
+      chapterId: chapterId,
+      preferredVersionId: versionId,
+    )).thenAnswer((_) async => resolved);
+
+    when(() => offlineResolver.updateLastReadAt(
+      versionId,
+      timestamp: any(named: 'timestamp'),
+    )).thenAnswer((_) async {});
+
+    final controller = ReaderSessionController(
+      chapterRepository: chapterRepo,
+      imageCacheCoordinator: cacheCoordinator,
+      offlineContentResolver: offlineResolver,
+      readerLeaseManager: leaseManager,
+    );
+
+    await controller.loadChapter(chapterId, versionId: versionId);
+
+    expect(controller.state.transportMode, equals(ReaderTransportMode.offline));
+    expect(controller.state.status, equals(ReaderStatus.ready));
+
+    // Verify updateLastReadAt was called with exact chapterVersionId
+    verify(() => offlineResolver.updateLastReadAt(
+      versionId,
+      timestamp: any(named: 'timestamp'),
+    )).called(1);
+
+    controller.dispose();
+  });
 }

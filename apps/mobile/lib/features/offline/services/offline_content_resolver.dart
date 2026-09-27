@@ -57,6 +57,11 @@ class OfflineContentResolver {
 
   String get userId => _repository.userId;
 
+  /// Cập nhật thời điểm đọc gần nhất của chapter version ngoại tuyến (LRU integration).
+  Future<void> updateLastReadAt(String chapterVersionId, {int? timestamp}) async {
+    final now = timestamp ?? DateTime.now().millisecondsSinceEpoch;
+    await _repository.updateLastReadAt(chapterVersionId, now);
+  }
 
   /// Giải quyết nội dung chương truyện ngoại tuyến.
   /// Trả về null nếu chưa được cài đặt, hoặc payload bị hỏng / không toàn vẹn.

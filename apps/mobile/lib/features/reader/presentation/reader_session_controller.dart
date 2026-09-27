@@ -1,4 +1,5 @@
 import 'package:flutter/widgets.dart';
+import '../../offline/repositories/offline_storage_repository.dart';
 import '../../offline/services/offline_content_resolver.dart';
 import '../../offline/services/reader_lease_manager.dart';
 import '../models/reader_models.dart';
@@ -12,6 +13,7 @@ class ReaderSessionController extends ChangeNotifier {
   final ReaderImageCacheCoordinator _imageCacheCoordinator;
   final OfflineContentResolver? _offlineContentResolver;
   final ReaderLeaseManager? _readerLeaseManager;
+  final OfflineStorageRepository? _offlineStorageRepository;
 
   ReaderLeaseToken? _activeLeaseToken;
   late final String _readerSessionId =
@@ -25,10 +27,12 @@ class ReaderSessionController extends ChangeNotifier {
     required ReaderImageCacheCoordinator imageCacheCoordinator,
     OfflineContentResolver? offlineContentResolver,
     ReaderLeaseManager? readerLeaseManager,
+    OfflineStorageRepository? offlineStorageRepository,
   })  : _chapterRepository = chapterRepository,
         _imageCacheCoordinator = imageCacheCoordinator,
         _offlineContentResolver = offlineContentResolver,
-        _readerLeaseManager = readerLeaseManager;
+        _readerLeaseManager = readerLeaseManager,
+        _offlineStorageRepository = offlineStorageRepository;
 
   /// Nạp thông tin chapter và khởi tạo session đọc
   /// (Ưu tiên giải quyết offline payload trước mọi side effect mạng)
@@ -86,6 +90,19 @@ class ReaderSessionController extends ChangeNotifier {
           _imageCacheCoordinator.registerLocalAssetFiles(offlineResult.localAssetFiles);
           detail = offlineResult.chapterDetail;
           mode = ReaderTransportMode.offline;
+
+          // Wire LRU: Cập nhật last_read_at ngay khi mở offline READY thành công
+          final targetVerId = offlineResult.offlineChapter.chapterVersionId;
+          final nowMs = DateTime.now().millisecondsSinceEpoch;
+          try {
+            if (_offlineContentResolver != null) {
+              await _offlineContentResolver.updateLastReadAt(targetVerId, timestamp: nowMs);
+            } else if (_offlineStorageRepository != null) {
+              await _offlineStorageRepository.updateLastReadAt(targetVerId, nowMs);
+            }
+          } catch (_) {
+            // Fail-safe: Lỗi update timestamp không làm gián đoạn trải nghiệm đọc
+          }
         } else {
           // Fallback sang online khi không lease được
           if (_activeLeaseToken != null) {

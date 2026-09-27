@@ -1,5 +1,6 @@
 import 'package:flutter/widgets.dart';
 import '../../offline/services/offline_content_resolver.dart';
+import '../../offline/services/reader_lease_manager.dart';
 import '../models/reader_models.dart';
 import '../repositories/chapter_repository.dart';
 import 'reader_image_cache_coordinator.dart';
@@ -10,6 +11,11 @@ class ReaderSessionController extends ChangeNotifier {
   final ChapterRepository _chapterRepository;
   final ReaderImageCacheCoordinator _imageCacheCoordinator;
   final OfflineContentResolver? _offlineContentResolver;
+  final ReaderLeaseManager? _readerLeaseManager;
+
+  ReaderLeaseToken? _activeLeaseToken;
+  late final String _readerSessionId =
+      'reader_session_${DateTime.now().microsecondsSinceEpoch}_$hashCode';
 
   ReaderSessionState _state = const ReaderSessionState();
   ReaderSessionState get state => _state;
@@ -18,9 +24,11 @@ class ReaderSessionController extends ChangeNotifier {
     required ChapterRepository chapterRepository,
     required ReaderImageCacheCoordinator imageCacheCoordinator,
     OfflineContentResolver? offlineContentResolver,
+    ReaderLeaseManager? readerLeaseManager,
   })  : _chapterRepository = chapterRepository,
         _imageCacheCoordinator = imageCacheCoordinator,
-        _offlineContentResolver = offlineContentResolver;
+        _offlineContentResolver = offlineContentResolver,
+        _readerLeaseManager = readerLeaseManager;
 
   /// Nạp thông tin chapter và khởi tạo session đọc
   /// (Ưu tiên giải quyết offline payload trước mọi side effect mạng)
@@ -50,12 +58,53 @@ class ReaderSessionController extends ChangeNotifier {
       final ReaderTransportMode mode;
 
       if (offlineResult != null) {
-        // Cài đặt chế độ ngoại tuyến: đăng ký local files vào image cache coordinator
-        _imageCacheCoordinator.registerLocalAssetFiles(offlineResult.localAssetFiles);
-        detail = offlineResult.chapterDetail;
-        mode = ReaderTransportMode.offline;
+        // Gate 4B: Acquire lease trước khi switch sang state READY
+        ReaderLeaseToken? newLease;
+        if (_readerLeaseManager != null) {
+          final targetUserId = offlineResult.offlineChapter.userId;
+          final targetVersionId = offlineResult.offlineChapter.chapterVersionId;
+          try {
+            newLease = _readerLeaseManager!.acquireLease(
+              userId: targetUserId,
+              chapterVersionId: targetVersionId,
+              readerSessionId: _readerSessionId,
+            );
+          } on ChapterDeletingException catch (_) {
+            // Chapter đang trong tiến trình xóa -> fail-closed không mở offline
+            offlineResult = null;
+          } catch (_) {
+            offlineResult = null;
+          }
+        }
+
+        if (offlineResult != null) {
+          // Acquire lease mới thành công -> release lease cũ theo thứ tự fail-safe
+          if (_activeLeaseToken != null) {
+            _readerLeaseManager?.releaseLease(_activeLeaseToken);
+          }
+          _activeLeaseToken = newLease;
+          _imageCacheCoordinator.registerLocalAssetFiles(offlineResult.localAssetFiles);
+          detail = offlineResult.chapterDetail;
+          mode = ReaderTransportMode.offline;
+        } else {
+          // Fallback sang online khi không lease được
+          if (_activeLeaseToken != null) {
+            _readerLeaseManager?.releaseLease(_activeLeaseToken);
+            _activeLeaseToken = null;
+          }
+          _imageCacheCoordinator.clearLocalAssetFiles();
+          detail = await _chapterRepository.getChapterDetail(
+            chapterId,
+            versionId: versionId,
+          );
+          mode = ReaderTransportMode.online;
+        }
       } else {
-        // Fallback sang online path: dọn local files và gọi ChapterRepository qua mạng
+        // Fallback sang online path: dọn lease cũ nếu có và gọi ChapterRepository qua mạng
+        if (_activeLeaseToken != null) {
+          _readerLeaseManager?.releaseLease(_activeLeaseToken);
+          _activeLeaseToken = null;
+        }
         _imageCacheCoordinator.clearLocalAssetFiles();
         detail = await _chapterRepository.getChapterDetail(
           chapterId,
@@ -146,6 +195,8 @@ class ReaderSessionController extends ChangeNotifier {
 
   @override
   void dispose() {
+    _readerLeaseManager?.releaseLease(_activeLeaseToken);
+    _activeLeaseToken = null;
     _imageCacheCoordinator.dispose();
     super.dispose();
   }

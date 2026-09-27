@@ -5,6 +5,7 @@ import '../../../core/auth/auth_service.dart';
 import '../../../core/theme/theme_tokens.dart';
 import '../../gamification/repositories/gamification_repository.dart';
 import '../../offline/services/offline_content_resolver.dart';
+import '../../offline/services/reader_lease_manager.dart';
 import '../models/manga_reading_mode.dart';
 import '../models/novel_block_models.dart';
 import '../models/reader_models.dart';
@@ -43,6 +44,7 @@ class ReaderScreen extends StatefulWidget {
   final AuthService? authService;
   final ChapterReportRepository? reportRepository;
   final OfflineContentResolver? offlineContentResolver;
+  final ReaderLeaseManager? readerLeaseManager;
 
   const ReaderScreen({
     super.key,
@@ -63,6 +65,7 @@ class ReaderScreen extends StatefulWidget {
     this.authService,
     this.reportRepository,
     this.offlineContentResolver,
+    this.readerLeaseManager,
   });
 
   @override
@@ -105,6 +108,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       chapterRepository: widget.chapterRepository,
       imageCacheCoordinator: _imageCacheCoordinator,
       offlineContentResolver: widget.offlineContentResolver,
+      readerLeaseManager: widget.readerLeaseManager,
     );
     _progressCoordinator = ReadingProgressCoordinator(
       repository: widget.readingProgressRepository,

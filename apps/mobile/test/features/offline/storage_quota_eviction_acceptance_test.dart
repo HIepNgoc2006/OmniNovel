@@ -20,6 +20,7 @@ import 'package:omninovel_mobile/features/offline/services/offline_content_resol
 import 'package:omninovel_mobile/features/offline/services/offline_deletion_service.dart';
 import 'package:omninovel_mobile/features/offline/services/reader_lease_manager.dart';
 import 'package:omninovel_mobile/features/offline/services/active_checkpoint_provider.dart';
+import 'package:omninovel_mobile/features/offline/services/storage_admission_coordinator.dart';
 import 'package:omninovel_mobile/features/offline/services/storage_quota_manager.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -2251,6 +2252,301 @@ void main() {
 
         expect(protectedIds, containsAll(['ver_cp_story1', 'ver_cp_story2']));
         expect(protectedIds.contains('ver_cp_other_user'), isFalse);
+      });
+    });
+
+    // =========================================================================
+    // Gate 6: Pre-Download Quota & Headroom Admission Guard
+    // =========================================================================
+    group('Gate 6: Pre-Download Quota & Headroom Admission Guard', () {
+      test('Gate 6.1: Sufficient headroom admits download without eviction and tracks RAM reservation', () async {
+        final dbPath = p.join(tempDir.path, 'gate6_1_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_gate6_1';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+        final diskProvider = MockDiskSpaceProvider();
+
+        final quotaManager = StorageQuotaManager(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          deletionService: deletionService,
+          readerLeaseManager: leaseManager,
+          diskSpaceProvider: diskProvider,
+          config: const StoragePolicyConfig(
+            minFreeDiskHeadroomBytes: 500000000, // 500 MB
+          ),
+        );
+
+        final coordinator = StorageAdmissionCoordinator(
+          diskSpaceProvider: diskProvider,
+          storageQuotaManager: quotaManager,
+          storagePaths: storagePaths,
+          config: const StoragePolicyConfig(
+            minFreeDiskHeadroomBytes: 500000000,
+          ),
+        );
+
+        // Free disk = 1,000 MB (dư dả so với headroom 500 MB)
+        when(() => diskProvider.getFreeBytes(any())).thenAnswer((_) async => 1000000000);
+
+        // Admit 100 MB
+        final token = await coordinator.admitDownload(
+          taskId: 'task_g6_1',
+          chapterVersionId: 'ver_g6_1',
+          requiredBytes: 100000000,
+        );
+
+        expect(token.taskId, equals('task_g6_1'));
+        expect(token.reservedBytes, equals(100000000));
+        expect(coordinator.totalReservedDownloadBytes, equals(100000000));
+        expect(coordinator.hasReservation('task_g6_1'), isTrue);
+
+        // Giải phóng
+        coordinator.releaseReservation('task_g6_1');
+        expect(coordinator.totalReservedDownloadBytes, equals(0));
+        expect(coordinator.hasReservation('task_g6_1'), isFalse);
+
+        await offlineDb.close();
+      });
+
+      test('Gate 6.2: Eviction-assisted admission evicts LRU candidates to fulfill shortfall and re-checks free space', () async {
+        final dbPath = p.join(tempDir.path, 'gate6_2_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_gate6_2';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+        final diskProvider = MockDiskSpaceProvider();
+
+        final quotaManager = StorageQuotaManager(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          deletionService: deletionService,
+          readerLeaseManager: leaseManager,
+          diskSpaceProvider: diskProvider,
+          config: const StoragePolicyConfig(
+            minFreeDiskHeadroomBytes: 500000000, // 500 MB
+          ),
+        );
+
+        final coordinator = StorageAdmissionCoordinator(
+          diskSpaceProvider: diskProvider,
+          storageQuotaManager: quotaManager,
+          storagePaths: storagePaths,
+          config: const StoragePolicyConfig(
+            minFreeDiskHeadroomBytes: 500000000,
+          ),
+        );
+
+        // Chèn 1 candidate cũ 50 MB
+        const vOld = 'ver_old_evictable';
+        final oldInstalledDir = await storagePaths.getInstalledDir(vOld);
+        await oldInstalledDir.create(recursive: true);
+        await File(p.join(oldInstalledDir.path, 'old.dat')).writeAsString('old');
+
+        await storageRepo.insertOfflineChapter(OfflineChapter(
+          userId: userId,
+          chapterVersionId: vOld,
+          chapterId: 'c_old',
+          storyId: 's1',
+          storyTitle: 'S',
+          chapterNumber: '1',
+          chapterTitle: 'Chap Old',
+          mediaFormat: 'COMIC',
+          installedDir: 'installed/$vOld',
+          totalFiles: 1,
+          totalBytes: 50000000, // 50 MB
+          installedAt: 100,
+          manifestJson: '{}',
+        ));
+
+        // Free disk hiện tại = 520 MB.
+        // Task cần 50 MB -> projected = 470 MB < 500 MB (thiếu 30 MB).
+        // Sau khi evict candidate 50 MB, free disk tăng lên 570 MB.
+        int callCount = 0;
+        when(() => diskProvider.getFreeBytes(any())).thenAnswer((_) async {
+          callCount++;
+          if (callCount <= 2) {
+            return 520000000; // Ban đầu & kiểm tra trong evictToFit
+          }
+          return 570000000; // Sau khi eviction thành công
+        });
+
+        final token = await coordinator.admitDownload(
+          taskId: 'task_g6_2',
+          chapterVersionId: 'ver_g6_2_new',
+          requiredBytes: 50000000,
+        );
+
+        expect(token.reservedBytes, equals(50000000));
+        expect(await storageRepo.isChapterInstalled(vOld), isFalse); // Đã bị evict
+        expect(await oldInstalledDir.exists(), isFalse); // Filesystem sạch
+
+        coordinator.releaseReservation('task_g6_2');
+        await offlineDb.close();
+      });
+
+      test('Gate 6.3: Cannot satisfy shortfall due to pinned/protected candidates fails closed with 0 byte downloaded', () async {
+        final dbPath = p.join(tempDir.path, 'gate6_3_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_gate6_3';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+        final diskProvider = MockDiskSpaceProvider();
+
+        final quotaManager = StorageQuotaManager(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          deletionService: deletionService,
+          readerLeaseManager: leaseManager,
+          diskSpaceProvider: diskProvider,
+          config: const StoragePolicyConfig(
+            minFreeDiskHeadroomBytes: 500000000,
+          ),
+        );
+
+        final coordinator = StorageAdmissionCoordinator(
+          diskSpaceProvider: diskProvider,
+          storageQuotaManager: quotaManager,
+          storagePaths: storagePaths,
+          config: const StoragePolicyConfig(
+            minFreeDiskHeadroomBytes: 500000000,
+          ),
+        );
+
+        // Chèn chapter bị PINNED (không thể evict)
+        const vPinned = 'ver_pinned_immortal';
+        await storageRepo.insertOfflineChapter(OfflineChapter(
+          userId: userId,
+          chapterVersionId: vPinned,
+          chapterId: 'c_pin',
+          storyId: 's1',
+          storyTitle: 'S',
+          chapterNumber: '1',
+          chapterTitle: 'Chap Pin',
+          mediaFormat: 'COMIC',
+          installedDir: 'installed/$vPinned',
+          totalFiles: 1,
+          totalBytes: 50000000,
+          installedAt: 100,
+          isPinned: true, // PINNED
+          manifestJson: '{}',
+        ));
+
+        // Free disk = 510 MB. Cần 50 MB -> thiếu 40 MB.
+        when(() => diskProvider.getFreeBytes(any())).thenAnswer((_) async => 510000000);
+
+        // Kỳ vọng ném StorageAdmissionDeniedException
+        await expectLater(
+          () => coordinator.admitDownload(
+            taskId: 'task_g6_3',
+            chapterVersionId: 'ver_g6_3_incoming',
+            requiredBytes: 50000000,
+          ),
+          throwsA(isA<StorageAdmissionDeniedException>()),
+        );
+
+        expect(coordinator.totalReservedDownloadBytes, equals(0));
+        await offlineDb.close();
+      });
+
+      test('Gate 6.4: Concurrent admission ledger prevents overcommitting shared free disk budget', () async {
+        final dbPath = p.join(tempDir.path, 'gate6_4_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_gate6_4';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+        final diskProvider = MockDiskSpaceProvider();
+
+        final quotaManager = StorageQuotaManager(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          deletionService: deletionService,
+          readerLeaseManager: leaseManager,
+          diskSpaceProvider: diskProvider,
+          config: const StoragePolicyConfig(
+            minFreeDiskHeadroomBytes: 500000000, // 500 MB
+          ),
+        );
+
+        final coordinator = StorageAdmissionCoordinator(
+          diskSpaceProvider: diskProvider,
+          storageQuotaManager: quotaManager,
+          storagePaths: storagePaths,
+          config: const StoragePolicyConfig(
+            minFreeDiskHeadroomBytes: 500000000,
+          ),
+        );
+
+        // Free disk = 800 MB -> dung lượng khả dụng tối đa = 800 - 500 = 300 MB.
+        when(() => diskProvider.getFreeBytes(any())).thenAnswer((_) async => 800000000);
+
+        // Task 1 xin 200 MB -> Đủ (còn lại 100 MB khả dụng)
+        final token1 = await coordinator.admitDownload(
+          taskId: 'task_concurrent_1',
+          chapterVersionId: 'ver_c1',
+          requiredBytes: 200000000,
+        );
+        expect(token1.reservedBytes, equals(200000000));
+        expect(coordinator.totalReservedDownloadBytes, equals(200000000));
+
+        // Task 2 đồng thời xin 200 MB -> Bị từ chối vì chỉ còn 100 MB khả dụng!
+        await expectLater(
+          () => coordinator.admitDownload(
+            taskId: 'task_concurrent_2',
+            chapterVersionId: 'ver_c2',
+            requiredBytes: 200000000,
+          ),
+          throwsA(isA<StorageAdmissionDeniedException>()),
+        );
+
+        // Task 1 hoàn thành và giải phóng
+        coordinator.releaseReservation('task_concurrent_1');
+        expect(coordinator.totalReservedDownloadBytes, equals(0));
+
+        // Task 2 thử lại sau khi Task 1 đã release -> THÀNH CÔNG!
+        final token2 = await coordinator.admitDownload(
+          taskId: 'task_concurrent_2',
+          chapterVersionId: 'ver_c2',
+          requiredBytes: 200000000,
+        );
+        expect(token2.reservedBytes, equals(200000000));
+        expect(coordinator.totalReservedDownloadBytes, equals(200000000));
+
+        coordinator.releaseReservation('task_concurrent_2');
+        await offlineDb.close();
       });
     });
   });

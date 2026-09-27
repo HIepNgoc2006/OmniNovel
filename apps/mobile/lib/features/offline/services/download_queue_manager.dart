@@ -7,6 +7,7 @@ import '../repositories/artifact_repository.dart';
 import '../repositories/offline_storage_repository.dart';
 import 'artifact_download_client.dart';
 import 'bundle_installer.dart';
+import 'storage_admission_coordinator.dart';
 
 /// Quản lý hàng đợi tải ngoại tuyến Durable Offline Download Manager.
 ///
@@ -26,6 +27,7 @@ class DownloadQueueManager {
   final ArtifactDownloadClient _downloadClient;
   final OfflineStoragePaths _storagePaths;
   final BundleInstaller? _bundleInstaller;
+  final StorageAdmissionCoordinator? _admissionCoordinator;
 
   final Map<String, CancelToken> _activeCancelTokens = {};
   final Map<String, Completer<void>> _activeOperations = {};
@@ -38,11 +40,13 @@ class DownloadQueueManager {
     required ArtifactDownloadClient downloadClient,
     required OfflineStoragePaths storagePaths,
     BundleInstaller? bundleInstaller,
+    StorageAdmissionCoordinator? admissionCoordinator,
   })  : _repository = repository,
         _artifactRepository = artifactRepository,
         _downloadClient = downloadClient,
         _storagePaths = storagePaths,
-        _bundleInstaller = bundleInstaller {
+        _bundleInstaller = bundleInstaller,
+        _admissionCoordinator = admissionCoordinator {
     if (repository.userId != storagePaths.userId) {
       throw ArgumentError(
         'Identity mismatch in DownloadQueueManager: repository (${repository.userId}) != storagePaths (${storagePaths.userId})',
@@ -51,6 +55,11 @@ class DownloadQueueManager {
     if (bundleInstaller != null && bundleInstaller.userId != repository.userId) {
       throw ArgumentError(
         'Identity mismatch in DownloadQueueManager: bundleInstaller (${bundleInstaller.userId}) != repository (${repository.userId})',
+      );
+    }
+    if (admissionCoordinator != null && admissionCoordinator.userId != repository.userId) {
+      throw ArgumentError(
+        'Identity mismatch in DownloadQueueManager: admissionCoordinator (${admissionCoordinator.userId}) != repository (${repository.userId})',
       );
     }
   }
@@ -528,6 +537,43 @@ class DownloadQueueManager {
         _notifyUpdate(currentTask);
       }
 
+      // =======================================================================
+      // Gate 6: Pre-Download Quota & Headroom Admission Guard
+      // =======================================================================
+      if (_admissionCoordinator != null) {
+        final remainingBytes = (expectedTotalBytes - resumeOffset).clamp(0, expectedTotalBytes);
+        try {
+          await _admissionCoordinator!.admitDownload(
+            taskId: taskId,
+            chapterVersionId: currentTask.chapterVersionId,
+            requiredBytes: remainingBytes,
+          );
+        } on StorageAdmissionDeniedException catch (e) {
+          // Fail-closed: Không đủ dung lượng đĩa khả dụng
+          await _repository.updateTaskStatus(
+            taskId,
+            DownloadTaskStatus.paused,
+            errorMessage: 'Tạm dừng do thiếu dung lượng đĩa: ${e.message}',
+          );
+          _notifyUpdate(currentTask.copyWith(
+            status: DownloadTaskStatus.paused,
+            errorMessage: 'Tạm dừng do thiếu dung lượng đĩa: ${e.message}',
+          ));
+          return;
+        } on DiskSpaceUnavailableException catch (e) {
+          await _repository.updateTaskStatus(
+            taskId,
+            DownloadTaskStatus.paused,
+            errorMessage: 'Tạm dừng: ${e.message}',
+          );
+          _notifyUpdate(currentTask.copyWith(
+            status: DownloadTaskStatus.paused,
+            errorMessage: e.message,
+          ));
+          return;
+        }
+      }
+
       // 4. Bắt đầu tải stream từ Storage qua ArtifactDownloadClient (P0.2: Zero JWT)
       Response<ResponseBody> response;
       bool shouldAppend = false;
@@ -704,6 +750,7 @@ class DownloadQueueManager {
         ));
       }
     } finally {
+      _admissionCoordinator?.releaseReservation(taskId);
       _activeCancelTokens.remove(taskId);
       _activeOperations.remove(taskId);
       if (!completer.isCompleted) {

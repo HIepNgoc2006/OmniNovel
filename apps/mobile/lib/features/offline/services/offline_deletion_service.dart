@@ -32,66 +32,68 @@ class OfflineDeletionService {
 
   /// Xóa một chương truyện ngoại tuyến theo [chapterVersionId].
   /// Ném [ChapterInUseException] nếu chương đang có active reader lease.
+  /// Ném [ChapterDeletingException] nếu chương đang được giữ bởi một tiến trình xóa khác.
   Future<void> deleteChapter(String chapterVersionId) async {
-    // 0. Lease Guard: Không được xóa chương đang được đọc
-    if (_readerLeaseManager.isLeased(userId, chapterVersionId)) {
-      throw ChapterInUseException(
-        userId: userId,
-        chapterVersionId: chapterVersionId,
-      );
-    }
-
-    final micros = DateTime.now().microsecondsSinceEpoch;
-    final tombstoneId = 'tomb_${_storagePaths.userScope}_${chapterVersionId}_$micros';
-
-    // Bước 1: DB Atomic Revocation
-    await _repository.atomicRevokeChapter(
-      chapterVersionId,
-      tombstoneId: tombstoneId,
+    // 0. Deletion Reservation Guard (Process-Local Atomicity & Race Prevention)
+    final reservation = _readerLeaseManager.reserveDeletion(
+      userId: userId,
+      chapterVersionId: chapterVersionId,
     );
 
-    // Bước 2: Filesystem Purge
-    await _purgePayloadFiles(chapterVersionId);
+    try {
+      final micros = DateTime.now().microsecondsSinceEpoch;
+      final tombstoneId = 'tomb_${_storagePaths.userScope}_${chapterVersionId}_$micros';
 
-    // Bước 3: DB Finalize
-    await _repository.atomicFinalizeChapterDeletion(chapterVersionId);
+      // Bước 1: DB Atomic Revocation
+      await _repository.atomicRevokeChapter(
+        chapterVersionId,
+        tombstoneId: tombstoneId,
+      );
+
+      // Bước 2: Filesystem Purge
+      await _purgePayloadFiles(chapterVersionId);
+
+      // Bước 3: DB Finalize
+      await _repository.atomicFinalizeChapterDeletion(chapterVersionId);
+    } finally {
+      _readerLeaseManager.releaseDeletionReservation(reservation);
+    }
   }
 
   /// Xóa toàn bộ các chương ngoại tuyến của một bộ truyện theo [storyId] (Batch Story Deletion).
-  /// Tuân thủ nguyên tắc All-or-Nothing: Nếu có BẤT KỲ chương nào trong truyện đang có active lease,
-  /// lập tức từ chối và ném [ChapterInUseException] mà không xóa bất kỳ chương nào trong batch.
+  /// Tuân thủ nguyên tắc All-or-Nothing: Nếu có BẤT KỲ chương nào trong truyện đang có active lease
+  /// hoặc đang deleting, lập tức từ chối và ném ngoại lệ mà không xóa bất kỳ chương nào trong batch.
   Future<void> deleteStory(String storyId) async {
     final chapters = await _repository.getOfflineChaptersByStory(storyId);
     if (chapters.isEmpty) return;
 
-    // 0. Lease Guard All-or-Nothing check
-    for (final chap in chapters) {
-      if (_readerLeaseManager.isLeased(userId, chap.chapterVersionId)) {
-        throw ChapterInUseException(
-          userId: userId,
-          chapterVersionId: chap.chapterVersionId,
-          message:
-              'Không thể xóa truyện $storyId vì chương ${chap.chapterNumber} (${chap.chapterVersionId}) đang được đọc trong một phiên Reader active.',
-        );
-      }
-    }
-
     final versionIds = chapters.map((c) => c.chapterVersionId).toList(growable: false);
-    final nowMicros = DateTime.now().microsecondsSinceEpoch;
 
-    // Bước 1: DB Atomic Revocation (Batch)
-    await _repository.atomicRevokeChapters(
-      versionIds,
-      tombstoneIdGenerator: (verId) => 'tomb_${_storagePaths.userScope}_${verId}_$nowMicros',
+    // 0. Batch Deletion Reservation Guard (Process-Local All-or-Nothing)
+    final reservations = _readerLeaseManager.reserveDeletionBatch(
+      userId: userId,
+      chapterVersionIds: versionIds,
     );
 
-    // Bước 2: Filesystem Purge cho từng version
-    for (final verId in versionIds) {
-      await _purgePayloadFiles(verId);
-    }
+    try {
+      final nowMicros = DateTime.now().microsecondsSinceEpoch;
 
-    // Bước 3: DB Finalize (Batch)
-    await _repository.atomicFinalizeChaptersDeletion(versionIds);
+      // Bước 1: DB Atomic Revocation (Batch)
+      await _repository.atomicRevokeChapters(
+        versionIds,
+        tombstoneIdGenerator: (verId) => 'tomb_${_storagePaths.userScope}_${verId}_$nowMicros',
+      );
+
+      // Bước 2: Filesystem Purge cho từng version
+      for (final verId in versionIds) {
+        await _purgePayloadFiles(verId);
+      }
+
+      // Bước 3: DB Finalize (Batch)
+      await _repository.atomicFinalizeChaptersDeletion(versionIds);
+    } finally {
+      _readerLeaseManager.releaseDeletionReservationBatch(reservations);
+    }
   }
 
   /// Dọn sạch các tệp trên đĩa cho một chapterVersionId (installed, tmp .part, staging)

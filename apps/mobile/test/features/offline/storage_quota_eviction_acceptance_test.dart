@@ -1280,6 +1280,107 @@ void main() {
           throwsA(isA<ArgumentError>()),
         );
       });
+
+      test('Gate 4.6: Deletion Reservation blocks acquireLease during deletion and releases cleanly', () {
+        final leaseManager = ReaderLeaseManager();
+        const userId = 'user_race_1';
+        const versionId = 'ver_race_001';
+
+        expect(leaseManager.isDeleting(userId, versionId), isFalse);
+
+        // 1. Reserve deletion
+        final reservation = leaseManager.reserveDeletion(
+          userId: userId,
+          chapterVersionId: versionId,
+        );
+        expect(reservation.userId, equals(userId));
+        expect(reservation.chapterVersionId, equals(versionId));
+        expect(leaseManager.isDeleting(userId, versionId), isTrue);
+
+        // 2. Reader trying to acquire lease while deleting MUST FAIL
+        expect(
+          () => leaseManager.acquireLease(
+            userId: userId,
+            chapterVersionId: versionId,
+            readerSessionId: 'session_race',
+          ),
+          throwsA(isA<ChapterDeletingException>()),
+        );
+
+        // 3. Second deletion reservation on same version MUST FAIL
+        expect(
+          () => leaseManager.reserveDeletion(
+            userId: userId,
+            chapterVersionId: versionId,
+          ),
+          throwsA(isA<ChapterDeletingException>()),
+        );
+
+        // 4. Release deletion reservation
+        leaseManager.releaseDeletionReservation(reservation);
+        expect(leaseManager.isDeleting(userId, versionId), isFalse);
+
+        // 5. Reader can now acquire lease
+        final token = leaseManager.acquireLease(
+          userId: userId,
+          chapterVersionId: versionId,
+          readerSessionId: 'session_race',
+        );
+        expect(token.leaseId, isNotEmpty);
+
+        // 6. Deletion reservation fails if already leased
+        expect(
+          () => leaseManager.reserveDeletion(
+            userId: userId,
+            chapterVersionId: versionId,
+          ),
+          throwsA(isA<ChapterInUseException>()),
+        );
+
+        leaseManager.releaseLease(token);
+      });
+
+      test('Gate 4.7: Batch Deletion Reservation is All-or-Nothing in RAM', () {
+        final leaseManager = ReaderLeaseManager();
+        const userId = 'user_race_batch';
+        final versionIds = ['ver_rb1', 'ver_rb2', 'ver_rb3'];
+
+        // Lease rb2
+        final token = leaseManager.acquireLease(
+          userId: userId,
+          chapterVersionId: 'ver_rb2',
+          readerSessionId: 'session_b',
+        );
+
+        // Batch reservation must fail and NOT mark rb1 or rb3 as deleting
+        expect(
+          () => leaseManager.reserveDeletionBatch(
+            userId: userId,
+            chapterVersionIds: versionIds,
+          ),
+          throwsA(isA<ChapterInUseException>()),
+        );
+        expect(leaseManager.isDeleting(userId, 'ver_rb1'), isFalse);
+        expect(leaseManager.isDeleting(userId, 'ver_rb2'), isFalse);
+        expect(leaseManager.isDeleting(userId, 'ver_rb3'), isFalse);
+
+        leaseManager.releaseLease(token);
+
+        // Now batch reservation succeeds
+        final reservations = leaseManager.reserveDeletionBatch(
+          userId: userId,
+          chapterVersionIds: versionIds,
+        );
+        expect(reservations.length, equals(3));
+        expect(leaseManager.isDeleting(userId, 'ver_rb1'), isTrue);
+        expect(leaseManager.isDeleting(userId, 'ver_rb2'), isTrue);
+        expect(leaseManager.isDeleting(userId, 'ver_rb3'), isTrue);
+
+        leaseManager.releaseDeletionReservationBatch(reservations);
+        expect(leaseManager.isDeleting(userId, 'ver_rb1'), isFalse);
+        expect(leaseManager.isDeleting(userId, 'ver_rb2'), isFalse);
+        expect(leaseManager.isDeleting(userId, 'ver_rb3'), isFalse);
+      });
     });
   });
 }

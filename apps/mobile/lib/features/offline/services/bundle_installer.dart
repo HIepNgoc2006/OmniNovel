@@ -116,6 +116,7 @@ class ReconciliationReport {
   final int reconstructedRows;
   final int removedOrphanDirs;
   final int cleanedPartFiles;
+  final int finalizedTombstones;
 
   const ReconciliationReport({
     this.cleanedStagingDirs = 0,
@@ -123,11 +124,12 @@ class ReconciliationReport {
     this.reconstructedRows = 0,
     this.removedOrphanDirs = 0,
     this.cleanedPartFiles = 0,
+    this.finalizedTombstones = 0,
   });
 
   @override
   String toString() =>
-      'ReconciliationReport(stagingCleaned: $cleanedStagingDirs, corruptedRowsRemoved: $removedCorruptedRows, rowsReconstructed: $reconstructedRows, orphanDirsRemoved: $removedOrphanDirs, partFilesCleaned: $cleanedPartFiles)';
+      'ReconciliationReport(stagingCleaned: $cleanedStagingDirs, corruptedRowsRemoved: $removedCorruptedRows, rowsReconstructed: $reconstructedRows, orphanDirsRemoved: $removedOrphanDirs, partFilesCleaned: $cleanedPartFiles, tombstonesFinalized: $finalizedTombstones)';
 }
 
 // ==========================================
@@ -695,6 +697,45 @@ class BundleInstaller {
     int reconstructedRows = 0;
     int removedOrphanDirs = 0;
     int cleanedPartFiles = 0;
+    int finalizedTombstones = 0;
+
+    // 0. P0.1 & P0.2 Precedence Step: Xử lý Deletion Tombstones TRƯỚC mọi bước khác
+    // Thứ tự tuyệt đối:
+    //   1. Enumerate deletion tombstones
+    //   2. Purge installed/tmp/staging cho từng tombstone
+    //   3. Chỉ finalize tombstone + task khi purge thành công
+    //   4. Nếu purge lỗi -> GIỮ tombstone để retry lần startup sau
+    final tombstones = await _repository.getOfflineDeletionTombstones();
+    final retainedTombstoneVersionIds = <String>{};
+
+    for (final tomb in tombstones) {
+      final vId = tomb.chapterVersionId;
+      bool purgeSuccess = false;
+      try {
+        await _storagePaths.deleteInstalledDir(vId);
+        await _storagePaths.deletePartFile(vId);
+        await _storagePaths.deleteStagingDir(vId);
+
+        final installedDir = await _storagePaths.getInstalledDir(vId);
+        final partFile = await _storagePaths.getPartFile(vId);
+        final stagingDir = await _storagePaths.getStagingDir(vId);
+
+        if (!await installedDir.exists() && !await partFile.exists() && !await stagingDir.exists()) {
+          purgeSuccess = true;
+        }
+      } catch (_) {
+        purgeSuccess = false;
+      }
+
+      if (purgeSuccess) {
+        // Chỉ finalize tombstone + task khi purge thành công
+        await _repository.atomicFinalizeChapterDeletion(vId);
+        finalizedTombstones++;
+      } else {
+        // Nếu purge lỗi: GIỮ tombstone để retry lần startup sau
+        retainedTombstoneVersionIds.add(vId);
+      }
+    }
 
     // 1. Gate 8: Dọn sạch mọi thư mục staging mồ côi
     final stagingRootDir = Directory(await _storagePaths.getStagingDirPath());
@@ -749,11 +790,18 @@ class BundleInstaller {
     }
 
     // 3. Gate 9 & Gate 11: Installed Filesystem vs DB (Folder có, DB row thiếu)
+    // CHỈ CHẠY cho payload KHÔNG bị tombstoned
     final installedRootDir = Directory(await _storagePaths.getInstalledDirPath());
     if (await installedRootDir.exists()) {
       for (final entity in installedRootDir.listSync()) {
         if (entity is Directory) {
           final versionId = p.basename(entity.path);
+
+          // Tuyệt đối không phục hồi thư mục của version đang có tombstone retained
+          if (retainedTombstoneVersionIds.contains(versionId)) {
+            continue;
+          }
+
           final isInstalledInDb = await _repository.isChapterInstalled(versionId);
 
           if (!isInstalledInDb) {
@@ -837,6 +885,7 @@ class BundleInstaller {
       reconstructedRows: reconstructedRows,
       removedOrphanDirs: removedOrphanDirs,
       cleanedPartFiles: cleanedPartFiles,
+      finalizedTombstones: finalizedTombstones,
     );
   }
 }

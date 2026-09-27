@@ -1525,5 +1525,175 @@ void main() {
         await offlineDb.close();
       });
     });
+
+    group('Gate 2 & Gate 3: Startup Reconciliation v2 & Deletion Precedence', () {
+      test('Gate 2.1 & 3.1: Tombstone wins absolute precedence over 5D.4 Recovery (Never Reconstruct)', () async {
+        final dbPath = p.join(tempDir.path, 'gate2_prec_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_prec_1';
+        const versionId = 'ver_tomb_prevails';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final installer = BundleInstaller(
+          storagePaths: storagePaths,
+          repository: storageRepo,
+        );
+
+        // Setup: Thư mục installed có manifest và file hợp lệ 100% VÀ DownloadTask ở PAUSED (trạng thái recoverable của 5D.4)
+        final pageContent = utf8.encode('page-content-gate21');
+        final pageSha = sha256.convert(pageContent).toString();
+        final manifest = {
+          'schemaVersion': 1,
+          'bundleType': 'OFFLINE_READER',
+          'chapterVersionId': versionId,
+          'chapterId': 'c1',
+          'storyId': 's1',
+          'chapterTitle': 'Phục hồi Gate 2.1',
+          'mediaFormat': 'COMIC',
+          'files': [
+            {'path': 'pages/001.webp', 'size': pageContent.length, 'sha256': pageSha}
+          ]
+        };
+
+        final installedDir = await storagePaths.getInstalledDir(versionId);
+        await installedDir.create(recursive: true);
+        await File(p.join(installedDir.path, 'manifest.json')).writeAsString(jsonEncode(manifest));
+        final pageFile = File(p.join(installedDir.path, 'pages', '001.webp'));
+        await pageFile.parent.create(recursive: true);
+        await pageFile.writeAsBytes(pageContent);
+
+        await storageRepo.insertTask(DownloadTask(
+          taskId: 'task_$versionId',
+          userId: userId,
+          chapterVersionId: versionId,
+          chapterId: 'c1',
+          storyId: 's1',
+          storyTitle: 'S',
+          chapterNumber: '1',
+          mediaFormat: 'COMIC',
+          status: DownloadTaskStatus.paused,
+          createdAt: 1000,
+          updatedAt: 1000,
+        ));
+
+        // Nhưng CÓ deletion tombstone (mô phỏng crash giữa Step 1 và Step 2 khi xóa)
+        await storageRepo.ensureDeletionRevoked(versionId, tombstoneId: 'tomb_$versionId');
+        expect(await storageRepo.getTombstone(versionId), isNotNull);
+
+        // Chạy Startup Reconciliation v2
+        final report = await installer.reconcileOnStartup();
+
+        // Verify: Thư mục vật lý BỊ PURGE, tombstone được finalize, và KHÔNG BAO GIỜ bị 5D.4 reconstruct!
+        expect(await installedDir.exists(), isFalse);
+        expect(await storageRepo.getTombstone(versionId), isNull);
+        expect(await storageRepo.isChapterInstalled(versionId), isFalse);
+        expect(await storageRepo.getTaskByVersionId(versionId), isNull);
+        expect(report.reconstructedRows, equals(0));
+        expect(report.finalizedTombstones, equals(1));
+
+        await offlineDb.close();
+      });
+
+      test('Gate 2.2: Crash after purge (tombstone exists, files already gone) finalizes cleanly', () async {
+        final dbPath = p.join(tempDir.path, 'gate2_crash_post_purge.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_prec_2';
+        const versionId = 'ver_tomb_purged';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final installer = BundleInstaller(
+          storagePaths: storagePaths,
+          repository: storageRepo,
+        );
+
+        // Filesystem không có folder (đã purge trước khi crash)
+        await storageRepo.insertTask(DownloadTask(
+          taskId: 'task_$versionId',
+          userId: userId,
+          chapterVersionId: versionId,
+          chapterId: 'c2',
+          storyId: 's1',
+          storyTitle: 'S',
+          chapterNumber: '2',
+          mediaFormat: 'COMIC',
+          status: DownloadTaskStatus.ready,
+          createdAt: 1000,
+          updatedAt: 1000,
+        ));
+        await storageRepo.ensureDeletionRevoked(versionId, tombstoneId: 'tomb_post_purge');
+
+        final report = await installer.reconcileOnStartup();
+        expect(await storageRepo.getTombstone(versionId), isNull);
+        expect(await storageRepo.getTaskByVersionId(versionId), isNull);
+        expect(report.finalizedTombstones, equals(1));
+
+        await offlineDb.close();
+      });
+
+      test('Gate 3.2: 5D.4 recovery reconstructs row when payload is valid and NO tombstone exists', () async {
+        final dbPath = p.join(tempDir.path, 'gate3_recovery_clean.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_prec_3';
+        const versionId = 'ver_valid_no_tomb';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final installer = BundleInstaller(
+          storagePaths: storagePaths,
+          repository: storageRepo,
+        );
+
+        final pageContent = utf8.encode('page-content-gate32');
+        final pageSha = sha256.convert(pageContent).toString();
+        final manifest = {
+          'schemaVersion': 1,
+          'bundleType': 'OFFLINE_READER',
+          'chapterVersionId': versionId,
+          'chapterId': 'c3',
+          'storyId': 's1',
+          'chapterTitle': 'Phục hồi Gate 3.2',
+          'mediaFormat': 'COMIC',
+          'files': [
+            {'path': 'pages/001.webp', 'size': pageContent.length, 'sha256': pageSha}
+          ]
+        };
+
+        final installedDir = await storagePaths.getInstalledDir(versionId);
+        await installedDir.create(recursive: true);
+        await File(p.join(installedDir.path, 'manifest.json')).writeAsString(jsonEncode(manifest));
+        final pageFile = File(p.join(installedDir.path, 'pages', '001.webp'));
+        await pageFile.parent.create(recursive: true);
+        await pageFile.writeAsBytes(pageContent);
+
+        await storageRepo.insertTask(DownloadTask(
+          taskId: 'task_$versionId',
+          userId: userId,
+          chapterVersionId: versionId,
+          chapterId: 'c3',
+          storyId: 's1',
+          storyTitle: 'S',
+          chapterNumber: '3',
+          mediaFormat: 'COMIC',
+          status: DownloadTaskStatus.paused,
+          createdAt: 1000,
+          updatedAt: 1000,
+        ));
+
+        // KHÔNG có tombstone
+        expect(await storageRepo.getTombstone(versionId), isNull);
+
+        final report = await installer.reconcileOnStartup();
+        // 5D.4 recovery tái tạo thành công
+        expect(report.reconstructedRows, equals(1));
+        expect(await storageRepo.isChapterInstalled(versionId), isTrue);
+
+        await offlineDb.close();
+      });
+    });
   });
 }

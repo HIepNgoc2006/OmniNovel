@@ -414,6 +414,9 @@ class OfflineStorageRepository {
     return results.map((m) => OfflineDeletionTombstone.fromMap(m)).toList();
   }
 
+  /// Alias tương thích cho [getAllTombstones].
+  Future<List<OfflineDeletionTombstone>> getOfflineDeletionTombstones() => getAllTombstones();
+
   /// Bước 1 của Giao thức Xóa Tất định (Deterministic Deletion Protocol):
   /// Nguyên tử ghi nhận tombstone và xóa row offline_chapters trong cùng một SQLite transaction.
   /// Sử dụng ConflictAlgorithm.ignore để đảm bảo tính Idempotent khi chạy lại sau crash.

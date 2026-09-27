@@ -44,8 +44,8 @@ class OfflineDeletionService {
       final micros = DateTime.now().microsecondsSinceEpoch;
       final tombstoneId = 'tomb_${_storagePaths.userScope}_${chapterVersionId}_$micros';
 
-      // Bước 1: DB Atomic Revocation
-      await _repository.atomicRevokeChapter(
+      // Bước 1: DB Atomic Revocation (Idempotent)
+      await _repository.ensureDeletionRevoked(
         chapterVersionId,
         tombstoneId: tombstoneId,
       );
@@ -64,10 +64,8 @@ class OfflineDeletionService {
   /// Tuân thủ nguyên tắc All-or-Nothing: Nếu có BẤT KỲ chương nào trong truyện đang có active lease
   /// hoặc đang deleting, lập tức từ chối và ném ngoại lệ mà không xóa bất kỳ chương nào trong batch.
   Future<void> deleteStory(String storyId) async {
-    final chapters = await _repository.getOfflineChaptersByStory(storyId);
-    if (chapters.isEmpty) return;
-
-    final versionIds = chapters.map((c) => c.chapterVersionId).toList(growable: false);
+    final versionIds = await _repository.getAllChapterVersionIdsByStory(storyId);
+    if (versionIds.isEmpty) return;
 
     // 0. Batch Deletion Reservation Guard (Process-Local All-or-Nothing)
     final reservations = _readerLeaseManager.reserveDeletionBatch(
@@ -78,8 +76,8 @@ class OfflineDeletionService {
     try {
       final nowMicros = DateTime.now().microsecondsSinceEpoch;
 
-      // Bước 1: DB Atomic Revocation (Batch)
-      await _repository.atomicRevokeChapters(
+      // Bước 1: DB Atomic Revocation (Batch Idempotent)
+      await _repository.ensureBatchDeletionRevoked(
         versionIds,
         tombstoneIdGenerator: (verId) => 'tomb_${_storagePaths.userScope}_${verId}_$nowMicros',
       );

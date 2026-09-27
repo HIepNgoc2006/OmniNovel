@@ -1381,6 +1381,149 @@ void main() {
         expect(leaseManager.isDeleting(userId, 'ver_rb2'), isFalse);
         expect(leaseManager.isDeleting(userId, 'ver_rb3'), isFalse);
       });
+
+      test('Gate 4.8: Single Chapter Deletion is idempotent after crash (existing tombstone resumes cleanly)', () async {
+        final dbPath = p.join(tempDir.path, 'idempotent_single_del_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(
+          customPath: dbPath,
+          databaseFactory: databaseFactoryFfi,
+        );
+
+        const userId = 'user_idempotent_1';
+        const versionId = 'ver_idem_001';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+
+        // Setup: chapter và installed folder
+        final installedDir = await storagePaths.getInstalledDir(versionId);
+        await installedDir.create(recursive: true);
+        await File(p.join(installedDir.path, 'p1.jpg')).writeAsString('fake image');
+
+        await storageRepo.insertOfflineChapter(OfflineChapter(
+          userId: userId,
+          chapterVersionId: versionId,
+          chapterId: 'chap_idem_1',
+          storyId: 'story_idem',
+          storyTitle: 'Idem Story',
+          chapterNumber: '1',
+          mediaFormat: 'COMIC',
+          installedDir: 'files/offline/scope/installed/$versionId',
+          totalFiles: 1,
+          totalBytes: 100,
+          installedAt: 1000,
+          manifestJson: '{}',
+        ));
+
+        await storageRepo.insertTask(DownloadTask(
+          taskId: 'task_$versionId',
+          userId: userId,
+          chapterVersionId: versionId,
+          chapterId: 'chap_idem_1',
+          storyId: 'story_idem',
+          storyTitle: 'Idem Story',
+          chapterNumber: '1',
+          mediaFormat: 'COMIC',
+          status: DownloadTaskStatus.ready,
+          createdAt: 1000,
+          updatedAt: 1000,
+        ));
+
+        // Giả lập crash sau Bước 1: Tombstone đã tồn tại, offline_chapters đã bị xóa
+        await storageRepo.ensureDeletionRevoked(versionId, tombstoneId: 'tomb_crashed_step1');
+        expect(await storageRepo.getTombstone(versionId), isNotNull);
+        expect(await storageRepo.isChapterInstalled(versionId), isFalse);
+
+        // Gọi deleteChapter lần nữa -> Phải resume thành công, không ném SQLite UNIQUE constraint violation
+        await deletionService.deleteChapter(versionId);
+
+        // Verify hoàn tất xóa cả filesystem lẫn tombstone và task
+        expect(await storageRepo.getTombstone(versionId), isNull);
+        expect(await storageRepo.getTaskByVersionId(versionId), isNull);
+        expect(await installedDir.exists(), isFalse);
+
+        await offlineDb.close();
+      });
+
+      test('Gate 4.9: Batch Story Deletion is idempotent when partial tombstones pre-exist', () async {
+        final dbPath = p.join(tempDir.path, 'idempotent_batch_del_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(
+          customPath: dbPath,
+          databaseFactory: databaseFactoryFfi,
+        );
+
+        const userId = 'user_idempotent_batch';
+        const storyId = 'story_idem_batch';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+
+        final versionIds = ['ver_ib1', 'ver_ib2', 'ver_ib3'];
+        for (var i = 0; i < 3; i++) {
+          final vId = versionIds[i];
+          final dir = await storagePaths.getInstalledDir(vId);
+          await dir.create(recursive: true);
+          await File(p.join(dir.path, 'file.txt')).writeAsString('content $i');
+
+          await storageRepo.insertOfflineChapter(OfflineChapter(
+            userId: userId,
+            chapterVersionId: vId,
+            chapterId: 'chap_ib$i',
+            storyId: storyId,
+            storyTitle: 'Idem Batch Story',
+            chapterNumber: '${i + 1}',
+            mediaFormat: 'COMIC',
+            installedDir: 'files/offline/scope/installed/$vId',
+            totalFiles: 1,
+            totalBytes: 50,
+            installedAt: 2000 + i,
+            manifestJson: '{}',
+          ));
+
+          await storageRepo.insertTask(DownloadTask(
+            taskId: 'task_$vId',
+            userId: userId,
+            chapterVersionId: vId,
+            chapterId: 'chap_ib$i',
+            storyId: storyId,
+            storyTitle: 'Idem Batch Story',
+            chapterNumber: '${i + 1}',
+            mediaFormat: 'COMIC',
+            status: DownloadTaskStatus.ready,
+            createdAt: 2000 + i,
+            updatedAt: 2000 + i,
+          ));
+        }
+
+        // Giả lập crash sau khi chapter 1 (ver_ib1) đã bị ghi tombstone
+        await storageRepo.ensureDeletionRevoked('ver_ib1', tombstoneId: 'tomb_pre_crashed');
+
+        // Gọi deleteStory -> Tiếp tục thực thi idempotent cho toàn bộ truyện
+        await deletionService.deleteStory(storyId);
+
+        for (final vId in versionIds) {
+          expect(await storageRepo.isChapterInstalled(vId), isFalse);
+          expect(await storageRepo.getTombstone(vId), isNull);
+          final dir = await storagePaths.getInstalledDir(vId);
+          expect(await dir.exists(), isFalse);
+        }
+
+        await offlineDb.close();
+      });
     });
   });
 }

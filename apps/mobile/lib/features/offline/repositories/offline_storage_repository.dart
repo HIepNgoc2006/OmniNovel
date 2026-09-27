@@ -271,6 +271,34 @@ class OfflineStorageRepository {
     return results.map((m) => OfflineChapter.fromMap(m)).toList();
   }
 
+  /// Lấy danh sách toàn bộ các chapterVersionId thuộc một bộ truyện
+  /// (truy vấn kết hợp cả `offline_chapters` và `download_tasks` chưa finalize để hỗ trợ resume deletion sau crash).
+  Future<List<String>> getAllChapterVersionIdsByStory(String storyId) async {
+    final chapterResults = await _db.query(
+      'offline_chapters',
+      columns: ['chapter_version_id'],
+      where: 'story_id = ? AND user_id = ?',
+      whereArgs: [storyId, userId],
+    );
+    final taskResults = await _db.query(
+      'download_tasks',
+      columns: ['chapter_version_id'],
+      where: 'story_id = ? AND user_id = ?',
+      whereArgs: [storyId, userId],
+    );
+
+    final set = <String>{};
+    for (final row in chapterResults) {
+      final v = row['chapter_version_id'] as String?;
+      if (v != null) set.add(v);
+    }
+    for (final row in taskResults) {
+      final v = row['chapter_version_id'] as String?;
+      if (v != null) set.add(v);
+    }
+    return set.toList();
+  }
+
   /// Lấy toàn bộ các phiên bản đã tải của một chương truyện cụ thể của user hiện tại.
   Future<List<OfflineChapter>> getOfflineChaptersByChapterId(String chapterId) async {
     final results = await _db.query(
@@ -388,7 +416,8 @@ class OfflineStorageRepository {
 
   /// Bước 1 của Giao thức Xóa Tất định (Deterministic Deletion Protocol):
   /// Nguyên tử ghi nhận tombstone và xóa row offline_chapters trong cùng một SQLite transaction.
-  Future<void> atomicRevokeChapter(
+  /// Sử dụng ConflictAlgorithm.ignore để đảm bảo tính Idempotent khi chạy lại sau crash.
+  Future<void> ensureDeletionRevoked(
     String chapterVersionId, {
     required String tombstoneId,
   }) async {
@@ -402,7 +431,7 @@ class OfflineStorageRepository {
           'chapter_version_id': chapterVersionId,
           'created_at': now,
         },
-        conflictAlgorithm: ConflictAlgorithm.abort,
+        conflictAlgorithm: ConflictAlgorithm.ignore,
       );
       await txn.delete(
         'offline_chapters',
@@ -411,6 +440,12 @@ class OfflineStorageRepository {
       );
     });
   }
+
+  /// Alias tương thích ngược cho [ensureDeletionRevoked].
+  Future<void> atomicRevokeChapter(
+    String chapterVersionId, {
+    required String tombstoneId,
+  }) => ensureDeletionRevoked(chapterVersionId, tombstoneId: tombstoneId);
 
   /// Bước 3 của Giao thức Xóa Tất định (Deterministic Deletion Protocol):
   /// Nguyên tử dọn dẹp tombstone và bản ghi download_tasks tương ứng sau khi filesystem đã được purge sạch.
@@ -429,8 +464,8 @@ class OfflineStorageRepository {
     });
   }
 
-  /// Nguyên tử thu hồi quyền đọc của hàng loạt chương (Batch Revocation).
-  Future<void> atomicRevokeChapters(
+  /// Nguyên tử thu hồi quyền đọc của hàng loạt chương (Batch Revocation) với tính Idempotent.
+  Future<void> ensureBatchDeletionRevoked(
     List<String> chapterVersionIds, {
     required String Function(String versionId) tombstoneIdGenerator,
   }) async {
@@ -445,7 +480,7 @@ class OfflineStorageRepository {
             'chapter_version_id': versionId,
             'created_at': now,
           },
-          conflictAlgorithm: ConflictAlgorithm.abort,
+          conflictAlgorithm: ConflictAlgorithm.ignore,
         );
         await txn.delete(
           'offline_chapters',
@@ -455,6 +490,12 @@ class OfflineStorageRepository {
       }
     });
   }
+
+  /// Alias tương thích ngược cho [ensureBatchDeletionRevoked].
+  Future<void> atomicRevokeChapters(
+    List<String> chapterVersionIds, {
+    required String Function(String versionId) tombstoneIdGenerator,
+  }) => ensureBatchDeletionRevoked(chapterVersionIds, tombstoneIdGenerator: tombstoneIdGenerator);
 
   /// Nguyên tử hoàn tất xóa sạch tombstones và tasks của danh sách chương (Batch Finalize).
   Future<void> atomicFinalizeChaptersDeletion(List<String> chapterVersionIds) async {

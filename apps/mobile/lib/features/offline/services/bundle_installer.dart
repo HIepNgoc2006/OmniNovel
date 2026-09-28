@@ -10,6 +10,8 @@ import '../../../core/storage/offline_storage_paths.dart';
 import '../models/download_task.dart';
 import '../models/offline_chapter.dart';
 import '../repositories/offline_storage_repository.dart';
+import 'storage_admission_coordinator.dart';
+
 
 // ==========================================
 // EXCEPTIONS (FAIL-CLOSED ARCHITECTURE)
@@ -98,6 +100,30 @@ class SafeExtractionRequest {
   });
 }
 
+/// Tham số truyền vào background isolate để kiểm tra sơ bộ Central Directory (Gate 7 Pre-flight).
+class ArchiveInspectionRequest {
+  final String zipFilePath;
+  final int maxEntries;
+  final int maxUncompressedSize;
+
+  const ArchiveInspectionRequest({
+    required this.zipFilePath,
+    this.maxEntries = 1000,
+    this.maxUncompressedSize = 500 * 1024 * 1024, // 500 MB
+  });
+}
+
+/// Kết quả kiểm tra sơ bộ Central Directory của tệp ZIP trước khi giải nén (Gate 7 Pre-flight).
+class ZipMetadataInspectionResult {
+  final int entryCount;
+  final int totalUncompressedBytes;
+
+  const ZipMetadataInspectionResult({
+    required this.entryCount,
+    required this.totalUncompressedBytes,
+  });
+}
+
 /// Kết quả trích xuất sau khi giải nén an toàn.
 class SafeExtractionResult {
   final int totalEntries;
@@ -135,6 +161,79 @@ class ReconciliationReport {
 // ==========================================
 // TOP-LEVEL ISOLATE WORKERS
 // ==========================================
+
+/// Kiểm tra sơ bộ Central Directory của tệp ZIP trong background isolate (Gate 7 Pre-flight).
+/// Quét toàn bộ headers để tính tổng số byte giải nén và số entry, kiểm tra symlink, zip slip,
+/// malformed header mà TUYỆT ĐỐI KHÔNG trích xuất bất kỳ tệp con nào và KHÔNG tạo thư mục staging (0 staging bytes).
+ZipMetadataInspectionResult inspectArchiveMetadataIsolate(ArchiveInspectionRequest request) {
+  final zipFile = File(request.zipFilePath);
+  if (!zipFile.existsSync()) {
+    throw FileSystemException('Tệp ZIP không tồn tại', request.zipFilePath);
+  }
+
+  final bytes = zipFile.readAsBytesSync();
+  final decoder = ZipDecoder();
+  try {
+    decoder.decodeBytes(bytes, verify: true);
+  } catch (e) {
+    throw UnsafeArchiveException('Tệp ZIP bị hỏng hoặc sai định dạng: $e');
+  }
+
+  int entryCount = 0;
+  int totalUncompressedBytes = 0;
+  final seenHeaderPaths = <String>{};
+
+  for (final header in decoder.directory.fileHeaders) {
+    entryCount++;
+    if (entryCount > request.maxEntries) {
+      throw ZipBombException(
+          'Vượt quá số lượng tệp tối đa cho phép trong tệp nén (${request.maxEntries})');
+    }
+
+    final mode = (header.externalFileAttributes ?? 0) >> 16;
+    if ((mode & 0xF000) == 0xA000) {
+      throw const UnsafeArchiveException('Phát hiện symlink/hardlink không an toàn trong tệp nén');
+    }
+
+    final rawHeaderName = header.filename.replaceAll('\\', '/');
+    if (rawHeaderName.startsWith('/') || rawHeaderName.contains(':')) {
+      throw ZipSlipException('Đường dẫn tuyệt đối không an toàn: ${header.filename}');
+    }
+
+    final normalized = p.normalize(rawHeaderName);
+    if (normalized == '..' ||
+        normalized.startsWith('../') ||
+        normalized.startsWith('..\\') ||
+        p.isAbsolute(normalized)) {
+      throw ZipSlipException('Phát hiện tấn công Zip Slip (path traversal): ${header.filename}');
+    }
+
+    if (seenHeaderPaths.contains(rawHeaderName)) {
+      throw UnsafeArchiveException('Phát hiện đường dẫn trùng lặp trong tệp nén: ${header.filename}');
+    }
+    seenHeaderPaths.add(rawHeaderName);
+
+    final uncompressedSize = header.uncompressedSize ?? 0;
+    if (uncompressedSize < 0) {
+      throw const UnsafeArchiveException('Kích thước giải nén không hợp lệ (âm) trong header tệp nén');
+    }
+
+    totalUncompressedBytes += uncompressedSize;
+    if (totalUncompressedBytes > request.maxUncompressedSize) {
+      throw ZipBombException(
+          'Tổng dung lượng giải nén vượt quá hạn mức an toàn (${request.maxUncompressedSize} bytes)');
+    }
+  }
+
+  if (entryCount <= 0) {
+    throw const UnsafeArchiveException('Tệp nén rỗng hoặc không chứa entry hợp lệ');
+  }
+
+  return ZipMetadataInspectionResult(
+    entryCount: entryCount,
+    totalUncompressedBytes: totalUncompressedBytes,
+  );
+}
 
 /// Tính mã băm SHA-256 của tệp trong background isolate.
 Future<String> computeFileSha256Isolate(String filePath) async {
@@ -279,6 +378,7 @@ class BundleInstaller {
   final OfflineStorageRepository _repository;
   final OfflineStoragePaths _storagePaths;
   final ComputeRunner _computeRunner;
+  final StorageAdmissionCoordinator? _admissionCoordinator;
 
   String get userId => _repository.userId;
 
@@ -286,12 +386,19 @@ class BundleInstaller {
     required OfflineStorageRepository repository,
     required OfflineStoragePaths storagePaths,
     ComputeRunner? computeRunner,
+    StorageAdmissionCoordinator? admissionCoordinator,
   })  : _repository = repository,
         _storagePaths = storagePaths,
-        _computeRunner = computeRunner ?? compute {
+        _computeRunner = computeRunner ?? compute,
+        _admissionCoordinator = admissionCoordinator {
     if (repository.userId != storagePaths.userId) {
       throw ArgumentError(
         'Identity Mismatch: repository.userId (${repository.userId}) != storagePaths.userId (${storagePaths.userId})',
+      );
+    }
+    if (admissionCoordinator != null && admissionCoordinator.userId != repository.userId) {
+      throw ArgumentError(
+        'Identity Mismatch: admissionCoordinator.userId (${admissionCoordinator.userId}) != repository.userId (${repository.userId})',
       );
     }
   }
@@ -350,6 +457,29 @@ class BundleInstaller {
 
       checkCancelled();
 
+      // =======================================================================
+      // Gate 7: Pre-Extraction Central Directory Inspection & Dual Admission
+      // =======================================================================
+      final coordinator = _admissionCoordinator;
+      if (coordinator != null) {
+        final inspectionResult = await _computeRunner(
+          inspectArchiveMetadataIsolate,
+          ArchiveInspectionRequest(
+            zipFilePath: partFile.path,
+          ),
+        );
+
+        checkCancelled();
+
+        await coordinator.admitInstallation(
+          taskId: task.taskId,
+          chapterVersionId: task.chapterVersionId,
+          uncompressedExpansionBytes: inspectionResult.totalUncompressedBytes,
+        );
+
+        checkCancelled();
+      }
+
       // 2. Dọn sạch staging cũ (nếu có) trước khi giải nén (Gate 5 Staging Isolation)
       await _storagePaths.deleteStagingDir(task.chapterVersionId);
 
@@ -361,6 +491,10 @@ class BundleInstaller {
           stagingDirPath: stagingPath,
         ),
       );
+
+      // Khi staging đã trích xuất xong lên đĩa thật, byte đã materialize trên filesystem:
+      // Giảm extraction reservation về 0 để raw free disk phản ánh thực tế, tránh double-counting!
+      _admissionCoordinator?.updateRemainingExtractionReservation(task.taskId, 0);
 
       checkCancelled();
 
@@ -422,6 +556,9 @@ class BundleInstaller {
       await _repository.commitInstalledChapterAndReady(offlineChapter, task.taskId);
       isPromoted = false; // Commit thành công, không rollback installed nữa
 
+      // Giải phóng install quota reservation vì chapter đã chính thức nằm trong DB (currentInstalledBytes)
+      _admissionCoordinator?.releaseInstallQuotaReservation(task.taskId);
+
       // Gate 13: Dọn dẹp tệp tạm .part và staging sau khi cài đặt thành công (Idempotent)
       await _storagePaths.deletePartFile(task.chapterVersionId);
       await _storagePaths.deleteStagingDir(task.chapterVersionId);
@@ -429,6 +566,7 @@ class BundleInstaller {
       return offlineChapter;
     } on OfflineInstallationCancelledException {
       // Invariant 10: Fail-closed cleanup khi bị cancel, KHÔNG ghi status FAILED
+      _admissionCoordinator?.releaseReservation(task.taskId);
       await _storagePaths.deleteStagingDir(task.chapterVersionId);
       if (isPromoted && promotedInstalledPath != null) {
         try {
@@ -441,6 +579,7 @@ class BundleInstaller {
       rethrow;
     } catch (e) {
       // Invariant 10: Fail-closed cleanup & task FAILED
+      _admissionCoordinator?.releaseReservation(task.taskId);
       await _storagePaths.deleteStagingDir(task.chapterVersionId);
       if (isPromoted && promotedInstalledPath != null) {
         try {

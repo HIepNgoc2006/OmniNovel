@@ -90,6 +90,9 @@ class StorageQuotaManager {
   String get userId => _repository.userId;
   StoragePolicyConfig get config => _config;
 
+  /// Truy vấn tổng số byte thực tế đã được cài đặt và ghi nhận trong SQLite.
+  Future<int> getTotalInstalledBytes() => _repository.getTotalStorageBytes();
+
   /// Lấy danh sách ứng viên có thể evict, được sắp xếp tất định và lọc sạch các ràng buộc loại trừ.
   Future<List<OfflineChapter>> getCandidates({Set<String>? excludedVersionIds}) async {
     final rawCandidates = await _repository.getEvictionCandidates();
@@ -123,6 +126,108 @@ class StorageQuotaManager {
 
       return true;
     }).toList();
+  }
+
+  /// Dọn dẹp LRU chỉ để phục vụ physical disk headroom (Gate 6 Pre-Download & Gate 7 Extraction Headroom).
+  /// Tuyệt đối KHÔNG ép App Installed Quota tại đây vì tệp nén tải về chưa cài đặt vào offline chapters.
+  Future<EvictionResult> evictForDiskHeadroom({
+    required int incomingBytes,
+    Set<String>? excludedVersionIds,
+  }) async {
+    final rootPath = await _storagePaths.getRootOfflinePath();
+    final freeBytes = await _diskSpaceProvider.getFreeBytes(rootPath);
+
+    int headroomNeeded = 0;
+    final projectedFree = freeBytes - incomingBytes;
+    if (projectedFree < _config.minFreeDiskHeadroomBytes) {
+      headroomNeeded = _config.minFreeDiskHeadroomBytes - projectedFree;
+    }
+
+    if (headroomNeeded <= 0) {
+      return const EvictionResult.empty();
+    }
+
+    final candidates = await getCandidates(excludedVersionIds: excludedVersionIds);
+    final evictedChapters = <OfflineChapter>[];
+    int freedBytes = 0;
+
+    for (final candidate in candidates) {
+      try {
+        await _deletionService.deleteChapter(candidate.chapterVersionId);
+        evictedChapters.add(candidate);
+        freedBytes += candidate.totalBytes;
+
+        if (freedBytes >= headroomNeeded) {
+          break;
+        }
+      } on ChapterInUseException {
+        continue;
+      } on ChapterDeletingException {
+        continue;
+      }
+    }
+
+    if (freedBytes < headroomNeeded) {
+      throw InsufficientStorageException(
+        requiredBytes: headroomNeeded,
+        freedBytes: freedBytes,
+      );
+    }
+
+    return EvictionResult(
+      evictedChapters: evictedChapters,
+      evictedBytes: freedBytes,
+      requiredBytes: headroomNeeded,
+      isSatisfied: true,
+    );
+  }
+
+  /// Dọn dẹp LRU để đảm bảo tổng dung lượng cài đặt sau khi cộng [incomingInstalledBytes]
+  /// không vượt quá [StoragePolicyConfig.maxOfflineStorageBytes] (Gate 7 Installed Quota).
+  Future<EvictionResult> evictForInstalledQuota({
+    required int incomingInstalledBytes,
+    Set<String>? excludedVersionIds,
+  }) async {
+    if (_config.maxOfflineStorageBytes == null) {
+      return const EvictionResult.empty();
+    }
+    final currentUsed = await _repository.getTotalStorageBytes();
+    final projectedUsed = currentUsed + incomingInstalledBytes;
+    if (projectedUsed <= _config.maxOfflineStorageBytes!) {
+      return const EvictionResult.empty();
+    }
+
+    final bytesToEvict = projectedUsed - _config.maxOfflineStorageBytes!;
+    final candidates = await getCandidates(excludedVersionIds: excludedVersionIds);
+    final evictedChapters = <OfflineChapter>[];
+    int freedBytes = 0;
+
+    for (final candidate in candidates) {
+      try {
+        await _deletionService.deleteChapter(candidate.chapterVersionId);
+        evictedChapters.add(candidate);
+        freedBytes += candidate.totalBytes;
+        if (freedBytes >= bytesToEvict) break;
+      } on ChapterInUseException {
+        continue;
+      } on ChapterDeletingException {
+        continue;
+      }
+    }
+
+    if (freedBytes < bytesToEvict) {
+      throw InsufficientStorageException(
+        requiredBytes: bytesToEvict,
+        freedBytes: freedBytes,
+      );
+    }
+
+    return EvictionResult(
+      evictedChapters: evictedChapters,
+      evictedBytes: freedBytes,
+      requiredBytes: bytesToEvict,
+      isSatisfied: true,
+    );
   }
 
   /// Dọn dẹp bộ nhớ để đủ dung lượng cho một gói tải mới có kích thước [incomingBytes].

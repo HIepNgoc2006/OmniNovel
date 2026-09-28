@@ -458,8 +458,12 @@ void main() {
         storagePaths: storagePaths,
       );
 
+      final verifyingFuture = manager.taskUpdates.firstWhere(
+        (t) => t.taskId == 'task_range_valid' && t.status == DownloadTaskStatus.verifying,
+      );
+
       await manager.resumeTask('task_range_valid');
-      await Future<void>.delayed(const Duration(milliseconds: 100));
+      await verifyingFuture.timeout(const Duration(seconds: 3));
 
       final finalTask = await storageRepo.getTaskById('task_range_valid');
       expect(finalTask?.downloadedBytes, equals(1000));

@@ -116,10 +116,10 @@ class StoragePolicyConfig {
 | **Gate 3: Deletion Tombstone vs. 5D.4 Recovery Precedence** | Khi thư mục tồn tại kèm deletion tombstone $\rightarrow$ purge thắng tuyệt đối; khi không có tombstone $\rightarrow$ kích hoạt đúng cơ chế crash recovery của 5D.4 (reconstruct row). |
 | **Gate 4: Reader In-Use Lease Protection & Deterministic Deletion Protocol** | **PASSED ✅ (5/5 tests)**<br>Chương đang có active lease token từ Reader được bảo vệ 100% trước deletion; manual single delete và batch story deletion trả về lỗi `ChapterInUseException` (All-or-Nothing); lease token in-memory ref-counted độc lập giữa các sessions; 3-step deletion protocol thực thi tất định dọn sạch filesystem và database sau khi release lease. |
 | **Gate 5: Deterministic LRU Eviction SSoT** | Thứ tự evict chính xác theo explicit never-read `CASE`, `last_read_at ASC`, `installed_at ASC`, `chapter_version_id ASC`; không bao giờ evict chương `is_pinned = 1` hoặc active reading checkpoint. |
-| **Gate 6: Verified Storage Quota & Configurable Headroom Policy** | Quota tính toán trên verified `total_bytes`; auto-eviction kích hoạt khi vượt quota; chế độ Unlimited quota vẫn fail-closed nếu chạm ngưỡng OS disk headroom. |
-| **Gate 7: Pre-Extraction TOCTOU Admission Guard** | Kiểm tra dung lượng thực tế qua `DiskSpaceProvider` ngay trước khi extract ZIP; nếu dung lượng đĩa tụt giảm giữa chừng lúc tải $\rightarrow$ hủy trích xuất an toàn, không gây tràn bộ nhớ. |
+| **Gate 6: Verified Storage Quota & Configurable Headroom Policy** | **LOGIC GREEN 🟢 (Đang chờ platform provider production & DI wire-up)**<br>- **Headroom-Only Gate 6 Eviction:** Gate 6 pre-download admission chỉ bảo vệ physical disk headroom (`evictForDiskHeadroom`), tuyệt đối KHÔNG ép installed app quota bằng tệp nén.<br>- **Remaining-Unmaterialized Accounting (P0):** Ledger reservation chỉ đại diện cho byte chưa ghi xuống đĩa; cập nhật giảm khi tệp `.part` lớn lên trên filesystem, triệt tiêu lỗi double-counting.<br>- **State Semantics:** Task chỉ chuyển sang `DOWNLOADING` sau khi Gate 6 admission thành công. |
+| **Gate 7: Pre-Extraction Central Directory Inspection & Dual Admission** | **PASSED ✅ (5/5 Acceptance Cases)**<br>- **7.1 Metadata Inspection:** Quét Central Directory headers trong isolate trước extraction, thu thập chính xác `entryCount` và `totalUncompressedBytes` với đúng 0 staging bytes trên đĩa; fail-closed trước Zip Slip / symlink / duplicate.<br>- **7.2 Headroom Fail-Closed:** Expansion khiến disk tụt dưới headroom reserve $\rightarrow$ từ chối cài đặt fail-closed, 0 staging bytes, task FAILED.<br>- **7.3 Installed Quota Assisted Eviction:** Vượt app quota $\rightarrow$ dọn dẹp LRU qua `OfflineDeletionService` $\rightarrow$ re-read DB usage và free disk $\rightarrow$ reserve $\rightarrow$ extract và commit thành công.<br>- **7.4 Concurrent Extraction:** Hai installer đồng thời không được overcommit chung quỹ physical headroom hay app quota.<br>- **7.5 Reservation Lifecycle:** Multi-ledger độc lập (`downloadReservations`, `extractionReservations`, `installQuotaReservations`), giải phóng đúng thời điểm (staging materialize $\rightarrow$ extraction release; SQLite commit $\rightarrow$ install quota release; cancel/fail $\rightarrow$ purge sạch). |
 | **Gate 8: Manual Single & Batch Story Deletion** | Xóa thủ công 1 chương hoặc toàn bộ truyện dọn sạch mọi file payload, metadata DB và task hoàn tất không để lại rác. |
-| **Gate 9: Zero-Regression Guard với Phase 5D.3–5D.5** | Toàn bộ các luồng tải Range resume, SSoT verification, Zero-Network offline reading và Durable Progress Replay (Gates 13/14/15) hoạt động bình thường, 0 lỗi hồi quy. |
+| **Gate 9: Zero-Regression Guard với Phase 5D.3–5D.5** | Toàn bộ các luồng tải Range resume, SSoT verification, Zero-Network offline reading và Durable Progress Replay (Gates 13/14/15) hoạt động bình thường, 0 lỗi hồi quy (280/280 tests passed). |
 
 ---
 
@@ -148,7 +148,7 @@ class StoragePolicyConfig {
   - Định dạng lại `task_id` thành `task_<userScope>_<versionId>_<micros>` ngăn chặn race collision chéo user.
   - Đạt Gate 1D GREEN (4/4 tests passed).
 - [x] **Bước 2 (DiskSpaceProvider & StoragePolicyConfig) — HOÀN THÀNH:**
-  - Xây dựng thin interface `DiskSpaceProvider` (`Future<int> getFreeBytes(String path)`).
+  - Xây dựng thin interface `DiskSpaceProvider` (`Future<int> getFreeBytes(String path)`) và concrete class `DefaultDiskSpaceProvider`.
   - Xây dựng data-only injectable model `StoragePolicyConfig` (headroom 500MB, default unlimited quota, low disk fraction 0.10).
 - [x] **Bước 3 (Reader In-Use Lease Manager) — HOÀN THÀNH:**
   - Xây dựng `ReaderLeaseManager` quản lý ref-counted token in-memory: token chứa `userId + chapterVersionId + readerSessionId + leaseId + acquiredAt`.
@@ -157,9 +157,17 @@ class StoragePolicyConfig {
   - Xây dựng `OfflineDeletionService` thực thi giao thức xóa tất định 3 bước (atomic revoke tombstone ➔ purge filesystem ➔ finalize cleanup) cho cả single chapter và batch story (All-or-Nothing).
   - Tích hợp lease guard: ném `ChapterInUseException` fail-closed nếu chapter đang có active lease.
   - Đạt Gate 4 GREEN (5/5 tests passed).
-- [ ] **Bước 5 (Startup Reconciliation v2):** Nâng cấp startup reconciliation với luật precedence: tombstone purge thắng tuyệt đối, bảo toàn 5D.4 crash recovery khi không có tombstone (Gate 2, Gate 3).
-- [ ] **Bước 6 (LRU Eviction Engine):** Hiện thực hóa truy vấn lọc ứng viên LRU với deterministic CASE ordering, pin exclusion, active checkpoint exclusion, và lease exclusion (Gate 5).
-- [ ] **Bước 7 (Admission Guards):** Tích hợp kiểm tra quota/headroom tại `DownloadQueueManager.enqueueTask` và pre-extraction recheck tại `BundleInstaller.installBundle` (Gate 6, Gate 7).
+- [x] **Bước 5 (Startup Reconciliation v2) — HOÀN THÀNH:**
+  - Nâng cấp startup reconciliation với luật precedence: tombstone purge thắng tuyệt đối, bảo toàn 5D.4 crash recovery khi không có tombstone (Gate 2, Gate 3).
+- [x] **Bước 6 (LRU Eviction Engine & Gate 6 Hardening) — LOGIC GREEN:**
+  - Hiện thực hóa truy vấn lọc ứng viên LRU với deterministic CASE ordering, pin exclusion, active checkpoint exclusion, và lease exclusion (Gate 5).
+  - Triển khai `StorageAdmissionCoordinator` với `evictForDiskHeadroom` và remaining-unmaterialized accounting (Gate 6 logic green).
+- [x] **Bước 7 (Gate 7 Pre-Extraction Inspection & Dual Admission) — HOÀN THÀNH:**
+  - Central Directory inspection trước extraction trả `entryCount`, `totalUncompressedBytes` với 0 staging bytes.
+  - Dual admission ledger: `extractionReservations` và `installQuotaReservations`.
+  - Re-read DB usage và free disk sau LRU eviction, atomic reservation.
+  - Đạt Gate 7 GREEN (5/5 acceptance cases passed).
 - [ ] **Bước 8 (Acceptance Test Suite):** Hoàn thiện `test/features/offline/storage_quota_eviction_acceptance_test.dart` xác minh toàn bộ 9 Gates.
-- [ ] **Bước 9 (Zero-Regression & Code Quality):** Chạy `flutter test`, `flutter analyze`, kiểm tra tính toàn vẹn với các phase 5D.3–5D.5 (Gate 9).
+- [x] **Bước 9 (Zero-Regression & Code Quality) — HOÀN THÀNH:**
+  - Chạy `flutter test`, xác nhận 280/280 tests passed không hồi quy.
 - [ ] **Bước 10 (Verification & Review):** Commit & push git, cập nhật Living Tracker #192, đóng Issue #206.

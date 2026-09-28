@@ -445,13 +445,7 @@ class DownloadQueueManager {
       var currentTask = initialTask;
       lastTask = currentTask;
 
-      // 1. Chuyển trạng thái sang DOWNLOADING
-      await _repository.updateTaskStatus(taskId, DownloadTaskStatus.downloading);
-      currentTask = currentTask.copyWith(status: DownloadTaskStatus.downloading);
-      lastTask = currentTask;
-      _notifyUpdate(currentTask);
-
-      // 2. BẤT BIẾN P0.7: Đọc offset thực tế từ Filesystem (SSoT)
+      // 1. BẤT BIẾN P0.7: Đọc offset thực tế từ Filesystem (SSoT)
       final partFile = await _storagePaths.getPartFile(currentTask.chapterVersionId);
       int resumeOffset = (await partFile.exists()) ? await partFile.length() : 0;
 
@@ -472,7 +466,7 @@ class DownloadQueueManager {
         _notifyUpdate(currentTask);
       }
 
-      // 3. Lấy hoặc làm mới Presigned Download URL từ Core API
+      // 2. Lấy hoặc làm mới Presigned Download URL từ Core API
       String? currentUrl = currentTask.downloadUrl;
       int expectedTotalBytes = currentTask.totalBytes;
       String? expectedSha256 = currentTask.sha256Hash;
@@ -540,10 +534,11 @@ class DownloadQueueManager {
       // =======================================================================
       // Gate 6: Pre-Download Quota & Headroom Admission Guard
       // =======================================================================
-      if (_admissionCoordinator != null) {
+      final coordinator = _admissionCoordinator;
+      if (coordinator != null) {
         final remainingBytes = (expectedTotalBytes - resumeOffset).clamp(0, expectedTotalBytes);
         try {
-          await _admissionCoordinator!.admitDownload(
+          await coordinator.admitDownload(
             taskId: taskId,
             chapterVersionId: currentTask.chapterVersionId,
             requiredBytes: remainingBytes,
@@ -573,6 +568,12 @@ class DownloadQueueManager {
           return;
         }
       }
+
+      // 3. CHỈ chuyển trạng thái sang DOWNLOADING sau khi Gate 6 Admission THÀNH CÔNG!
+      await _repository.updateTaskStatus(taskId, DownloadTaskStatus.downloading);
+      currentTask = currentTask.copyWith(status: DownloadTaskStatus.downloading);
+      lastTask = currentTask;
+      _notifyUpdate(currentTask);
 
       // 4. Bắt đầu tải stream từ Storage qua ArtifactDownloadClient (P0.2: Zero JWT)
       Response<ResponseBody> response;
@@ -667,6 +668,12 @@ class DownloadQueueManager {
           sink.add(chunk);
           currentDownloadedBytes += chunk.length;
 
+          // Cập nhật remaining download reservation để tránh double-counting khi .part lớn dần
+          _admissionCoordinator?.updateRemainingDownloadReservation(
+            taskId,
+            (expectedTotalBytes - currentDownloadedBytes).clamp(0, expectedTotalBytes),
+          );
+
           // Throttle ghi DB mỗi 300ms hoặc khi xong
           final now = DateTime.now().millisecondsSinceEpoch;
           if (now - lastProgressUpdate > 300) {
@@ -723,6 +730,9 @@ class DownloadQueueManager {
       );
       lastTask = currentTask;
       _notifyUpdate(currentTask);
+
+      // Giải phóng download reservation sau khi tải xong toàn bộ vào .part
+      _admissionCoordinator?.releaseDownloadReservation(taskId);
 
       // Phase 5D.4: Bàn giao tác vụ cài đặt gói offline cho BundleInstaller
       // BẤT BIẾN: installer được serialize TRONG lifecycle mutex operation (await settle),

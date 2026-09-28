@@ -8,6 +8,11 @@ import '../../library/repositories/library_repository.dart';
 import '../../reader/models/reading_progress_models.dart';
 import '../../reader/presentation/reading_progress_coordinator.dart';
 import '../../reader/repositories/reading_progress_repository.dart';
+import '../../offline/services/offline_content_resolver.dart';
+import '../../studio/models/studio_models.dart';
+import '../../studio/presentation/studio_quick_approval_sheet.dart';
+import '../../studio/presentation/widgets/studio_job_chooser_dialog.dart';
+import '../../studio/repositories/studio_repository.dart';
 import '../models/story_models.dart';
 import '../repositories/story_repository.dart';
 
@@ -16,6 +21,8 @@ class StoryDetailScreen extends StatefulWidget {
   final StoryRepository storyRepository;
   final ReadingProgressRepository readingProgressRepository;
   final LibraryRepository? libraryRepository;
+  final StudioRepository? studioRepository;
+  final OfflineContentResolver? offlineResolver;
 
   const StoryDetailScreen({
     super.key,
@@ -23,6 +30,8 @@ class StoryDetailScreen extends StatefulWidget {
     required this.storyRepository,
     required this.readingProgressRepository,
     this.libraryRepository,
+    this.studioRepository,
+    this.offlineResolver,
   });
 
   @override
@@ -34,6 +43,7 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
   StoryDetail? _story;
   ResumePointer? _resumePointer;
   Set<String> _readChapterIds = {};
+  Map<String, List<TranslationJobSummaryDto>> _readyJobsByChapterId = {};
   bool _isBookmarked = false;
   int _followersCount = 0;
   bool _isTogglingBookmark = false;
@@ -102,12 +112,24 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
         server: serverProgress,
       );
 
+      // Pha 3: Lấy danh sách Translation Jobs READY_FOR_REVIEW theo chapter nếu có studioRepository
+      Map<String, List<TranslationJobSummaryDto>> readyJobs = {};
+      final studioRepo = widget.studioRepository;
+      if (studioRepo != null) {
+        try {
+          readyJobs = await studioRepo.getJobsByChapterForStory(story.id);
+        } catch (_) {
+          readyJobs = {};
+        }
+      }
+
       if (mounted) {
         setState(() {
           _story = story;
           _resumePointer = pointer;
           _readChapterIds =
               serverProgress?.readChapterIds.toSet() ?? const <String>{};
+          _readyJobsByChapterId = readyJobs;
           _isBookmarked = bookmarkRes.isBookmarked;
           _followersCount = story.followersCount;
           _isLoading = false;
@@ -121,6 +143,61 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
         });
       }
     }
+  }
+
+  Future<void> _openStudioQuickApproval(
+    ChapterItemSummary chapter,
+    List<TranslationJobSummaryDto> jobs,
+  ) async {
+    final studioRepo = widget.studioRepository;
+    if (studioRepo == null || jobs.isEmpty) return;
+
+    final TranslationJobSummaryDto selectedJob;
+    if (jobs.length == 1) {
+      selectedJob = jobs.first;
+    } else {
+      final chosen = await StudioJobChooserDialog.show(
+        context,
+        chapterNumber: chapter.chapterNumber.toString(),
+        jobs: jobs,
+      );
+      if (chosen == null) return;
+      selectedJob = chosen;
+    }
+
+    if (!mounted) return;
+
+    await StudioQuickApprovalSheet.show(
+      context,
+      repository: studioRepo,
+      jobId: selectedJob.id,
+      onAppliedSuccessfully: () async {
+        // Tải lại danh sách chương và tiến trình sau khi xuất bản thành công
+        await _loadStoryAndProgress();
+
+        // Gate 9: Version-Aware Offline Hint
+        final offlineResolver = widget.offlineResolver;
+        if (offlineResolver != null) {
+          try {
+            final resolved = await offlineResolver.resolveChapter(chapterId: chapter.id);
+            if (resolved != null && mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Đã xuất bản bản dịch mới cho Chương ${chapter.chapterNumber}. Bản tải ngoại tuyến hiện tại là phiên bản cũ.',
+                  ),
+                  duration: const Duration(seconds: 6),
+                  action: SnackBarAction(
+                    label: 'Chi tiết',
+                    onPressed: () {},
+                  ),
+                ),
+              );
+            }
+          } catch (_) {}
+        }
+      },
+    );
   }
 
   Future<void> _toggleBookmark() async {
@@ -649,6 +726,7 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
 
   Widget _buildChapterTile(ChapterItemSummary chapter, StoryDetail story) {
     final isRead = _readChapterIds.contains(chapter.id);
+    final jobsForChapter = _readyJobsByChapterId[chapter.id] ?? const [];
     final titleText = chapter.title != null && chapter.title!.isNotEmpty
         ? 'Chương ${chapter.chapterNumber}: ${chapter.title}'
         : 'Chương ${chapter.chapterNumber}';
@@ -672,7 +750,41 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
           ],
         ],
       ),
-      trailing: const Icon(Icons.chevron_right, color: AppColors.textMuted),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (jobsForChapter.isNotEmpty)
+            InkWell(
+              onTap: () => _openStudioQuickApproval(chapter, jobsForChapter),
+              borderRadius: BorderRadius.circular(12),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                margin: const EdgeInsets.only(right: 6),
+                decoration: BoxDecoration(
+                  color: context.primaryColor.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: context.primaryColor.withValues(alpha: 0.6)),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.auto_awesome, size: 12, color: context.primaryColor),
+                    const SizedBox(width: 4),
+                    Text(
+                      'Duyệt AI',
+                      style: TextStyle(
+                        color: context.primaryColor,
+                        fontSize: 11,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          const Icon(Icons.chevron_right, color: AppColors.textMuted),
+        ],
+      ),
       onTap: () {
         context.push('/reader/${chapter.id}?storyId=${story.id}&pageIndex=0');
       },

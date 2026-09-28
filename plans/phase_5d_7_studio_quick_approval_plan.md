@@ -1,7 +1,8 @@
 # Kế Hoạch Triển Khai Phase 5D.7: Studio Quick-Approval Action Sheet & Coherent Apply Protocol
 
 - **Tên Phase:** Phase 5D.7 — Studio Quick-Approval Action Sheet (Polish - Mobile)
-- **Tracking Issue:** [Issue #207](https://github.com/HIepNgoc2006/OmniNovel/issues/207)
+- **Trạng Thái:** **FROZEN-FINAL ✅ — 10/10 Acceptance Gates PASS, 314/314 Tests PASS, flutter analyze 0 issues**
+- **Tracking Issue:** [Issue #207](https://github.com/HIepNgoc2006/OmniNovel/issues/207) (CLOSED)
 - **Living Master Tracker:** [Issue #192](https://github.com/HIepNgoc2006/OmniNovel/issues/192)
 - **Baseline Tham Chiếu:** Commit [`b999e6e`](https://github.com/HIepNgoc2006/OmniNovel/commit/b999e6e) (Offline Storage Engine Frozen-Final)
 
@@ -169,18 +170,18 @@ apps/mobile/lib/features/studio/
 
 ## 4. MA TRẬN 10 ACCEPTANCE GATES (VERIFICATION CRITERIA)
 
-| Gate | Tiêu Chí Kiểm Tra (Acceptance Criteria) | Phương Pháp Xác Minh |
-| :--- | :--- | :--- |
-| **Gate 1: Canonical Contract Parity** | DTOs phản ánh 100% `@omninovel/shared`: `rawText`, `translatedText`, `isHumanVerified`, `sourceAssets[]`, `resultAssets[]`, `ReviewSummaryDto`. Không có field giả. | Unit Test Serialization |
-| **Gate 2: Server-Authoritative Permission Gate** | Nút Publish bị disable khi `permissions.canApply == false`. Hiển thị tooltip/banner `INSUFFICIENT_ROLE`. Không dựa vào `user.role` cục bộ. | Widget Test Mock Permissions |
-| **Gate 3: Bounded Previews & Segments** | Manga ghép cặp đúng `pageNumber` theo bounded/lazy window, hỗ trợ nút gạt Trước/Sau và `InteractiveViewer`. Novel hiển thị danh sách đối chiếu song ngữ phân trang. | Widget Test Visual Rendering |
-| **Gate 4: Apply Fail-Closed & Canonical Freshness** | Nút Apply CTA bị vô hiệu hóa khi `reviewRevision != materializedRevision` (stale) hoặc `status != READY_FOR_REVIEW`. Không phát sinh bất kỳ request POST nào khi stale. | Controller State Machine Test |
-| **Gate 5: Explicit Mode Selection** | Nút Xuất bản bị disable cho đến khi người dùng chọn rõ ràng giữa `OVERWRITE_ACTIVE_VERSION` và `CREATE_ALTERNATE_VERSION`. Không có default mode ngầm định. | UI Form Interaction Test |
-| **Gate 6: Frozen Idempotency & Ambiguous Recovery** | Sinh UUID-v4 khi bấm submit. Giả lập timeout/lỗi mạng: hệ thống retry với đúng `{idempotencyKey, mode}` cũ; gọi GET đối soát: `APPLIED ➔ SUCCEEDED`, `READY_FOR_REVIEW ➔ Reset/IDLE`, timeout ➔ giữ nguyên `OUTCOME_UNKNOWN`. | Integration Test Mock Dio |
-| **Gate 7: Authoritative Post-Apply Coherence** | Sau `POST /apply` thành công, gọi `GET /jobs/:id` xác nhận `status == APPLIED`, `targetVersion.id` khớp, và `workspaceRevision` đã tiến. Lỗi lệch ➔ `COMMITTED_RECONCILIATION_REQUIRED`. | Controller Integration Test |
-| **Gate 8: Non-Invasive Entry Point & Multi-Job Chooser** | Lấy danh sách job từ `GET /api/v1/ai/jobs?storyId=...&status=READY_FOR_REVIEW` (có phân trang đầy đủ). Nhóm `jobsByChapterId`. Chapter 1 job ➔ mở sheet; Chapter >1 jobs ➔ mở chooser. | Screen Integration Test |
-| **Gate 9: Version-Aware Offline Refresh** | So sánh `offline.chapterVersionId` với phiên bản mới. Chỉ hiện gợi ý cập nhật khi `OVERWRITE_ACTIVE_VERSION`. Zero mutation vào bundle offline cũ. | Resolver Integration Test |
-| **Gate 10: Zero Regression & Full Test Suite** | Toàn bộ unit/widget tests của Studio PASS; 291/291 offline tests hiện có PASS 100%; `flutter analyze` 0 issues. | Full Test Runner |
+| Gate | Tiêu Chí Kiểm Tra (Acceptance Criteria) | Phương Pháp Xác Minh | Trạng Thái |
+| :--- | :--- | :--- | :---: |
+| **Gate 1: Canonical Contract Parity** | DTOs phản ánh 100% `@omninovel/shared`: `rawText`, `translatedText`, `isHumanVerified`, `sourceAssets[]`, `resultAssets[]`, `ReviewSummaryDto`. Không có field giả. | Unit Test Serialization (`studio_repository_test.dart`) | **PASS ✅** |
+| **Gate 2: Server-Authoritative Permission Gate** | Nút Publish bị disable khi `permissions.canApply == false`. Hiển thị tooltip/banner `INSUFFICIENT_ROLE`. Không dựa vào `user.role` cục bộ. | Widget Test Mock Permissions (`studio_presentation_widgets_test.dart`) | **PASS ✅** |
+| **Gate 3: Bounded Previews & Segments** | Manga ghép cặp đúng `pageNumber` theo bounded/lazy window, hỗ trợ nút gạt Trước/Sau và `InteractiveViewer`. Novel hiển thị danh sách đối chiếu song ngữ phân trang. | Widget Test Visual Rendering (`studio_presentation_widgets_test.dart`) | **PASS ✅** |
+| **Gate 4: Apply Fail-Closed & Canonical Freshness** | Nút Apply CTA bị vô hiệu hóa khi `reviewRevision != materializedRevision` (stale) hoặc `status != READY_FOR_REVIEW`. Không phát sinh bất kỳ request POST nào khi stale. | Controller State Machine Test (`studio_approval_controller_test.dart`) | **PASS ✅** |
+| **Gate 5: Explicit Mode Selection** | Nút Xuất bản bị disable cho đến khi người dùng chọn rõ ràng giữa `OVERWRITE_ACTIVE_VERSION` và `CREATE_ALTERNATE_VERSION`. Không có default mode ngầm định. | UI Form Interaction Test (`studio_presentation_widgets_test.dart`) | **PASS ✅** |
+| **Gate 6: Frozen Idempotency & Ambiguous Recovery** | Sinh UUID-v4 khi bấm submit. Giả lập timeout/lỗi mạng: hệ thống retry với đúng `{idempotencyKey, mode}` cũ; gọi GET đối soát: `APPLIED ➔ SUCCEEDED`, `READY_FOR_REVIEW ➔ Reset/IDLE`, timeout ➔ giữ nguyên `OUTCOME_UNKNOWN`. | Integration Test Mock Dio (`studio_approval_controller_test.dart`) | **PASS ✅** |
+| **Gate 7: Authoritative Post-Apply Coherence** | Sau `POST /apply` thành công, gọi `GET /jobs/:id` xác nhận `status == APPLIED`, `targetVersion.id` khớp, và `workspaceRevision` đã tiến. Lỗi lệch ➔ `COMMITTED_RECONCILIATION_REQUIRED`. | Controller Integration Test (`studio_approval_controller_test.dart`) | **PASS ✅** |
+| **Gate 8: Non-Invasive Entry Point & Multi-Job Chooser** | Lấy danh sách job từ `GET /api/v1/ai/jobs?storyId=...&status=READY_FOR_REVIEW` (có phân trang đầy đủ). Nhóm `jobsByChapterId`. Chapter 1 job ➔ mở sheet; Chapter >1 jobs ➔ mở chooser. | Screen Integration Test (`studio_integration_wiring_test.dart`) | **PASS ✅** |
+| **Gate 9: Version-Aware Offline Refresh** | So sánh `offline.chapterVersionId` với phiên bản mới. Chỉ hiện gợi ý cập nhật khi `OVERWRITE_ACTIVE_VERSION`. Zero mutation vào bundle offline cũ. | Resolver Integration Test (`studio_integration_wiring_test.dart`) | **PASS ✅** |
+| **Gate 10: Zero Regression & Full Test Suite** | Toàn bộ unit/widget tests của Studio PASS (23/23 tests); 291/291 offline tests hiện có PASS 100% (Tổng suite: 314/314 PASS); `flutter analyze` 0 issues. | Full Test Runner (`flutter test`, `flutter analyze`) | **PASS ✅** |
 
 ---
 
@@ -188,27 +189,28 @@ apps/mobile/lib/features/studio/
 
 > **Nguyên tắc cốt lõi:** Tuyệt đối không dựng giao diện UI trước khi Controller Protocol và State Machine đạt chuẩn. Correctness của Idempotency, Freshness và Reconciliation là trọng tâm hàng đầu.
 
-- **Phase 1 (Gate 1 — Contracts & Repository):**
+- **Phase 1 (Gate 1 — Contracts & Repository):** [x] ĐÃ HOÀN THÀNH (6/6 tests PASS)
   - Viết `apps/mobile/lib/features/studio/models/studio_models.dart`.
-  - Viết `apps/mobile/lib/features/studio/repositories/studio_repository.dart` kèm phân trang `getAllReadyForReviewJobs(storyId)`.
+  - Viết `apps/mobile/lib/features/studio/repositories/studio_repository.dart` kèm phân trang `getAllReadyForReviewJobs(storyId)` và `getJobsByChapterForStory(storyId)`.
   - Viết bộ kiểm thử `test/features/studio/studio_repository_test.dart` (Gate 1).
-- **Phase 2 (Gate 4, 5, 6, 7 — State Machine & Protocol Controller):**
+- **Phase 2 (Gate 4, 5, 6, 7 — State Machine & Protocol Controller):** [x] ĐÃ HOÀN THÀNH (9/9 tests PASS)
   - Viết `apps/mobile/lib/features/studio/presentation/controllers/studio_approval_controller.dart`.
   - Triển khai toàn bộ State Machine: Freshness Gate, Frozen Idempotency `{key, mode}`, Ambiguity Recovery (`SUBMISSION_OUTCOME_UNKNOWN ➔ RECONCILING`), Coherence Check, `COMMITTED_RECONCILIATION_REQUIRED`.
   - Viết bộ kiểm thử `test/features/studio/studio_approval_controller_test.dart` chứng minh tất cả các kịch bản timeout, retry, stale guard, và mismatch (Gate 4, 5, 6, 7).
-- **Phase 3 (Gate 2, 3, 5 — Presentation Components):**
+- **Phase 3 (Gate 2, 3, 5 — Presentation Components):** [x] ĐÃ HOÀN THÀNH (4/4 tests PASS)
   - Viết `MangaPreviewComparisonView` (bounded/lazy window, toggle Trước/Sau, InteractiveViewer).
   - Viết `NovelSegmentComparisonView` (paginated bilingual list, human-verified badge).
   - Viết `StudioApplyFormView` (Explicit Mode Selector, Server-Authoritative Permission Guard, Freshness Warning).
   - Viết `StudioJobChooserDialog` (Chooser khi chapter có nhiều job).
   - Viết `StudioQuickApprovalSheet` (DraggableScrollableSheet tích hợp).
   - Viết widget tests cho từng thành phần (Gate 2, 3, 5).
-- **Phase 4 (Gate 8, 9 — Wiring Entry Points & Offline Refresh Hint):**
+- **Phase 4 (Gate 8, 9 — Wiring Entry Points & Offline Refresh Hint):** [x] ĐÃ HOÀN THÀNH (4/4 tests PASS)
   - Tích hợp `StoryDetailScreen` (fetch jobs phân trang, hiển thị badge `[Duyệt AI]`, mở sheet hoặc chooser).
-  - Tích hợp menu `ReaderControlOverlay`.
+  - Tích hợp `ReaderScreen` top HUD overlay.
   - Tích hợp Version-Aware Offline Hint liên kết với `OfflineContentResolver`.
-  - Viết tests cho entry point wiring và offline refresh hint (Gate 8, 9).
-- **Phase 5 (Gate 10 — Verification & Freeze Baseline):**
-  - Chạy `flutter test test/features/studio/` và toàn bộ test suite.
-  - Chạy `flutter analyze`.
-  - Cập nhật Issue #207 và Master Tracker #192. Commit & Push lên `main`.
+  - Viết `test/features/studio/studio_integration_wiring_test.dart` cho entry point wiring và offline refresh hint (Gate 8, 9).
+- **Phase 5 (Gate 10 — Verification & Freeze Baseline):** [x] ĐÃ HOÀN THÀNH (314/314 tests PASS, flutter analyze 0 issues)
+  - Chạy `flutter test test/features/studio/` (23/23 PASS) và toàn bộ test suite mobile (314/314 PASS).
+  - Chạy `flutter analyze` (0 issues).
+  - Đóng Issue #207 và cập nhật Master Tracker #192. Commit & Push lên remote `main`.
+

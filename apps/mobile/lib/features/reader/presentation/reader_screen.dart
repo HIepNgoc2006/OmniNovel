@@ -25,6 +25,10 @@ import 'reader_session_controller.dart';
 import 'reader_session_state.dart';
 import 'reading_progress_coordinator.dart';
 import 'webtoon_reader_view.dart';
+import '../../studio/models/studio_models.dart';
+import '../../studio/presentation/studio_quick_approval_sheet.dart';
+import '../../studio/presentation/widgets/studio_job_chooser_dialog.dart';
+import '../../studio/repositories/studio_repository.dart';
 
 class ReaderScreen extends StatefulWidget {
   final String chapterId;
@@ -45,6 +49,7 @@ class ReaderScreen extends StatefulWidget {
   final ChapterReportRepository? reportRepository;
   final OfflineContentResolver? offlineContentResolver;
   final ReaderLeaseManager? readerLeaseManager;
+  final StudioRepository? studioRepository;
 
   const ReaderScreen({
     super.key,
@@ -66,6 +71,7 @@ class ReaderScreen extends StatefulWidget {
     this.reportRepository,
     this.offlineContentResolver,
     this.readerLeaseManager,
+    this.studioRepository,
   });
 
   @override
@@ -82,6 +88,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
   PageController? _pageController;
   final GlobalKey<WebtoonReaderViewState> _webtoonKey = GlobalKey();
   bool _showOverlay = false;
+  List<TranslationJobSummaryDto> _readyAiJobs = [];
 
   List<NovelBlockItem>? _novelBlocks;
   bool _loadingNovelContent = false;
@@ -124,6 +131,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       versionId: widget.versionId,
       initialPageIndex: widget.initialPageIndex,
     );
+    _checkReadyAiJobs();
   }
 
   void _onNovelSettingsChanged() {
@@ -471,6 +479,13 @@ class _ReaderScreenState extends State<ReaderScreen> {
                       tooltip: 'Báo lỗi chương',
                       onPressed: _openReportSheet,
                     ),
+                    // Nút Duyệt bản dịch AI (Phase 5D.7)
+                    if (_readyAiJobs.isNotEmpty)
+                      IconButton(
+                        icon: const Icon(Icons.auto_awesome, color: Colors.purpleAccent),
+                        tooltip: 'Duyệt bản dịch AI mới',
+                        onPressed: _openStudioQuickApproval,
+                      ),
                   ],
                 ),
               ),
@@ -741,6 +756,87 @@ class _ReaderScreenState extends State<ReaderScreen> {
       initialPageNumber: pageNumber,
       initialAnchorBlockId: anchorBlockId,
       repository: widget.reportRepository,
+    );
+  }
+
+  Future<void> _checkReadyAiJobs() async {
+    final studioRepo = widget.studioRepository;
+    if (studioRepo == null) return;
+    try {
+      final jobsByChapter = await studioRepo.getJobsByChapterForStory(widget.storyId);
+      final jobs = jobsByChapter[widget.chapterId] ?? [];
+      if (mounted) {
+        setState(() {
+          _readyAiJobs = jobs;
+        });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _readyAiJobs = [];
+        });
+      }
+    }
+  }
+
+  Future<void> _openStudioQuickApproval() async {
+    final studioRepo = widget.studioRepository;
+    if (studioRepo == null || _readyAiJobs.isEmpty) return;
+
+    final TranslationJobSummaryDto selectedJob;
+    if (_readyAiJobs.length == 1) {
+      selectedJob = _readyAiJobs.first;
+    } else {
+      final chapterDetail = _sessionController.state.chapterDetail;
+      final chapterNum = chapterDetail?.chapter.chapterNumber.toString() ?? '';
+      final chosen = await StudioJobChooserDialog.show(
+        context,
+        chapterNumber: chapterNum,
+        jobs: _readyAiJobs,
+      );
+      if (chosen == null) return;
+      selectedJob = chosen;
+    }
+
+    if (!mounted) return;
+
+    await StudioQuickApprovalSheet.show(
+      context,
+      repository: studioRepo,
+      jobId: selectedJob.id,
+      onAppliedSuccessfully: () async {
+        // Tải lại jobs và reload chương hiện tại để phản ánh phiên bản mới
+        await _checkReadyAiJobs();
+        await _sessionController.loadChapter(
+          widget.chapterId,
+          versionId: null, // Lấy active version mới nhất sau khi apply
+          initialPageIndex: _sessionController.state.focusedPageIndex,
+        );
+
+        // Gate 9: Version-Aware Offline Hint
+        final offlineResolver = widget.offlineContentResolver;
+        if (offlineResolver != null) {
+          try {
+            final resolved = await offlineResolver.resolveChapter(chapterId: widget.chapterId);
+            if (resolved != null && mounted) {
+              final chapterDetail = _sessionController.state.chapterDetail;
+              final chapterNum = chapterDetail?.chapter.chapterNumber.toString() ?? '';
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'Đã xuất bản bản dịch mới${chapterNum.isNotEmpty ? " cho Chương $chapterNum" : ""}. Bản tải ngoại tuyến hiện tại là phiên bản cũ.',
+                  ),
+                  duration: const Duration(seconds: 6),
+                  action: SnackBarAction(
+                    label: 'Đóng',
+                    onPressed: () {},
+                  ),
+                ),
+              );
+            }
+          } catch (_) {}
+        }
+      },
     );
   }
 

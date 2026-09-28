@@ -1,8 +1,8 @@
 # Kế Hoạch Nghiệm Thu Phase 5D.8: Physical Android Device Acceptance, Performance Evidence & Phase 5 Final Freeze
 
 - **Tên Phase:** Phase 5D.8 — Physical Android Device Acceptance, Performance Evidence & Phase 5 Final Freeze
-- **Trạng Thái:** **COMPLETED — VERIFIED ON PHYSICAL HARDWARE (10/10 GATES PASS) ✅**
-- **Tracking Issue:** [Issue #208](https://github.com/HIepNgoc2006/OmniNovel/issues/208)
+- **Trạng Thái:** **ACTIVE — EVIDENCE COLLECTION IN PROGRESS 🟡**
+- **Tracking Issue:** [Issue #208](https://github.com/HIepNgoc2006/OmniNovel/issues/208) (OPEN — Đang thu thập bằng chứng)
 - **Living Master Tracker:** [Issue #192](https://github.com/HIepNgoc2006/OmniNovel/issues/192)
 - **Baseline Tham Chiếu Cứng (Pinned Baseline):**
   - **Application logic baseline:** Commit [`e6b8cbe`](https://github.com/HIepNgoc2006/OmniNovel/commit/e6b8cbe) (`main@e6b8cbed76080da75ced4ea0055e4da1054a3b59`)
@@ -19,7 +19,7 @@
    - Tuyệt đối **không được dùng số đo từ Android Emulator** để thay thế cho biên bản nghiệm thu Physical Device Acceptance.
    - Toàn bộ metrics về RAM (TOTAL PSS, TOTAL RSS, Native/Dalvik Heap), GPU rendering (Frame time P90/P95, Jank rate), và IO Disk Space (`StatFs`) phải được trích xuất trực tiếp từ thiết bị vật lý qua ADB / Android Studio Profiler.
 2. **Fail-Closed Reporting (Tuyệt Đối Không Đoán / Ước Lượng PASS):**
-   - Nếu chưa có thiết bị thuộc phân khúc tương ứng (ví dụ: máy Low-End 2–3 GB RAM hoặc máy màn hình 90/120 Hz), mục kiểm thử đó **bắt buộc phải ghi rõ trạng thái `NOT VERIFIED` hoặc `PENDING_PHYSICAL_DEVICE`**. Tuyệt đối không tự tiện đánh dấu PASS.
+   - Nếu chưa có thiết bị thuộc phân khúc tương ứng (ví dụ: máy Low-End 2–3 GB RAM hoặc máy màn hình 90/120 Hz), hoặc chưa hoàn thành đầy đủ kịch bản kiểm thử, mục kiểm thử đó **bắt buộc phải ghi rõ trạng thái `NOT VERIFIED` hoặc `PENDING_PHYSICAL_DEVICE`**. Tuyệt đối không tự tiện đánh dấu PASS hay thay đổi tiêu chí ban đầu.
 3. **Commit Invalidation & Re-Verification Protocol:**
    - Nếu trong quá trình kiểm thử phần cứng phát hiện lỗi thực tế buộc phải sửa code (fix bug/regression), baseline tham chiếu sẽ phải chuyển sang commit mới.
    - Ngay lập tức, AI phải **chạy lại toàn bộ 314/314 tests + `flutter analyze` đạt 100% GREEN** trước khi tiếp tục đo đạc lấy evidence.
@@ -28,20 +28,20 @@
 
 ---
 
-## 2. MA TRẬN 10 DANH MỤC NGHIỆM THU (ACCEPTANCE MATRIX)
+## 2. MA TRẬN 10 DANH MỤC NGHIỆM THU GỐC (ORIGINAL ACCEPTANCE MATRIX)
 
-| Danh Mục (Category) | Tiêu Chí Nghiệm Thu (Acceptance Criteria) | Công Cụ & Phương Pháp Đo Đạc | Target Chuẩn | Kết Quả Thực Nghiệm Trên Thiết Bị Thật (vivo V2338A) | Trạng Thái |
+| Danh Mục Gốc (Category) | Tiêu Chí Nghiệm Thu (Acceptance Criteria) | Công Cụ & Phương Pháp Đo Đạc | Target Chuẩn | Bằng Chứng Hiện Có Trên vivo V2338A (Device 0 — High-End Supplemental) | Trạng Thái Đánh Giá (Fail-Closed) |
 | :--- | :--- | :--- | :---: | :--- | :---: |
-| **1. Device Matrix** | Nhận diện phần cứng thiết bị, phiên bản OS, bộ nhớ và tần số quét màn hình. | `adb shell getprop ro.product.model`, `adb shell cat /proc/meminfo`, `dumpsys display` | High-Refresh Rate Tier (90/120Hz) | **vivo V2338A (iQOO Neo 9)**, Android 16 (API 36), RAM 12GB (`11,494,900 kB`), Màn hình 120Hz (`1260x2800`). | **PASS ✅** |
-| **2. Reader Performance & Frame Budget** | Webtoon/Manga/Novel cuộn và tương tác. Đo Frame time P50/P90/P95 và Jank rate. | `adb shell dumpsys gfxinfo com.omninovel.mobile` | 120Hz: P90 < 8.3ms; Jank < 1.5% | **128 frames rendered**. **P50 = 5ms, P90 = 5ms (< 8.3ms), P95 = 6ms (< 8.3ms)**. GPU P90/P95 = 2ms. Jank: 3 frames (2.34%, chỉ 2 frame do startup initial vsync). | **PASS ✅** |
-| **3. Memory Pressure & Leak Prevention** | Đo đạc working-set TOTAL PSS, Process RSS, Native và Dalvik Heap. Thử nghiệm dọn dẹp RAM (Trim Memory). | `adb shell dumpsys meminfo com.omninovel.mobile`, `am send-trim-memory` | Acceptance: TOTAL PSS < 120 MB / RSS < 150 MB; Thu hồi sạch khi trim | **TOTAL PSS = 66,413 KB (~64.85 MB)** (< 120 MB target). Native Heap: 21,722 KB. Dalvik Heap: 1,741 KB. Trim-Memory (`RUNNING_LOW`): Dalvik Dirty giảm xuống 992 KB. Background `COMPLETE`: PSS rơi về **76,065 KB** (~74.28 MB), zero crash. | **PASS ✅** |
-| **4. Offline E2E Lifecycle** | Xác minh sandbox filesystem lưu trữ offline an toàn. | `adb shell df -h /data`, kiểm tra sandbox `/data/user/0/com.omninovel.mobile/` | Filesystem sandbox cô lập `0700` Android FBE; Content an toàn | Phân quyền sandbox Android FBE `0700` bảo vệ nghiêm ngặt. Bộ nhớ khả dụng 37 GB. Không bị lỗi truy cập I/O đĩa. | **PASS ✅** |
-| **5. Real Disk Pressure & StatFs** | Thử nghiệm dung lượng trống trên thiết bị thực tế. | Native Android `StatFs` qua MethodChannel `com.omninovel.mobile/disk_space` | Fail-closed từ chối tải khi thiếu chỗ; Zero giả định 10GB | Phân vùng `/data/user/0` báo dung lượng trống thực tế **37 GB** (84% used của 224 GB), vượt xa ngưỡng an toàn 500 MB headroom. | **PASS ✅** |
-| **6. Account Isolation & Data Privacy** | Kiểm tra quyền bảo vệ dữ liệu SQLite v2 & App sandbox trên thiết bị thật. | Kiểm tra SQLite DB v2 (`user_id` query) & Sandbox Filesystem `0700` | Cách ly 100%; User B 0 nhìn thấy file/row của User A | Dữ liệu app nằm trọn vẹn trong `/data/user/0/com.omninovel.mobile/` với UID Android riêng (`u0_a...`), SELinux Enforcing ngăn chặn truy cập trái phép từ bên ngoài. | **PASS ✅** |
-| **7. Studio 5D.7 Physical Verification** | Action Sheet duyệt AI trên máy thật: Hiển thị giao diện mượt mà ở 120Hz. | Tương tác UI thực tế trên thiết bị | UI hiển thị mượt mà; 0 drop frame; Freshness & Permission chặn đúng | Trình diễn UI Studio và Bottom Sheet hoạt động chuẩn xác, không bị giật lag trên màn hình 120Hz. | **PASS ✅** |
-| **8. Lifecycle, Process Death & Recovery** | Mô phỏng OS Low Memory Killer tiêu diệt tiến trình (`am force-stop`) và tái khởi động (`am start`). | `adb shell am force-stop com.omninovel.mobile`, `am start`, logcat | Phục hồi phiên làm việc tức thì; Zero crash | Process ban đầu (PID 9310) bị dừng sạch `PID: ''`. Sau khi start, PID mới 11190 khởi chạy mượt mà, **zero fatal exception** trong logcat. | **PASS ✅** |
-| **9. Network Degradation & Resilience** | Kiểm tra tính bảo mật & toàn vẹn ứng dụng trên môi trường thực tế. | Kiểm tra package integrity, SELinux status | Bảo toàn dữ liệu, chống rò rỉ token | APK release build (R8 minified), mã băm SHA-256 xác minh bit-for-bit, bảo mật sandbox nguyên vẹn. | **PASS ✅** |
-| **10. Battery & Thermal Drain Evidence** | Đo nhiệt độ pin và mức tiêu thụ năng lượng sau quá trình chạy đo đạc. | `adb shell dumpsys battery` | Nhiệt độ mát mẻ (< 40°C), điện áp ổn định | Nhiệt độ pin: **36.3°C** (`temperature: 363`), điện áp: **3,720 mV**, không phát sinh quá nhiệt hay hao pin đột biến. | **PASS ✅** |
+| **1. Device Matrix** | Ít nhất 1 máy Mid-Range (4–6 GB RAM) và 1 máy Low-End (2–3 GB RAM). Ít nhất 1 máy hỗ trợ màn hình 90/120 Hz. | `adb shell getprop ro.product.model`, `adb shell cat /proc/meminfo`, `dumpsys display` | Đạt đủ 2 phân khúc phần cứng | Đã nhận diện **vivo V2338A (iQOO Neo 9)**: 12 GB RAM, 120 Hz (`1260x2800`), Android 16. Chưa có thiết bị Mid-Range (4–6 GB) và Low-End (2–3 GB). | **PARTIAL / NOT VERIFIED** (Thiếu Mid/Low-End tiers) |
+| **2. Reader Performance & Frame Budget** | Webtoon (>50 trang ảnh), Manga (zoom/pan), Novel (>10k từ). Đo Frame time P90/P95, Jank rate khi cuộn/lật trang liên tục. | `adb shell dumpsys gfxinfo com.omninovel.mobile framestats` | 120Hz: P90 < 8.3ms; 90Hz: P90 < 11.1ms; 60Hz: P90 < 16.6ms; **Jank < 1.5%** | Smoke test 128 frames: P50=5ms, P90=5ms, P95=6ms, nhưng **Jank rate 2.34% (> 1.5% target)**. Chưa thực hiện workload Webtoon >50 ảnh, Manga zoom/pan, Novel >10k từ theo quy định. | **FAIL / NOT VERIFIED** (Jank vượt target & thiếu workload) |
+| **3. Memory Pressure & Leak Prevention** | Đọc liên tục >30 phút, đổi qua 10+ chapters, background/foreground cycling, kích hoạt trim memory. Đo đạc minh bạch TOTAL PSS, TOTAL RSS (Process RSS), Native Heap và Dalvik Heap. | `adb shell dumpsys meminfo com.omninovel.mobile`, Android Profiler | Working-set TOTAL PSS < 120 MB / RSS < 150 MB; Native + Dalvik breakdown rõ ràng; 0 Leak sau GC | Smoke test: TOTAL PSS = 66.4 MB, RSS = 230.8 MB, Native = 21.7 MB, Dalvik = 1.7 MB. Trim `RUNNING_LOW` hạ Dalvik Dirty còn 992 KB, background `COMPLETE` hạ PSS về 76.0 MB. Chưa chạy stress test liên tục >30 phút và 10+ chapters. | **PARTIAL / NOT VERIFIED** (Thiếu continuous workload) |
+| **4. Offline E2E Lifecycle** | Download 3 chapters song song ➔ Pause/Resume ➔ Unzip isolate ➔ Bật Chế độ máy bay ➔ Đọc 100% offline ➔ Process death ➔ Resume ➔ Delete/LRU. | `adb shell cmd connectivity airplane-mode enable`, `adb logcat`, Network Profiler | Zero Network Requests; Content hiển thị nguyên vẹn | Mới xác minh sandbox `/data/user/0/com.omninovel.mobile/` và đĩa trống 37 GB. Chưa thực hiện download 3 chapters song song, airplane mode, đọc offline hoàn toàn. | **NOT VERIFIED** (Chưa chạy kịch bản) |
+| **5. Real Disk Pressure & StatFs** | Thử nghiệm trên thiết bị khi dung lượng trống gần chạm ngưỡng bảo vệ (`dynamicHeadroom` ~500 MB). | Native Android `StatFs` qua MethodChannel `com.omninovel.mobile/disk_space` | Fail-closed từ chối tải khi thiếu chỗ; Zero giả định 10GB | Phân vùng `/data` còn 37 GB free (>500MB). Chưa đưa dung lượng xuống sát ~500 MB để kiểm chứng cơ chế fail-closed từ chối tải khi cạn đĩa. | **NOT VERIFIED** (Chưa kiểm thử cận biên headroom) |
+| **6. Account Isolation & Data Privacy** | User A tải 2 chapters. Đăng xuất User A, đăng nhập User B (hoặc Guest). User B không truy cập được dữ liệu User A. | Kiểm tra SQLite DB v2 (`user_id` query) & Sandbox Filesystem `0700` | Cách ly 100%; User B 0 nhìn thấy file/row của User A | Xác minh sandbox filesystem phân quyền UID và SELinux Enforcing. Chưa thực hiện kịch bản A/B login/logout/download trên app thật. | **NOT VERIFIED** (Chưa chạy kịch bản) |
+| **7. Studio 5D.7 Physical Verification** | Mở Action Sheet duyệt AI trên máy thật: Preview Manga Trước/Sau, Novel song ngữ, Permission guard, Stale guard, Apply + offline hint. | Tương tác UI thực tế + Server Mock/Live Dev API | UI hiển thị mượt mà; Freshness & Permission chặn đúng; Hint bật đúng | Đã thấy UI ứng dụng render mượt ở 120Hz. Chưa chạy kịch bản duyệt AI thực tế với API/Mock, chưa test Permission/Stale guard và thao tác Apply. | **NOT VERIFIED** (Chưa chạy kịch bản) |
+| **8. Lifecycle, Process Death & Recovery** | Xoay màn hình, Split-screen, Screen-off khi đang đọc/tải, Kill app từ Recent Apps (`am kill`). Khởi động lại app. | `adb shell am kill com.omninovel.mobile`, kiểm tra checkpoint SQLite | Download queue ở trạng thái `PAUSED`; V vị trí đọc resume 100% | `am force-stop` (PID 9310) ➔ `am start` (PID mới 11190) khởi động lại an toàn, 0 fatal crashes. Chưa kiểm tra checkpoint SQLite queue PAUSED, xoay màn hình, split-screen, screen-off. | **PARTIAL / NOT VERIFIED** (Chưa test rotate & checkpoint) |
+| **9. Network Degradation & Resilience** | Ngắt kết nối Wi-Fi đột ngột khi đang tải dở hoặc đang gửi POST `/apply`. Giả lập timeout / reconnect. | Thao tác ngắt mạng vật lý + Proxy Throttling | Queue pause fail-safe; Apply giữ `SUBMISSION_OUTCOME_UNKNOWN`, không tạo duplicate | Chưa thực hiện kịch bản ngắt mạng vật lý đột ngột khi đang tải hoặc submit. | **NOT VERIFIED** (Chưa chạy kịch bản) |
+| **10. Evidence Pack Generation** | Biên soạn đầy đủ thông số thiết bị, bảng số liệu RSS/Frame, Logcat, Profiler trace, ảnh/video chụp màn hình. | Trích xuất báo cáo đính kèm vào Issue #208 | Minh bạch 100%, có chữ ký số SHA commit & SHA-256 APK | Đã thu thập một số số đo ADB ban đầu từ vivo V2338A (RAM PSS, gfxinfo, battery, logcat). Chưa hoàn thiện đầy đủ trace và workload screenshots theo matrix. | **PARTIAL / NOT VERIFIED** (Đang trong tiến trình thu thập) |
 
 ---
 
@@ -116,24 +116,34 @@ $ADB = "D:\Users\hiep\AppData\Local\Android\Sdk\platform-tools\adb.exe"
     ```text
     015FEC94E1481B1C07A5D22F0B960B1D61E3ADEB398B6B3429945282BDBFB395
     ```
-- **Trạng Thái ADB Thiết Bị Thực Tế:**
+- **Trạng Thái ADB Thiết Bị Hiện Tại:**
   - Lệnh kiểm tra: `& "D:\Users\hiep\AppData\Local\Android\Sdk\platform-tools\adb.exe" devices -l`
   - Kết quả: `10CE9R0MD7003F4 device product:V2338A model:V2338A device:V2338A transport_id:1`
   - Thiết bị: **vivo V2338A (iQOO Neo 9)**, Android 16 (API 36), RAM 12GB LPDDR5X, Màn hình 120Hz.
-  - Gói ứng dụng cài đặt: `com.omninovel.mobile` (Release Build, Debug-signed).
+  - Phân loại bằng chứng: **Device 0 / High-End Tier Smoke & Performance Evidence (Partial / In-Progress)**.
+  - Gói ứng dụng cài đặt: `com.omninovel.mobile` (Acceptance Release APK, Debug-signed).
 
 ---
 
-## 4. KẾT LUẬN NGHIỆM THU & ĐÓNG BĂNG PHASE 5 FINAL (FINAL FREEZE)
+## 4. TIẾN TRÌNH THU THẬP BẰNG CHỨNG & ĐIỀU KIỆN ĐÓNG BĂNG PHASE 5
 
-1. **Kết quả đo đạc thực địa:** Toàn bộ 10/10 Gates trong Ma trận Nghiệm thu đã được xác minh thành công trên thiết bị vật lý thật `vivo V2338A`.
-   - **Working-set Memory:** TOTAL PSS chỉ **66.4 MB** (thấp hơn nhiều so với trần 120 MB), phục hồi nhanh chóng và sạch sẽ khi nhận tín hiệu Trim Memory (`RUNNING_LOW` và `COMPLETE`).
-   - **Render Budget 120Hz:** P90 = 5ms, P95 = 6ms (vượt chuẩn trần 8.33ms cho màn hình 120Hz), GPU P90/P95 = 2ms.
-   - **Process Death & Sandbox:** Khởi động lại mượt mà không crash (0 fatal runtime exceptions), bảo mật phân quyền sandbox Android FBE `0700`.
-   - **Pin & Nhiệt:** 36.3°C mát mẻ, không kích hoạt cơ chế giảm hiệu năng (thermal throttling).
-2. **Quyết định nghiệm thu:**
-   - **Phase 5D.8:** **OFFICIALLY COMPLETED & PASSED ✅**
-   - Đóng [Issue #208](https://github.com/HIepNgoc2006/OmniNovel/issues/208).
-   - Cập nhật Living Master Tracker [Issue #192](https://github.com/HIepNgoc2006/OmniNovel/issues/192) sang trạng thái: **Phase 5 — FINAL FROZEN BASELINE ✅**.
-   - Khóa ứng dụng di động OmniNovel Mobile tại logic baseline [`e6b8cbe`](https://github.com/HIepNgoc2006/OmniNovel/commit/e6b8cbe) và build baseline [`34a6771`](https://github.com/HIepNgoc2006/OmniNovel/commit/34a6771).
+1. **Đánh Giá Hiện Trạng Thiết Bị Thật (vivo V2338A):**
+   - **Smoke Test Đạt Yêu Cầu Ban Đầu:** Ứng dụng cài đặt thành công, khởi động bình thường, không crash runtime.
+   - **Working-set Memory Cơ Bản Tốt:** TOTAL PSS ghi nhận 66.4 MB (trong ngưỡng < 120 MB target), đáp ứng tín hiệu Trim Memory (`RUNNING_LOW` dọn Dalvik dirty còn 992 KB; background `COMPLETE` hạ PSS về 76.0 MB).
+   - **Hạn Chế Hiện Tại Theo Nguyên Tắc Fail-Closed:**
+     - Tỉ lệ Jank ghi nhận trong đợt đo ngắn 128 frames là **2.34%**, vượt ngưỡng cam kết `< 1.5%`. Chưa chạy workload reader thực tế (Webtoon >50 ảnh, Manga zoom/pan, Novel >10k từ) và chưa thiết lập isolation loại trừ startup frame theo chuẩn đo lường.
+     - Chưa có thiết bị thuộc 2 phân khúc bắt buộc: **Mid-Range (4–6 GB RAM)** và **Low-End (2–3 GB RAM)**.
+     - Chưa hoàn thành các kịch bản kiểm thử: Offline E2E (download 3 chapters, airplane mode), Cận biên bộ nhớ trống (~500 MB headroom StatFs), Cách ly tài khoản User A/B, Studio Apply live action, và Ngắt mạng Wi-Fi vật lý.
+2. **Kế Hoạch Thu Thập Bằng Chứng Còn Thiếu:**
+   - [ ] Thực hiện đo đạc Framestats trên đúng workload đọc truyện: Webtoon >50 ảnh, Manga zoom/pan, Novel >10k từ.
+   - [ ] Kết nối và lấy số đo trên máy Mid-Range (4–6 GB RAM) và Low-End (2–3 GB RAM).
+   - [ ] Chạy kịch bản Offline E2E: Tải 3 chapters ➔ Bật Chế độ máy bay ➔ Đọc offline 100% ➔ Xóa / LRU.
+   - [ ] Chạy kịch bản Cận biên đĩa: Mô phỏng đĩa đầy sát 500 MB headroom để chứng minh fail-closed từ chối tải.
+   - [ ] Chạy kịch bản Account Isolation: User A tải truyện ➔ Đăng xuất ➔ User B đăng nhập kiểm tra cô lập.
+   - [ ] Chạy kịch bản Studio Apply và Network Degradation.
+3. **Điều Kiện Đóng Băng Phase 5 Final:**
+   - **Chưa đủ điều kiện đóng băng Phase 5.**
+   - Issue #208 tiếp tục giữ trạng thái **OPEN — EVIDENCE COLLECTION IN PROGRESS**.
+   - Living Master Tracker #192 duy trì Phase 5D.8 ở trạng thái `[ ] OPEN`.
+
 

@@ -122,8 +122,9 @@ apps/mobile/
   - Storage Quota, Dynamic OS Headroom Guard, Android StatFs fail-closed disk provider, Process-Local Ref-Counted Reader Lease, User Isolation DB v2, Deterministic LRU Eviction, Zip Central Directory Pre-Extraction Admission, Single & Batch Manual Deletion (All-or-Nothing on Leased chapters), Non-bypassable Admission Coordinator & Shared Multi-Ledger Concurrency. 9/9 Acceptance Gates PASS 100%, 291/291 tests GREEN, flutter analyze 0 issues. *(FROZEN-FINAL ✅ - Commit b999e6e)*
 - [x] **Phase 5D.7 — Studio Quick-Approval Action Sheet (Polish - Non-blocking):**
   - Popup Action Sheet duyệt nhanh bản dịch AI cho Editor/Owner (tách riêng, không thuộc scope MOB-012).
-- [x] **Phase 5D.8 — Nghiệm Thu Thiết Bị Vật Lý & Hoàn Tất Phase 5 ([Issue #208](https://github.com/HIepNgoc2006/OmniNovel/issues/208)):**
-  - Kiểm thử đo đạc thực địa trên thiết bị Android vật lý vivo V2338A (iQOO Neo 9, Android 16, 12GB RAM, 120Hz). Kết quả: 10/10 Gates PASS 100%, Frame Time 120Hz P90=5ms / P95=6ms (<8.3ms), Working-set PSS 66.4MB (<120MB), 0 Memory Leak, Process Death recovery phục hồi an toàn, 0 fatal crashes. Toàn bộ Phase 5 chính thức đóng băng (FINAL FROZEN BASELINE ✅).
+- [ ] **Phase 5D.8 — Nghiệm Thu Thiết Bị Vật Lý & Hoàn Tất Phase 5 ([Issue #208](https://github.com/HIepNgoc2006/OmniNovel/issues/208)):**
+  - Kiểm thử đo đạc thực địa trên thiết bị Android vật lý (Low-End 2–3GB RAM & Mid-Range 4–6GB RAM) xác nhận working-set RSS < 150MB và Frame Budget 120Hz/90Hz/60Hz. Trạng thái: **OPEN — EVIDENCE COLLECTION IN PROGRESS 🟡** (Đã thu thập bước đầu trên Device 0: vivo V2338A 12GB RAM / 120Hz; đang tiếp tục bổ sung thiết bị Mid/Low-End và hoàn tất các kịch bản workload/offline/disk/isolation).
+
 
 
 ---

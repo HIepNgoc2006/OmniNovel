@@ -3,9 +3,9 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 import { buildPostgresConnectionOptions } from './database.config';
 
-dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
-dotenv.config({ path: path.resolve(process.cwd(), '../../.env') });
-dotenv.config({ path: path.resolve(process.cwd(), '.env') });
+dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
+dotenv.config({ path: path.resolve(process.cwd(), '../../.env'), override: true });
+dotenv.config({ path: path.resolve(process.cwd(), '.env'), override: true });
 
 const pgOptions = buildPostgresConnectionOptions({
   databaseUrl: process.env.DATABASE_URL,

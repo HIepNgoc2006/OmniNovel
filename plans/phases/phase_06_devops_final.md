@@ -1,7 +1,7 @@
 # 📋 Phase 6: Triển Khai DevOps, Hạ Tầng Đám Mây & Nghiệm Thu 5 Môn
 
 - **Mục tiêu:** Thiết lập hạ tầng triển khai thực tế đa môi trường (Local/CI vs Production Cloud), tự động hóa CI/CD, hệ thống giám sát và hồ sơ bảo vệ 5 môn học.
-- **Trạng thái:** [ ] Đang chuẩn bị hạ tầng (IN PROGRESS 🟡)
+- **Trạng thái:** [x] Phase 6.1 Đã hoàn tất và nghiệm thu (CLOSED / FROZEN ✅) | Chuẩn bị Phase 6.2 (IN PROGRESS 🟡)
 
 ---
 
@@ -23,25 +23,33 @@
    - Hỗ trợ 2 chế độ: `STORAGE_PROVIDER=minio` (Local/CI) và `STORAGE_PROVIDER=r2` (Production).
    - Biến môi trường chuẩn hóa: `S3_ENDPOINT`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_BUCKET_MANGA`, `S3_BUCKET_NOVEL`, `S3_FORCE_PATH_STYLE`.
    - **Fail-Fast in Production:** Khi `NODE_ENV=production` hoặc `STORAGE_PROVIDER=r2`, nếu thiếu bất kỳ biến nào thì ứng dụng lập tức dừng boot (throw error), tuyệt đối không silent fallback về MinIO localhost.
-2. **Presigned URL Domain Integrity:**
+2. **SSRF Provider Isolation Invariant:**
+   - Khi `STORAGE_PROVIDER=r2`, AI Worker tuyệt đối không thêm MinIO/localhost origins vào allowlist. Chỉ cho phép R2 endpoint và các virtual-hosted bucket subdomains (`https://<bucket>.<account_id>.r2.cloudflarestorage.com`).
+3. **Presigned URL Domain Integrity:**
    - Presigned URLs cấp phát cho người dùng tải/đọc ảnh phải giữ nguyên host từ S3 SDK (`*.r2.cloudflarestorage.com`), không rewrite sang Custom CDN host vì R2 không hỗ trợ presigned signature trên custom domain.
-3. **Database Migration SSoT:**
+4. **Database Migration SSoT & Provenance:**
    - Không chỉnh sửa database bằng tay trên Supabase Studio Dashboard. Mọi thay đổi schema phải xuất phát từ TypeORM Migrations được version-control trong repo và chạy bằng migration runner chuyên dụng.
+   - `data-source.ts` thực thi `dotenv.config({ ..., override: true })` để cô lập hoàn toàn môi trường dự án khỏi biến môi trường OS toàn cục.
 
 ---
 
 ## 3. DANH SÁCH ĐẦU VIỆC (CHECKLIST)
 
-### A. Chuẩn Hóa Mã Nguồn & Cấu Hình Provider-Neutral (Phase 6.1)
+### A. Chuẩn Hóa Mã Nguồn & Cấu Hình Provider-Neutral (Phase 6.1 - CLOSED / FROZEN ✅)
 - [x] Refactor `StorageService` (`services/api`) hỗ trợ `minio` và `r2` với fail-fast validation ở production và fail-fast enum.
 - [x] Refactor `env.validation.ts` schema với đầy đủ `STORAGE_PROVIDER`, `S3_*`, `DATABASE_URL`, `DB_SSL` và production fail-fast guards.
-- [x] Hợp nhất cấu hình PostgreSQL qua `buildPostgresConnectionOptions` đảm bảo 100% parity giữa runtime (`DatabaseModule`) và migration CLI (`data-source.ts`).
-- [x] Refactor SSRF Safe Downloader (`services/ai-worker`) hỗ trợ R2 endpoint domain & virtual-hosted subdomains.
+- [x] Hợp nhất cấu hình PostgreSQL qua `buildPostgresConnectionOptions` đảm bảo 100% parity giữa runtime (`DatabaseModule`) và migration CLI (`data-source.ts`). Thêm `{ override: true }` cho dotenv để chống ô nhiễm biến môi trường OS.
+- [x] **[P0 Sửa xong]** Cách ly nghiêm ngặt SSRF Safe Downloader (`services/ai-worker`): Khi `STORAGE_PROVIDER=r2` ở production, tuyệt đối cấm thêm MinIO/localhost origin; chỉ whitelist R2 endpoint và bucket subdomains.
+- [x] **[P1 Sửa xong]** Cleanup `services/ai-worker/app/core/config.py`: Xóa bỏ trùng lặp khai báo `STORAGE_PROVIDER` và `S3_ENDPOINT`; áp dụng `Literal["minio", "r2"]` giúp fail-fast ngay khi boot nếu typo.
+- [x] **[P0 Sửa xong]** Nâng cấp R2 Live Smoke Runner (`r2-live-smoke.ts`): Bổ sung chế độ nghiệm thu `R2_LIVE_SMOKE_REQUIRED=true` (thiếu credentials sẽ FAIL-FAST ngay, không skip). Chạy toàn diện chu trình (PUT presigned → HEAD → GET presigned → COPY/promote → DELETE) trên cả 2 buckets (`omninovel-manga` và `omninovel-novel`) với khối `finally` dọn dẹp chống rác dữ liệu.
 - [x] Viết bộ kiểm thử hợp đồng (Contract Tests) chứng minh Cloudflare R2 config, Presigned URL generation, Supabase URL/SSL, và bảo toàn 100% MinIO local compatibility.
-- [x] Chạy lại toàn bộ 384/384 tests Backend API và 321/321 tests AI Worker đạt 100% GREEN.
 - [x] Khởi tạo 2 R2 buckets chuẩn hóa trên Cloudflare: `omninovel-manga` và `omninovel-novel` (Account `5647695aab5f1dfad2253715bf29531e`).
-- [x] Audit và migrate thành công toàn bộ 18 TypeORM migrations (0000 -> 0017) lên Supabase PostgreSQL 17.6 (`sovdnipwoybywqorjvkt`), tạo 33 tables và ghi nhận 18 records trong bảng `migrations`.
-- [x] Viết bộ kiểm thử live smoke test vòng đời R2 (`r2-live-smoke.ts`: PUT presigned → HEAD → GET → COPY/promote → DELETE).
+- [x] **[P1 Sửa xong]** Chứng minh Migration Provenance & Parity:
+  - Supabase PostgreSQL 17.6 (`sovdnipwoybywqorjvkt`): 33 tables ở schema `public`, 18 migrations (0000 -> 0017) ghi nhận đầy đủ trong bảng `migrations`.
+  - Local PostgreSQL 16: Dọn dẹp 15,211 legacy test jobs chặn invariant 0017, chạy `npm run migration:run` thành công, kiểm tra `npm run migration:show` xác nhận toàn bộ 18 migrations hiển thị `[X]` applied.
+- [x] Xác thực kiểm thử cục bộ (Locally Verified):
+  - Backend NestJS: **386 passed, 1 skipped** (test mạng R2 live khi thiếu credentials, có test fail-fast mode đi kèm) trên 32 test suites.
+  - AI Worker: **323 passed, 0 failed** trên pytest.
 
 ### B. Đóng Gói Docker & Reverse Proxy (Phase 6.2)
 - [ ] Hoàn thiện `deploy/docker-compose.yml` cho Production VPS: gồm 4 container cốt lõi (`nginx`, `api`, `ai-worker`, `redis`).

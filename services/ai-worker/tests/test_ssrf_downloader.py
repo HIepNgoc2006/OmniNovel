@@ -161,6 +161,7 @@ async def test_safe_download_bytes_blocks_ssrf():
 
 def test_ssrf_allows_cloudflare_r2_production_origins(monkeypatch):
     monkeypatch.setattr("app.core.ssrf_safe_downloader.settings.ENV", "production")
+    monkeypatch.setattr("app.core.ssrf_safe_downloader.settings.STORAGE_PROVIDER", "r2")
     monkeypatch.setattr(
         "app.core.ssrf_safe_downloader.settings.S3_ENDPOINT",
         "https://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com",
@@ -190,5 +191,18 @@ def test_ssrf_allows_cloudflare_r2_production_origins(monkeypatch):
     # 5. Block HTTP when R2 requires HTTPS
     with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED: Port 80 trên host .* không được phép"):
         validate_download_url("http://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com/omninovel/chapter1.zip")
+
+    # 6. Block MinIO / localhost in production R2 mode (STRICT PROVIDER ISOLATION)
+    with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED: Origin .* không nằm trong danh sách"):
+        validate_download_url("http://localhost:9000/raw-manga/chapter.zip")
+
+
+def test_storage_provider_typo_fail_fast():
+    from pydantic import ValidationError
+    from app.core.config import Settings
+
+    with pytest.raises(ValidationError):
+        Settings(AI_WORKER_SECRET="test_secret", STORAGE_PROVIDER="r22")
+
 
 

@@ -20,51 +20,54 @@ class SSRFBlockedError(ValueError):
 def _get_allowed_origins() -> Set[Tuple[str, str, int]]:
     """
     Trả về tập hợp các origin (scheme, hostname, port) được phép tải file Object Storage.
-    - Ở production: CHỈ cho phép origin được cấu hình cụ thể qua settings.MINIO_ENDPOINT hoặc settings.S3_ENDPOINT.
-    - Ở test/development: Bổ sung các local aliases (localhost, 127.0.0.1, minio, host.docker.internal).
+    - Nếu provider == 'r2': CHỈ cho phép origin từ settings.S3_ENDPOINT.
+    - Nếu provider == 'minio': CHỈ cho phép origin từ settings.MINIO_ENDPOINT.
+    - Ở production: Tuyệt đối KHÔNG bổ sung local aliases.
+    - Ở test/development: Bổ sung các local aliases chỉ khi provider == 'minio'.
     """
-    origins = set()
+    origins: Set[Tuple[str, str, int]] = set()
+    provider = (settings.STORAGE_PROVIDER or "minio").lower()
 
-    # 1. MinIO Origin
-    raw_endpoint = (settings.MINIO_ENDPOINT or "localhost").lower()
-    if "://" in raw_endpoint:
-        parsed_minio = urllib.parse.urlparse(raw_endpoint)
-        minio_host = parsed_minio.hostname or "localhost"
-        minio_port = parsed_minio.port or settings.MINIO_PORT or 9000
-    elif ":" in raw_endpoint:
-        parts = raw_endpoint.split(":")
-        minio_host = parts[0]
-        try:
-            minio_port = int(parts[1])
-        except ValueError:
-            minio_port = settings.MINIO_PORT or 9000
+    if provider == "r2":
+        if settings.S3_ENDPOINT:
+            raw_s3 = settings.S3_ENDPOINT.strip().lower()
+            if "://" not in raw_s3:
+                raw_s3 = f"https://{raw_s3}"
+            parsed_s3 = urllib.parse.urlparse(raw_s3)
+            s3_scheme = (parsed_s3.scheme or "https").lower()
+            s3_host = (parsed_s3.hostname or "").lower()
+            s3_port = parsed_s3.port or (443 if s3_scheme == "https" else 80)
+            if s3_host:
+                origins.add((s3_scheme, s3_host, s3_port))
     else:
-        minio_host = raw_endpoint
-        minio_port = settings.MINIO_PORT or 9000
+        # MinIO Origin
+        raw_endpoint = (settings.MINIO_ENDPOINT or "localhost").lower()
+        if "://" in raw_endpoint:
+            parsed_minio = urllib.parse.urlparse(raw_endpoint)
+            minio_host = parsed_minio.hostname or "localhost"
+            minio_port = parsed_minio.port or settings.MINIO_PORT or 9000
+        elif ":" in raw_endpoint:
+            parts = raw_endpoint.split(":")
+            minio_host = parts[0]
+            try:
+                minio_port = int(parts[1])
+            except ValueError:
+                minio_port = settings.MINIO_PORT or 9000
+        else:
+            minio_host = raw_endpoint
+            minio_port = settings.MINIO_PORT or 9000
 
-    minio_scheme = "https" if settings.MINIO_USE_SSL else "http"
-    origins.add((minio_scheme, minio_host, minio_port))
+        minio_scheme = "https" if settings.MINIO_USE_SSL else "http"
+        origins.add((minio_scheme, minio_host, minio_port))
 
-    # 2. Cloudflare R2 / S3-compatible Origin
-    if settings.S3_ENDPOINT:
-        raw_s3 = settings.S3_ENDPOINT.strip().lower()
-        if "://" not in raw_s3:
-            raw_s3 = f"https://{raw_s3}"
-        parsed_s3 = urllib.parse.urlparse(raw_s3)
-        s3_scheme = (parsed_s3.scheme or "https").lower()
-        s3_host = (parsed_s3.hostname or "").lower()
-        s3_port = parsed_s3.port or (443 if s3_scheme == "https" else 80)
-        if s3_host:
-            origins.add((s3_scheme, s3_host, s3_port))
-
-    # Chỉ thêm local aliases khi ở môi trường test hoặc development
-    if settings.ENV != "production":
-        origins.update({
-            ("http", "localhost", minio_port),
-            ("http", "127.0.0.1", minio_port),
-            ("http", "minio", minio_port),
-            ("http", "host.docker.internal", minio_port),
-        })
+        # Chỉ thêm local aliases khi ở môi trường test hoặc development VÀ provider là minio
+        if settings.ENV != "production":
+            origins.update({
+                ("http", "localhost", minio_port),
+                ("http", "127.0.0.1", minio_port),
+                ("http", "minio", minio_port),
+                ("http", "host.docker.internal", minio_port),
+            })
 
     return origins
 
@@ -123,7 +126,8 @@ def validate_download_url(url: str) -> urllib.parse.ParseResult:
 
     # 5. Hỗ trợ Cloudflare R2 / S3 Virtual-Hosted style:
     # URL có dạng: https://<bucket>.<account_id>.r2.cloudflarestorage.com/...
-    if settings.S3_ENDPOINT:
+    provider = (settings.STORAGE_PROVIDER or "minio").lower()
+    if provider == "r2" and settings.S3_ENDPOINT:
         raw_s3 = settings.S3_ENDPOINT.strip().lower()
         if "://" not in raw_s3:
             raw_s3 = f"https://{raw_s3}"

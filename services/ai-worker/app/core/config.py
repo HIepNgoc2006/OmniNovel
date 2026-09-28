@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Đảm bảo tuyệt đối HF_HOME và TORCH_HOME trỏ về thư mục .cache trong services/ai-worker
@@ -21,18 +21,18 @@ class Settings(BaseSettings):
     AI_WORKER_PORT: int = 8001
     AI_WORKER_SECRET: str
     CORE_API_INTERNAL_URL: str = "http://localhost:8000"
-    STORAGE_PROVIDER: str = "minio"
-    S3_ENDPOINT: Optional[str] = None
-    MINIO_ENDPOINT: str = "localhost"
-    MINIO_PORT: int = 9000
-    MINIO_USE_SSL: bool = False
 
-    # Object Storage Provider & S3 / R2 Configuration (SSoT với Core API)
-    STORAGE_PROVIDER: str = "minio"
+    # Object Storage Provider (minio | r2) & S3 / R2 Configuration (SSoT với Core API)
+    STORAGE_PROVIDER: Literal["minio", "r2"] = "minio"
     S3_ENDPOINT: Optional[str] = None
     S3_REGION: Optional[str] = None
     S3_BUCKET_MANGA: Optional[str] = None
     S3_BUCKET_NOVEL: Optional[str] = None
+
+    # MinIO Local Configuration
+    MINIO_ENDPOINT: str = "localhost"
+    MINIO_PORT: int = 9000
+    MINIO_USE_SSL: bool = False
 
     # Model & Inference Settings
     OCR_MODEL_NAME: str = "kha-white/manga-ocr-base"

@@ -166,33 +166,46 @@ def test_ssrf_allows_cloudflare_r2_production_origins(monkeypatch):
         "app.core.ssrf_safe_downloader.settings.S3_ENDPOINT",
         "https://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com",
     )
+    monkeypatch.setattr("app.core.ssrf_safe_downloader.settings.S3_BUCKET_MANGA", "omninovel-manga")
+    monkeypatch.setattr("app.core.ssrf_safe_downloader.settings.S3_BUCKET_NOVEL", "omninovel-novel")
     monkeypatch.setattr("app.core.ssrf_safe_downloader.settings.MINIO_ENDPOINT", "none.internal")
 
-    # 1. R2 Path-Style URL
-    path_url = "https://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com/omninovel/chapter1.zip"
+    # 1. R2 Path-Style URL với bucket được phép
+    path_url = "https://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com/omninovel-manga/chapter1.zip"
     parsed_path = validate_download_url(path_url)
     assert parsed_path.hostname == "5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com"
     assert parsed_path.scheme == "https"
 
-    # 2. R2 Virtual-Hosted Style URL
-    virtual_url = "https://omninovel.5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com/chapter1.zip"
+    # 2. R2 Virtual-Hosted Style URL với bucket được phép
+    virtual_url = "https://omninovel-manga.5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com/chapter1.zip"
     parsed_virtual = validate_download_url(virtual_url)
-    assert parsed_virtual.hostname == "omninovel.5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com"
+    assert parsed_virtual.hostname == "omninovel-manga.5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com"
     assert parsed_virtual.scheme == "https"
 
-    # 3. Block evil account R2 domain
-    with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED: Origin .* không nằm trong danh sách"):
-        validate_download_url("https://attacker-account.r2.cloudflarestorage.com/omninovel/exploit.zip")
+    # Novel bucket virtual-hosted cũng PASS
+    novel_url = "https://omninovel-novel.5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com/novel.txt"
+    assert validate_download_url(novel_url).hostname == "omninovel-novel.5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com"
 
-    # 4. Block evil virtual-hosted account R2 domain
-    with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED: Origin .* không nằm trong danh sách"):
-        validate_download_url("https://omninovel.attacker-account.r2.cloudflarestorage.com/exploit.zip")
+    # 3. Chặn bucket KHÁC (unauthorized bucket) trong cùng account qua Virtual-Hosted Style
+    with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED: R2 bucket 'some-other-bucket' không được phép"):
+        validate_download_url("https://some-other-bucket.5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com/chapter1.zip")
 
-    # 5. Block HTTP when R2 requires HTTPS
+    # 4. Chặn bucket KHÁC (unauthorized bucket) trong cùng account qua Path-Style
+    with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED: R2 bucket 'some-other-bucket' trong path-style không được phép"):
+        validate_download_url("https://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com/some-other-bucket/chapter1.zip")
+
+    # 5. Chặn hoàn toàn account R2 độc hại khác (Attacker Account)
+    with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED: Origin .* không nằm trong danh sách"):
+        validate_download_url("https://attacker-account.r2.cloudflarestorage.com/omninovel-manga/exploit.zip")
+
+    with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED: Origin .* không nằm trong danh sách"):
+        validate_download_url("https://omninovel-manga.attacker-account.r2.cloudflarestorage.com/exploit.zip")
+
+    # 6. Chặn giao thức HTTP khi R2 yêu cầu HTTPS
     with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED: Port 80 trên host .* không được phép"):
-        validate_download_url("http://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com/omninovel/chapter1.zip")
+        validate_download_url("http://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com/omninovel-manga/chapter1.zip")
 
-    # 6. Block MinIO / localhost in production R2 mode (STRICT PROVIDER ISOLATION)
+    # 7. Chặn MinIO / localhost khi đang ở production R2 mode (STRICT PROVIDER ISOLATION)
     with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED: Origin .* không nằm trong danh sách"):
         validate_download_url("http://localhost:9000/raw-manga/chapter.zip")
 

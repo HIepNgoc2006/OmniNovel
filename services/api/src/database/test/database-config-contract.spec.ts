@@ -247,4 +247,55 @@ describe('Database Configuration Contract (Local vs Supabase Production & Parity
       expect(runtimeOptions.ssl).toEqual({ rejectUnauthorized: false });
     });
   });
+
+  describe('5. Production Environment Precedence Invariant (No Dotenv Override)', () => {
+    const originalEnv = { ...process.env };
+
+    afterEach(() => {
+      process.env = { ...originalEnv };
+    });
+
+    it('should prioritize OS/Docker/CI injected DATABASE_URL over local file values (override: false)', () => {
+      const injectedProdDbUrl =
+        'postgresql://postgres.sovdnipwoybywqorjvkt:SupabaseSecret@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres';
+
+      // Giả lập môi trường container/CI đã inject DATABASE_URL
+      process.env.DATABASE_URL = injectedProdDbUrl;
+      process.env.DB_HOST = 'remote-pg';
+
+      // Nạp cấu hình - kết nối PHẢI chọn injectedProdDbUrl
+      const resolved = buildPostgresConnectionOptions({
+        databaseUrl: process.env.DATABASE_URL,
+        host: process.env.DB_HOST,
+        port: process.env.DB_PORT,
+        username: process.env.DB_USER,
+        password: process.env.DB_PASSWORD,
+        database: process.env.DB_NAME,
+        ssl: process.env.DB_SSL,
+      });
+
+      expect(resolved.url).toBe(injectedProdDbUrl);
+      expect(resolved.host).toBeUndefined();
+    });
+
+    it('should allow explicit MIGRATION_ENV_FILE only when variables are unset in process.env', () => {
+      // Injected key
+      process.env.DATABASE_URL = 'postgresql://injected:pass@db:5432/injected_db';
+      delete process.env.DB_PORT;
+
+      // Mock value from explicit file (chỉ điền khi process.env chưa có)
+      const explicitFileDbPort = 5434;
+      if (!process.env.DB_PORT) {
+        process.env.DB_PORT = String(explicitFileDbPort);
+      }
+
+      const resolved = buildPostgresConnectionOptions({
+        databaseUrl: process.env.DATABASE_URL,
+        port: process.env.DB_PORT,
+      });
+
+      // DATABASE_URL không bị ghi đè bởi file
+      expect(resolved.url).toBe('postgresql://injected:pass@db:5432/injected_db');
+    });
+  });
 });

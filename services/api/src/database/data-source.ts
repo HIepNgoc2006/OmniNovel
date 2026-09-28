@@ -1,11 +1,31 @@
 import { DataSource } from 'typeorm';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import * as fs from 'fs';
 import { buildPostgresConnectionOptions } from './database.config';
 
-dotenv.config({ path: path.resolve(__dirname, '../../../.env'), override: true });
-dotenv.config({ path: path.resolve(process.cwd(), '../../.env'), override: true });
-dotenv.config({ path: path.resolve(process.cwd(), '.env'), override: true });
+// Quy tắc ưu tiên biến môi trường:
+// 1. OS / Docker / CI injected env (process.env) - mức ưu tiên cao nhất, tuyệt đối KHÔNG override.
+// 2. Explicit env file (nếu MIGRATION_ENV_FILE được chỉ định rõ ràng).
+// 3. Local env fallback (.env ở các đường dẫn thông thường, chỉ điền các giá trị còn thiếu).
+if (process.env.MIGRATION_ENV_FILE) {
+  const explicitPath = path.resolve(process.cwd(), process.env.MIGRATION_ENV_FILE);
+  if (fs.existsSync(explicitPath)) {
+    dotenv.config({ path: explicitPath });
+  }
+}
+
+const candidateEnvPaths = [
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(process.cwd(), '../../.env'),
+  path.resolve(__dirname, '../../../.env'),
+];
+
+for (const envPath of candidateEnvPaths) {
+  if (fs.existsSync(envPath)) {
+    dotenv.config({ path: envPath });
+  }
+}
 
 const pgOptions = buildPostgresConnectionOptions({
   databaseUrl: process.env.DATABASE_URL,

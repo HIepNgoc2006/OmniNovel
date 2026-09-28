@@ -118,15 +118,30 @@ def validate_download_url(url: str) -> urllib.parse.ParseResult:
         effective_port = 443 if scheme == "https" else 80
 
     # 4. Thẩm định exact origin (scheme, hostname, port)
+    provider = (settings.STORAGE_PROVIDER or "minio").lower()
     allowed_origins = _get_allowed_origins()
     current_origin = (scheme, hostname, effective_port)
 
     if current_origin in allowed_origins:
+        # Nếu là R2 provider và dùng path-style trên S3_ENDPOINT, kiểm tra bucket allowlist ở segment đầu path
+        if provider == "r2" and settings.S3_ENDPOINT:
+            allowed_buckets = {
+                (settings.S3_BUCKET_MANGA or "").strip().lower(),
+                (settings.S3_BUCKET_NOVEL or "").strip().lower(),
+            }
+            allowed_buckets.discard("")
+            path_segments = [seg for seg in (parsed.path or "").strip("/").split("/") if seg]
+            if path_segments and allowed_buckets:
+                first_segment = path_segments[0].lower()
+                if first_segment not in allowed_buckets:
+                    raise SSRFBlockedError(
+                        f"SSRF_BLOCKED: R2 bucket '{first_segment}' trong path-style không được phép. Chỉ cho phép các buckets: {allowed_buckets}."
+                    )
         return parsed
 
     # 5. Hỗ trợ Cloudflare R2 / S3 Virtual-Hosted style:
     # URL có dạng: https://<bucket>.<account_id>.r2.cloudflarestorage.com/...
-    provider = (settings.STORAGE_PROVIDER or "minio").lower()
+    # Khóa chặt bucket isolation: CHỈ cho phép exact bucket allowlist {S3_BUCKET_MANGA, S3_BUCKET_NOVEL}
     if provider == "r2" and settings.S3_ENDPOINT:
         raw_s3 = settings.S3_ENDPOINT.strip().lower()
         if "://" not in raw_s3:
@@ -140,8 +155,16 @@ def validate_download_url(url: str) -> urllib.parse.ParseResult:
             suffix = f".{s3_host}"
             if hostname.endswith(suffix):
                 prefix = hostname[:-len(suffix)]
-                if prefix and "." not in prefix:  # 1 level subdomain for bucket
+                allowed_buckets = {
+                    (settings.S3_BUCKET_MANGA or "").strip().lower(),
+                    (settings.S3_BUCKET_NOVEL or "").strip().lower(),
+                }
+                allowed_buckets.discard("")
+                if prefix in allowed_buckets:
                     return parsed
+                raise SSRFBlockedError(
+                    f"SSRF_BLOCKED: R2 bucket '{prefix}' không được phép. Chỉ cho phép các buckets: {allowed_buckets or '{chưa cấu hình}'}."
+                )
 
     # Nếu không khớp exact origin, kiểm tra match hostname và port
     allowed_hosts = {o[1] for o in allowed_origins}

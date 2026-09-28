@@ -4,14 +4,7 @@ import '../models/storage_policy_config.dart';
 import 'disk_space_provider.dart';
 import 'storage_quota_manager.dart';
 
-/// Ngoại lệ ném ra khi DiskSpaceProvider gặp sự cố, trả về dung lượng đĩa âm hoặc không đọc được.
-class DiskSpaceUnavailableException implements Exception {
-  final String message;
-  const DiskSpaceUnavailableException(this.message);
-
-  @override
-  String toString() => 'DiskSpaceUnavailableException: $message';
-}
+export 'disk_space_provider.dart' show DiskSpaceUnavailableException;
 
 /// Ngoại lệ ném ra khi một tác vụ tải bị từ chối tiếp nhận (Admission Denied) do không đủ dung lượng.
 class StorageAdmissionDeniedException implements Exception {

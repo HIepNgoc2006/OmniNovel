@@ -207,7 +207,7 @@ void main() {
     storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: 'test_user');
     await storagePaths.ensureDirectoriesExist();
 
-    bundleInstaller = BundleInstaller(
+    bundleInstaller = BundleInstaller.forTestingWithoutAdmission(
       repository: storageRepo,
       storagePaths: storagePaths,
       computeRunner: <Q, R>(callback, message) async => await callback(message),
@@ -821,7 +821,7 @@ void main() {
 
       // Copy lại các bản ghi từ storageRepo cũ nếu dùng in-memory (hoặc test trên đĩa)
       // Ở đây với inMemoryDatabasePath mới, ta cài lại chapter
-      final restartInstaller = BundleInstaller(
+      final restartInstaller = BundleInstaller.forTestingWithoutAdmission(
         repository: freshRepo,
         storagePaths: storagePaths,
         computeRunner: <Q, R>(callback, message) async => await callback(message),

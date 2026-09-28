@@ -168,7 +168,7 @@ void main() {
     await storagePaths.ensureDirectoriesExist();
 
     // Dùng computeRunner đồng bộ trong môi trường test ffi để deterministic
-    bundleInstaller = BundleInstaller(
+    bundleInstaller = BundleInstaller.forTestingWithoutAdmission(
       repository: storageRepo,
       storagePaths: storagePaths,
       computeRunner: <Q, R>(callback, message) async => await callback(message),
@@ -387,7 +387,7 @@ void main() {
       };
 
       // Custom installer với maxEntries = 5 để test nhanh
-      final customInstaller = BundleInstaller(
+      final customInstaller = BundleInstaller.forTestingWithoutAdmission(
         repository: storageRepo,
         storagePaths: storagePaths,
         computeRunner: <Q, R>(callback, message) async {
@@ -1119,7 +1119,7 @@ void main() {
       await storageRepo.insertTask(task);
 
       final computeCalls = <String>[];
-      final monitoredInstaller = BundleInstaller(
+      final monitoredInstaller = BundleInstaller.forTestingWithoutAdmission(
         repository: storageRepo,
         storagePaths: storagePaths,
         computeRunner: <Q, R>(callback, message) async {
@@ -1178,7 +1178,7 @@ void main() {
       final cancelToken = CancelToken();
 
       // Giả lập hủy token trong lúc compute runner đang giải nén
-      final cancellableInstaller = BundleInstaller(
+      final cancellableInstaller = BundleInstaller.forTestingWithoutAdmission(
         repository: storageRepo,
         storagePaths: storagePaths,
         computeRunner: <Q, R>(callback, message) async {
@@ -1255,7 +1255,7 @@ void main() {
         cancelToken: cancelToken,
       );
 
-      final installer = BundleInstaller(
+      final installer = BundleInstaller.forTestingWithoutAdmission(
         repository: storageRepo,
         storagePaths: hookedStoragePaths,
         computeRunner: <Q, R>(callback, message) async => await callback(message),

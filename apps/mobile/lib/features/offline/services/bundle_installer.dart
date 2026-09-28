@@ -381,12 +381,15 @@ class BundleInstaller {
   final StorageAdmissionCoordinator? _admissionCoordinator;
 
   String get userId => _repository.userId;
+  bool get hasAdmissionCoordinator => _admissionCoordinator != null;
+  StorageAdmissionCoordinator? get admissionCoordinator => _admissionCoordinator;
 
+  /// Constructor chính cho Production: BẮT BUỘC [admissionCoordinator] để ngăn chặn silent bypass Gate 7.
   BundleInstaller({
     required OfflineStorageRepository repository,
     required OfflineStoragePaths storagePaths,
+    required StorageAdmissionCoordinator admissionCoordinator,
     ComputeRunner? computeRunner,
-    StorageAdmissionCoordinator? admissionCoordinator,
   })  : _repository = repository,
         _storagePaths = storagePaths,
         _computeRunner = computeRunner ?? compute,
@@ -396,9 +399,27 @@ class BundleInstaller {
         'Identity Mismatch: repository.userId (${repository.userId}) != storagePaths.userId (${storagePaths.userId})',
       );
     }
-    if (admissionCoordinator != null && admissionCoordinator.userId != repository.userId) {
+    if (admissionCoordinator.userId != repository.userId) {
       throw ArgumentError(
         'Identity Mismatch: admissionCoordinator.userId (${admissionCoordinator.userId}) != repository.userId (${repository.userId})',
+      );
+    }
+  }
+
+  /// Named constructor dành riêng cho các unit test cô lập không kiểm tra admission guard.
+  /// Tuyệt đối KHÔNG sử dụng trong production code.
+  @visibleForTesting
+  BundleInstaller.forTestingWithoutAdmission({
+    required OfflineStorageRepository repository,
+    required OfflineStoragePaths storagePaths,
+    ComputeRunner? computeRunner,
+  })  : _repository = repository,
+        _storagePaths = storagePaths,
+        _computeRunner = computeRunner ?? compute,
+        _admissionCoordinator = null {
+    if (repository.userId != storagePaths.userId) {
+      throw ArgumentError(
+        'Identity Mismatch: repository.userId (${repository.userId}) != storagePaths.userId (${storagePaths.userId})',
       );
     }
   }

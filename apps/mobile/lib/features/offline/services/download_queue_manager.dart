@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'package:dio/dio.dart';
+import 'package:flutter/foundation.dart';
 import '../../../core/storage/offline_storage_paths.dart';
 import '../models/download_task.dart';
 import '../repositories/artifact_repository.dart';
@@ -34,13 +35,19 @@ class DownloadQueueManager {
   final StreamController<DownloadTask> _taskUpdateController =
       StreamController<DownloadTask>.broadcast();
 
+  bool get hasAdmissionCoordinator => _admissionCoordinator != null;
+  StorageAdmissionCoordinator? get admissionCoordinator => _admissionCoordinator;
+
+  /// Constructor chính cho Production: BẮT BUỘC [admissionCoordinator] để ngăn chặn silent bypass Gate 6.
+  /// Đồng thời kiểm tra bất biến Concurrency Ledger: [bundleInstaller] và [DownloadQueueManager]
+  /// BẮT BUỘC phải dùng chung một instance [StorageAdmissionCoordinator] duy nhất per user context.
   DownloadQueueManager({
     required OfflineStorageRepository repository,
     required ArtifactRepository artifactRepository,
     required ArtifactDownloadClient downloadClient,
     required OfflineStoragePaths storagePaths,
+    required StorageAdmissionCoordinator admissionCoordinator,
     BundleInstaller? bundleInstaller,
-    StorageAdmissionCoordinator? admissionCoordinator,
   })  : _repository = repository,
         _artifactRepository = artifactRepository,
         _downloadClient = downloadClient,
@@ -57,9 +64,45 @@ class DownloadQueueManager {
         'Identity mismatch in DownloadQueueManager: bundleInstaller (${bundleInstaller.userId}) != repository (${repository.userId})',
       );
     }
-    if (admissionCoordinator != null && admissionCoordinator.userId != repository.userId) {
+    if (admissionCoordinator.userId != repository.userId) {
       throw ArgumentError(
         'Identity mismatch in DownloadQueueManager: admissionCoordinator (${admissionCoordinator.userId}) != repository (${repository.userId})',
+      );
+    }
+    // Concurrency Ledger Non-Bypass & Multi-Ledger Sharing Invariant:
+    // Queue và Installer BẮT BUỘC phải dùng chung một instance StorageAdmissionCoordinator per user!
+    if (bundleInstaller != null && bundleInstaller.hasAdmissionCoordinator) {
+      if (!identical(bundleInstaller.admissionCoordinator, admissionCoordinator)) {
+        throw ArgumentError(
+          'Concurrency Ledger Violation: bundleInstaller and downloadQueueManager MUST share the exact same StorageAdmissionCoordinator instance per user.',
+        );
+      }
+    }
+  }
+
+  /// Named constructor dành riêng cho các unit test cô lập không kiểm tra admission guard.
+  /// Tuyệt đối KHÔNG sử dụng trong production code.
+  @visibleForTesting
+  DownloadQueueManager.forTestingWithoutAdmission({
+    required OfflineStorageRepository repository,
+    required ArtifactRepository artifactRepository,
+    required ArtifactDownloadClient downloadClient,
+    required OfflineStoragePaths storagePaths,
+    BundleInstaller? bundleInstaller,
+  })  : _repository = repository,
+        _artifactRepository = artifactRepository,
+        _downloadClient = downloadClient,
+        _storagePaths = storagePaths,
+        _bundleInstaller = bundleInstaller,
+        _admissionCoordinator = null {
+    if (repository.userId != storagePaths.userId) {
+      throw ArgumentError(
+        'Identity mismatch in DownloadQueueManager: repository (${repository.userId}) != storagePaths (${storagePaths.userId})',
+      );
+    }
+    if (bundleInstaller != null && bundleInstaller.userId != repository.userId) {
+      throw ArgumentError(
+        'Identity mismatch in DownloadQueueManager: bundleInstaller (${bundleInstaller.userId}) != repository (${repository.userId})',
       );
     }
   }

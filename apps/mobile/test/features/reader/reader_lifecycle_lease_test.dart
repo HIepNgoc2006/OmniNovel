@@ -187,11 +187,11 @@ void main() {
     when(() => offlineResolver.resolveChapter(chapterId: 'chap_online', preferredVersionId: any(named: 'preferredVersionId')))
         .thenAnswer((_) async => null);
 
-    final onlineDetail = ChapterDetail(
-      chapter: const ChapterHeaderSummary(id: 'chap_online', chapterNumber: '1', title: 'Online'),
-      story: const ChapterStorySummary(id: 's1', slug: 's1', title: 'Story', mediaFormat: 'COMIC'),
-      activeVersion: const ChapterVersionInfo(id: 'ver_online', versionNumber: 1),
-      pages: const [],
+    const onlineDetail = ChapterDetail(
+      chapter: ChapterHeaderSummary(id: 'chap_online', chapterNumber: '1', title: 'Online'),
+      story: ChapterStorySummary(id: 's1', slug: 's1', title: 'Story', mediaFormat: 'COMIC'),
+      activeVersion: ChapterVersionInfo(id: 'ver_online', versionNumber: 1),
+      pages: [],
     );
     when(() => chapterRepo.getChapterDetail('chap_online', versionId: any(named: 'versionId')))
         .thenAnswer((_) async => onlineDetail);

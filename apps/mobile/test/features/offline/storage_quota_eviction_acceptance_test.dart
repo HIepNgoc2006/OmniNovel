@@ -21,6 +21,8 @@ import 'package:omninovel_mobile/features/offline/services/offline_deletion_serv
 import 'package:omninovel_mobile/features/offline/services/reader_lease_manager.dart';
 import 'package:omninovel_mobile/features/offline/services/active_checkpoint_provider.dart';
 import 'package:omninovel_mobile/features/offline/services/storage_admission_coordinator.dart';
+import 'package:flutter/services.dart';
+import 'package:omninovel_mobile/features/offline/services/offline_user_scope.dart';
 import 'package:omninovel_mobile/features/offline/services/storage_quota_manager.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
@@ -32,6 +34,7 @@ class MockDiskSpaceProvider extends Mock implements DiskSpaceProvider {}
 
 void main() {
   setUpAll(() {
+    TestWidgetsFlutterBinding.ensureInitialized();
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
   });
@@ -746,8 +749,8 @@ void main() {
         final repoA = OfflineStorageRepository(database: offlineDb, userId: 'user_a');
         final repoB = OfflineStorageRepository(database: offlineDb, userId: 'user_b');
 
-        final installerA = BundleInstaller(repository: repoA, storagePaths: pathsA);
-        final installerB = BundleInstaller(repository: repoB, storagePaths: pathsB);
+        final installerA = BundleInstaller.forTestingWithoutAdmission(repository: repoA, storagePaths: pathsA);
+        final installerB = BundleInstaller.forTestingWithoutAdmission(repository: repoB, storagePaths: pathsB);
 
         final resolverA = OfflineContentResolver(
           repository: repoA,
@@ -879,12 +882,12 @@ void main() {
 
         // BundleInstaller mismatch
         expect(
-          () => BundleInstaller(repository: repoA, storagePaths: pathsB),
+          () => BundleInstaller.forTestingWithoutAdmission(repository: repoA, storagePaths: pathsB),
           throwsA(isA<ArgumentError>()),
         );
 
         // OfflineContentResolver mismatch (storagePaths mismatch)
-        final installerA = BundleInstaller(repository: repoA, storagePaths: pathsA);
+        final installerA = BundleInstaller.forTestingWithoutAdmission(repository: repoA, storagePaths: pathsA);
         expect(
           () => OfflineContentResolver(
             repository: repoA,
@@ -896,7 +899,7 @@ void main() {
 
         // OfflineContentResolver mismatch (bundleInstaller mismatch)
         final repoB = OfflineStorageRepository(database: offlineDb, userId: 'user_b');
-        final installerB = BundleInstaller(repository: repoB, storagePaths: pathsB);
+        final installerB = BundleInstaller.forTestingWithoutAdmission(repository: repoB, storagePaths: pathsB);
         expect(
           () => OfflineContentResolver(
             repository: repoA,
@@ -912,7 +915,7 @@ void main() {
         final downloadClient = ArtifactDownloadClient();
 
         expect(
-          () => DownloadQueueManager(
+          () => DownloadQueueManager.forTestingWithoutAdmission(
             repository: repoA,
             artifactRepository: artifactRepo,
             downloadClient: downloadClient,
@@ -922,7 +925,7 @@ void main() {
         );
 
         expect(
-          () => DownloadQueueManager(
+          () => DownloadQueueManager.forTestingWithoutAdmission(
             repository: repoA,
             artifactRepository: artifactRepo,
             downloadClient: downloadClient,
@@ -954,7 +957,7 @@ void main() {
         final artifactRepo = ArtifactRepository(apiClient: mockApiClient);
         final downloadClient = ArtifactDownloadClient();
 
-        final queue = DownloadQueueManager(
+        final queue = DownloadQueueManager.forTestingWithoutAdmission(
           repository: repoA,
           artifactRepository: artifactRepo,
           downloadClient: downloadClient,
@@ -1411,7 +1414,7 @@ void main() {
         await installedDir.create(recursive: true);
         await File(p.join(installedDir.path, 'p1.jpg')).writeAsString('fake image');
 
-        await storageRepo.insertOfflineChapter(OfflineChapter(
+        await storageRepo.insertOfflineChapter(const OfflineChapter(
           userId: userId,
           chapterVersionId: versionId,
           chapterId: 'chap_idem_1',
@@ -1426,7 +1429,7 @@ void main() {
           manifestJson: '{}',
         ));
 
-        await storageRepo.insertTask(DownloadTask(
+        await storageRepo.insertTask(const DownloadTask(
           taskId: 'task_$versionId',
           userId: userId,
           chapterVersionId: versionId,
@@ -1540,7 +1543,7 @@ void main() {
         const versionId = 'ver_tomb_prevails';
         final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
         final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
-        final installer = BundleInstaller(
+        final installer = BundleInstaller.forTestingWithoutAdmission(
           storagePaths: storagePaths,
           repository: storageRepo,
         );
@@ -1568,7 +1571,7 @@ void main() {
         await pageFile.parent.create(recursive: true);
         await pageFile.writeAsBytes(pageContent);
 
-        await storageRepo.insertTask(DownloadTask(
+        await storageRepo.insertTask(const DownloadTask(
           taskId: 'task_$versionId',
           userId: userId,
           chapterVersionId: versionId,
@@ -1609,13 +1612,13 @@ void main() {
         const versionId = 'ver_tomb_purged';
         final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
         final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
-        final installer = BundleInstaller(
+        final installer = BundleInstaller.forTestingWithoutAdmission(
           storagePaths: storagePaths,
           repository: storageRepo,
         );
 
         // Filesystem không có folder (đã purge trước khi crash)
-        await storageRepo.insertTask(DownloadTask(
+        await storageRepo.insertTask(const DownloadTask(
           taskId: 'task_$versionId',
           userId: userId,
           chapterVersionId: versionId,
@@ -1647,7 +1650,7 @@ void main() {
         const versionId = 'ver_valid_no_tomb';
         final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
         final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
-        final installer = BundleInstaller(
+        final installer = BundleInstaller.forTestingWithoutAdmission(
           storagePaths: storagePaths,
           repository: storageRepo,
         );
@@ -1674,7 +1677,7 @@ void main() {
         await pageFile.parent.create(recursive: true);
         await pageFile.writeAsBytes(pageContent);
 
-        await storageRepo.insertTask(DownloadTask(
+        await storageRepo.insertTask(const DownloadTask(
           taskId: 'task_$versionId',
           userId: userId,
           chapterVersionId: versionId,
@@ -1970,7 +1973,7 @@ void main() {
         );
 
         const vId = 'ver_quota_only';
-        await storageRepo.insertOfflineChapter(OfflineChapter(
+        await storageRepo.insertOfflineChapter(const OfflineChapter(
           userId: userId,
           chapterVersionId: vId,
           chapterId: 'c1',
@@ -2086,7 +2089,7 @@ void main() {
         );
 
         // Chèn 2 chapters
-        await storageRepo.insertOfflineChapter(OfflineChapter(
+        await storageRepo.insertOfflineChapter(const OfflineChapter(
           userId: userId,
           chapterVersionId: 'ver_protected_by_cp',
           chapterId: 'c1',
@@ -2102,7 +2105,7 @@ void main() {
           manifestJson: '{}',
         ));
 
-        await storageRepo.insertOfflineChapter(OfflineChapter(
+        await storageRepo.insertOfflineChapter(const OfflineChapter(
           userId: userId,
           chapterVersionId: 'ver_freely_evictable',
           chapterId: 'c2',
@@ -2157,7 +2160,7 @@ void main() {
         // Chèn 2 chapters x 10 MB
         const vId1 = 'ver_leased_cannot_evict';
         const vId2 = 'ver_pinned_cannot_evict';
-        await storageRepo.insertOfflineChapter(OfflineChapter(
+        await storageRepo.insertOfflineChapter(const OfflineChapter(
           userId: userId,
           chapterVersionId: vId1,
           chapterId: 'c1',
@@ -2172,7 +2175,7 @@ void main() {
           installedAt: 100,
           manifestJson: '{}',
         ));
-        await storageRepo.insertOfflineChapter(OfflineChapter(
+        await storageRepo.insertOfflineChapter(const OfflineChapter(
           userId: userId,
           chapterVersionId: vId2,
           chapterId: 'c2',
@@ -2360,7 +2363,7 @@ void main() {
         await oldInstalledDir.create(recursive: true);
         await File(p.join(oldInstalledDir.path, 'old.dat')).writeAsString('old');
 
-        await storageRepo.insertOfflineChapter(OfflineChapter(
+        await storageRepo.insertOfflineChapter(const OfflineChapter(
           userId: userId,
           chapterVersionId: vOld,
           chapterId: 'c_old',
@@ -2440,7 +2443,7 @@ void main() {
 
         // Chèn chapter bị PINNED (không thể evict)
         const vPinned = 'ver_pinned_immortal';
-        await storageRepo.insertOfflineChapter(OfflineChapter(
+        await storageRepo.insertOfflineChapter(const OfflineChapter(
           userId: userId,
           chapterVersionId: vPinned,
           chapterId: 'c_pin',
@@ -2546,6 +2549,524 @@ void main() {
         expect(coordinator.totalReservedDownloadBytes, equals(200000000));
 
         coordinator.releaseReservation('task_concurrent_2');
+        await offlineDb.close();
+      });
+
+      // =======================================================================
+      // Gate 6.5: Fail-Closed DefaultDiskSpaceProvider (StatFs Native & Non-Fallback)
+      // =======================================================================
+      test('Gate 6.5.1: DefaultDiskSpaceProvider throws DiskSpaceUnavailableException if custom provider returns negative bytes', () async {
+        final provider = DefaultDiskSpaceProvider((path) async => -100);
+        await expectLater(
+          () => provider.getFreeBytes('/dummy/path'),
+          throwsA(isA<DiskSpaceUnavailableException>()),
+        );
+      });
+
+      test('Gate 6.5.2: DefaultDiskSpaceProvider fails-closed on MissingPluginException without falling back to fake 10 GB', () async {
+        // Tạo instance không có customProvider và dùng channel chưa đăng ký native backend
+        const dummyChannel = MethodChannel('com.omninovel.mobile/disk_space_unregistered');
+        final provider = DefaultDiskSpaceProvider.withChannel(dummyChannel);
+
+        await expectLater(
+          () => provider.getFreeBytes('/dummy/path'),
+          throwsA(isA<DiskSpaceUnavailableException>()),
+        );
+      });
+
+      test('Gate 6.5.3: DefaultDiskSpaceProvider parses positive bytes from platform channel correctly', () async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          const MethodChannel(DefaultDiskSpaceProvider.defaultChannelName),
+          (MethodCall call) async {
+            if (call.method == 'getFreeDiskSpace') {
+              return 4294967296; // 4 GB
+            }
+            return null;
+          },
+        );
+
+        const provider = DefaultDiskSpaceProvider();
+        final freeBytes = await provider.getFreeBytes('/data/user/0/com.omninovel.mobile/files');
+        expect(freeBytes, equals(4294967296));
+
+        // Dọn dẹp mock handler
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger.setMockMethodCallHandler(
+          const MethodChannel(DefaultDiskSpaceProvider.defaultChannelName),
+          null,
+        );
+      });
+
+      // =======================================================================
+      // Gate 6.6: Production Admission Non-Bypass & OfflineUserScope Wiring
+      // =======================================================================
+      test('Gate 6.6.1: QueueManager & BundleInstaller enforce shared StorageAdmissionCoordinator invariant', () async {
+        final dbPath = p.join(tempDir.path, 'shared_coordinator_violation_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_shared_coord';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+        final diskProvider = MockDiskSpaceProvider();
+        final quotaManager = StorageQuotaManager(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          deletionService: deletionService,
+          readerLeaseManager: leaseManager,
+          diskSpaceProvider: diskProvider,
+        );
+
+        final coordinatorA = StorageAdmissionCoordinator(
+          diskSpaceProvider: diskProvider,
+          storageQuotaManager: quotaManager,
+          storagePaths: storagePaths,
+        );
+        final coordinatorB = StorageAdmissionCoordinator(
+          diskSpaceProvider: diskProvider,
+          storageQuotaManager: quotaManager,
+          storagePaths: storagePaths,
+        );
+
+        final installerA = BundleInstaller(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          admissionCoordinator: coordinatorA,
+        );
+
+        final mockApiClient = MockApiClient();
+        final artifactRepo = ArtifactRepository(apiClient: mockApiClient);
+        final downloadClient = ArtifactDownloadClient();
+
+        // Cố tình inject coordinatorB vào Queue trong khi installer dùng coordinatorA
+        // Bắt buộc ném ArgumentError để ngăn chặn rủi ro concurrent ledger mismatch
+        expect(
+          () => DownloadQueueManager(
+            repository: storageRepo,
+            artifactRepository: artifactRepo,
+            downloadClient: downloadClient,
+            storagePaths: storagePaths,
+            admissionCoordinator: coordinatorB,
+            bundleInstaller: installerA,
+          ),
+          throwsA(isA<ArgumentError>()),
+        );
+
+        await offlineDb.close();
+      });
+
+      test('Gate 6.6.2: OfflineUserScope wires exactly ONE shared StorageAdmissionCoordinator across all services', () async {
+        final dbPath = p.join(tempDir.path, 'offline_user_scope_wire_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_scope_valid';
+        final mockApiClient = MockApiClient();
+        final artifactRepo = ArtifactRepository(apiClient: mockApiClient);
+        final downloadClient = ArtifactDownloadClient();
+        final diskProvider = MockDiskSpaceProvider();
+
+        final scope = await OfflineUserScope.create(
+          userId: userId,
+          database: offlineDb,
+          artifactRepository: artifactRepo,
+          downloadClient: downloadClient,
+          diskSpaceProvider: diskProvider,
+          customBasePath: tempDir.path,
+        );
+
+        // Xác nhận tính duy nhất của StorageAdmissionCoordinator instance
+        expect(scope.bundleInstaller.hasAdmissionCoordinator, isTrue);
+        expect(scope.queueManager.hasAdmissionCoordinator, isTrue);
+        expect(identical(scope.bundleInstaller.admissionCoordinator, scope.admissionCoordinator), isTrue);
+        expect(identical(scope.queueManager.admissionCoordinator, scope.admissionCoordinator), isTrue);
+        expect(identical(scope.bundleInstaller.admissionCoordinator, scope.queueManager.admissionCoordinator), isTrue);
+
+        // Khởi tạo và dọn dẹp
+        await scope.initialize();
+        scope.dispose();
+        await offlineDb.close();
+      });
+
+      test('Gate 6.6.3: OfflineUserScope enforces identity matching across all sub-components', () async {
+        final dbPath = p.join(tempDir.path, 'scope_mismatch_test.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userIdA = 'user_alpha';
+        const userIdB = 'user_beta';
+
+        final pathsA = OfflineStoragePaths(customBasePath: tempDir.path, userId: userIdA);
+        final repoA = OfflineStorageRepository(database: offlineDb, userId: userIdA);
+        final leaseManagerA = ReaderLeaseManager();
+        final deletionServiceA = OfflineDeletionService(repository: repoA, storagePaths: pathsA, readerLeaseManager: leaseManagerA);
+        final diskProvider = MockDiskSpaceProvider();
+        final quotaManagerA = StorageQuotaManager(
+          repository: repoA,
+          storagePaths: pathsA,
+          deletionService: deletionServiceA,
+          readerLeaseManager: leaseManagerA,
+          diskSpaceProvider: diskProvider,
+        );
+        final coordinatorA = StorageAdmissionCoordinator(
+          diskSpaceProvider: diskProvider,
+          storageQuotaManager: quotaManagerA,
+          storagePaths: pathsA,
+        );
+        final installerA = BundleInstaller(repository: repoA, storagePaths: pathsA, admissionCoordinator: coordinatorA);
+        final mockApiClient = MockApiClient();
+        final artifactRepo = ArtifactRepository(apiClient: mockApiClient);
+        final downloadClient = ArtifactDownloadClient();
+        final queueA = DownloadQueueManager(
+          repository: repoA,
+          artifactRepository: artifactRepo,
+          downloadClient: downloadClient,
+          storagePaths: pathsA,
+          admissionCoordinator: coordinatorA,
+          bundleInstaller: installerA,
+        );
+        final resolverA = OfflineContentResolver(repository: repoA, storagePaths: pathsA, bundleInstaller: installerA);
+
+        // Trộn component của userIdB vào scope của userIdA -> Ném ArgumentError
+        final pathsB = OfflineStoragePaths(customBasePath: tempDir.path, userId: userIdB);
+        expect(
+          () => OfflineUserScope(
+            userId: userIdA,
+            storagePaths: pathsB, // MISMATCH
+            repository: repoA,
+            diskSpaceProvider: diskProvider,
+            policyConfig: const StoragePolicyConfig(),
+            readerLeaseManager: leaseManagerA,
+            checkpointProvider: InMemoryCheckpointProvider(),
+            deletionService: deletionServiceA,
+            quotaManager: quotaManagerA,
+            admissionCoordinator: coordinatorA,
+            bundleInstaller: installerA,
+            queueManager: queueA,
+            contentResolver: resolverA,
+          ),
+          throwsA(isA<ArgumentError>()),
+        );
+
+        await offlineDb.close();
+      });
+    });
+
+    // =========================================================================
+    // Gate 8: Manual Single & Batch Story Deletion (Independent Acceptance)
+    // =========================================================================
+    group('Gate 8: Manual Single & Batch Story Deletion', () {
+      test('Gate 8.1: Single Chapter Deletion purges payload, database row, tombstone, and download_task', () async {
+        final dbPath = p.join(tempDir.path, 'gate8_single_delete.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_gate8_1';
+        const versionId = 'ver_g8_single';
+        const storyId = 'story_g8_single';
+
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+
+        // Setup: installed payload, .part, staging, offline_chapters row, download_task
+        final installedDir = await storagePaths.getInstalledDir(versionId);
+        await installedDir.create(recursive: true);
+        await File(p.join(installedDir.path, 'content.txt')).writeAsString('installed payload');
+
+        final partFile = await storagePaths.getPartFile(versionId);
+        await partFile.parent.create(recursive: true);
+        await partFile.writeAsString('part leftover');
+
+        final stagingDir = await storagePaths.getStagingDir(versionId);
+        await stagingDir.create(recursive: true);
+        await File(p.join(stagingDir.path, 'temp.txt')).writeAsString('staging leftover');
+
+        await storageRepo.insertOfflineChapter(const OfflineChapter(
+          userId: userId,
+          chapterVersionId: versionId,
+          chapterId: 'c1',
+          storyId: storyId,
+          storyTitle: 'Story 8.1',
+          chapterNumber: '1',
+          mediaFormat: 'COMIC',
+          installedDir: 'installed/$versionId',
+          totalFiles: 1,
+          totalBytes: 2048,
+          installedAt: 1000,
+          manifestJson: '{}',
+        ));
+
+        await storageRepo.insertTask(const DownloadTask(
+          taskId: 'task_g8_1',
+          userId: userId,
+          chapterVersionId: versionId,
+          chapterId: 'c1',
+          storyId: storyId,
+          storyTitle: 'Story 8.1',
+          chapterNumber: '1',
+          mediaFormat: 'COMIC',
+          status: DownloadTaskStatus.ready,
+          createdAt: 1000,
+          updatedAt: 1000,
+        ));
+
+        expect(await storageRepo.isChapterInstalled(versionId), isTrue);
+        expect(await storageRepo.getTaskByVersionId(versionId), isNotNull);
+        expect(await installedDir.exists(), isTrue);
+
+        // Thực thi Single Deletion
+        await deletionService.deleteChapter(versionId);
+
+        // Verify: 3-step deletion protocol hoàn tất triệt để
+        expect(await storageRepo.isChapterInstalled(versionId), isFalse);
+        expect(await storageRepo.getTaskByVersionId(versionId), isNull);
+        expect(await storageRepo.getTombstone(versionId), isNull);
+        expect(await installedDir.exists(), isFalse);
+        expect(await partFile.exists(), isFalse);
+        expect(await stagingDir.exists(), isFalse);
+
+        await offlineDb.close();
+      });
+
+      test('Gate 8.2: Single Chapter Deletion is blocked fail-closed when chapter has active reader lease', () async {
+        final dbPath = p.join(tempDir.path, 'gate8_single_leased.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_gate8_2';
+        const versionId = 'ver_g8_leased';
+
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+
+        final installedDir = await storagePaths.getInstalledDir(versionId);
+        await installedDir.create(recursive: true);
+        await File(p.join(installedDir.path, 'content.txt')).writeAsString('installed payload');
+
+        await storageRepo.insertOfflineChapter(const OfflineChapter(
+          userId: userId,
+          chapterVersionId: versionId,
+          chapterId: 'c1',
+          storyId: 's1',
+          storyTitle: 'Story 8.2',
+          chapterNumber: '1',
+          mediaFormat: 'COMIC',
+          installedDir: 'installed/$versionId',
+          totalFiles: 1,
+          totalBytes: 1024,
+          installedAt: 1000,
+          manifestJson: '{}',
+        ));
+
+        // Reader acquire lease
+        final lease = leaseManager.acquireLease(
+          userId: userId,
+          chapterVersionId: versionId,
+          readerSessionId: 'session_reader_g8_2',
+        );
+
+        // Deletion BẮT BUỘC bị từ chối fail-closed với ChapterInUseException
+        await expectLater(
+          () => deletionService.deleteChapter(versionId),
+          throwsA(isA<ChapterInUseException>()),
+        );
+
+        // Verify: Filesystem và SQLite nguyên vẹn 100%
+        expect(await storageRepo.isChapterInstalled(versionId), isTrue);
+        expect(await installedDir.exists(), isTrue);
+
+        // Sau khi release lease, xóa lại thành công sạch sẽ
+        leaseManager.releaseLease(lease);
+        await deletionService.deleteChapter(versionId);
+        expect(await storageRepo.isChapterInstalled(versionId), isFalse);
+        expect(await installedDir.exists(), isFalse);
+
+        await offlineDb.close();
+      });
+
+      test('Gate 8.3: Batch Story Deletion purges all chapters in story across DB, filesystem, and tasks', () async {
+        final dbPath = p.join(tempDir.path, 'gate8_batch_delete.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_gate8_3';
+        const storyId = 'story_g8_batch';
+
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+
+        // Tạo 3 chapters cho story
+        final versionIds = ['ver_g8_b1', 'ver_g8_b2', 'ver_g8_b3'];
+        for (int i = 0; i < versionIds.length; i++) {
+          final vId = versionIds[i];
+          final dir = await storagePaths.getInstalledDir(vId);
+          await dir.create(recursive: true);
+          await File(p.join(dir.path, 'page.jpg')).writeAsString('content $i');
+
+          await storageRepo.insertOfflineChapter(OfflineChapter(
+            userId: userId,
+            chapterVersionId: vId,
+            chapterId: 'c_$i',
+            storyId: storyId,
+            storyTitle: 'Story Batch',
+            chapterNumber: '${i + 1}',
+            mediaFormat: 'COMIC',
+            installedDir: 'installed/$vId',
+            totalFiles: 1,
+            totalBytes: 1024,
+            installedAt: 1000 + i,
+            manifestJson: '{}',
+          ));
+
+          await storageRepo.insertTask(DownloadTask(
+            taskId: 'task_$vId',
+            userId: userId,
+            chapterVersionId: vId,
+            chapterId: 'c_$i',
+            storyId: storyId,
+            storyTitle: 'Story Batch',
+            chapterNumber: '${i + 1}',
+            mediaFormat: 'COMIC',
+            status: DownloadTaskStatus.ready,
+            createdAt: 1000 + i,
+            updatedAt: 1000 + i,
+          ));
+        }
+
+        expect((await storageRepo.getAllChapterVersionIdsByStory(storyId)).length, equals(3));
+
+        // Thực thi Batch Story Deletion
+        await deletionService.deleteStory(storyId);
+
+        // Verify: Tất cả 3 chapters bị xóa sạch
+        expect((await storageRepo.getAllChapterVersionIdsByStory(storyId)).length, equals(0));
+        for (final vId in versionIds) {
+          expect(await storageRepo.isChapterInstalled(vId), isFalse);
+          expect(await storageRepo.getTaskByVersionId(vId), isNull);
+          expect(await storageRepo.getTombstone(vId), isNull);
+          expect(await (await storagePaths.getInstalledDir(vId)).exists(), isFalse);
+        }
+
+        await offlineDb.close();
+      });
+
+      test('Gate 8.4: Batch Story Deletion enforces All-or-Nothing if ANY chapter is leased', () async {
+        final dbPath = p.join(tempDir.path, 'gate8_batch_all_or_nothing.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_gate8_4';
+        const storyId = 'story_g8_all_or_nothing';
+
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+
+        final versionIds = ['ver_aon_1', 'ver_aon_2', 'ver_aon_3'];
+        for (int i = 0; i < versionIds.length; i++) {
+          final vId = versionIds[i];
+          final dir = await storagePaths.getInstalledDir(vId);
+          await dir.create(recursive: true);
+          await File(p.join(dir.path, 'page.jpg')).writeAsString('content $i');
+
+          await storageRepo.insertOfflineChapter(OfflineChapter(
+            userId: userId,
+            chapterVersionId: vId,
+            chapterId: 'c_$i',
+            storyId: storyId,
+            storyTitle: 'Story AON',
+            chapterNumber: '${i + 1}',
+            mediaFormat: 'COMIC',
+            installedDir: 'installed/$vId',
+            totalFiles: 1,
+            totalBytes: 1024,
+            installedAt: 1000 + i,
+            manifestJson: '{}',
+          ));
+        }
+
+        // Chapter 2 đang được reader đọc (active lease)
+        final lease = leaseManager.acquireLease(
+          userId: userId,
+          chapterVersionId: 'ver_aon_2',
+          readerSessionId: 'reader_session_aon',
+        );
+
+        // Gọi deleteStory -> Bắt buộc ném ChapterInUseException
+        await expectLater(
+          () => deletionService.deleteStory(storyId),
+          throwsA(isA<ChapterInUseException>()),
+        );
+
+        // BẤT BIẾN ALL-OR-NOTHING:
+        // Cả 3 chapter (kể cả chapter 1 và 3 không bị lease) PHẢI CÒN NGUYÊN VẸN 100%!
+        for (final vId in versionIds) {
+          expect(await storageRepo.isChapterInstalled(vId), isTrue,
+              reason: 'Chapter $vId phải được giữ nguyên khi batch bị từ chối');
+          expect(await (await storagePaths.getInstalledDir(vId)).exists(), isTrue);
+          expect(await storageRepo.getTombstone(vId), isNull,
+              reason: 'Không được để lại tombstone rác cho $vId');
+        }
+
+        leaseManager.releaseLease(lease);
+        await offlineDb.close();
+      });
+
+      test('Gate 8.5: Deletion is idempotent when target chapter or story does not exist', () async {
+        final dbPath = p.join(tempDir.path, 'gate8_idempotent_delete.db');
+        final offlineDb = OfflineDatabase();
+        await offlineDb.initialize(customPath: dbPath, databaseFactory: databaseFactoryFfi);
+
+        const userId = 'user_gate8_5';
+        final storagePaths = OfflineStoragePaths(customBasePath: tempDir.path, userId: userId);
+        final storageRepo = OfflineStorageRepository(database: offlineDb, userId: userId);
+        final leaseManager = ReaderLeaseManager();
+        final deletionService = OfflineDeletionService(
+          repository: storageRepo,
+          storagePaths: storagePaths,
+          readerLeaseManager: leaseManager,
+        );
+
+        // Xóa chapter không tồn tại -> Không ném lỗi
+        await expectLater(
+          deletionService.deleteChapter('ver_non_existent'),
+          completes,
+        );
+
+        // Xóa story không có chapter nào -> Không ném lỗi
+        await expectLater(
+          deletionService.deleteStory('story_non_existent'),
+          completes,
+        );
+
         await offlineDb.close();
       });
     });

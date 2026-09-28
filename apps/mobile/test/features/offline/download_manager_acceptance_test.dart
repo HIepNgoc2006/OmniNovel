@@ -140,7 +140,7 @@ void main() {
       await storageRepo.insertTask(taskVerifying);
 
       final downloadClient = ArtifactDownloadClient();
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: downloadClient,
@@ -207,7 +207,7 @@ void main() {
         }
       });
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: ArtifactDownloadClient(customDio: mockDio),
@@ -269,7 +269,7 @@ void main() {
       );
       await storageRepo.insertTask(task);
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: ArtifactDownloadClient(),
@@ -327,7 +327,7 @@ void main() {
         }
       });
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: ArtifactDownloadClient(customDio: mockDio),
@@ -387,7 +387,7 @@ void main() {
       );
       await storageRepo.insertTask(failedTask);
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: ArtifactDownloadClient(),
@@ -451,7 +451,7 @@ void main() {
         return responseBody;
       });
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: fakeDownloadClient,
@@ -525,7 +525,7 @@ void main() {
         }
       });
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: ArtifactDownloadClient(customDio: mockDio),
@@ -594,7 +594,7 @@ void main() {
         }
       });
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: ArtifactDownloadClient(customDio: mockDio),
@@ -662,7 +662,7 @@ void main() {
         }
       });
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: ArtifactDownloadClient(customDio: mockDio),
@@ -730,7 +730,7 @@ void main() {
         }
       });
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: ArtifactDownloadClient(customDio: mockDio),
@@ -792,7 +792,7 @@ void main() {
 
       final fakeDownloadClient = ArtifactDownloadClient(customDio: mockDio);
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: fakeDownloadClient,
@@ -874,7 +874,7 @@ void main() {
             },
           ));
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: fakeDownloadClient,
@@ -937,7 +937,7 @@ void main() {
             },
           ));
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: ArtifactDownloadClient(customDio: mockDio),
@@ -1012,7 +1012,7 @@ void main() {
         return ResponseBody(Stream.value(Uint8List.fromList(List.filled(50, 0))), 200);
       });
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: ArtifactDownloadClient(customDio: mockDio),
@@ -1089,7 +1089,7 @@ void main() {
       // Tạo installer với computeRunner trì hoãn để mô phỏng tác vụ giải nén đang chạy
       final installStarted = Completer<void>();
       final installContinue = Completer<void>();
-      final mockInstaller = BundleInstaller(
+      final mockInstaller = BundleInstaller.forTestingWithoutAdmission(
         repository: storageRepo,
         storagePaths: storagePaths,
         computeRunner: <Q, R>(callback, message) async {
@@ -1101,7 +1101,7 @@ void main() {
         },
       );
 
-      final manager = DownloadQueueManager(
+      final manager = DownloadQueueManager.forTestingWithoutAdmission(
         repository: storageRepo,
         artifactRepository: artifactRepo,
         downloadClient: ArtifactDownloadClient(customDio: mockDio),

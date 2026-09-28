@@ -64,11 +64,12 @@ class ReaderSessionController extends ChangeNotifier {
       if (offlineResult != null) {
         // Gate 4B: Acquire lease trước khi switch sang state READY
         ReaderLeaseToken? newLease;
-        if (_readerLeaseManager != null) {
+        final leaseManager = _readerLeaseManager;
+        if (leaseManager != null) {
           final targetUserId = offlineResult.offlineChapter.userId;
           final targetVersionId = offlineResult.offlineChapter.chapterVersionId;
           try {
-            newLease = _readerLeaseManager!.acquireLease(
+            newLease = leaseManager.acquireLease(
               userId: targetUserId,
               chapterVersionId: targetVersionId,
               readerSessionId: _readerSessionId,

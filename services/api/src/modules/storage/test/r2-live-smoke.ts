@@ -24,6 +24,42 @@ export interface R2LiveSmokeResult {
   reason?: string;
 }
 
+async function verifyKeyDeleted(
+  s3Client: S3Client,
+  bucket: string,
+  key: string,
+  keyLabel: string,
+): Promise<void> {
+  try {
+    await s3Client.send(
+      new HeadObjectCommand({
+        Bucket: bucket,
+        Key: key,
+      }),
+    );
+    throw new Error(
+      `[Zero-Leak Violation] ${keyLabel} ("${key}") vẫn còn tồn tại trên bucket "${bucket}" sau khi dọn dẹp!`,
+    );
+  } catch (err: any) {
+    if (
+      err.name === 'NotFound' ||
+      err.$metadata?.httpStatusCode === 404 ||
+      err.message?.includes('Not Found')
+    ) {
+      console.log(
+        `[R2 Smoke Test] [Zero-Leak Verified] ${keyLabel} ("${key}") đã được xác nhận 404 Not Found trên "${bucket}".`,
+      );
+      return;
+    }
+    if (err.message?.startsWith('[Zero-Leak Violation]')) {
+      throw err;
+    }
+    throw new Error(
+      `[R2 Smoke Test] Lỗi bất thường khi xác minh trạng thái xóa của ${keyLabel} ("${key}"): ${err.message}`,
+    );
+  }
+}
+
 /**
  * Real Cloudflare R2 Smoke Test:
  * Kiểm tra chu trình vòng đời lưu trữ thật (End-to-End Live Storage Lifecycle):
@@ -121,6 +157,7 @@ export async function runR2LiveSmokeTest(
     const finalKey = `chapters/smoke-test/${target.label.toLowerCase()}-${testId}.txt`;
     const testPayload = `OmniNovel R2 Smoke Test Payload [${target.label}]: ${testId} - Timestamp: ${new Date().toISOString()}`;
     const contentType = 'text/plain';
+    let testExecutionError: any = null;
 
     try {
       // 1. Sinh presigned PUT URL
@@ -216,13 +253,17 @@ export async function runR2LiveSmokeTest(
         throw new Error(`Promote thất bại: Final key không đúng kích thước.`);
       }
       console.log(`[R2 Smoke Test] [${target.label}] 4. COPY / Promote thành công.`);
-
       verifiedBuckets.push(target.name);
+    } catch (err) {
+      testExecutionError = err;
+      throw err;
     } finally {
-      // 5. Cleanup Invariant: Luôn dọn dẹp các object tạm trong finally block, không để lại rác
+      // 5. Cleanup & Zero-Leak Verification Invariant
       console.log(
-        `[R2 Smoke Test] [${target.label}] 5. Cleanup: Dọn dẹp quarantine & final keys...`,
+        `[R2 Smoke Test] [${target.label}] 5. Cleanup & Zero-Leak Verification: Dọn dẹp cả quarantineKey và finalKey...`,
       );
+      const cleanupErrors: string[] = [];
+
       try {
         await s3Client.send(
           new DeleteObjectCommand({
@@ -230,8 +271,8 @@ export async function runR2LiveSmokeTest(
             Key: quarantineKey,
           }),
         );
-      } catch (delErr) {
-        console.warn(`[R2 Smoke Test] Cảnh báo khi xóa quarantineKey ${quarantineKey}:`, delErr);
+      } catch (delErr: any) {
+        cleanupErrors.push(`Lỗi xóa quarantineKey: ${delErr.message}`);
       }
 
       try {
@@ -241,27 +282,30 @@ export async function runR2LiveSmokeTest(
             Key: finalKey,
           }),
         );
-      } catch (delErr) {
-        console.warn(`[R2 Smoke Test] Cảnh báo khi xóa finalKey ${finalKey}:`, delErr);
+      } catch (delErr: any) {
+        cleanupErrors.push(`Lỗi xóa finalKey: ${delErr.message}`);
       }
-    }
 
-    // Xác nhận đã xóa thành công (HEAD -> 404)
-    try {
-      await s3Client.send(
-        new HeadObjectCommand({
-          Bucket: target.name,
-          Key: finalKey,
-        }),
-      );
-      throw new Error(`File ${finalKey} vẫn tồn tại sau khi DELETE trên bucket ${target.name}!`);
-    } catch (err: any) {
-      if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
-        console.log(
-          `[R2 Smoke Test] [${target.label}] 5. Xác nhận DELETE thành công (HEAD 404 Not Found).`,
-        );
-      } else {
-        throw err;
+      // Xác minh 404 Not Found cho CẢ HAI keys (Bảo đảm Zero-Leak Invariant 100%)
+      try {
+        await verifyKeyDeleted(s3Client, target.name, quarantineKey, 'quarantineKey');
+      } catch (leakErr: any) {
+        cleanupErrors.push(leakErr.message);
+      }
+
+      try {
+        await verifyKeyDeleted(s3Client, target.name, finalKey, 'finalKey');
+      } catch (leakErr: any) {
+        cleanupErrors.push(leakErr.message);
+      }
+
+      if (cleanupErrors.length > 0) {
+        const aggregatedError = `[R2 Smoke Test] [${target.label}] Vi phạm Zero-Leak / Lỗi dọn dẹp:\n${cleanupErrors.join('\n')}`;
+        if (!testExecutionError) {
+          throw new Error(aggregatedError);
+        } else {
+          console.error(aggregatedError);
+        }
       }
     }
   }

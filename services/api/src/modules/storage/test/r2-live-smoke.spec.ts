@@ -1,23 +1,34 @@
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import * as fs from 'fs';
 import { runR2LiveSmokeTest } from './r2-live-smoke';
 
-const envPaths = [
-  path.resolve(process.cwd(), '.env'),
-  path.resolve(process.cwd(), '../../.env'),
-  path.resolve(__dirname, '../../../../.env'),
-];
-for (const p of envPaths) {
-  dotenv.config({ path: p });
+function findFileUpwards(fileName: string, startDir: string = process.cwd()): string | null {
+  let curr = startDir;
+  while (true) {
+    const candidate = path.join(curr, fileName);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+    const parent = path.dirname(curr);
+    if (parent === curr) break;
+    curr = parent;
+  }
+  return null;
+}
+
+// CHỈ nạp credentials từ file riêng biệt .env.r2-live KHI explicit flag R2_LIVE_ACCEPTANCE=true
+// Tuyệt đối KHÔNG tự động nạp production .env trong test suite thông thường để tránh rò rỉ network call
+const isLiveAcceptanceEnabled = process.env.R2_LIVE_ACCEPTANCE === 'true';
+
+if (isLiveAcceptanceEnabled) {
+  const r2LiveEnvPath = findFileUpwards('.env.r2-live', __dirname);
+  if (r2LiveEnvPath) {
+    dotenv.config({ path: r2LiveEnvPath });
+  }
 }
 
 describe('Real Cloudflare R2 Lifecycle Smoke Test (Live Network E2E & Invariants)', () => {
-  const isRequired = process.env.R2_LIVE_SMOKE_REQUIRED === 'true';
-  const hasR2Creds =
-    !!process.env.S3_ACCESS_KEY_ID &&
-    !!process.env.S3_SECRET_ACCESS_KEY &&
-    !!process.env.S3_ENDPOINT;
-
   describe('1. Acceptance Invariant: R2_LIVE_SMOKE_REQUIRED mode', () => {
     it('should FAIL-FAST when R2_LIVE_SMOKE_REQUIRED is enabled but credentials are missing', async () => {
       await expect(
@@ -45,12 +56,13 @@ describe('Real Cloudflare R2 Lifecycle Smoke Test (Live Network E2E & Invariants
     });
   });
 
-  describe('2. Real Network Lifecycle Execution', () => {
-    // Nếu có credentials thật hoặc R2_LIVE_SMOKE_REQUIRED=true thì test chạy bắt buộc
-    const runLive = hasR2Creds || isRequired;
-    const testRunner = runLive ? it : it.skip;
+  // Tách biệt hoàn toàn khỏi test suite thường:
+  // Suite này CHỈ chạy khi R2_LIVE_ACCEPTANCE=true được bật chủ động (Explicit Opt-In).
+  // Khi chạy "npm test" thông thường, suite này sẽ tự động SKIPPED an toàn.
+  const liveDescribe = isLiveAcceptanceEnabled ? describe : describe.skip;
 
-    testRunner(
+  liveDescribe('2. Real Network Lifecycle Execution (Explicit Opt-In Only)', () => {
+    it(
       'should execute full R2 lifecycle on both omninovel-manga and omninovel-novel buckets with zero leaks',
       async () => {
         const result = await runR2LiveSmokeTest({

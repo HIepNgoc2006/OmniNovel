@@ -42,7 +42,7 @@ describe('Database Configuration Contract (Local vs Supabase Production & Parity
 
   describe('2. Supabase URL + SSL Contract', () => {
     const supabaseUrl =
-      'postgresql://postgres.sovdnipwoybywqorjvkt:SecureSupabasePass2026@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres';
+      'postgresql://postgres.dummy_project_ref:fake_test_password@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres';
 
     it('should prioritize DATABASE_URL over separate host/port fields and omit individual fields', () => {
       const options = buildPostgresConnectionOptions({
@@ -98,13 +98,13 @@ describe('Database Configuration Contract (Local vs Supabase Production & Parity
       JWT_REFRESH_SECRET: 'a_very_strong_custom_production_refresh_jwt_secret_456',
       AI_WORKER_SECRET: 'production_ai_worker_custom_secret_789',
       STORAGE_PROVIDER: 'r2',
-      S3_ENDPOINT: 'https://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com',
-      S3_ACCESS_KEY_ID: 'prod-r2-access-key-id',
-      S3_SECRET_ACCESS_KEY: 'prod-r2-secret-access-key-very-long',
+      S3_ENDPOINT: 'https://0123456789abcdef.r2.cloudflarestorage.com',
+      S3_ACCESS_KEY_ID: 'fake-prod-r2-access-key-id',
+      S3_SECRET_ACCESS_KEY: 'fake-prod-r2-secret-access-key-very-long',
       S3_BUCKET_MANGA: 'omninovel',
       S3_BUCKET_NOVEL: 'omninovel-novel',
       DATABASE_URL:
-        'postgresql://postgres.sovdnipwoybywqorjvkt:prod_pass@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres',
+        'postgresql://postgres.dummy_project_ref:fake_test_password@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres',
       DB_SSL: 'true',
     };
 
@@ -212,7 +212,7 @@ describe('Database Configuration Contract (Local vs Supabase Production & Parity
     it('should generate identical connection options for runtime and migration CLI when targeting Supabase Production', () => {
       const supabaseEnv = {
         DATABASE_URL:
-          'postgresql://postgres.sovdnipwoybywqorjvkt:SupabaseSecurePassword2026@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres',
+          'postgresql://postgres.dummy_project_ref:fake_test_password@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres',
         DB_SSL: 'true',
       };
 
@@ -257,7 +257,7 @@ describe('Database Configuration Contract (Local vs Supabase Production & Parity
 
     it('should prioritize OS/Docker/CI injected DATABASE_URL over local file values (override: false)', () => {
       const injectedProdDbUrl =
-        'postgresql://postgres.sovdnipwoybywqorjvkt:SupabaseSecret@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres';
+        'postgresql://postgres.dummy_project_ref:fake_test_password@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres';
 
       // Giả lập môi trường container/CI đã inject DATABASE_URL
       process.env.DATABASE_URL = injectedProdDbUrl;

@@ -1,5 +1,7 @@
 # Environment variables
 .env
+.env.*
+.env.r2-live
 .env.local
 .env.*.local
 !.env.example

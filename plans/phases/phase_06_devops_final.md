@@ -33,10 +33,12 @@
 ## 3. DANH SÁCH ĐẦU VIỆC (CHECKLIST)
 
 ### A. Chuẩn Hóa Mã Nguồn & Cấu Hình Provider-Neutral (Phase 6.1)
-- [ ] Refactor `StorageService` (`services/api`) hỗ trợ `minio` và `r2` với fail-fast validation ở production.
-- [ ] Refactor SSRF Safe Downloader (`services/ai-worker`) hỗ trợ R2 endpoint domain.
-- [ ] Viết bộ kiểm thử hợp đồng (Contract Tests) chứng minh Cloudflare R2 config, Presigned URL generation, và bảo toàn 100% MinIO local compatibility.
-- [ ] Chạy lại toàn bộ 352/352 tests Backend API đạt 100% GREEN.
+- [x] Refactor `StorageService` (`services/api`) hỗ trợ `minio` và `r2` với fail-fast validation ở production và fail-fast enum.
+- [x] Refactor `env.validation.ts` schema với đầy đủ `STORAGE_PROVIDER`, `S3_*`, `DATABASE_URL`, `DB_SSL` và production fail-fast guards.
+- [x] Hợp nhất cấu hình PostgreSQL qua `buildPostgresConnectionOptions` đảm bảo 100% parity giữa runtime (`DatabaseModule`) và migration CLI (`data-source.ts`).
+- [x] Refactor SSRF Safe Downloader (`services/ai-worker`) hỗ trợ R2 endpoint domain & virtual-hosted subdomains.
+- [x] Viết bộ kiểm thử hợp đồng (Contract Tests) chứng minh Cloudflare R2 config, Presigned URL generation, Supabase URL/SSL, và bảo toàn 100% MinIO local compatibility.
+- [x] Chạy lại toàn bộ 384/384 tests Backend API và 322/322 tests AI Worker đạt 100% GREEN.
 
 ### B. Đóng Gói Docker & Reverse Proxy (Phase 6.2)
 - [ ] Hoàn thiện `deploy/docker-compose.yml` cho Production VPS: gồm 4 container cốt lõi (`nginx`, `api`, `ai-worker`, `redis`).

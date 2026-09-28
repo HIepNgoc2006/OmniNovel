@@ -1,18 +1,25 @@
 import { DataSource } from 'typeorm';
 import * as dotenv from 'dotenv';
 import * as path from 'path';
+import { buildPostgresConnectionOptions } from './database.config';
 
 dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 dotenv.config({ path: path.resolve(process.cwd(), '../../.env') });
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
+const pgOptions = buildPostgresConnectionOptions({
+  databaseUrl: process.env.DATABASE_URL,
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  username: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  ssl: process.env.DB_SSL,
+});
+
 export const AppDataSource = new DataSource({
   type: 'postgres',
-  host: process.env.DB_HOST || 'localhost',
-  port: parseInt(process.env.DB_PORT || '5432', 10),
-  username: process.env.DB_USER || 'postgres',
-  password: process.env.DB_PASSWORD || 'postgres_password_secure',
-  database: process.env.DB_NAME || 'omninovel_db',
+  ...pgOptions,
   synchronize: false, // Bắt buộc false theo ADR-011
   logging: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : false,
   entities: [path.join(__dirname, '../**/*.entity{.ts,.js}')],

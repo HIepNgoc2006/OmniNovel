@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { buildPostgresConnectionOptions } from './database.config';
 import { User } from '../modules/users/entities/user.entity';
 import { UserProgression } from '../modules/users/entities/user-progression.entity';
 import { RankTheme } from '../modules/users/entities/rank-theme.entity';
@@ -33,14 +34,21 @@ import { TranslationSegment } from '../modules/translation/entities/translation-
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
-      useFactory: (config: ConfigService) => ({
-        type: 'postgres',
-        host: config.get<string>('DB_HOST', 'localhost'),
-        port: config.get<number>('DB_PORT', 5433),
-        username: config.get<string>('DB_USER', 'postgres'),
-        password: config.get<string>('DB_PASSWORD', 'postgres_password_secure'),
-        database: config.get<string>('DB_NAME', 'omninovel_db'),
-        synchronize: false, // Bắt buộc false theo ADR-011
+      useFactory: (config: ConfigService) => {
+        const pgOptions = buildPostgresConnectionOptions({
+          databaseUrl: config.get<string>('DATABASE_URL'),
+          host: config.get<string>('DB_HOST'),
+          port: config.get<number>('DB_PORT'),
+          username: config.get<string>('DB_USER'),
+          password: config.get<string>('DB_PASSWORD'),
+          database: config.get<string>('DB_NAME'),
+          ssl: config.get<boolean | string>('DB_SSL'),
+        });
+
+        return {
+          type: 'postgres',
+          ...pgOptions,
+          synchronize: false, // Bắt buộc false theo ADR-011
         entities: [
           User,
           UserProgression,

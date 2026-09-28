@@ -158,3 +158,37 @@ async def test_safe_download_bytes_blocks_ssrf():
             url="http://169.254.169.254/latest/meta-data",
         )
 
+
+def test_ssrf_allows_cloudflare_r2_production_origins(monkeypatch):
+    monkeypatch.setattr("app.core.ssrf_safe_downloader.settings.ENV", "production")
+    monkeypatch.setattr(
+        "app.core.ssrf_safe_downloader.settings.S3_ENDPOINT",
+        "https://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com",
+    )
+    monkeypatch.setattr("app.core.ssrf_safe_downloader.settings.MINIO_ENDPOINT", "none.internal")
+
+    # 1. R2 Path-Style URL
+    path_url = "https://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com/omninovel/chapter1.zip"
+    parsed_path = validate_download_url(path_url)
+    assert parsed_path.hostname == "5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com"
+    assert parsed_path.scheme == "https"
+
+    # 2. R2 Virtual-Hosted Style URL
+    virtual_url = "https://omninovel.5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com/chapter1.zip"
+    parsed_virtual = validate_download_url(virtual_url)
+    assert parsed_virtual.hostname == "omninovel.5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com"
+    assert parsed_virtual.scheme == "https"
+
+    # 3. Block evil account R2 domain
+    with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED: Origin .* không nằm trong danh sách"):
+        validate_download_url("https://attacker-account.r2.cloudflarestorage.com/omninovel/exploit.zip")
+
+    # 4. Block evil virtual-hosted account R2 domain
+    with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED: Origin .* không nằm trong danh sách"):
+        validate_download_url("https://omninovel.attacker-account.r2.cloudflarestorage.com/exploit.zip")
+
+    # 5. Block HTTP when R2 requires HTTPS
+    with pytest.raises(SSRFBlockedError, match="SSRF_BLOCKED: Port 80 trên host .* không được phép"):
+        validate_download_url("http://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com/omninovel/chapter1.zip")
+
+

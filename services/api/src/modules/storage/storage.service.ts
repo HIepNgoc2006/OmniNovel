@@ -51,10 +51,17 @@ export class StorageService {
     private dataSource: DataSource,
   ) {
     const nodeEnv = this.configService.get<string>('NODE_ENV', 'development');
+    const rawProvider = this.configService.get<string>('STORAGE_PROVIDER');
     const provider = (
-      this.configService.get<string>('STORAGE_PROVIDER') ||
+      rawProvider ||
       (nodeEnv === 'production' ? 'r2' : 'minio')
     ).toLowerCase();
+
+    if (provider !== 'r2' && provider !== 'minio') {
+      throw new Error(
+        `[StorageService] Invalid STORAGE_PROVIDER: '${rawProvider}'. Expected 'minio' | 'r2'. Fail-fast triggered.`,
+      );
+    }
 
     let endpoint: string;
     let region: string;

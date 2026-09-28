@@ -20,9 +20,12 @@ class SSRFBlockedError(ValueError):
 def _get_allowed_origins() -> Set[Tuple[str, str, int]]:
     """
     Trả về tập hợp các origin (scheme, hostname, port) được phép tải file Object Storage.
-    - Ở production: CHỈ cho phép origin được cấu hình cụ thể qua settings.MINIO_ENDPOINT.
+    - Ở production: CHỈ cho phép origin được cấu hình cụ thể qua settings.MINIO_ENDPOINT hoặc settings.S3_ENDPOINT.
     - Ở test/development: Bổ sung các local aliases (localhost, 127.0.0.1, minio, host.docker.internal).
     """
+    origins = set()
+
+    # 1. MinIO Origin
     raw_endpoint = (settings.MINIO_ENDPOINT or "localhost").lower()
     if "://" in raw_endpoint:
         parsed_minio = urllib.parse.urlparse(raw_endpoint)
@@ -40,10 +43,19 @@ def _get_allowed_origins() -> Set[Tuple[str, str, int]]:
         minio_port = settings.MINIO_PORT or 9000
 
     minio_scheme = "https" if settings.MINIO_USE_SSL else "http"
+    origins.add((minio_scheme, minio_host, minio_port))
 
-    origins = {
-        (minio_scheme, minio_host, minio_port),
-    }
+    # 2. Cloudflare R2 / S3-compatible Origin
+    if settings.S3_ENDPOINT:
+        raw_s3 = settings.S3_ENDPOINT.strip().lower()
+        if "://" not in raw_s3:
+            raw_s3 = f"https://{raw_s3}"
+        parsed_s3 = urllib.parse.urlparse(raw_s3)
+        s3_scheme = (parsed_s3.scheme or "https").lower()
+        s3_host = (parsed_s3.hostname or "").lower()
+        s3_port = parsed_s3.port or (443 if s3_scheme == "https" else 80)
+        if s3_host:
+            origins.add((s3_scheme, s3_host, s3_port))
 
     # Chỉ thêm local aliases khi ở môi trường test hoặc development
     if settings.ENV != "production":
@@ -63,6 +75,7 @@ def validate_download_url(url: str) -> urllib.parse.ParseResult:
     - Bắt buộc giao thức http hoặc https.
     - Chặn IP metadata cloud (169.254.169.254) và mọi dải link-local / multicast.
     - Thẩm định exact origin: Khóa chặt theo (scheme, hostname, port) của Object Storage được cấu hình.
+    - Hỗ trợ virtual-hosted style của Cloudflare R2 (<bucket>.<account_id>.r2.cloudflarestorage.com).
     """
     if not url or not isinstance(url, str):
         raise SSRFBlockedError("SSRF_BLOCKED: URL tải nguồn không hợp lệ hoặc rỗng.")
@@ -105,18 +118,37 @@ def validate_download_url(url: str) -> urllib.parse.ParseResult:
     allowed_origins = _get_allowed_origins()
     current_origin = (scheme, hostname, effective_port)
 
+    if current_origin in allowed_origins:
+        return parsed
+
+    # 5. Hỗ trợ Cloudflare R2 / S3 Virtual-Hosted style:
+    # URL có dạng: https://<bucket>.<account_id>.r2.cloudflarestorage.com/...
+    if settings.S3_ENDPOINT:
+        raw_s3 = settings.S3_ENDPOINT.strip().lower()
+        if "://" not in raw_s3:
+            raw_s3 = f"https://{raw_s3}"
+        parsed_s3 = urllib.parse.urlparse(raw_s3)
+        s3_scheme = (parsed_s3.scheme or "https").lower()
+        s3_host = (parsed_s3.hostname or "").lower()
+        s3_port = parsed_s3.port or (443 if s3_scheme == "https" else 80)
+
+        if scheme == s3_scheme and effective_port == s3_port and s3_host:
+            suffix = f".{s3_host}"
+            if hostname.endswith(suffix):
+                prefix = hostname[:-len(suffix)]
+                if prefix and "." not in prefix:  # 1 level subdomain for bucket
+                    return parsed
+
     # Nếu không khớp exact origin, kiểm tra match hostname và port
-    if current_origin not in allowed_origins:
-        # Kiểm tra nếu hostname thuộc allowed hosts nhưng sai port
-        allowed_hosts = {o[1] for o in allowed_origins}
-        if hostname in allowed_hosts:
-            allowed_ports = {o[2] for o in allowed_origins if o[1] == hostname}
-            raise SSRFBlockedError(
-                f"SSRF_BLOCKED: Port {effective_port} trên host '{hostname}' không được phép. Các port được phép: {allowed_ports}"
-            )
+    allowed_hosts = {o[1] for o in allowed_origins}
+    if hostname in allowed_hosts:
+        allowed_ports = {o[2] for o in allowed_origins if o[1] == hostname}
         raise SSRFBlockedError(
-            f"SSRF_BLOCKED: Origin '{scheme}://{hostname}:{effective_port}' không nằm trong danh sách Object Storage được cấp phép."
+            f"SSRF_BLOCKED: Port {effective_port} trên host '{hostname}' không được phép. Các port được phép: {allowed_ports}"
         )
+    raise SSRFBlockedError(
+        f"SSRF_BLOCKED: Origin '{scheme}://{hostname}:{effective_port}' không nằm trong danh sách Object Storage được cấp phép."
+    )
 
     return parsed
 

@@ -7,22 +7,42 @@ export const envSchema = z
     API_BASE_URL: z.string().default('http://localhost:8000'),
     WEB_BASE_URL: z.string().default('http://localhost:3000'),
 
-    // PostgreSQL
+    // PostgreSQL Local
     DB_HOST: z.string().default('localhost'),
     DB_PORT: z.coerce.number().default(5433),
     DB_USER: z.string().default('postgres'),
     DB_PASSWORD: z.string().default('postgres_password_secure'),
     DB_NAME: z.string().default('omninovel_db'),
 
+    // PostgreSQL Cloud / Supabase / SSL
+    DATABASE_URL: z.string().optional(),
+    DB_SSL: z
+      .union([z.boolean(), z.string().transform((v) => v === 'true')])
+      .default(false),
+
     // Redis
     REDIS_HOST: z.string().default('localhost'),
     REDIS_PORT: z.coerce.number().default(6379),
     REDIS_PASSWORD: z.string().optional().default(''),
 
-    // MinIO
+    // Storage Provider & S3 / R2 Configuration
+    STORAGE_PROVIDER: z.enum(['minio', 'r2']).default('minio'),
+    S3_ENDPOINT: z.string().url().optional(),
+    S3_REGION: z.string().optional(),
+    S3_ACCESS_KEY_ID: z.string().optional(),
+    S3_SECRET_ACCESS_KEY: z.string().optional(),
+    S3_BUCKET_MANGA: z.string().optional(),
+    S3_BUCKET_NOVEL: z.string().optional(),
+    S3_FORCE_PATH_STYLE: z
+      .union([z.boolean(), z.string().transform((v) => v === 'true')])
+      .optional(),
+
+    // MinIO Local
     MINIO_ENDPOINT: z.string().default('localhost'),
     MINIO_PORT: z.coerce.number().default(9000),
-    MINIO_USE_SSL: z.string().transform((v) => v === 'true').default('false'),
+    MINIO_USE_SSL: z
+      .union([z.boolean(), z.string().transform((v) => v === 'true')])
+      .default(false),
     MINIO_ACCESS_KEY: z.string().default('minioadmin'),
     MINIO_SECRET_KEY: z.string().default('minioadmin'),
     MINIO_BUCKET_MANGA: z.string().default('manga-media'),
@@ -44,9 +64,8 @@ export const envSchema = z
       if (data.NODE_ENV === 'production') {
         const isDefaultJwt = data.JWT_SECRET.includes('super_secret');
         const isDefaultRefresh = data.JWT_REFRESH_SECRET.includes('super_secret');
-        const isDefaultDbPass = data.DB_PASSWORD === 'postgres_password_secure';
         const isDefaultAiSecret = data.AI_WORKER_SECRET.includes('internal_ai_worker_secret');
-        if (isDefaultJwt || isDefaultRefresh || isDefaultDbPass || isDefaultAiSecret) {
+        if (isDefaultJwt || isDefaultRefresh || isDefaultAiSecret) {
           return false;
         }
       }
@@ -54,7 +73,44 @@ export const envSchema = z
     },
     {
       message:
-        'CẢNH BÁO AN NINH: Không được phép sử dụng mật khẩu/secret mặc định trên môi trường Production.',
+        'CẢNH BÁO AN NINH: Không được phép sử dụng JWT_SECRET, JWT_REFRESH_SECRET hoặc AI_WORKER_SECRET mặc định trên môi trường Production.',
+    },
+  )
+  .refine(
+    (data) => {
+      if (data.NODE_ENV === 'production') {
+        if (data.DATABASE_URL) {
+          return (
+            data.DATABASE_URL.startsWith('postgresql://') ||
+            data.DATABASE_URL.startsWith('postgres://')
+          );
+        }
+        return data.DB_PASSWORD !== 'postgres_password_secure';
+      }
+      return true;
+    },
+    {
+      message:
+        'CẢNH BÁO DATABASE: Trên môi trường Production, bắt buộc cung cấp DATABASE_URL hợp lệ (postgresql://...) hoặc cấu hình DB_PASSWORD không được dùng giá trị mặc định.',
+    },
+  )
+  .refine(
+    (data) => {
+      const isR2Required = data.NODE_ENV === 'production' || data.STORAGE_PROVIDER === 'r2';
+      if (isR2Required) {
+        return !!(
+          data.S3_ENDPOINT &&
+          data.S3_ACCESS_KEY_ID &&
+          data.S3_SECRET_ACCESS_KEY &&
+          data.S3_BUCKET_MANGA &&
+          data.S3_BUCKET_NOVEL
+        );
+      }
+      return true;
+    },
+    {
+      message:
+        'CẢNH BÁO STORAGE: Khi NODE_ENV=production hoặc STORAGE_PROVIDER=r2, bắt buộc cung cấp đầy đủ: S3_ENDPOINT, S3_ACCESS_KEY_ID, S3_SECRET_ACCESS_KEY, S3_BUCKET_MANGA, S3_BUCKET_NOVEL.',
     },
   );
 

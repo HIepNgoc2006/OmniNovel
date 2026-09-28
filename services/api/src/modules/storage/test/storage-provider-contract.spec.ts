@@ -144,6 +144,15 @@ describe('StorageService Provider-Neutral Contract (MinIO Local vs Cloudflare R2
         }),
       ).rejects.toThrow('Production / R2 Storage Misconfiguration');
     });
+
+    it('should FAIL-FAST when STORAGE_PROVIDER is invalid (e.g. typo r22)', async () => {
+      await expect(
+        createServiceWithConfig({
+          NODE_ENV: 'development',
+          STORAGE_PROVIDER: 'r22',
+        }),
+      ).rejects.toThrow("Invalid STORAGE_PROVIDER: 'r22'");
+    });
   });
 
   describe('3. Local Dev & CI Backward Compatibility (MinIO Zero Regression)', () => {

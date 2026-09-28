@@ -50,24 +50,100 @@ export class StorageService {
     private configService: ConfigService,
     private dataSource: DataSource,
   ) {
-    const endpoint = this.configService.get<string>('MINIO_ENDPOINT', 'localhost');
-    const port = this.configService.get<number>('MINIO_PORT', 9000);
-    const useSSL = this.configService.get<boolean>('MINIO_USE_SSL', false);
-    const accessKey = this.configService.get<string>('MINIO_ACCESS_KEY', 'minioadmin');
-    const secretKey = this.configService.get<string>('MINIO_SECRET_KEY', 'minioadmin');
+    const nodeEnv = this.configService.get<string>('NODE_ENV', 'development');
+    const provider = (
+      this.configService.get<string>('STORAGE_PROVIDER') ||
+      (nodeEnv === 'production' ? 'r2' : 'minio')
+    ).toLowerCase();
 
-    this.mangaBucket = this.configService.get<string>('MINIO_BUCKET_MANGA', 'manga-media');
-    this.novelBucket = this.configService.get<string>('MINIO_BUCKET_NOVEL', 'novel-media');
+    let endpoint: string;
+    let region: string;
+    let accessKey: string;
+    let secretKey: string;
+    let forcePathStyle: boolean;
+
+    if (provider === 'r2' || nodeEnv === 'production') {
+      // PRODUCTION / R2: BẮT BUỘC FAIL-FAST nếu thiếu bất kỳ biến nào, TUYỆT ĐỐI không fallback localhost / minioadmin
+      const r2Endpoint = this.configService.get<string>('S3_ENDPOINT');
+      const r2AccessKey =
+        this.configService.get<string>('S3_ACCESS_KEY_ID') ||
+        this.configService.get<string>('AWS_ACCESS_KEY_ID');
+      const r2SecretKey =
+        this.configService.get<string>('S3_SECRET_ACCESS_KEY') ||
+        this.configService.get<string>('AWS_SECRET_ACCESS_KEY');
+      const r2MangaBucket = this.configService.get<string>('S3_BUCKET_MANGA');
+      const r2NovelBucket = this.configService.get<string>('S3_BUCKET_NOVEL');
+
+      const missingVars: string[] = [];
+      if (!r2Endpoint) missingVars.push('S3_ENDPOINT');
+      if (!r2AccessKey) missingVars.push('S3_ACCESS_KEY_ID');
+      if (!r2SecretKey) missingVars.push('S3_SECRET_ACCESS_KEY');
+      if (!r2MangaBucket) missingVars.push('S3_BUCKET_MANGA');
+      if (!r2NovelBucket) missingVars.push('S3_BUCKET_NOVEL');
+
+      if (missingVars.length > 0) {
+        throw new Error(
+          `[StorageService] Production / R2 Storage Misconfiguration: Missing required environment variables: ${missingVars.join(', ')}. Fail-fast triggered.`,
+        );
+      }
+
+      endpoint = r2Endpoint!;
+      region = this.configService.get<string>('S3_REGION', 'auto');
+      accessKey = r2AccessKey!;
+      secretKey = r2SecretKey!;
+      forcePathStyle = this.configService.get<boolean>('S3_FORCE_PATH_STYLE', false);
+
+      this.mangaBucket = r2MangaBucket!;
+      this.novelBucket = r2NovelBucket!;
+    } else {
+      // LOCAL DEV / CI: Hỗ trợ S3_* hoặc fallback về MINIO_*
+      const s3Endpoint = this.configService.get<string>('S3_ENDPOINT');
+      if (s3Endpoint) {
+        endpoint = s3Endpoint;
+      } else {
+        const minioHost = this.configService.get<string>('MINIO_ENDPOINT', 'localhost');
+        const minioPort = this.configService.get<number>('MINIO_PORT', 9000);
+        const useSSL = this.configService.get<boolean>('MINIO_USE_SSL', false);
+        endpoint = `${useSSL ? 'https' : 'http'}://${minioHost}:${minioPort}`;
+      }
+
+      region = this.configService.get<string>('S3_REGION', 'us-east-1');
+      accessKey =
+        this.configService.get<string>('S3_ACCESS_KEY_ID') ||
+        this.configService.get<string>('MINIO_ACCESS_KEY', 'minioadmin');
+      secretKey =
+        this.configService.get<string>('S3_SECRET_ACCESS_KEY') ||
+        this.configService.get<string>('MINIO_SECRET_KEY', 'minioadmin');
+      forcePathStyle = this.configService.get<boolean>('S3_FORCE_PATH_STYLE', true);
+
+      this.mangaBucket =
+        this.configService.get<string>('S3_BUCKET_MANGA') ||
+        this.configService.get<string>('MINIO_BUCKET_MANGA', 'manga-media');
+      this.novelBucket =
+        this.configService.get<string>('S3_BUCKET_NOVEL') ||
+        this.configService.get<string>('MINIO_BUCKET_NOVEL', 'novel-media');
+    }
 
     this.s3Client = new S3Client({
-      endpoint: `${useSSL ? 'https' : 'http'}://${endpoint}:${port}`,
-      region: 'us-east-1',
+      endpoint,
+      region,
       credentials: {
         accessKeyId: accessKey,
         secretAccessKey: secretKey,
       },
-      forcePathStyle: true,
+      forcePathStyle,
     });
+  }
+
+  public getS3Client(): S3Client {
+    return this.s3Client;
+  }
+
+  public getBucketConfig() {
+    return {
+      mangaBucket: this.mangaBucket,
+      novelBucket: this.novelBucket,
+    };
   }
 
   // 1. TẠO PHIÊN UPLOAD VÀ CẤP PRESIGNED PUT URL

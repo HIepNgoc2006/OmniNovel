@@ -39,4 +39,11 @@ class ApiEndpoints {
   static const String gamificationTransactions = '/gamification/transactions';
   static const String gamificationReadChapter = '/gamification/read-chapter';
   static const String gamificationLeaderboard = '/gamification/leaderboard';
+
+  // Studio AI Translation (Phase 5D.7)
+  static const String aiJobs = '/ai/jobs';
+  static String aiJobDetail(String id) => '/ai/jobs/$id';
+  static String aiJobPreviews(String id) => '/ai/jobs/$id/previews';
+  static String aiJobSegments(String id) => '/ai/jobs/$id/segments';
+  static String aiJobApply(String id) => '/ai/jobs/$id/apply';
 }

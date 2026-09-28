@@ -38,7 +38,10 @@
 - [x] Hợp nhất cấu hình PostgreSQL qua `buildPostgresConnectionOptions` đảm bảo 100% parity giữa runtime (`DatabaseModule`) và migration CLI (`data-source.ts`).
 - [x] Refactor SSRF Safe Downloader (`services/ai-worker`) hỗ trợ R2 endpoint domain & virtual-hosted subdomains.
 - [x] Viết bộ kiểm thử hợp đồng (Contract Tests) chứng minh Cloudflare R2 config, Presigned URL generation, Supabase URL/SSL, và bảo toàn 100% MinIO local compatibility.
-- [x] Chạy lại toàn bộ 384/384 tests Backend API và 322/322 tests AI Worker đạt 100% GREEN.
+- [x] Chạy lại toàn bộ 384/384 tests Backend API và 321/321 tests AI Worker đạt 100% GREEN.
+- [x] Khởi tạo 2 R2 buckets chuẩn hóa trên Cloudflare: `omninovel-manga` và `omninovel-novel` (Account `5647695aab5f1dfad2253715bf29531e`).
+- [x] Audit và migrate thành công toàn bộ 18 TypeORM migrations (0000 -> 0017) lên Supabase PostgreSQL 17.6 (`sovdnipwoybywqorjvkt`), tạo 33 tables và ghi nhận 18 records trong bảng `migrations`.
+- [x] Viết bộ kiểm thử live smoke test vòng đời R2 (`r2-live-smoke.ts`: PUT presigned → HEAD → GET → COPY/promote → DELETE).
 
 ### B. Đóng Gói Docker & Reverse Proxy (Phase 6.2)
 - [ ] Hoàn thiện `deploy/docker-compose.yml` cho Production VPS: gồm 4 container cốt lõi (`nginx`, `api`, `ai-worker`, `redis`).

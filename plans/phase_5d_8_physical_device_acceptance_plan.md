@@ -5,11 +5,11 @@
 - **Tracking Issue:** [Issue #208](https://github.com/HIepNgoc2006/OmniNovel/issues/208)
 - **Living Master Tracker:** [Issue #192](https://github.com/HIepNgoc2006/OmniNovel/issues/192)
 - **Baseline Tham Chiếu Cứng (Pinned Baseline):**
-  - **Application code baseline:** Commit [`e6b8cbe`](https://github.com/HIepNgoc2006/OmniNovel/commit/e6b8cbe) (`main@e6b8cbed76080da75ced4ea0055e4da1054a3b59`)
-  - **Acceptance documentation baseline:** Commit [`373c458`](https://github.com/HIepNgoc2006/OmniNovel/commit/373c458) (`docs(plans): initialize Phase 5D.8 physical device acceptance plan and acceptance matrix (#208)`)
+  - **Application logic baseline:** Commit [`e6b8cbe`](https://github.com/HIepNgoc2006/OmniNovel/commit/e6b8cbe) (`main@e6b8cbed76080da75ced4ea0055e4da1054a3b59`)
+  - **Build/acceptance baseline:** Commit [`34a6771`](https://github.com/HIepNgoc2006/OmniNovel/commit/34a6771) (`main@34a6771712c3f966bbdb56cb9e99f905ffb907ab`, thêm `kotlin.incremental=false` giải quyết build cross-drive)
 - **Suite Baseline Hiện Tại:** 314/314 tests PASS 100%, `flutter analyze` 0 issues.
 - **Tính Chất Phase:** **Acceptance / Evidence Phase** (Nghiêm cấm thêm feature mới; chỉ tập trung thu thập bằng chứng thực nghiệm trên phần cứng thật).
-- **Toolchain Environment Pinned:** OpenJDK 17.0.20.1 LTS (`.tools/jdk-17`), Gradle 8.10.2, AGP 8.7.0, Flutter 3.47.5 (Dart 3.13.4).
+- **Môi Trường Toolchain Cố Định (Pinned Toolchain):** Project-local OpenJDK 17.0.20.1 LTS binary (`.tools/jdk-17`) + Flutter CLI pinned qua `flutter config --jdk-dir`, Gradle 8.10.2, AGP 8.7.0, Flutter 3.47.5 (Dart 3.13.4).
 
 ---
 
@@ -99,18 +99,23 @@ $ADB = "D:\Users\hiep\AppData\Local\Android\Sdk\platform-tools\adb.exe"
 & $ADB shell am kill com.omninovel.mobile
 ```
 
-### 3.4. Bằng Chứng Biên Dịch Release APK (Pre-Hardware Gate Verified ✅)
-- **Application Code Baseline:** Commit [`e6b8cbe`](https://github.com/HIepNgoc2006/OmniNovel/commit/e6b8cbe)
-- **Acceptance Documentation Baseline:** Commit [`373c458`](https://github.com/HIepNgoc2006/OmniNovel/commit/373c458)
+### 3.4. Bằng Chứng Biên Dịch Acceptance APK (Pre-Hardware Gate Verified ✅)
+- **Phân Định Provenance & Baseline:**
+  - **Application logic baseline:** Commit [`e6b8cbe`](https://github.com/HIepNgoc2006/OmniNovel/commit/e6b8cbe) (Logic app 100% nguyên vẹn, zero thay đổi code nghiệp vụ).
+  - **Build/acceptance baseline:** Commit [`34a6771`](https://github.com/HIepNgoc2006/OmniNovel/commit/34a6771) (`main@34a6771712c3f966bbdb56cb9e99f905ffb907ab`, thêm `kotlin.incremental=false` tại `apps/mobile/android/gradle.properties`).
 - **Môi Trường Toolchain Cố Định (Pinned Toolchain):**
-  - **Java Runtime:** OpenJDK 17.0.20.1 LTS (Cô lập cục bộ tại `.tools/jdk-17`, cấu hình qua `flutter config --jdk-dir`)
-  - **Gradle / AGP:** Gradle 8.10.2 + Android Gradle Plugin 8.7.0
-  - **Android SDK & NDK:** SDK Platform 36/34, NDK `27.0.12077973`
-  - **Flutter SDK:** Channel stable 3.47.5 (Engine af7e796e16, Dart 3.13.4)
-- **File Binary Sinh Ra (Artifact):**
+  - **Java Runtime:** Project-local OpenJDK 17.0.20.1 LTS binary (`.tools/jdk-17`) + Flutter CLI pinned qua `flutter config --jdk-dir`.
+  - **Gradle / AGP:** Gradle 8.10.2 + Android Gradle Plugin 8.7.0.
+  - **Android SDK & NDK:** SDK Platform 36/34, Build-Tools 34.0.0, NDK `27.0.12077973`.
+  - **Flutter SDK:** Channel stable 3.47.5 (Engine af7e796e16, Dart 3.13.4).
+- **Phân Loại & Bản Chất Binary (Artifact Classification):**
+  - **Loại file:** **Acceptance APK — release build, debug-signed** (Biên dịch ở chế độ Release với đầy đủ R8 code shrinking, obfuscation, resource shrinking, AOT release compilation, nhưng được ký bằng debug key nội bộ phục vụ kiểm thử hiệu năng phần cứng Phase 5D.8; chưa phải production distribution RC).
   - **Đường dẫn:** `apps/mobile/build/app/outputs/flutter-apk/app-release.apk`
-  - **Dung lượng:** 57,982,080 bytes (55.3 MB)
-  - **Mã băm SHA-256:** `015FEC94E1481B1C07A5D22F0B960B1D61E3ADEB398B6B3429945282BDBFB395`
+  - **Dung lượng:** 57,982,080 bytes (55.3 MB).
+  - **Mã băm SHA-256 (Tái lập độc lập từ clean worktree):**
+    ```text
+    015FEC94E1481B1C07A5D22F0B960B1D61E3ADEB398B6B3429945282BDBFB395
+    ```
 - **Trạng Thái ADB Thiết Bị Hiện Tại:**
   - Lệnh kiểm tra: `& "D:\Users\hiep\AppData\Local\Android\Sdk\platform-tools\adb.exe" devices -l`
   - Kết quả: `List of devices attached` (Rỗng / Chưa kết nối cáp USB hoặc Wi-Fi Debugging)

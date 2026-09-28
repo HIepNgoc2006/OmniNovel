@@ -42,10 +42,14 @@ export async function runR2LiveSmokeTest(
   const isRequired =
     options.required ?? (process.env.R2_LIVE_SMOKE_REQUIRED === 'true');
 
-  const endpoint = options.endpoint || process.env.S3_ENDPOINT;
-  const accessKeyId = options.accessKeyId || process.env.S3_ACCESS_KEY_ID;
+  const endpoint =
+    'endpoint' in options ? options.endpoint : process.env.S3_ENDPOINT;
+  const accessKeyId =
+    'accessKeyId' in options ? options.accessKeyId : process.env.S3_ACCESS_KEY_ID;
   const secretAccessKey =
-    options.secretAccessKey || process.env.S3_SECRET_ACCESS_KEY;
+    'secretAccessKey' in options
+      ? options.secretAccessKey
+      : process.env.S3_SECRET_ACCESS_KEY;
   const mangaBucket =
     options.mangaBucket || process.env.S3_BUCKET_MANGA || 'omninovel-manga';
   const novelBucket =

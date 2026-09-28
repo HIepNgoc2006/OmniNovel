@@ -1,7 +1,7 @@
 # 📋 Phase 6: Triển Khai DevOps, Hạ Tầng Đám Mây & Nghiệm Thu 5 Môn
 
 - **Mục tiêu:** Thiết lập hạ tầng triển khai thực tế đa môi trường (Local/CI vs Production Cloud), tự động hóa CI/CD, hệ thống giám sát và hồ sơ bảo vệ 5 môn học.
-- **Trạng thái:** [ ] Phase 6.1: CONDITIONAL — Đã hoàn thành 100% code hardening & contracts; Gate R2 Live Lifecycle cần credentials thực để PASS toàn diện | Phase 6.2 (QUEUED 🟡)
+- **Trạng thái:** [x] Phase 6.1 Đã hoàn tất và nghiệm thu toàn diện (CLOSED / FROZEN ✅) | Bắt đầu Phase 6.2 (IN PROGRESS 🟡)
 
 ---
 
@@ -36,7 +36,7 @@
 
 ## 3. DANH SÁCH ĐẦU VIỆC (CHECKLIST)
 
-### A. Chuẩn Hóa Mã Nguồn & Cấu Hình Provider-Neutral (Phase 6.1 - CONDITIONAL 🟡)
+### A. Chuẩn Hóa Mã Nguồn & Cấu Hình Provider-Neutral (Phase 6.1 - CLOSED / FROZEN ✅)
 - [x] Refactor `StorageService` (`services/api`) hỗ trợ `minio` và `r2` với fail-fast validation ở production và fail-fast enum.
 - [x] Refactor `env.validation.ts` schema với đầy đủ `STORAGE_PROVIDER`, `S3_*`, `DATABASE_URL`, `DB_SSL` và production fail-fast guards.
 - [x] **[P0 Sửa xong]** Hợp nhất cấu hình PostgreSQL qua `buildPostgresConnectionOptions` đảm bảo 100% parity giữa runtime (`DatabaseModule`) và migration CLI (`data-source.ts`). Bỏ hoàn toàn `{ override: true }`, bảo đảm biến môi trường OS/Docker/CI luôn có quyền ưu tiên cao nhất, hỗ trợ biến rõ ràng `MIGRATION_ENV_FILE`.
@@ -51,11 +51,12 @@
   - Supabase PostgreSQL 17.6 (`sovdnipwoybywqorjvkt`): 33 tables ở schema `public`, 18 migrations (0000 -> 0017) ghi nhận đầy đủ trong bảng `migrations`.
   - Local PostgreSQL 16: **Local fixture cleanup** (dọn dẹp 15,211 legacy test rows do dữ liệu rác test cục bộ vi phạm unique invariant của 0017), chạy `npm run migration:run` thành công, kiểm tra `npm run migration:show` xác nhận toàn bộ 18 migrations hiển thị `[X]` applied.
 - [x] Xác thực kiểm thử cục bộ (Locally Verified):
-  - Backend NestJS: **388 passed, 1 skipped** (test mạng R2 live khi thiếu credentials, fail-fast mode đã verified) trên 32 test suites.
+  - Backend NestJS: **389 passed, 0 skipped, 0 failed** trên 32 test suites.
   - AI Worker: **322 passed, 0 failed** trên pytest.
-- [ ] **[R2 Gate Chờ Credentials]** Thực thi R2 Live Lifecycle với real credentials để verify 100%:
-  - Yêu cầu: `S3_ACCESS_KEY_ID` & `S3_SECRET_ACCESS_KEY` thật trên account Cloudflare.
-  - Kỳ vọng: `omninovel-manga` ✅, `omninovel-novel` ✅, zero leaked objects ✅.
+- [x] **[R2 Gate ĐÃ NGHIỆM THU THÀNH CÔNG]** Thực thi R2 Live Lifecycle với real credentials trên Cloudflare R2:
+  - Kích hoạt chế độ `R2_LIVE_SMOKE_REQUIRED=true` với endpoint `https://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com`.
+  - Toàn bộ chu trình (Presigned PUT -> HEAD xác thực ContentLength -> Presigned GET đối chiếu -> COPY promote -> DELETE trong finally -> HEAD xác nhận 404) PASS hoàn toàn.
+  - Kết quả: `omninovel-manga` ✅, `omninovel-novel` ✅, zero leaked objects ✅.
 
 ### B. Đóng Gói Docker & Reverse Proxy (Phase 6.2)
 - [ ] Hoàn thiện `deploy/docker-compose.yml` cho Production VPS: gồm 4 container cốt lõi (`nginx`, `api`, `ai-worker`, `redis`).

@@ -1,4 +1,15 @@
+import * as dotenv from 'dotenv';
+import * as path from 'path';
 import { runR2LiveSmokeTest } from './r2-live-smoke';
+
+const envPaths = [
+  path.resolve(process.cwd(), '.env'),
+  path.resolve(process.cwd(), '../../.env'),
+  path.resolve(__dirname, '../../../../.env'),
+];
+for (const p of envPaths) {
+  dotenv.config({ path: p });
+}
 
 describe('Real Cloudflare R2 Lifecycle Smoke Test (Live Network E2E & Invariants)', () => {
   const isRequired = process.env.R2_LIVE_SMOKE_REQUIRED === 'true';

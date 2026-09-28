@@ -42,8 +42,16 @@ export async function runR2LiveSmokeTest(
   const isRequired =
     options.required ?? (process.env.R2_LIVE_SMOKE_REQUIRED === 'true');
 
-  const endpoint =
+  const rawEndpoint =
     'endpoint' in options ? options.endpoint : process.env.S3_ENDPOINT;
+  let endpoint = rawEndpoint;
+  if (endpoint) {
+    try {
+      endpoint = new URL(endpoint).origin;
+    } catch {
+      // keep as is
+    }
+  }
   const accessKeyId =
     'accessKeyId' in options ? options.accessKeyId : process.env.S3_ACCESS_KEY_ID;
   const secretAccessKey =

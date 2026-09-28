@@ -94,7 +94,12 @@ export class StorageService {
         );
       }
 
-      endpoint = r2Endpoint!;
+      try {
+        const parsedUrl = new URL(r2Endpoint!);
+        endpoint = parsedUrl.origin;
+      } catch {
+        endpoint = r2Endpoint!;
+      }
       region = this.configService.get<string>('S3_REGION', 'auto');
       accessKey = r2AccessKey!;
       secretKey = r2SecretKey!;

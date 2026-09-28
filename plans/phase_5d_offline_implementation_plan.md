@@ -503,11 +503,13 @@ CREATE INDEX idx_download_tasks_status ON download_tasks(status);
   - [x] **P1.1:** Strict Whitelist Novel Illustrations — Unknown or non-whitelisted illustration paths are blocked.
 - [x] **Hồi quy & Phân tích Tĩnh:** 109/109 Reader tests PASS 100%, 17/17 Acceptance Gates test cases PASS 100%, `flutter analyze` 0 issues (Clean 100%).
 
-### 📌 Phase 5D.6: Quản Lý Dung Lượng, Eviction & Cách Ly Người Dùng
-- [ ] Giới hạn dung lượng bộ nhớ tải về (Storage Quota): Cảnh báo khi bộ nhớ thiết bị còn trống dưới 200MB.
-- [ ] Tính năng Xóa thủ công từng chương hoặc toàn bộ bộ truyện đã tải.
-- [ ] Chiến lược LRU Eviction: Tùy chọn tự động dọn dẹp các chương cũ nhất khi chạm trần dung lượng người dùng thiết lập.
-- [ ] Cô lập người dùng: Phân vùng dữ liệu tải theo `userId` (hoặc cấu hình dùng chung giữa các user trên cùng thiết bị nhưng bảo vệ bookmark cá nhân).
+### 📌 Phase 5D.6: Quản Lý Dung Lượng, Eviction & Cách Ly Người Dùng (FROZEN-FINAL ✅ - Commit b999e6e)
+- [x] Giới hạn dung lượng bộ nhớ tải về (Storage Quota): Cảnh báo khi bộ nhớ thiết bị còn trống dưới 200MB, Dynamic OS Headroom Guard & Fail-Closed Android StatFs provider.
+- [x] Tính năng Xóa thủ công từng chương hoặc toàn bộ bộ truyện đã tải (Gate 8 Single & Batch Deletion, All-or-Nothing khi có active lease).
+- [x] Chiến lược LRU Eviction: Tự động dọn dẹp các chương cũ nhất khi chạm trần dung lượng người dùng thiết lập, loại trừ các chương đang có Reader active lease.
+- [x] Cô lập người dùng: Phân vùng dữ liệu tải theo `userId` (Database v2 schema, per-user folder isolation, SSoT OfflineUserScope).
+- [x] Pre-Extraction Admission Guard: Inspect Zip Central Directory trước khi giải nén, ledger reservation đa tầng không overcommit.
+- [x] Nghiệm thu: 9/9 Acceptance Gates PASS 100%, 291/291 tests GREEN, flutter analyze 0 issues. *(Issue #206 CLOSED)*
 
 ### 📌 Phase 5D.7: Studio Quick-Approval Action Sheet (Polish - Non-blocking)
 - [ ] Xây dựng Bottom Sheet / Dialog xác nhận duyệt nhanh bản dịch AI cho Editor/Owner khi job dịch hoàn tất.

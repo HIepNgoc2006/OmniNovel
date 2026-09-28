@@ -72,3 +72,6 @@ test-results/
 /uploads/
 /temp/
 /storage/
+
+# Local isolated tools (e.g. pinned JDK)
+.tools/

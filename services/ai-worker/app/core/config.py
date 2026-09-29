@@ -3,17 +3,17 @@ from pathlib import Path
 from typing import Optional, Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Đảm bảo tuyệt đối HF_HOME và TORCH_HOME trỏ về thư mục .cache trong services/ai-worker
 _AI_WORKER_DIR = Path(__file__).resolve().parent.parent.parent
 _CACHE_DIR = _AI_WORKER_DIR / ".cache"
-_HF_HOME = _CACHE_DIR / "huggingface"
-_TORCH_HOME = _CACHE_DIR / "torch"
 
-_HF_HOME.mkdir(parents=True, exist_ok=True)
-_TORCH_HOME.mkdir(parents=True, exist_ok=True)
+_HF_HOME = os.environ.get("HF_HOME") or str(_CACHE_DIR / "huggingface")
+_TORCH_HOME = os.environ.get("TORCH_HOME") or str(_CACHE_DIR / "torch")
 
-os.environ["HF_HOME"] = str(_HF_HOME)
-os.environ["TORCH_HOME"] = str(_TORCH_HOME)
+Path(_HF_HOME).mkdir(parents=True, exist_ok=True)
+Path(_TORCH_HOME).mkdir(parents=True, exist_ok=True)
+
+os.environ.setdefault("HF_HOME", _HF_HOME)
+os.environ.setdefault("TORCH_HOME", _TORCH_HOME)
 
 class Settings(BaseSettings):
     ENV: str = "production"

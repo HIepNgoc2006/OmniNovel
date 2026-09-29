@@ -294,7 +294,7 @@ git push origin main
 - Consumes: Nginx 1.30.5-alpine, OpenSSL CLI.
 - Produces: Custom Nginx image `omninovel-nginx`, dynamic upstream resolve `zone api_backend 64k; server api:8000 resolve;`, rate limit status 429, runtime TLS state coordination.
 
-- [ ] **Step 1: Tạo `deploy/nginx/Dockerfile`**
+- [x] **Step 1: Tạo `deploy/nginx/Dockerfile`**
 
 Tạo file [deploy/nginx/Dockerfile](file:///e:/Workspace%202/Doctruyen_project/deploy/nginx/Dockerfile):
 
@@ -313,7 +313,7 @@ RUN chmod +x /entrypoint.sh /activate-production-tls.sh
 ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]
 ```
 
-- [ ] **Step 2: Tạo `deploy/nginx/nginx.conf`**
+- [x] **Step 2: Tạo `deploy/nginx/nginx.conf`**
 
 Tạo file [deploy/nginx/nginx.conf](file:///e:/Workspace%202/Doctruyen_project/deploy/nginx/nginx.conf) với đầy đủ `limit_req_zone` và `limit_req_status 429`:
 
@@ -357,7 +357,7 @@ http {
 }
 ```
 
-- [ ] **Step 3: Tạo `deploy/nginx/conf.d/omninovel.conf`**
+- [x] **Step 3: Tạo `deploy/nginx/conf.d/omninovel.conf`**
 
 Tạo file [deploy/nginx/conf.d/omninovel.conf](file:///e:/Workspace%202/Doctruyen_project/deploy/nginx/conf.d/omninovel.conf) với Dynamic DNS Upstream và các proxy locations:
 
@@ -439,7 +439,7 @@ server {
 }
 ```
 
-- [ ] **Step 4: Tạo `deploy/nginx/entrypoint.sh`**
+- [x] **Step 4: Tạo `deploy/nginx/entrypoint.sh`**
 
 Tạo file [deploy/nginx/entrypoint.sh](file:///e:/Workspace%202/Doctruyen_project/deploy/nginx/entrypoint.sh):
 
@@ -503,7 +503,7 @@ nginx -t
 exec nginx -g "daemon off;"
 ```
 
-- [ ] **Step 5: Tạo `deploy/nginx/activate-production-tls.sh`**
+- [x] **Step 5: Tạo `deploy/nginx/activate-production-tls.sh`**
 
 Tạo file [deploy/nginx/activate-production-tls.sh](file:///e:/Workspace%202/Doctruyen_project/deploy/nginx/activate-production-tls.sh):
 
@@ -545,7 +545,7 @@ nginx -s reload
 echo "Kích hoạt Production TLS thành công không gián đoạn dịch vụ!"
 ```
 
-- [ ] **Step 6: Build và Kiểm tra Syntax Image Nginx**
+- [x] **Step 6: Build và Kiểm tra Syntax Image Nginx**
 
 Chạy từ thư mục gốc repository:
 ```bash
@@ -554,7 +554,7 @@ docker run --rm omninovel-nginx:test nginx -v
 ```
 Kỳ vọng: Nginx phiên bản 1.30.5 được hiển thị và OpenSSL có sẵn trong container.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add deploy/nginx/Dockerfile deploy/nginx/nginx.conf deploy/nginx/conf.d/omninovel.conf deploy/nginx/entrypoint.sh deploy/nginx/activate-production-tls.sh

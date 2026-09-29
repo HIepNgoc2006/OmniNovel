@@ -30,7 +30,7 @@
 - Consumes: Root `package.json`, root `package-lock.json`, `packages/shared`, `services/api/src/database/data-source.ts`.
 - Produces: Docker image `omninovel-api:test`, script `npm run migration:run:prod` biên dịch và thực thi migrations từ `dist/database/data-source.js`, fail-fast validation khi thiếu `REDIS_PASSWORD` ở production.
 
-- [ ] **Step 1: Bổ sung script migration production trong `services/api/package.json`**
+- [x] **Step 1: Bổ sung script migration production trong `services/api/package.json`**
 
 Thêm script `"migration:run:prod": "typeorm migration:run -d dist/database/data-source.js"` vào `scripts` của [services/api/package.json](file:///e:/Workspace%202/Doctruyen_project/services/api/package.json):
 
@@ -40,7 +40,7 @@ Thêm script `"migration:run:prod": "typeorm migration:run -d dist/database/data
     "typeorm": "typeorm-ts-node-commonjs",
 ```
 
-- [ ] **Step 2: Thêm Production Fail-Fast Guard cho `REDIS_PASSWORD` trong `env.validation.ts`**
+- [x] **Step 2: Thêm Production Fail-Fast Guard cho `REDIS_PASSWORD` trong `env.validation.ts`**
 
 Trong [services/api/src/config/env.validation.ts](file:///e:/Workspace%202/Doctruyen_project/services/api/src/config/env.validation.ts), bổ sung kiểm tra bắt buộc `REDIS_PASSWORD` không được rỗng khi `NODE_ENV === 'production'`:
 
@@ -62,7 +62,7 @@ Và thông báo lỗi rõ ràng:
         'CẢNH BÁO AN NINH: Không được phép sử dụng JWT_SECRET, JWT_REFRESH_SECRET, AI_WORKER_SECRET mặc định hoặc để trống REDIS_PASSWORD trên môi trường Production.',
 ```
 
-- [ ] **Step 3: Tạo `services/api/Dockerfile` với Monorepo Root Context**
+- [x] **Step 3: Tạo `services/api/Dockerfile` với Monorepo Root Context**
 
 Tạo file [services/api/Dockerfile](file:///e:/Workspace%202/Doctruyen_project/services/api/Dockerfile):
 
@@ -119,7 +119,7 @@ EXPOSE 8000
 CMD ["node", "dist/main"]
 ```
 
-- [ ] **Step 4: Chạy Build Spike xác minh Image API Monorepo**
+- [x] **Step 4: Chạy Build Spike xác minh Image API Monorepo**
 
 Chạy từ thư mục gốc repository:
 ```bash
@@ -127,7 +127,7 @@ docker build -f services/api/Dockerfile -t omninovel-api:test .
 ```
 Kỳ vọng: Build thành công qua cả 2 stages mà không gặp lỗi thiếu lockfile hay thiếu thư mục node_modules.
 
-- [ ] **Step 5: Kiểm tra Runtime Boot & Migration Spike trên Container Test**
+- [x] **Step 5: Kiểm tra Runtime Boot & Migration Spike trên Container Test**
 
 Chạy container test kiểm tra lệnh node dist/main khởi động:
 ```bash
@@ -139,7 +139,7 @@ docker run --rm omninovel-api:test npm run migration:run:prod -- --help
 ```
 Kỳ vọng: Lệnh typeorm CLI phản hồi `typeorm migration:run` thành công, chứng minh `dist/database/data-source.js` tồn tại và chạy tốt.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add services/api/package.json services/api/src/config/env.validation.ts services/api/Dockerfile
@@ -161,7 +161,7 @@ git push origin main
 - Consumes: `services/ai-worker/app`, `services/ai-worker/main.py`.
 - Produces: Docker image `omninovel-ai-worker:test`, CPU PyTorch inference không chứa pytest, `os.environ.setdefault` cho cache model volume.
 
-- [ ] **Step 1: Tạo `services/ai-worker/requirements-prod-cpu.txt`**
+- [x] **Step 1: Tạo `services/ai-worker/requirements-prod-cpu.txt`**
 
 Tạo file [services/ai-worker/requirements-prod-cpu.txt](file:///e:/Workspace%202/Doctruyen_project/services/ai-worker/requirements-prod-cpu.txt):
 
@@ -180,7 +180,7 @@ numpy>=1.26.0,<2.3.0
 opencv-python-headless>=4.9.0,<5.0.0
 ```
 
-- [ ] **Step 2: Cập nhật `services/ai-worker/requirements-ci-cpu.txt`**
+- [x] **Step 2: Cập nhật `services/ai-worker/requirements-ci-cpu.txt`**
 
 Cập nhật [services/ai-worker/requirements-ci-cpu.txt](file:///e:/Workspace%202/Doctruyen_project/services/ai-worker/requirements-ci-cpu.txt) kế thừa từ file production:
 
@@ -190,7 +190,7 @@ pytest>=8.0.0,<9.0.0
 pytest-asyncio>=0.23.0,<0.26.0
 ```
 
-- [ ] **Step 3: Cập nhật `services/ai-worker/app/core/config.py` dùng `os.environ.setdefault`**
+- [x] **Step 3: Cập nhật `services/ai-worker/app/core/config.py` dùng `os.environ.setdefault`**
 
 Sửa đổi đoạn cấu hình cache trong [services/ai-worker/app/core/config.py](file:///e:/Workspace%202/Doctruyen_project/services/ai-worker/app/core/config.py):
 
@@ -208,7 +208,7 @@ os.environ.setdefault("HF_HOME", _HF_HOME)
 os.environ.setdefault("TORCH_HOME", _TORCH_HOME)
 ```
 
-- [ ] **Step 4: Tạo `services/ai-worker/Dockerfile` CPU Non-Root**
+- [x] **Step 4: Tạo `services/ai-worker/Dockerfile` CPU Non-Root**
 
 Tạo file [services/ai-worker/Dockerfile](file:///e:/Workspace%202/Doctruyen_project/services/ai-worker/Dockerfile):
 
@@ -254,7 +254,7 @@ EXPOSE 8001
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--workers", "1"]
 ```
 
-- [ ] **Step 5: Chạy Build Test Image AI Worker**
+- [x] **Step 5: Chạy Build Test Image AI Worker**
 
 Chạy từ thư mục gốc repository:
 ```bash
@@ -262,7 +262,7 @@ docker build -f services/ai-worker/Dockerfile -t omninovel-ai-worker:test .
 ```
 Kỳ vọng: Image build thành công, cài đặt đúng Torch CPU wheel và cấu hình `appuser` non-root.
 
-- [ ] **Step 6: Chạy thử Container và Kiểm tra Healthcheck**
+- [x] **Step 6: Chạy thử Container và Kiểm tra Healthcheck**
 
 ```bash
 docker run --rm -d --name test-ai-worker -e AI_WORKER_SECRET=test_secret omninovel-ai-worker:test
@@ -271,7 +271,7 @@ docker stop test-ai-worker
 ```
 Kỳ vọng: Trả về JSON `{"status": "healthy", "service": "omninovel-ai-worker"}`.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add services/ai-worker/requirements-prod-cpu.txt services/ai-worker/requirements-ci-cpu.txt services/ai-worker/app/core/config.py services/ai-worker/Dockerfile

@@ -1,10 +1,10 @@
 # Đặc Tả Kỹ Thuật: Hạ Tầng Production Docker Compose & Nginx (Phase 6.2)
 
-- **Trạng thái:** APPROVED WITH REQUIRED AMENDMENTS (REVISION 3 - FINAL CANDIDATE)
-- **Ngày lập:** 2026-09-29 (Cập nhật Revision 3: 2026-09-29)
+- **Trạng thái:** APPROVED WITH REQUIRED AMENDMENTS (REVISION 4 - FINAL CANDIDATE)
+- **Ngày lập:** 2026-09-29 (Cập nhật Revision 4: 2026-09-29)
 - **Tác giả:** Antigravity Engineering
 - **Quyết định kiến trúc (ADR Phase 6.2):** 
-  > 3-Network Production Topology (`edge`, `internal`, `egress`) + Root-Context Multi-stage Monorepo Builds (dựa trên root `package-lock.json`) + CPU-Only AI Worker (`requirements-prod-cpu.txt`) + Nginx Ingress Độc Quyền (Custom Alpine Image với OpenSSL, Pin >= 1.27.3 kèm Dynamic DNS Resolver `zone api_backend 64k; server api:8000 resolve;`, `service_started`) + Redis Container-Side Secret Expansion & Production Password Guard + Outbound Egress Cho Supabase/R2 + Hai Trạng Thái TLS/HSTS Độc Lập Qua Runtime State Files (`tls-mode.conf`, `port80-mode.conf`) + Explicit Production Migration Script.
+  > 3-Network Production Topology (`edge`, `internal`, `egress`) + Root-Context Multi-stage Monorepo Builds (dựa trên root `package-lock.json`, runner chỉ lấy root `node_modules` và dist) + CPU-Only AI Worker (`requirements-prod-cpu.txt`) + Nginx Ingress Độc Quyền (Custom Alpine Image với OpenSSL, Pin Stable Nginx 1.30.5-alpine >= 1.27.3 kèm Dynamic DNS Resolver `zone api_backend 64k; server api:8000 resolve;`, `service_started`) + Redis Container-Side Secret Expansion & Production Password Guard + Outbound Egress Cho Supabase/R2 + Hai Trạng Thái TLS/HSTS Độc Lập Qua Runtime State Files (`tls-mode.conf`, `port80-mode.conf`) Kèm Script Kích Hoạt Nguyên Tử (`activate-production-tls.sh`) + Định Nghĩa Đầy Đủ `limit_req_zone` và `limit_req_status 429` + Explicit Isolated Production Migration Script (`--no-deps`).
 
 ---
 
@@ -54,13 +54,13 @@ Phase 6.1 đã hoàn tất và đóng băng sạch (`CLOSED / FROZEN CLEAN`) t�
 
 | Tên Mạng Docker | Thuộc Tính | Các Container Tham Gia | Mục Đích & Ranh Giới An Ninh |
 | :--- | :--- | :--- | :--- |
-| `omninovel-edge` | `driver: bridge` | `nginx`, `api` | Mạng biên (Edge). Duy nhất `nginx` bind cổng host (`80:80`, `443:443`). `api` nhận reverse proxy nhưng **không có host port**. |
+| `omninovel-edge` | `driver: bridge` | `nginx`, `api` | Mạng biên (Edge). Duy nhất `nginx` bind application host ports (`80:80`, `443:443`). `api` nhận reverse proxy nhưng **không có host port**. |
 | `omninovel-internal` | `driver: bridge`<br>`internal: true` | `api`, `ai-worker`, `redis` | Mạng cô lập nội bộ. **Không có default gateway ra Internet**. Dành riêng cho RPC nội bộ giữa API ↔ AI Worker và kết nối API ↔ Redis. Ngăn chặn tuyệt đối mọi truy cập trái phép từ bên ngoài. |
 | `omninovel-egress` | `driver: bridge`<br>*(no published ports)* | `api`, `ai-worker` | Mạng xuất phát kết nối ra ngoài (Outbound WAN). Cho phép API truy vấn Supabase Postgres / Cloudflare R2 và AI Worker tải ảnh gốc từ R2 qua Presigned URL. |
 
 ### 2.2. Ma Trận Công Bố Cổng (Port Exposure Policy)
 
-- `nginx`: `ports: ["80:80", "443:443"]` (Cổng vào duy nhất).
+- `nginx`: `ports: ["80:80", "443:443"]` (Cổng ứng dụng duy nhất công bố ra host).
 - `api`: `ports: []` (Không expose cổng host `8000`).
 - `ai-worker`: `ports: []` (Không expose cổng host `8001`).
 - `redis`: `ports: []` (Không expose cổng host `6379`, chỉ kết nối duy nhất vào `omninovel-internal`).
@@ -90,6 +90,8 @@ Phase 6.1 đã hoàn tất và đóng băng sạch (`CLOSED / FROZEN CLEAN`) t�
 ### 3.1. Backend API (`services/api/Dockerfile`)
 
 Kho mã nguồn là một **npm workspace monorepo** với một file khóa duy nhất tại gốc: [package-lock.json](file:///e:/Workspace%202/Doctruyen_project/package-lock.json). Không có file lock riêng tại `services/api/` hay `packages/shared/`. Vì vậy, Dockerfile lấy ngữ cảnh build từ thư mục gốc (`context: ..`) và tận dụng cơ chế cài đặt của npm workspace.
+
+*Lưu ý về layout dependencies:* Trong npm workspaces, các gói phụ thuộc được hoist lên `/app/node_modules` ở root. Runner image chỉ cần copy root `/app/node_modules` và Node sẽ tự động resolve các module từ thư mục cha `/app/node_modules` khi chạy từ `/app/services/api/dist/main`. Không thực hiện copy `/app/services/api/node_modules` vì thư mục cục bộ này không tồn tại độc lập sau root install.
 
 ```dockerfile
 # ==========================================
@@ -133,13 +135,12 @@ WORKDIR /app
 ENV NODE_ENV=production \
     PORT=8000
 
-# Copy node_modules gốc (đã prune) và symlinks workspace
+# Copy root node_modules (đã prune) và symlinks workspace
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/packages/shared/package.json ./packages/shared/package.json
 
 COPY --from=builder /app/services/api/dist ./services/api/dist
-COPY --from=builder /app/services/api/node_modules ./services/api/node_modules
 COPY --from=builder /app/services/api/package.json ./services/api/package.json
 
 WORKDIR /app/services/api
@@ -265,14 +266,14 @@ os.environ.setdefault("TORCH_HOME", _TORCH_HOME)
 
 ---
 
-## 4. THIẾT KẾ NGINX IMAGE, DYNAMIC DNS RESOLVER & TLS STATE MACHINE
+## 4. THIẾT KẾ NGINX IMAGE, DYNAMIC DNS RESOLVER, RATE LIMITING & TLS STATE MACHINE
 
 ### 4.1. Nginx Custom Dockerfile (`deploy/nginx/Dockerfile`)
 
-Do base image Alpine chính thức của Nginx không cài sẵn OpenSSL CLI trong runtime, hệ thống tạo custom image nhẹ được pin phiên bản **Nginx 1.27.4-alpine** (>= 1.27.3 để hỗ trợ upstream dynamic resolution):
+Hệ thống pin phiên bản **Nginx Stable 1.30.5-alpine** (hỗ trợ đầy đủ upstream dynamic resolve và bao gồm các bản vá bảo mật mới nhất), đồng thời cài đặt sẵn OpenSSL CLI:
 
 ```dockerfile
-FROM nginx:1.27.4-alpine
+FROM nginx:1.30.5-alpine
 
 # Cài đặt OpenSSL CLI cho script bootstrap self-signed certificate
 RUN apk add --no-cache openssl
@@ -280,15 +281,62 @@ RUN apk add --no-cache openssl
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY conf.d/ /etc/nginx/conf.d/
 COPY entrypoint.sh /entrypoint.sh
+COPY activate-production-tls.sh /activate-production-tls.sh
 
-RUN chmod +x /entrypoint.sh
+RUN chmod +x /entrypoint.sh /activate-production-tls.sh
 
 ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]
 ```
 
-### 4.2. Cấu Hình Nginx Dynamic DNS Resolver (`deploy/nginx/conf.d/omninovel.conf`)
+### 4.2. Cấu Hình Nginx Master (`deploy/nginx/nginx.conf`)
 
-Để ngăn chặn lỗi `502 Bad Gateway` khi container `api` bị recreate và nhận IP nội bộ mới trong mạng Docker, cấu hình sử dụng tính năng **Upstream Zone & Dynamic Resolve** chính thức từ Nginx OSS 1.27.3+:
+Định nghĩa đầy đủ shared memory rate limiting zones và cấu hình mã lỗi trả về `429 Too Many Requests`:
+
+```nginx
+user nginx;
+worker_processes auto;
+error_log /var/log/nginx/error.log warn;
+pid /var/run/nginx.pid;
+
+events {
+    worker_connections 1024;
+}
+
+http {
+    include /etc/nginx/mime.types;
+    default_type application/octet-stream;
+
+    log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                    '$status $body_bytes_sent "$http_referer" '
+                    '"$http_user_agent" "$http_x_forwarded_for"';
+
+    access_log /var/log/nginx/access.log main;
+
+    sendfile on;
+    tcp_nopush on;
+    tcp_nodelay on;
+    keepalive_timeout 65;
+    types_hash_max_size 2048;
+
+    # Gzip Compression
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types text/plain text/css text/xml application/json application/javascript application/rss+xml application/atom+xml image/svg+xml;
+
+    # Rate Limiting Definitions (Thỏa mãn tiêu chuẩn Gate G10)
+    limit_req_zone $binary_remote_addr zone=api_general_limit:10m rate=30r/s;
+    limit_req_zone $binary_remote_addr zone=auth_limit:10m rate=5r/s;
+    limit_req_status 429;
+
+    include /etc/nginx/conf.d/*.conf;
+}
+```
+
+### 4.3. Cấu Hình Nginx Virtual Host & Dynamic Resolver (`deploy/nginx/conf.d/omninovel.conf`)
+
+Sử dụng **Upstream Zone & Dynamic Resolve** chính thức từ Nginx OSS:
 
 ```nginx
 resolver 127.0.0.11 valid=10s ipv6=off;
@@ -329,7 +377,7 @@ server {
     # Chính sách HSTS được điều khiển độc lập qua file runtime
     include /etc/nginx/runtime/tls-mode.conf;
 
-    # Rate Limiting
+    # Rate Limiting chung cho API
     limit_req zone=api_general_limit burst=20 nodelay;
 
     # Core Backend API (Preserve URI)
@@ -341,7 +389,7 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
-    # Auth Limiting Riêng Biệt
+    # Auth Limiting Riêng Biệt (Trả về 429 nếu quá 5 req/s)
     location /api/v1/auth/ {
         limit_req zone=auth_limit burst=5 nodelay;
         proxy_pass http://api_backend;
@@ -378,32 +426,11 @@ server {
 }
 ```
 
-### 4.3. Máy Trạng Thái TLS (TLS State Machine: Bootstrap ➔ Production)
+### 4.4. Máy Trạng Thái TLS & Script Kích Hoạt Nguyên Tử (`activate-production-tls.sh`)
 
-Thay vì chỉ symlink file cert, hệ thống điều khiển **đồng thời cả 3 thành phần**: (1) Chứng chỉ SSL, (2) Chính sách HSTS, và (3) Hành vi Port 80 thông qua 2 file runtime state: `/etc/nginx/runtime/tls-mode.conf` và `/etc/nginx/runtime/port80-mode.conf`.
+Điều phối đồng thời cả 3 thành phần: (1) Chứng chỉ SSL, (2) Chính sách HSTS, và (3) Hành vi Port 80 thông qua 2 file runtime state: `/etc/nginx/runtime/tls-mode.conf` và `/etc/nginx/runtime/port80-mode.conf`.
 
-```text
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ TRẠNG THÁI 1: BOOTSTRAP (Lần đầu khởi động, chưa có Let's Encrypt cert)     │
-│ 1. Symlink: current/* ──► dummy/* (Self-signed certificate)                 │
-│ 2. /etc/nginx/runtime/tls-mode.conf: Trống (# HSTS Disabled)                │
-│ 3. /etc/nginx/runtime/port80-mode.conf: proxy_pass http://api_backend       │
-│    (Cho phép truy cập HTTP trực tiếp để kiểm thử, không force HTTPS)        │
-└──────────────────────────────────────┬──────────────────────────────────────┘
-                                       │
-                                       │ Quản trị viên chạy Certbot cấp cert thật
-                                       ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ TRẠNG THÁI 2: PRODUCTION (Đã có chứng chỉ Let's Encrypt thật)               │
-│ 1. Symlink: current/* ──► live/${DOMAIN}/* (Real Let's Encrypt cert)        │
-│ 2. /etc/nginx/runtime/tls-mode.conf:                                        │
-│    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains";│
-│ 3. /etc/nginx/runtime/port80-mode.conf: return 301 https://$host$request_uri│
-│ 4. Kiểm tra cấu hình và reload: nginx -t && nginx -s reload (Zero downtime) │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### 4.4. Script Entrypoint Nginx (`deploy/nginx/entrypoint.sh`)
+#### A. Script Khởi Động Container (`deploy/nginx/entrypoint.sh`)
 
 ```bash
 #!/bin/sh
@@ -468,6 +495,52 @@ nginx -t
 exec nginx -g "daemon off;"
 ```
 
+#### B. Script Kích Hoạt Nguyên Tử Khi Có Cert Thật (`deploy/nginx/activate-production-tls.sh`)
+
+Được gọi ngay sau khi quản trị viên chạy lệnh Certbot cấp cert lần đầu thành công:
+
+```bash
+#!/bin/sh
+set -e
+
+DOMAIN="${DOMAIN:-localhost}"
+CERT_DIR="/etc/nginx/ssl"
+LIVE_DIR="${CERT_DIR}/live/${DOMAIN}"
+CURRENT_DIR="${CERT_DIR}/current"
+RUNTIME_DIR="/etc/nginx/runtime"
+
+if [ ! -f "${LIVE_DIR}/fullchain.pem" ] || [ ! -f "${LIVE_DIR}/privkey.pem" ]; then
+  echo "ERROR: Không tìm thấy chứng chỉ Let's Encrypt tại ${LIVE_DIR}"
+  exit 1
+fi
+
+echo "Đang kích hoạt chứng chỉ Production Let's Encrypt cho domain: ${DOMAIN}..."
+
+# 1. Cập nhật symlink nguyên tử
+ln -sfn "${LIVE_DIR}/fullchain.pem" "${CURRENT_DIR}/fullchain.pem"
+ln -sfn "${LIVE_DIR}/privkey.pem" "${CURRENT_DIR}/privkey.pem"
+
+# 2. Ghi chính sách HSTS vào tls-mode.conf
+cat << 'EOF' > "${RUNTIME_DIR}/tls-mode.conf"
+# PRODUCTION MODE: HSTS enabled
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+EOF
+
+# 3. Ghi 301 HTTPS Redirect vào port80-mode.conf
+cat << 'EOF' > "${RUNTIME_DIR}/port80-mode.conf"
+# PRODUCTION MODE: Redirect all HTTP to HTTPS (trừ ACME challenge)
+location / {
+    return 301 https://$host$request_uri;
+}
+EOF
+
+# 4. Kiểm tra cấu hình và reload Nginx
+nginx -t
+nginx -s reload
+
+echo "Kích hoạt Production TLS thành công không gián đoạn dịch vụ!"
+```
+
 ---
 
 ## 5. CẤU TRÚC FILE COMPOSE (`deploy/docker-compose.yml`)
@@ -476,7 +549,7 @@ exec nginx -g "daemon off;"
 version: '3.8'
 
 services:
-  # 1. Nginx Reverse Proxy & TLS Ingress (Custom image pin 1.27.4 kèm OpenSSL)
+  # 1. Nginx Reverse Proxy & TLS Ingress (Custom image pin 1.30.5-alpine kèm OpenSSL)
   nginx:
     build:
       context: ./nginx
@@ -606,8 +679,8 @@ Nhằm ngăn ngừa rủi ro tranh chấp lock hoặc tự ý thay đổi CSDL k
 # Bước 1: Build images từ clean checkout
 docker compose --env-file .env -f deploy/docker-compose.yml build
 
-# Bước 2: Thực thi Database Migration độc lập (Explicit Migration Gate)
-docker compose --env-file .env -f deploy/docker-compose.yml run --rm api npm run migration:run:prod
+# Bước 2: Thực thi Database Migration độc lập (Isolated Migration Gate với --no-deps)
+docker compose --env-file .env -f deploy/docker-compose.yml run --rm --no-deps api npm run migration:run:prod
 
 # Bước 3: Khởi động cụm containers
 docker compose --env-file .env -f deploy/docker-compose.yml up -d
@@ -625,7 +698,7 @@ curl -k https://localhost/health/ready
 
 | Gate | Tên Tiêu Chí | Điều Kiện Nghiệm Thu Cụ Thể (Pass Criteria) |
 | :---: | :--- | :--- |
-| **G00** | `Credential Rotation Prerequisite` | R2 API Token cũ (từng xuất hiện trong chat history) đã được thu hồi và thay thế bằng cặp Key mới trên Cloudflare Dashboard. Supabase Database Password cũ (từng nằm trong lịch sử git) đã được reset trên Supabase Dashboard. Biến môi trường mới đã cập nhật vào file `.env` cục bộ (tuyệt đối không in giá trị bí mật ra log/spec). Trạng thái: **SẴN SÀNG / ĐÃ XÁC NHẬN VẬN HÀNH**. |
+| **G00** | `Credential Rotation Prerequisite` | R2 API Token cũ (từng xuất hiện trong chat history) được thu hồi và thay thế bằng cặp Key mới trên Cloudflare Dashboard. Supabase Database Password cũ (từng nằm trong lịch sử git) được reset trên Supabase Dashboard. Biến môi trường mới được cập nhật vào file `.env` cục bộ (tuyệt đối không in giá trị bí mật ra log/spec). Trạng thái: **PENDING MANUAL CONFIRMATION** (được đánh dấu hoàn tất ngay khi người dùng xác nhận thao tác rotation). |
 
 ---
 
@@ -634,16 +707,16 @@ curl -k https://localhost/health/ready
 | STT | Tên Tiêu Chí (Gate) | Điều Kiện Nghiệm Thu Cụ Thể (Pass Criteria) | Phương Pháp Kiểm Tra |
 | :---: | :--- | :--- | :--- |
 | **G01** | `Compose Config Valid` | `docker compose --env-file .env -f deploy/docker-compose.yml config` hợp lệ, cú pháp chuẩn, không hardcode credentials trong file. | `docker compose config` |
-| **G02** | `Clean Multi-Stage Build & Migration Proof` | Build thành công cả 2 Dockerfile từ clean checkout (root lockfile). Lệnh `run --rm api npm run migration:run:prod` chạy thành công và báo không còn pending migration trên Supabase. | `docker compose build` & `run --rm api npm run migration:run:prod` |
-| **G03** | `Strict Port Isolation` | Chỉ duy nhất host ports `80` và `443` mở. Các cổng `8000`, `8001`, `6379` hoàn toàn không lắng nghe trên host interface. | `netstat -tuln` / `Test-NetConnection` |
+| **G02** | `Clean Multi-Stage Build & Migration Proof` | Build thành công cả 2 Dockerfile từ clean checkout (root lockfile). Lệnh `run --rm --no-deps api npm run migration:run:prod` chạy thành công và báo không còn pending migration trên Supabase. | `docker compose build` & `run --rm --no-deps ...` |
+| **G03** | `Strict Port Isolation` | Compose chỉ publish application ports `80` và `443` ra host. Các cổng backend `8000`, `8001`, `6379` hoàn toàn không được publish ra host interface. | `docker compose ps` / `netstat -tuln` |
 | **G04** | `Nginx API Health Pass` | `GET http://localhost/health/live` và `/health/ready` qua Nginx trả về `HTTP 200` và JSON `{"status": "UP"}`. | `curl -i http://localhost/health/ready` |
 | **G05** | `API ↔ Redis Pass & Guard` | API kết nối thành công tới Redis có mật khẩu qua `omninovel-internal`. Healthcheck ready báo `redis: UP`. Nếu `REDIS_PASSWORD` rỗng ở production, Redis fail-fast không start. | Kiểm tra log API & `/health/ready` |
 | **G06** | `API ↔ AI Worker Authenticated RPC & Egress` | API gửi RPC tới AI Worker qua `omninovel-internal` với `x-internal-key` thành công. Gọi không có key bị trả về `401/403`. AI Worker thực hiện tải thành công presigned URL từ R2 qua `omninovel-egress`. | Integration script |
 | **G07** | `API ↔ Supabase Connection Pass` | API kết nối thành công tới Supabase PostgreSQL qua `omninovel-egress`. Healthcheck ready báo `database: UP`. | Kiểm tra log API & `/health/ready` |
 | **G08** | `API ↔ R2 Signed Storage Pass` | API gọi R2 cấp Presigned URL thành công. | Endpoint upload media smoke |
 | **G09** | `WebSocket Socket.IO /ws/ai Upgrade Pass` | Client `socket.io-client` kết nối tới path `/socket.io/` tại namespace `/ws/ai` qua Nginx, nhận handshake và trao đổi event thành công. | Node.js Socket.IO acceptance runner |
-| **G10** | `Rate Limiting & Throttling Pass` | Gửi request liên tục vượt 30 req/s vào API hoặc 5 req/s vào auth endpoints bị Nginx chặn với mã `429 Too Many Requests`. | Kịch bản bắn tải wrk / ab / curl loop |
-| **G11** | `TLS Bootstrap & Atomic Transition` | Nginx boot thành công với self-signed cert (không có HSTS). Chuyển sang cert thật và reload cập nhật đồng bộ cả cert, HSTS và port 80 redirect không gián đoạn dịch vụ. | Kiểm tra TLS handshake & reload |
+| **G10** | `Rate Limiting & Throttling Pass` | Gửi request liên tục vượt 30 req/s vào API hoặc 5 req/s vào auth endpoints bị Nginx chặn với mã `429 Too Many Requests` (chính xác nhờ `limit_req_status 429`). | Kịch bản bắn tải wrk / ab / curl loop |
+| **G11** | `TLS Bootstrap & Atomic Transition` | Nginx boot thành công với self-signed cert (không có HSTS). Chuyển sang cert thật qua `activate-production-tls.sh` cập nhật đồng bộ cả cert, HSTS và port 80 redirect không gián đoạn dịch vụ. | Kiểm tra TLS handshake & reload |
 | **G12** | `Auto-Recovery, Cache Persistence & DNS Re-resolve` | Thực thi `docker compose --env-file .env -f deploy/docker-compose.yml up -d --force-recreate ai-worker`: model cache trong named volume `omninovel_ai_model_cache` vẫn nguyên vẹn. Recreate `api`: Nginx tự động phân giải lại IP mới qua `upstream ... resolve` mà không bị lỗi 502. | `docker compose up -d --force-recreate` |
 | **G13** | `Non-Root Container Hardening` | Container `api` chạy dưới user `node` (UID 1000); container `ai-worker` chạy dưới `appuser` (UID 10001). | `docker compose exec ... id` |
 | **G14** | `Secret Hygiene in Logs` | Logs của toàn bộ 4 container tuyệt đối không in ra DB password, R2 secret access key, hoặc JWT secrets. | `docker compose logs` regex scan |
@@ -653,8 +726,8 @@ curl -k https://localhost/health/ready
 ## 8. THỨ TỰ THI CÔNG TRONG IMPLEMENTATION PLAN
 
 Kế hoạch triển khai (Implementation Plan) sẽ bắt đầu bằng:
-1. **Task 1 (Spike & Build Proof):** Xây dựng `services/api/Dockerfile` trên root context + root `package-lock.json`, bổ sung `migration:run:prod` và `env.validation.ts` Redis guard, chứng minh layout `node_modules/@omninovel/shared` và kiểm tra lệnh `npm run migration:run:prod` chạy thành công.
+1. **Task 1 (Spike & Build Proof):** Xây dựng `services/api/Dockerfile` trên root context + root `package-lock.json`, bổ sung `migration:run:prod` và `env.validation.ts` Redis guard, kiểm chứng thực tế quá trình build và xác nhận layout `node_modules/@omninovel/shared` hoạt động với `node dist/main`, đồng thời kiểm tra lệnh `npm run migration:run:prod` chạy thành công với `--no-deps`.
 2. **Task 2 (AI Worker Image):** Tách `requirements-prod-cpu.txt`, sửa `config.py` với `os.environ.setdefault`, xây dựng `services/ai-worker/Dockerfile` non-root.
-3. **Task 3 (Nginx Image, Dynamic Upstream & TLS State Machine):** Tạo `deploy/nginx/Dockerfile` (Nginx 1.27.4-alpine + OpenSSL), viết `entrypoint.sh` (quản lý symlink, `tls-mode.conf`, `port80-mode.conf`), cấu hình `nginx.conf` và `omninovel.conf` (Dynamic Upstream Resolve `zone api_backend 64k`, rate limit, WebSocket `/socket.io`).
+3. **Task 3 (Nginx Image, Dynamic Upstream, Rate Limiting & TLS State Machine):** Tạo `deploy/nginx/Dockerfile` (Nginx 1.30.5-alpine + OpenSSL), cấu hình `nginx.conf` (`limit_req_zone`, `limit_req_status 429;`) và `omninovel.conf` (Dynamic Upstream Resolve `zone api_backend 64k`, rate limit, WebSocket `/socket.io`), viết `entrypoint.sh` và `activate-production-tls.sh`.
 4. **Task 4 (Compose Integration):** Tạo `deploy/docker-compose.yml` với 3-network topology, container-side expansion và Redis password guard.
 5. **Task 5 (Acceptance Verification):** Thực thi toàn bộ 14 Acceptance Gates (từ G01 đến G14) kèm bằng chứng kiểm thử thực tế.

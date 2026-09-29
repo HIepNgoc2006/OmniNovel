@@ -78,7 +78,8 @@ import { TranslationSegment } from '../modules/translation/entities/translation-
           TranslationSegment,
         ],
         logging: config.get<string>('NODE_ENV') === 'development' ? ['error', 'warn'] : false,
-      }),
+        };
+      },
     }),
   ],
 })

@@ -97,6 +97,7 @@ describe('Database Configuration Contract (Local vs Supabase Production & Parity
       JWT_SECRET: 'a_very_strong_custom_production_jwt_secret_key_123',
       JWT_REFRESH_SECRET: 'a_very_strong_custom_production_refresh_jwt_secret_456',
       AI_WORKER_SECRET: 'production_ai_worker_custom_secret_789',
+      REDIS_PASSWORD: 'custom_production_redis_password_secure_2026',
       STORAGE_PROVIDER: 'r2',
       S3_ENDPOINT: 'https://0123456789abcdef.r2.cloudflarestorage.com',
       S3_ACCESS_KEY_ID: 'fake-prod-r2-access-key-id',
@@ -107,6 +108,17 @@ describe('Database Configuration Contract (Local vs Supabase Production & Parity
         'postgresql://postgres.dummy_project_ref:fake_test_password@aws-0-ap-southeast-1.pooler.supabase.com:5432/postgres',
       DB_SSL: 'true',
     };
+
+    it('should FAIL-FAST when REDIS_PASSWORD is missing or empty in production', () => {
+      const missingRedisPass = {
+        ...validProdBase,
+        REDIS_PASSWORD: '',
+      };
+
+      expect(() => validateEnv(missingRedisPass)).toThrow(
+        /CẢNH BÁO AN NINH.*REDIS_PASSWORD/,
+      );
+    });
 
     it('should FAIL-FAST when NODE_ENV is production and default DB_PASSWORD is used without DATABASE_URL', () => {
       const invalidProdConfig = {

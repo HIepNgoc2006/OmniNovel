@@ -65,7 +65,9 @@ export const envSchema = z
         const isDefaultJwt = data.JWT_SECRET.includes('super_secret');
         const isDefaultRefresh = data.JWT_REFRESH_SECRET.includes('super_secret');
         const isDefaultAiSecret = data.AI_WORKER_SECRET.includes('internal_ai_worker_secret');
-        if (isDefaultJwt || isDefaultRefresh || isDefaultAiSecret) {
+        const isMissingRedisPassword = !data.REDIS_PASSWORD || data.REDIS_PASSWORD.trim().length === 0;
+
+        if (isDefaultJwt || isDefaultRefresh || isDefaultAiSecret || isMissingRedisPassword) {
           return false;
         }
       }
@@ -73,7 +75,7 @@ export const envSchema = z
     },
     {
       message:
-        'CẢNH BÁO AN NINH: Không được phép sử dụng JWT_SECRET, JWT_REFRESH_SECRET hoặc AI_WORKER_SECRET mặc định trên môi trường Production.',
+        'CẢNH BÁO AN NINH: Không được phép sử dụng JWT_SECRET, JWT_REFRESH_SECRET, AI_WORKER_SECRET mặc định hoặc để trống REDIS_PASSWORD trên môi trường Production.',
     },
   )
   .refine(

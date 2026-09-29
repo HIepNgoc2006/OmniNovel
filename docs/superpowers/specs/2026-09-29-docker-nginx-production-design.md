@@ -1,20 +1,20 @@
 # Đặc Tả Kỹ Thuật: Hạ Tầng Production Docker Compose & Nginx (Phase 6.2)
 
-- **Trạng thái:** APPROVED WITH REQUIRED AMENDMENTS (REVISION 2 - FINAL CANDIDATE)
-- **Ngày lập:** 2026-09-29 (Cập nhật Revision 2: 2026-09-29)
+- **Trạng thái:** APPROVED WITH REQUIRED AMENDMENTS (REVISION 3 - FINAL CANDIDATE)
+- **Ngày lập:** 2026-09-29 (Cập nhật Revision 3: 2026-09-29)
 - **Tác giả:** Antigravity Engineering
 - **Quyết định kiến trúc (ADR Phase 6.2):** 
-  > 3-Network Production Topology (`edge`, `internal`, `egress`) + Root-Context Multi-stage Monorepo Builds (dựa trên root `package-lock.json`) + CPU-Only AI Worker (tách riêng `requirements-prod-cpu.txt`) + Nginx Ingress Độc Quyền (khởi động độc lập `service_started`) + Redis Container-Side Secret Expansion + Outbound Egress Cho Supabase/R2 + Fail-Safe Atomic TLS Symlink Bootstrap/Renewal + Explicit Production Migration Script.
+  > 3-Network Production Topology (`edge`, `internal`, `egress`) + Root-Context Multi-stage Monorepo Builds (dựa trên root `package-lock.json`) + CPU-Only AI Worker (`requirements-prod-cpu.txt`) + Nginx Ingress Độc Quyền (Custom Alpine Image với OpenSSL, Pin >= 1.27.3 kèm Dynamic DNS Resolver `zone api_backend 64k; server api:8000 resolve;`, `service_started`) + Redis Container-Side Secret Expansion & Production Password Guard + Outbound Egress Cho Supabase/R2 + Hai Trạng Thái TLS/HSTS Độc Lập Qua Runtime State Files (`tls-mode.conf`, `port80-mode.conf`) + Explicit Production Migration Script.
 
 ---
 
 ## 1. TỔNG QUAN & BỐI CẢNH (EXECUTIVE SUMMARY)
 
 Phase 6.1 đã hoàn tất và đóng băng sạch (`CLOSED / FROZEN CLEAN`) tầng lưu trữ Cloudflare R2 với zero-leak verification trên cả hai bucket và vệ sinh HEAD credentials. Bước tiếp theo — **Phase 6.2** — hoàn thiện tầng triển khai Production trên máy chủ VPS Linux thông qua cụm 4 container cốt lõi:
-1. `nginx`: Ingress gateway duy nhất, đón nhận và phân luồng traffic Internet, quản lý SSL/TLS và rate limiting. Khởi động độc lập (`service_started`) để luôn sẵn sàng phục vụ ACME challenge.
+1. `nginx`: Ingress gateway duy nhất, đón nhận và phân luồng traffic Internet, quản lý SSL/TLS và rate limiting. Khởi động độc lập (`service_started`), hỗ trợ Dynamic Upstream DNS qua Docker embedded DNS resolver.
 2. `api`: NestJS Core Backend API, phục vụ nghiệp vụ, xác thực JWT, kết nối Supabase Postgres và điều phối hàng đợi BullMQ.
 3. `ai-worker`: Python FastAPI AI Translation Engine, chạy suy luận CPU (manga-ocr), tải và xử lý media từ R2 qua mạng egress.
-4. `redis`: Bộ nhớ đệm (Cache) và quản lý hàng đợi tác vụ dịch thuật (BullMQ), bảo vệ bằng container-side secret expansion.
+4. `redis`: Bộ nhớ đệm (Cache) và quản lý hàng đợi tác vụ dịch thuật (BullMQ), bảo vệ bằng container-side secret expansion và fail-fast password guard.
 
 **Nguyên tắc Bất Biến Ranh Giới (Single Source of Truth - SSoT):**
 - **Cơ sở dữ liệu:** Supabase Managed PostgreSQL nằm **hoàn toàn bên ngoài VPS**. Không triển khai container PostgreSQL trong production compose.
@@ -65,18 +65,23 @@ Phase 6.1 đã hoàn tất và đóng băng sạch (`CLOSED / FROZEN CLEAN`) t�
 - `ai-worker`: `ports: []` (Không expose cổng host `8001`).
 - `redis`: `ports: []` (Không expose cổng host `6379`, chỉ kết nối duy nhất vào `omninovel-internal`).
 
-### 2.3. Quy Định Bí Mật Môi Trường & Container-Side Expansion (Secret Hygiene)
+### 2.3. Quy Định Bí Mật Môi Trường & Working Directory SSoT
 
-1. **Không duplicate biến bí mật trong YAML:** Tránh việc dùng `${REDIS_PASSWORD}` hay `${AI_WORKER_SECRET}` trực tiếp trong thuộc tính `environment:` vì shell host có thể ghi đè rỗng.
-2. **Container-side expansion cho Redis:**
-   - Redis được gắn `env_file: ../.env`.
-   - Command chạy qua shell bọc: `sh -c 'exec redis-server --appendonly yes --protected-mode yes --requirepass "$$REDIS_PASSWORD"'` (sử dụng cú pháp `$$` để Docker Compose không nội suy trên host mà để subshell trong container tự đọc biến từ `.env`).
-   - Healthcheck: `CMD-SHELL redis-cli -a "$$REDIS_PASSWORD" ping`.
-3. **Cú pháp thực thi chuẩn SSoT:**
-   Mọi lệnh vận hành compose đều dùng cú pháp nạp file môi trường tường minh:
+1. **Khóa một convention thực thi CLI duy nhất:**
+   Toàn bộ lệnh `docker compose` **bắt buộc chạy từ Repository Root**:
    ```bash
-   docker compose --env-file ../.env -f deploy/docker-compose.yml <command>
+   docker compose --env-file .env -f deploy/docker-compose.yml <command>
    ```
+   *Lý do kỹ thuật:* Cờ CLI `--env-file` được Docker phân giải tương đối theo Current Working Directory của shell (nên khi đứng tại repo root, trỏ `.env` là chính xác). Trong khi đó, thuộc tính `env_file:` bên trong file YAML được Compose phân giải theo vị trí của file compose (`deploy/`), do đó trong YAML giữ đúng `env_file: - ../.env`.
+2. **Container-side expansion cho Redis & Production Password Guard:**
+   - Redis được nạp `env_file: ../.env`.
+   - Entrypoint Redis kiểm tra biến bắt buộc trước khi start và dùng shell expansion nội bộ (cú pháp `$$` tránh Compose nội suy trên host):
+     ```bash
+     : "${REDIS_PASSWORD:?ERROR: REDIS_PASSWORD is required and cannot be empty}"
+     exec redis-server --appendonly yes --protected-mode yes --requirepass "$$REDIS_PASSWORD"
+     ```
+   - Healthcheck: `CMD-SHELL redis-cli -a "$$REDIS_PASSWORD" ping`.
+   - Trong `services/api/src/config/env.validation.ts`: Bổ sung kiểm tra fail-fast ở production: khi `NODE_ENV === 'production'`, `REDIS_PASSWORD` **bắt buộc phải có giá trị và không được để trống**.
 
 ---
 
@@ -84,7 +89,7 @@ Phase 6.1 đã hoàn tất và đóng băng sạch (`CLOSED / FROZEN CLEAN`) t�
 
 ### 3.1. Backend API (`services/api/Dockerfile`)
 
-Kho mã nguồn là một **npm workspace monorepo** với một file khóa duy nhất tại gốc: [package-lock.json](file:///e:/Workspace%202/Doctruyen_project/package-lock.json). Không có file lock riêng tại `services/api/` hay `packages/shared/`. Vì vậy, Dockerfile phải lấy ngữ cảnh build từ thư mục gốc (`context: ..`) và tận dụng cơ chế cài đặt của npm workspace.
+Kho mã nguồn là một **npm workspace monorepo** với một file khóa duy nhất tại gốc: [package-lock.json](file:///e:/Workspace%202/Doctruyen_project/package-lock.json). Không có file lock riêng tại `services/api/` hay `packages/shared/`. Vì vậy, Dockerfile lấy ngữ cảnh build từ thư mục gốc (`context: ..`) và tận dụng cơ chế cài đặt của npm workspace.
 
 ```dockerfile
 # ==========================================
@@ -260,15 +265,222 @@ os.environ.setdefault("TORCH_HOME", _TORCH_HOME)
 
 ---
 
-## 4. CẤU TRÚC FILE COMPOSE (`deploy/docker-compose.yml`)
+## 4. THIẾT KẾ NGINX IMAGE, DYNAMIC DNS RESOLVER & TLS STATE MACHINE
+
+### 4.1. Nginx Custom Dockerfile (`deploy/nginx/Dockerfile`)
+
+Do base image Alpine chính thức của Nginx không cài sẵn OpenSSL CLI trong runtime, hệ thống tạo custom image nhẹ được pin phiên bản **Nginx 1.27.4-alpine** (>= 1.27.3 để hỗ trợ upstream dynamic resolution):
+
+```dockerfile
+FROM nginx:1.27.4-alpine
+
+# Cài đặt OpenSSL CLI cho script bootstrap self-signed certificate
+RUN apk add --no-cache openssl
+
+COPY nginx.conf /etc/nginx/nginx.conf
+COPY conf.d/ /etc/nginx/conf.d/
+COPY entrypoint.sh /entrypoint.sh
+
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/bin/sh", "/entrypoint.sh"]
+```
+
+### 4.2. Cấu Hình Nginx Dynamic DNS Resolver (`deploy/nginx/conf.d/omninovel.conf`)
+
+Để ngăn chặn lỗi `502 Bad Gateway` khi container `api` bị recreate và nhận IP nội bộ mới trong mạng Docker, cấu hình sử dụng tính năng **Upstream Zone & Dynamic Resolve** chính thức từ Nginx OSS 1.27.3+:
+
+```nginx
+resolver 127.0.0.11 valid=10s ipv6=off;
+
+upstream api_backend {
+    zone api_backend 64k;
+    server api:8000 resolve;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name _;
+
+    # Nơi ACME challenge được phục vụ bởi Certbot
+    location /.well-known/acme-challenge/ {
+        root /var/www/certbot;
+    }
+
+    # Trạng thái Port 80 được điều khiển độc lập qua file runtime
+    include /etc/nginx/runtime/port80-mode.conf;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name _;
+
+    # Chứng chỉ SSL trỏ vào đường dẫn symlink cố định
+    ssl_certificate /etc/nginx/ssl/current/fullchain.pem;
+    ssl_certificate_key /etc/nginx/ssl/current/privkey.pem;
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384";
+
+    # Chính sách HSTS được điều khiển độc lập qua file runtime
+    include /etc/nginx/runtime/tls-mode.conf;
+
+    # Rate Limiting
+    limit_req zone=api_general_limit burst=20 nodelay;
+
+    # Core Backend API (Preserve URI)
+    location /api/v1/ {
+        proxy_pass http://api_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Auth Limiting Riêng Biệt
+    location /api/v1/auth/ {
+        limit_req zone=auth_limit burst=5 nodelay;
+        proxy_pass http://api_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # WebSocket Socket.IO (Namespace /ws/ai)
+    location /socket.io/ {
+        proxy_pass http://api_backend;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # Health Probes
+    location = /health/live {
+        proxy_pass http://api_backend;
+    }
+
+    location = /health/ready {
+        proxy_pass http://api_backend;
+    }
+
+    # Chặn đứng các đường dẫn nội bộ
+    location /internal/ {
+        return 403;
+    }
+}
+```
+
+### 4.3. Máy Trạng Thái TLS (TLS State Machine: Bootstrap ➔ Production)
+
+Thay vì chỉ symlink file cert, hệ thống điều khiển **đồng thời cả 3 thành phần**: (1) Chứng chỉ SSL, (2) Chính sách HSTS, và (3) Hành vi Port 80 thông qua 2 file runtime state: `/etc/nginx/runtime/tls-mode.conf` và `/etc/nginx/runtime/port80-mode.conf`.
+
+```text
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TRẠNG THÁI 1: BOOTSTRAP (Lần đầu khởi động, chưa có Let's Encrypt cert)     │
+│ 1. Symlink: current/* ──► dummy/* (Self-signed certificate)                 │
+│ 2. /etc/nginx/runtime/tls-mode.conf: Trống (# HSTS Disabled)                │
+│ 3. /etc/nginx/runtime/port80-mode.conf: proxy_pass http://api_backend       │
+│    (Cho phép truy cập HTTP trực tiếp để kiểm thử, không force HTTPS)        │
+└──────────────────────────────────────┬──────────────────────────────────────┘
+                                       │
+                                       │ Quản trị viên chạy Certbot cấp cert thật
+                                       ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ TRẠNG THÁI 2: PRODUCTION (Đã có chứng chỉ Let's Encrypt thật)               │
+│ 1. Symlink: current/* ──► live/${DOMAIN}/* (Real Let's Encrypt cert)        │
+│ 2. /etc/nginx/runtime/tls-mode.conf:                                        │
+│    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains";│
+│ 3. /etc/nginx/runtime/port80-mode.conf: return 301 https://$host$request_uri│
+│ 4. Kiểm tra cấu hình và reload: nginx -t && nginx -s reload (Zero downtime) │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 4.4. Script Entrypoint Nginx (`deploy/nginx/entrypoint.sh`)
+
+```bash
+#!/bin/sh
+set -e
+
+DOMAIN="${DOMAIN:-localhost}"
+CERT_DIR="/etc/nginx/ssl"
+DUMMY_DIR="${CERT_DIR}/dummy"
+LIVE_DIR="${CERT_DIR}/live/${DOMAIN}"
+CURRENT_DIR="${CERT_DIR}/current"
+RUNTIME_DIR="/etc/nginx/runtime"
+
+mkdir -p "${DUMMY_DIR}" "${CURRENT_DIR}" "${RUNTIME_DIR}"
+
+# 1. Sinh chứng chỉ Bootstrap nếu chưa có
+if [ ! -f "${DUMMY_DIR}/cert.pem" ] || [ ! -f "${DUMMY_DIR}/key.pem" ]; then
+  echo "[Nginx Entrypoint] Đang sinh chứng chỉ Self-Signed Bootstrap..."
+  openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
+    -keyout "${DUMMY_DIR}/key.pem" \
+    -out "${DUMMY_DIR}/cert.pem" \
+    -subj "/CN=${DOMAIN}"
+fi
+
+# 2. Thiết lập trạng thái ban đầu dựa trên sự tồn tại của cert thật
+if [ -f "${LIVE_DIR}/fullchain.pem" ] && [ -f "${LIVE_DIR}/privkey.pem" ]; then
+  echo "[Nginx Entrypoint] Kích hoạt PRODUCTION TLS State cho domain: ${DOMAIN}."
+  ln -sfn "${LIVE_DIR}/fullchain.pem" "${CURRENT_DIR}/fullchain.pem"
+  ln -sfn "${LIVE_DIR}/privkey.pem" "${CURRENT_DIR}/privkey.pem"
+
+  cat << 'EOF' > "${RUNTIME_DIR}/tls-mode.conf"
+# PRODUCTION MODE: HSTS enabled
+add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+EOF
+
+  cat << 'EOF' > "${RUNTIME_DIR}/port80-mode.conf"
+# PRODUCTION MODE: Redirect all HTTP to HTTPS
+location / {
+    return 301 https://$host$request_uri;
+}
+EOF
+
+else
+  echo "[Nginx Entrypoint] Kích hoạt BOOTSTRAP TLS State (Self-signed, No HSTS)."
+  ln -sfn "${DUMMY_DIR}/cert.pem" "${CURRENT_DIR}/fullchain.pem"
+  ln -sfn "${DUMMY_DIR}/key.pem" "${CURRENT_DIR}/privkey.pem"
+
+  cat << 'EOF' > "${RUNTIME_DIR}/tls-mode.conf"
+# BOOTSTRAP MODE: HSTS is disabled to prevent browser pinning
+EOF
+
+  cat << 'EOF' > "${RUNTIME_DIR}/port80-mode.conf"
+# BOOTSTRAP MODE: Allow direct HTTP proxy during setup
+location / {
+    proxy_pass http://api_backend;
+}
+EOF
+fi
+
+# 3. Test config trước khi chạy daemon
+nginx -t
+
+exec nginx -g "daemon off;"
+```
+
+---
+
+## 5. CẤU TRÚC FILE COMPOSE (`deploy/docker-compose.yml`)
 
 ```yaml
 version: '3.8'
 
 services:
-  # 1. Nginx Reverse Proxy & TLS Ingress
+  # 1. Nginx Reverse Proxy & TLS Ingress (Custom image pin 1.27.4 kèm OpenSSL)
   nginx:
-    image: nginx:1.27-alpine
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
     container_name: omninovel-prod-nginx
     restart: unless-stopped
     ports:
@@ -277,17 +489,14 @@ services:
     environment:
       - DOMAIN=${DOMAIN:-localhost}
     volumes:
-      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
-      - ./nginx/conf.d:/etc/nginx/conf.d:ro
-      - ./nginx/entrypoint.sh:/entrypoint.sh:ro
       - certbot_acme_data:/var/www/certbot:ro
       - nginx_ssl_certs:/etc/nginx/ssl
+      - nginx_runtime_config:/etc/nginx/runtime
     networks:
       - omninovel-edge
     depends_on:
       api:
         condition: service_started
-    entrypoint: ["/bin/sh", "/entrypoint.sh"]
 
   # 2. NestJS Core Backend API
   api:
@@ -344,6 +553,7 @@ services:
       - ../.env
     entrypoint: >
       /bin/sh -c '
+      : "$${REDIS_PASSWORD:?ERROR: REDIS_PASSWORD is required and cannot be empty}"
       exec redis-server
       --appendonly yes
       --protected-mode yes
@@ -380,115 +590,9 @@ volumes:
     name: omninovel_certbot_acme_data
   nginx_ssl_certs:
     name: omninovel_nginx_ssl_certs
+  nginx_runtime_config:
+    name: omninovel_nginx_runtime_config
 ```
-
----
-
-## 5. THIẾT KẾ NGINX & QUY TRÌNH CHUYỂN ĐỔI TLS (NGINX/TLS LIFECYCLE)
-
-### 5.1. Kiến Trúc Atomic Symlink (`/etc/nginx/ssl/current/`)
-
-Để Nginx có thể khởi động ngay từ ngày đầu tiên mà không bị lỗi syntax chứng chỉ, cấu hình Nginx trỏ vào một đường dẫn cố định duy nhất:
-```nginx
-ssl_certificate /etc/nginx/ssl/current/fullchain.pem;
-ssl_certificate_key /etc/nginx/ssl/current/privkey.pem;
-```
-
-Cơ chế điều phối qua symlink:
-```text
-/etc/nginx/ssl/current/
-   │
-   ├── [Bootstrap State]  ──► /etc/nginx/ssl/dummy/ (Self-signed 30 days)
-   │                          * Port 80 mở /.well-known/acme-challenge/
-   │                          * KHÔNG bật HSTS
-   │
-   └── [Production State] ──► /etc/nginx/ssl/live/${DOMAIN}/ (Let's Encrypt thật)
-                              * Port 80 redirect 301 sang HTTPS
-                              * KÍCH HOẠT HSTS 1 năm
-```
-
-### 5.2. Script Khởi Động Nginx (`deploy/nginx/entrypoint.sh`)
-
-```bash
-#!/bin/sh
-set -e
-
-DOMAIN="${DOMAIN:-localhost}"
-CERT_DIR="/etc/nginx/ssl"
-DUMMY_DIR="${CERT_DIR}/dummy"
-LIVE_DIR="${CERT_DIR}/live/${DOMAIN}"
-CURRENT_DIR="${CERT_DIR}/current"
-
-mkdir -p "${DUMMY_DIR}" "${CURRENT_DIR}"
-
-# 1. Sinh chứng chỉ Bootstrap nếu chưa có
-if [ ! -f "${DUMMY_DIR}/cert.pem" ] || [ ! -f "${DUMMY_DIR}/key.pem" ]; then
-  echo "[Nginx Entrypoint] Đang sinh chứng chỉ Self-Signed Bootstrap..."
-  openssl req -x509 -nodes -newkey rsa:2048 -days 30 \
-    -keyout "${DUMMY_DIR}/key.pem" \
-    -out "${DUMMY_DIR}/cert.pem" \
-    -subj "/CN=${DOMAIN}"
-fi
-
-# 2. Kiểm tra nếu đã có cert Let's Encrypt thật cho DOMAIN
-if [ -f "${LIVE_DIR}/fullchain.pem" ] && [ -f "${LIVE_DIR}/privkey.pem" ]; then
-  echo "[Nginx Entrypoint] Đã phát hiện chứng chỉ Let's Encrypt thật cho ${DOMAIN}."
-  ln -sfn "${LIVE_DIR}/fullchain.pem" "${CURRENT_DIR}/fullchain.pem"
-  ln -sfn "${LIVE_DIR}/privkey.pem" "${CURRENT_DIR}/privkey.pem"
-else
-  echo "[Nginx Entrypoint] Sử dụng chứng chỉ Bootstrap tạm thời."
-  ln -sfn "${DUMMY_DIR}/cert.pem" "${CURRENT_DIR}/fullchain.pem"
-  ln -sfn "${DUMMY_DIR}/key.pem" "${CURRENT_DIR}/privkey.pem"
-fi
-
-exec nginx -g "daemon off;"
-```
-
-### 5.3. Cấu Hình Nginx (`deploy/nginx/conf.d/omninovel.conf`)
-
-- **DNS Resolver:**
-  Sử dụng DNS nội bộ của Docker để Nginx phân giải động IP của container `api` khi container được recreate mà không bị stale IP:
-  ```nginx
-  resolver 127.0.0.11 valid=10s ipv6=off;
-  ```
-- **Định tuyến API chuẩn (Preserve URI):**
-  - `location /api/v1/`: Sử dụng `proxy_pass http://api:8000;` để chuyển tiếp nguyên vẹn đường dẫn.
-  - Tuyệt đối **không bật `proxy_cache`** cho `/api/v1/` vì API chứa logic auth/user state và R2 presigned URLs đi trực tiếp Cloudflare R2.
-- **WebSocket Upgrade:**
-  - `location /socket.io/`: Cung cấp HTTP/1.1 WebSocket Upgrade headers để phục vụ Socket.IO namespace `/ws/ai`.
-- **Health Probes:**
-  - `location = /health/live` và `location = /health/ready`: Chuyển tiếp sang `http://api:8000;`.
-- **Chặn Đường Dẫn Nội Bộ:**
-  - `location /internal/ { return 403; }`: Chặn mọi truy cập vào endpoint nội bộ.
-- **Rate Limiting:**
-  - API thông thường: Giới hạn `30r/s`, burst `20 nodelay`.
-  - Auth nhạy cảm (`/api/v1/auth/`): Giới hạn `5r/s`, burst `5 nodelay`.
-
-### 5.4. Quy Trình Cấp Phát & Gia Hạn Chứng Chỉ (One-Off & Renewal)
-
-1. **Cấp phát lần đầu (Initial Issuance):**
-   ```bash
-   docker run --rm -it \
-     -v omninovel_certbot_acme_data:/var/www/certbot \
-     -v omninovel_nginx_ssl_certs:/etc/letsencrypt \
-     certbot/certbot certonly --webroot \
-     -w /var/www/certbot \
-     -d yourdomain.com \
-     --email admin@yourdomain.com --agree-tos --no-eff-email
-   ```
-2. **Kích hoạt cert thật sau khi cấp:**
-   ```bash
-   docker compose --env-file ../.env -f deploy/docker-compose.yml exec nginx sh -c '
-     ln -sfn /etc/nginx/ssl/live/${DOMAIN}/fullchain.pem /etc/nginx/ssl/current/fullchain.pem &&
-     ln -sfn /etc/nginx/ssl/live/${DOMAIN}/privkey.pem /etc/nginx/ssl/current/privkey.pem &&
-     nginx -t && nginx -s reload
-   '
-   ```
-3. **Gia hạn định kỳ (Scheduled Renewal):**
-   Thiết lập cron job hoặc systemd timer trên máy chủ VPS:
-   ```bash
-   0 3 * * 1 docker run --rm -v omninovel_certbot_acme_data:/var/www/certbot -v omninovel_nginx_ssl_certs:/etc/letsencrypt certbot/certbot renew --webroot -w /var/www/certbot --quiet && docker compose --env-file /path/to/.env -f /path/to/deploy/docker-compose.yml exec nginx sh -c "nginx -t && nginx -s reload"
-   ```
 
 ---
 
@@ -496,20 +600,20 @@ exec nginx -g "daemon off;"
 
 Nhằm ngăn ngừa rủi ro tranh chấp lock hoặc tự ý thay đổi CSDL khi container restart ngoài ý muốn, **tuyệt đối không chạy tự động TypeORM migrations trong entrypoint của `api`**.
 
-### Quy Trình Deploy Chuẩn 4 Bước
+### Quy Trình Deploy Chuẩn 4 Bước (Chạy Tại Repository Root)
 
 ```bash
 # Bước 1: Build images từ clean checkout
-docker compose --env-file ../.env -f deploy/docker-compose.yml build
+docker compose --env-file .env -f deploy/docker-compose.yml build
 
 # Bước 2: Thực thi Database Migration độc lập (Explicit Migration Gate)
-docker compose --env-file ../.env -f deploy/docker-compose.yml run --rm api npm run migration:run:prod
+docker compose --env-file .env -f deploy/docker-compose.yml run --rm api npm run migration:run:prod
 
 # Bước 3: Khởi động cụm containers
-docker compose --env-file ../.env -f deploy/docker-compose.yml up -d
+docker compose --env-file .env -f deploy/docker-compose.yml up -d
 
 # Bước 4: Kiểm tra trạng thái sức khỏe
-docker compose --env-file ../.env -f deploy/docker-compose.yml ps
+docker compose --env-file .env -f deploy/docker-compose.yml ps
 curl -k https://localhost/health/ready
 ```
 
@@ -529,18 +633,18 @@ curl -k https://localhost/health/ready
 
 | STT | Tên Tiêu Chí (Gate) | Điều Kiện Nghiệm Thu Cụ Thể (Pass Criteria) | Phương Pháp Kiểm Tra |
 | :---: | :--- | :--- | :--- |
-| **G01** | `Compose Config Valid` | `docker compose --env-file ../.env -f deploy/docker-compose.yml config` hợp lệ, cú pháp chuẩn, không hardcode credentials trong file. | `docker compose config` |
+| **G01** | `Compose Config Valid` | `docker compose --env-file .env -f deploy/docker-compose.yml config` hợp lệ, cú pháp chuẩn, không hardcode credentials trong file. | `docker compose config` |
 | **G02** | `Clean Multi-Stage Build & Migration Proof` | Build thành công cả 2 Dockerfile từ clean checkout (root lockfile). Lệnh `run --rm api npm run migration:run:prod` chạy thành công và báo không còn pending migration trên Supabase. | `docker compose build` & `run --rm api npm run migration:run:prod` |
 | **G03** | `Strict Port Isolation` | Chỉ duy nhất host ports `80` và `443` mở. Các cổng `8000`, `8001`, `6379` hoàn toàn không lắng nghe trên host interface. | `netstat -tuln` / `Test-NetConnection` |
 | **G04** | `Nginx API Health Pass` | `GET http://localhost/health/live` và `/health/ready` qua Nginx trả về `HTTP 200` và JSON `{"status": "UP"}`. | `curl -i http://localhost/health/ready` |
-| **G05** | `API ↔ Redis Pass` | API kết nối thành công tới Redis có mật khẩu qua `omninovel-internal`. Healthcheck ready báo `redis: UP`. | Kiểm tra log API & `/health/ready` |
+| **G05** | `API ↔ Redis Pass & Guard` | API kết nối thành công tới Redis có mật khẩu qua `omninovel-internal`. Healthcheck ready báo `redis: UP`. Nếu `REDIS_PASSWORD` rỗng ở production, Redis fail-fast không start. | Kiểm tra log API & `/health/ready` |
 | **G06** | `API ↔ AI Worker Authenticated RPC & Egress` | API gửi RPC tới AI Worker qua `omninovel-internal` với `x-internal-key` thành công. Gọi không có key bị trả về `401/403`. AI Worker thực hiện tải thành công presigned URL từ R2 qua `omninovel-egress`. | Integration script |
 | **G07** | `API ↔ Supabase Connection Pass` | API kết nối thành công tới Supabase PostgreSQL qua `omninovel-egress`. Healthcheck ready báo `database: UP`. | Kiểm tra log API & `/health/ready` |
 | **G08** | `API ↔ R2 Signed Storage Pass` | API gọi R2 cấp Presigned URL thành công. | Endpoint upload media smoke |
 | **G09** | `WebSocket Socket.IO /ws/ai Upgrade Pass` | Client `socket.io-client` kết nối tới path `/socket.io/` tại namespace `/ws/ai` qua Nginx, nhận handshake và trao đổi event thành công. | Node.js Socket.IO acceptance runner |
 | **G10** | `Rate Limiting & Throttling Pass` | Gửi request liên tục vượt 30 req/s vào API hoặc 5 req/s vào auth endpoints bị Nginx chặn với mã `429 Too Many Requests`. | Kịch bản bắn tải wrk / ab / curl loop |
-| **G11** | `TLS Bootstrap & Zero Downtime Transition` | Nginx boot thành công với self-signed cert (không có HSTS). Chuyển sang cert thật và reload không gây gián đoạn dịch vụ; sau đó HSTS mới được kích hoạt. | Kiểm tra TLS handshake & reload |
-| **G12** | `Auto-Recovery, Cache Persistence & DNS Re-resolve` | Thực thi `docker compose up -d --force-recreate ai-worker`: model cache trong named volume `omninovel_ai_model_cache` vẫn nguyên vẹn, không tải lại. Recreate `api`: Nginx tự động phân giải lại IP mới mà không bị lỗi 502 stale IP. | `docker compose up -d --force-recreate` |
+| **G11** | `TLS Bootstrap & Atomic Transition` | Nginx boot thành công với self-signed cert (không có HSTS). Chuyển sang cert thật và reload cập nhật đồng bộ cả cert, HSTS và port 80 redirect không gián đoạn dịch vụ. | Kiểm tra TLS handshake & reload |
+| **G12** | `Auto-Recovery, Cache Persistence & DNS Re-resolve` | Thực thi `docker compose --env-file .env -f deploy/docker-compose.yml up -d --force-recreate ai-worker`: model cache trong named volume `omninovel_ai_model_cache` vẫn nguyên vẹn. Recreate `api`: Nginx tự động phân giải lại IP mới qua `upstream ... resolve` mà không bị lỗi 502. | `docker compose up -d --force-recreate` |
 | **G13** | `Non-Root Container Hardening` | Container `api` chạy dưới user `node` (UID 1000); container `ai-worker` chạy dưới `appuser` (UID 10001). | `docker compose exec ... id` |
 | **G14** | `Secret Hygiene in Logs` | Logs của toàn bộ 4 container tuyệt đối không in ra DB password, R2 secret access key, hoặc JWT secrets. | `docker compose logs` regex scan |
 
@@ -548,9 +652,9 @@ curl -k https://localhost/health/ready
 
 ## 8. THỨ TỰ THI CÔNG TRONG IMPLEMENTATION PLAN
 
-Để loại bỏ hoàn toàn nguy cơ tắc nghẽn kỹ thuật, kế hoạch triển khai (Implementation Plan) sẽ bắt đầu bằng:
-1. **Task 1 (Spike & Build Proof):** Xây dựng `services/api/Dockerfile` trên root context + root `package-lock.json`, chứng minh layout `node_modules/@omninovel/shared` và kiểm tra lệnh `npm run migration:run:prod` chạy thành công.
+Kế hoạch triển khai (Implementation Plan) sẽ bắt đầu bằng:
+1. **Task 1 (Spike & Build Proof):** Xây dựng `services/api/Dockerfile` trên root context + root `package-lock.json`, bổ sung `migration:run:prod` và `env.validation.ts` Redis guard, chứng minh layout `node_modules/@omninovel/shared` và kiểm tra lệnh `npm run migration:run:prod` chạy thành công.
 2. **Task 2 (AI Worker Image):** Tách `requirements-prod-cpu.txt`, sửa `config.py` với `os.environ.setdefault`, xây dựng `services/ai-worker/Dockerfile` non-root.
-3. **Task 3 (Nginx & TLS Bootstrap):** Viết `deploy/nginx/entrypoint.sh` (atomic symlink), cấu hình `deploy/nginx/nginx.conf` và `omninovel.conf` (DNS resolver, rate limit, WebSocket `/socket.io`).
-4. **Task 4 (Compose Integration):** Tạo `deploy/docker-compose.yml` với 3-network topology và container-side expansion cho Redis.
+3. **Task 3 (Nginx Image, Dynamic Upstream & TLS State Machine):** Tạo `deploy/nginx/Dockerfile` (Nginx 1.27.4-alpine + OpenSSL), viết `entrypoint.sh` (quản lý symlink, `tls-mode.conf`, `port80-mode.conf`), cấu hình `nginx.conf` và `omninovel.conf` (Dynamic Upstream Resolve `zone api_backend 64k`, rate limit, WebSocket `/socket.io`).
+4. **Task 4 (Compose Integration):** Tạo `deploy/docker-compose.yml` với 3-network topology, container-side expansion và Redis password guard.
 5. **Task 5 (Acceptance Verification):** Thực thi toàn bộ 14 Acceptance Gates (từ G01 đến G14) kèm bằng chứng kiểm thử thực tế.

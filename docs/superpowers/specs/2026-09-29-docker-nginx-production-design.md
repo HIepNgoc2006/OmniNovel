@@ -1,17 +1,17 @@
 # Đặc Tả Kỹ Thuật: Hạ Tầng Production Docker Compose & Nginx (Phase 6.2)
 
-- **Trạng thái:** APPROVED WITH REQUIRED AMENDMENTS (REVISION 4 - FINAL CANDIDATE)
-- **Ngày lập:** 2026-09-29 (Cập nhật Revision 4: 2026-09-29)
+- **Trạng thái:** FINAL / APPROVED
+- **Ngày lập:** 2026-09-29 (Cập nhật FINAL: 2026-09-29)
 - **Tác giả:** Antigravity Engineering
 - **Quyết định kiến trúc (ADR Phase 6.2):** 
-  > 3-Network Production Topology (`edge`, `internal`, `egress`) + Root-Context Multi-stage Monorepo Builds (dựa trên root `package-lock.json`, runner chỉ lấy root `node_modules` và dist) + CPU-Only AI Worker (`requirements-prod-cpu.txt`) + Nginx Ingress Độc Quyền (Custom Alpine Image với OpenSSL, Pin Stable Nginx 1.30.5-alpine >= 1.27.3 kèm Dynamic DNS Resolver `zone api_backend 64k; server api:8000 resolve;`, `service_started`) + Redis Container-Side Secret Expansion & Production Password Guard + Outbound Egress Cho Supabase/R2 + Hai Trạng Thái TLS/HSTS Độc Lập Qua Runtime State Files (`tls-mode.conf`, `port80-mode.conf`) Kèm Script Kích Hoạt Nguyên Tử (`activate-production-tls.sh`) + Định Nghĩa Đầy Đủ `limit_req_zone` và `limit_req_status 429` + Explicit Isolated Production Migration Script (`--no-deps`).
+  > 3-Network Production Topology (`edge`, `internal`, `egress`) + Root-Context Multi-stage Monorepo Builds (dựa trên root `package-lock.json`, runner chỉ lấy root `node_modules` và dist) + CPU-Only AI Worker (`requirements-prod-cpu.txt`) + Nginx Ingress Độc Quyền (Khởi động hoàn toàn độc lập, không `depends_on`, Custom Alpine Image với OpenSSL, Pin Stable Nginx 1.30.5-alpine >= 1.27.3 kèm Dynamic DNS Resolver `zone api_backend 64k; server api:8000 resolve;`) + Redis Container-Side Secret Expansion & Production Password Guard + Outbound Egress Cho Supabase/R2 + Hai Trạng Thái TLS/HSTS Độc Lập Qua Runtime State Files (`tls-mode.conf`, `port80-mode.conf`) Kèm Script Kích Hoạt Nguyên Tử (`activate-production-tls.sh`) + Định Nghĩa Đầy Đủ `limit_req_zone` và `limit_req_status 429` + Explicit Isolated Production Migration Script (`--no-deps`) + Secret-Safe Validation (`config --quiet`).
 
 ---
 
 ## 1. TỔNG QUAN & BỐI CẢNH (EXECUTIVE SUMMARY)
 
 Phase 6.1 đã hoàn tất và đóng băng sạch (`CLOSED / FROZEN CLEAN`) tầng lưu trữ Cloudflare R2 với zero-leak verification trên cả hai bucket và vệ sinh HEAD credentials. Bước tiếp theo — **Phase 6.2** — hoàn thiện tầng triển khai Production trên máy chủ VPS Linux thông qua cụm 4 container cốt lõi:
-1. `nginx`: Ingress gateway duy nhất, đón nhận và phân luồng traffic Internet, quản lý SSL/TLS và rate limiting. Khởi động độc lập (`service_started`), hỗ trợ Dynamic Upstream DNS qua Docker embedded DNS resolver.
+1. `nginx`: Ingress gateway duy nhất, đón nhận và phân luồng traffic Internet, quản lý SSL/TLS và rate limiting. **Khởi động hoàn toàn độc lập (không khai báo `depends_on: api`)** để cổng 80 luôn sẵn sàng phục vụ ACME challenge của Certbot bất kể trạng thái của backend, hỗ trợ Dynamic Upstream DNS qua Docker embedded DNS resolver.
 2. `api`: NestJS Core Backend API, phục vụ nghiệp vụ, xác thực JWT, kết nối Supabase Postgres và điều phối hàng đợi BullMQ.
 3. `ai-worker`: Python FastAPI AI Translation Engine, chạy suy luận CPU (manga-ocr), tải và xử lý media từ R2 qua mạng egress.
 4. `redis`: Bộ nhớ đệm (Cache) và quản lý hàng đợi tác vụ dịch thuật (BullMQ), bảo vệ bằng container-side secret expansion và fail-fast password guard.
@@ -549,7 +549,7 @@ echo "Kích hoạt Production TLS thành công không gián đoạn dịch vụ!
 version: '3.8'
 
 services:
-  # 1. Nginx Reverse Proxy & TLS Ingress (Custom image pin 1.30.5-alpine kèm OpenSSL)
+  # 1. Nginx Reverse Proxy & TLS Ingress (Khởi động hoàn toàn độc lập, không depends_on api)
   nginx:
     build:
       context: ./nginx
@@ -567,9 +567,6 @@ services:
       - nginx_runtime_config:/etc/nginx/runtime
     networks:
       - omninovel-edge
-    depends_on:
-      api:
-        condition: service_started
 
   # 2. NestJS Core Backend API
   api:
@@ -592,8 +589,6 @@ services:
       - omninovel-egress
     depends_on:
       redis:
-        condition: service_healthy
-      ai-worker:
         condition: service_healthy
 
   # 3. Python FastAPI AI Translation Worker Engine (CPU Inference)
@@ -706,19 +701,19 @@ curl -k https://localhost/health/ready
 
 | STT | Tên Tiêu Chí (Gate) | Điều Kiện Nghiệm Thu Cụ Thể (Pass Criteria) | Phương Pháp Kiểm Tra |
 | :---: | :--- | :--- | :--- |
-| **G01** | `Compose Config Valid` | `docker compose --env-file .env -f deploy/docker-compose.yml config` hợp lệ, cú pháp chuẩn, không hardcode credentials trong file. | `docker compose config` |
+| **G01** | `Compose Config Valid (Secret-Safe)` | Lệnh `docker compose --env-file .env -f deploy/docker-compose.yml config --quiet` thoát với exit code 0, cú pháp chuẩn, không render hay in credentials ra stdout. | `docker compose ... config --quiet` |
 | **G02** | `Clean Multi-Stage Build & Migration Proof` | Build thành công cả 2 Dockerfile từ clean checkout (root lockfile). Lệnh `run --rm --no-deps api npm run migration:run:prod` chạy thành công và báo không còn pending migration trên Supabase. | `docker compose build` & `run --rm --no-deps ...` |
 | **G03** | `Strict Port Isolation` | Compose chỉ publish application ports `80` và `443` ra host. Các cổng backend `8000`, `8001`, `6379` hoàn toàn không được publish ra host interface. | `docker compose ps` / `netstat -tuln` |
-| **G04** | `Nginx API Health Pass` | `GET http://localhost/health/live` và `/health/ready` qua Nginx trả về `HTTP 200` và JSON `{"status": "UP"}`. | `curl -i http://localhost/health/ready` |
+| **G04** | `Nginx API Health Pass (Bootstrap vs Production)` | **1. Bootstrap Mode:** `GET http://localhost/health/live` và `GET https://localhost/health/live` (-k) đều trả về `HTTP 200` JSON `{"status": "UP"}`.<br>**2. Production Mode:** `GET http://localhost/health/live` trả về `HTTP 301` chuyển hướng sang HTTPS; `GET https://localhost/health/live` trả về `HTTP 200` kèm header `Strict-Transport-Security`. | `curl -i http://localhost/health/live` & `curl -ik https://localhost/health/live` |
 | **G05** | `API ↔ Redis Pass & Guard` | API kết nối thành công tới Redis có mật khẩu qua `omninovel-internal`. Healthcheck ready báo `redis: UP`. Nếu `REDIS_PASSWORD` rỗng ở production, Redis fail-fast không start. | Kiểm tra log API & `/health/ready` |
 | **G06** | `API ↔ AI Worker Authenticated RPC & Egress` | API gửi RPC tới AI Worker qua `omninovel-internal` với `x-internal-key` thành công. Gọi không có key bị trả về `401/403`. AI Worker thực hiện tải thành công presigned URL từ R2 qua `omninovel-egress`. | Integration script |
 | **G07** | `API ↔ Supabase Connection Pass` | API kết nối thành công tới Supabase PostgreSQL qua `omninovel-egress`. Healthcheck ready báo `database: UP`. | Kiểm tra log API & `/health/ready` |
 | **G08** | `API ↔ R2 Signed Storage Pass` | API gọi R2 cấp Presigned URL thành công. | Endpoint upload media smoke |
 | **G09** | `WebSocket Socket.IO /ws/ai Upgrade Pass` | Client `socket.io-client` kết nối tới path `/socket.io/` tại namespace `/ws/ai` qua Nginx, nhận handshake và trao đổi event thành công. | Node.js Socket.IO acceptance runner |
 | **G10** | `Rate Limiting & Throttling Pass` | Gửi request liên tục vượt 30 req/s vào API hoặc 5 req/s vào auth endpoints bị Nginx chặn với mã `429 Too Many Requests` (chính xác nhờ `limit_req_status 429`). | Kịch bản bắn tải wrk / ab / curl loop |
-| **G11** | `TLS Bootstrap & Atomic Transition` | Nginx boot thành công với self-signed cert (không có HSTS). Chuyển sang cert thật qua `activate-production-tls.sh` cập nhật đồng bộ cả cert, HSTS và port 80 redirect không gián đoạn dịch vụ. | Kiểm tra TLS handshake & reload |
+| **G11** | `TLS Bootstrap, Independent Ingress & Atomic Transition` | Nginx boot thành công độc lập ngay cả khi `api` đang stopped (phục vụ ACME challenge port 80). Chuyển sang cert thật qua `activate-production-tls.sh` cập nhật đồng bộ cert, HSTS và port 80 redirect không gián đoạn dịch vụ. | Kiểm tra boot độc lập, TLS handshake & reload |
 | **G12** | `Auto-Recovery, Cache Persistence & DNS Re-resolve` | Thực thi `docker compose --env-file .env -f deploy/docker-compose.yml up -d --force-recreate ai-worker`: model cache trong named volume `omninovel_ai_model_cache` vẫn nguyên vẹn. Recreate `api`: Nginx tự động phân giải lại IP mới qua `upstream ... resolve` mà không bị lỗi 502. | `docker compose up -d --force-recreate` |
-| **G13** | `Non-Root Container Hardening` | Container `api` chạy dưới user `node` (UID 1000); container `ai-worker` chạy dưới `appuser` (UID 10001). | `docker compose exec ... id` |
+| **G13** | `Non-Root Container Hardening` | Container `api` chạy dưới user `node` (UID 1000); container `ai-worker` chạy dưới user `appuser` (UID 10001). | `docker compose exec ... id` |
 | **G14** | `Secret Hygiene in Logs` | Logs của toàn bộ 4 container tuyệt đối không in ra DB password, R2 secret access key, hoặc JWT secrets. | `docker compose logs` regex scan |
 
 ---
@@ -729,5 +724,5 @@ Kế hoạch triển khai (Implementation Plan) sẽ bắt đầu bằng:
 1. **Task 1 (Spike & Build Proof):** Xây dựng `services/api/Dockerfile` trên root context + root `package-lock.json`, bổ sung `migration:run:prod` và `env.validation.ts` Redis guard, kiểm chứng thực tế quá trình build và xác nhận layout `node_modules/@omninovel/shared` hoạt động với `node dist/main`, đồng thời kiểm tra lệnh `npm run migration:run:prod` chạy thành công với `--no-deps`.
 2. **Task 2 (AI Worker Image):** Tách `requirements-prod-cpu.txt`, sửa `config.py` với `os.environ.setdefault`, xây dựng `services/ai-worker/Dockerfile` non-root.
 3. **Task 3 (Nginx Image, Dynamic Upstream, Rate Limiting & TLS State Machine):** Tạo `deploy/nginx/Dockerfile` (Nginx 1.30.5-alpine + OpenSSL), cấu hình `nginx.conf` (`limit_req_zone`, `limit_req_status 429;`) và `omninovel.conf` (Dynamic Upstream Resolve `zone api_backend 64k`, rate limit, WebSocket `/socket.io`), viết `entrypoint.sh` và `activate-production-tls.sh`.
-4. **Task 4 (Compose Integration):** Tạo `deploy/docker-compose.yml` với 3-network topology, container-side expansion và Redis password guard.
+4. **Task 4 (Compose Integration):** Tạo `deploy/docker-compose.yml` với 3-network topology, Nginx hoàn toàn độc lập không `depends_on`, container-side expansion và Redis password guard.
 5. **Task 5 (Acceptance Verification):** Thực thi toàn bộ 14 Acceptance Gates (từ G01 đến G14) kèm bằng chứng kiểm thử thực tế.

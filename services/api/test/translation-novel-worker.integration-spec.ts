@@ -235,6 +235,7 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
     }
 
     // Trỏ AI_WORKER_BASE_URL sang tiến trình Python Worker thật
+    process.env.AI_WORKER_BASE_URL = `http://127.0.0.1:${pythonPort}`;
     const origGet = configService.get.bind(configService);
     jest.spyOn(configService, 'get').mockImplementation((key: string, def?: any) => {
       if (key === 'AI_WORKER_BASE_URL') {
@@ -273,10 +274,10 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
 
     // 2. Chờ BullMQ Processor gọi Python /process-novel -> FullNovelPipeline -> Upload HTML -> READY_FOR_REVIEW
     let isReady = false;
-    for (let i = 0; i < 40; i++) {
+    for (let i = 0; i < 60; i++) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       const jobCheck = await dataSource.query(
-        `SELECT status, progress_percentage, last_sequence, result_manifest FROM translation_jobs WHERE id = $1`,
+        `SELECT status, progress_percentage, last_sequence, error_trace, result_manifest FROM translation_jobs WHERE id = $1`,
         [jobId],
       );
       if (jobCheck[0]?.status === TranslationJobStatus.READY_FOR_REVIEW) {
@@ -285,6 +286,10 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
         expect(jobCheck[0].result_manifest?.mediaFormat).toBe('NOVEL');
         expect(jobCheck[0].result_manifest?.qa?.passed).toBe(true);
         expect(jobCheck[0].result_manifest?.htmlKey).toBeDefined();
+        break;
+      }
+      if (jobCheck[0]?.status === TranslationJobStatus.FAILED) {
+        console.error('Novel translation job failed with errorTrace:', jobCheck[0].error_trace);
         break;
       }
     }

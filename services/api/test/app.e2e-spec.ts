@@ -789,6 +789,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
           storyId: storyBId, // Story B không chứa Chapter A
           progressPercentage: 50,
           scrollPosition: 1200,
+          writeEpoch: 0,
         })
         .expect(400);
 
@@ -802,6 +803,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
           readingMode: 'WEBTOON',
           progressPercentage: 85.5,
           scrollPosition: 2400,
+          writeEpoch: 0,
         })
         .expect(200);
 
@@ -840,6 +842,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
           chapterVersionId: draftVerId,
           progressPercentage: 50,
           scrollPosition: 1000,
+          writeEpoch: 0,
         })
         .expect(403);
 
@@ -853,6 +856,7 @@ describe('OmniNovel Backend Core API (e2e)', () => {
           chapterId: chapterBId,
           progressPercentage: 50,
           scrollPosition: 1000,
+          writeEpoch: 0,
         })
         .expect(403);
 

@@ -179,6 +179,7 @@ jobs:
           JWT_EXPIRATION: 15m
           JWT_REFRESH_SECRET: super_secret_refresh_jwt_key_2026
           JWT_REFRESH_EXPIRATION: 7d
+          AI_WORKER_BASE_URL: http://127.0.0.1:8001
           AI_TRANSLATION_SERVICE_URL: http://127.0.0.1:8001
           AI_WORKER_SECRET: internal_ai_worker_secret_secure_2026
         run: npm run test:e2e

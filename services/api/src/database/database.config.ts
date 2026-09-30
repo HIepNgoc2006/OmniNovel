@@ -16,6 +16,9 @@ export interface ResolvedPostgresConnectionOptions {
   password?: string;
   database?: string;
   ssl?: boolean | { rejectUnauthorized: boolean };
+  extra?: {
+    ssl?: boolean | { rejectUnauthorized: boolean };
+  };
 }
 
 /**
@@ -29,6 +32,7 @@ export interface ResolvedPostgresConnectionOptions {
  * - Nếu không có `databaseUrl`:
  *     → Dùng các biến `host, port, username, password, database` cục bộ (mặc định localhost:5433)
  *     → `ssl: { rejectUnauthorized: false }` khi `ssl=true`, ngược lại `false`
+ * - Cung cấp `extra: { ssl: sslOption }` để `pg.Pool` nhận diện cấu hình SSL khi truyền qua URL.
  */
 export function buildPostgresConnectionOptions(
   input: PostgresConfigInput = {},
@@ -40,12 +44,14 @@ export function buildPostgresConnectionOptions(
     (typeof input.databaseUrl === 'string' && input.databaseUrl.includes('sslmode=require'));
 
   const sslOption = isSsl ? { rejectUnauthorized: false } : false;
+  const extraOption = sslOption ? { ssl: sslOption } : undefined;
 
   const rawUrl = input.databaseUrl ? input.databaseUrl.trim() : '';
   if (rawUrl.length > 0) {
     return {
       url: rawUrl,
       ssl: sslOption,
+      extra: extraOption,
     };
   }
 
@@ -56,5 +62,6 @@ export function buildPostgresConnectionOptions(
     password: input.password || 'postgres_password_secure',
     database: input.database || 'omninovel_db',
     ssl: sslOption,
+    extra: extraOption,
   };
 }

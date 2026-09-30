@@ -72,7 +72,7 @@ services:
       - ../.env
     entrypoint: >
       /bin/sh -c '
-      : "$${REDIS_PASSWORD:?ERROR: REDIS_PASSWORD is required and cannot be empty}"
+      : "$${REDIS_PASSWORD:?ERROR: REDIS_PASSWORD is required and cannot be empty}";
       exec redis-server
       --appendonly yes
       --protected-mode yes

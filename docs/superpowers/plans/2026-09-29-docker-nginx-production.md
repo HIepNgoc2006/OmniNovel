@@ -574,7 +574,7 @@ git push origin main
 - Create: `deploy/docker-compose.yml`
 
 **Interfaces:**
-- Consumes: Images từ Task 1, 2, 3; `.env` file; 3 mạng Docker; 4 named volumes cố định.
+- Consumes: Images từ Task 1, 2, 3; `.env` file; 3 mạng Docker; 5 named volumes cố định.
 - Produces: Production stack hoàn chỉnh, lệnh config `--quiet` hợp lệ không lộ credentials, Redis guard chống mật khẩu rỗng.
 
 - [x] **Step 1: Tạo `deploy/docker-compose.yml`**
@@ -724,11 +724,11 @@ git push origin main
 - Consumes: Production Docker Compose stack, curl, socket.io-client.
 - Produces: Bằng chứng kiểm thử tự động toàn diện G01 -> G14, cập nhật trạng thái Phase 6.2 hoàn thành.
 
-- [ ] **Step 1: Viết Script Runner Nghiệm Thu `deploy/test-acceptance-phase6-2.ts`**
+- [x] **Step 1: Viết Script Runner Nghiệm Thu `deploy/test-acceptance-phase6-2.ts`**
 
 Tạo runner kiểm tra tự động các gates quan trọng (G01 config, G03 port isolation, G04 Nginx API health, G05 Redis connection, G09 WebSocket Socket.IO `/ws/ai` namespace, G10 Rate Limit 429, G12 Container recreation & DNS re-resolve).
 
-- [ ] **Step 2: Thực thi Build & Chạy Migration Độc Lập (G02 Proof)**
+- [x] **Step 2: Thực thi Build & Chạy Migration Độc Lập (G02 Proof)**
 
 ```bash
 docker compose --env-file .env -f deploy/docker-compose.yml build
@@ -736,7 +736,7 @@ docker compose --env-file .env -f deploy/docker-compose.yml run --rm --no-deps a
 ```
 Kỳ vọng: Toàn bộ container build thành công; migration báo không còn migration nào đang pending.
 
-- [ ] **Step 3: Khởi động Stack và Kiểm tra Port Isolation (G03)**
+- [x] **Step 3: Khởi động Stack và Kiểm tra Port Isolation (G03)**
 
 ```bash
 docker compose --env-file .env -f deploy/docker-compose.yml up -d
@@ -744,7 +744,7 @@ docker compose --env-file .env -f deploy/docker-compose.yml ps
 ```
 Kỳ vọng: Cả 4 container healthy. Chỉ có Nginx publish cổng host 80 và 443. Các cổng 8000, 8001, 6379 không xuất hiện trong cột PORTS dạng `0.0.0.0:*`.
 
-- [ ] **Step 4: Chạy Acceptance Tests (G04 - G14)**
+- [x] **Step 4: Chạy Acceptance Tests (G04 - G14)**
 
 Thực thi runner kiểm tra:
 - G04: Probe HTTP và HTTPS liveness/readiness endpoint.
@@ -752,11 +752,11 @@ Thực thi runner kiểm tra:
 - G10: Gửi 35 requests liên tục kiểm tra Nginx trả về mã lỗi 429.
 - G12: Chạy `docker compose --env-file .env -f deploy/docker-compose.yml up -d --force-recreate ai-worker` và recreate `api` xác nhận model cache volume giữ nguyên và Nginx re-resolve IP mới thành công.
 
-- [ ] **Step 5: Dọn dẹp test environment và cập nhật tài liệu Phase 6.2**
+- [x] **Step 5: Dọn dẹp test environment và cập nhật tài liệu Phase 6.2**
 
 Cập nhật [plans/phases/phase_06_devops_final.md](file:///e:/Workspace%202/Doctruyen_project/plans/phases/phase_06_devops_final.md): Đánh dấu Phase 6.2 hoàn thành với toàn bộ 14 tiêu chí nghiệm thu PASS.
 
-- [ ] **Step 6: Commit & Push Final Evidence**
+- [x] **Step 6: Commit & Push Final Evidence**
 
 ```bash
 git add deploy/test-acceptance-phase6-2.ts plans/phases/phase_06_devops_final.md

@@ -1,7 +1,7 @@
 # 📋 Phase 6: Triển Khai DevOps, Hạ Tầng Đám Mây & Nghiệm Thu 5 Môn
 
 - **Mục tiêu:** Thiết lập hạ tầng triển khai thực tế đa môi trường (Local/CI vs Production Cloud), tự động hóa CI/CD, hệ thống giám sát và hồ sơ bảo vệ 5 môn học.
-- **Trạng thái:** [x] Phase 6.1 Đã hoàn tất và nghiệm thu toàn diện (CLOSED / FROZEN ✅) | Bắt đầu Phase 6.2 (IN PROGRESS 🟡)
+- **Trạng thái:** [x] Phase 6.1 (CLOSED / FROZEN ✅) \| [x] Phase 6.2 (CLOSED / FROZEN ✅) \| Bắt đầu Phase 6.3 (IN PROGRESS 🟡)
 
 ---
 
@@ -64,10 +64,26 @@
   - Kết quả: `omninovel-manga` ✅, `omninovel-novel` ✅, zero leaked objects verified ✅.
 - [x] **PHASE 6.1 CHÍNH THỨC FROZEN & CLOSED CLEAN.**
 
-### B. Đóng Gói Docker & Reverse Proxy (Phase 6.2)
-- [ ] Hoàn thiện `deploy/docker-compose.yml` cho Production VPS: gồm 4 container cốt lõi (`nginx`, `api`, `ai-worker`, `redis`).
-- [ ] Duy trì `deploy/docker-compose.dev.yml` cho Local Dev / CI: bổ sung `postgres` và `minio`.
-- [ ] Cấu hình Nginx Production: SSL (Let's Encrypt / Certbot), HTTP/2, Gzip/Brotli, Header Security, Rate Limiting.
+### B. Đóng Gói Docker & Reverse Proxy (Phase 6.2 - CLOSED / FROZEN ✅)
+- [x] Hoàn thiện `deploy/docker-compose.yml` cho Production VPS: gồm 4 container cốt lõi (`nginx`, `api`, `ai-worker`, `redis`), 3-Network Topology (`edge`, `internal: true`, `egress`), 5 named volumes, Redis guard với `$$REDIS_PASSWORD`.
+- [x] Duy trì `deploy/docker-compose.dev.yml` cho Local Dev / CI: bổ sung `postgres` và `minio`.
+- [x] Cấu hình Nginx Production: SSL (Let's Encrypt / Certbot), HTTP/2, Gzip, Dynamic Upstream DNS (`zone api_backend 64k; server api:8000 resolve;`), Rate Limiting 429 (`api_general_limit: 30r/s`, `auth_limit: 5r/s`), WebSocket `/socket.io/` upgrade, TLS State Machine (Bootstrap vs Production) với zero-downtime hot reload.
+- [x] **[14 ACCEPTANCE GATES ĐÃ NGHIỆM THU PASS 100% - SANITIZED & HARDENED]** Chạy test suite tự động `deploy/test-acceptance-phase6-2.ts`:
+  - **G01 (Config Valid):** `docker compose config --quiet` exit 0 không render credentials.
+  - **G02 (Migration Proof):** Isolated runner `run --rm --no-deps api npm run migration:run:prod` chạy trên Supabase PostgreSQL thật báo 18 migrations `[X]` applied, `No migrations are pending`.
+  - **G03 (Port Isolation):** Chỉ Nginx mở `80` và `443`. Các cổng backend `8000`, `8001`, `6379` không publish ra host.
+  - **G04 (API Health & HSTS):** HTTP/80 trả 301 chuyển hướng HTTPS, HTTPS/443 trả 200 kèm HSTS `max-age=31536000; includeSubDomains`.
+  - **G05 (Redis Pass & Guard):** `/health/ready` báo `redis: UP`. Khi rỗng password: container ephemeral fail-fast exit code 2 với `ERROR_REDIS_PASSWORD_REQUIRED`.
+  - **G06 (AI Worker RPC & Egress):** Internal RPC với `x-internal-key` hợp lệ, cấm gọi không auth (401). AI Worker truy cập R2 qua `omninovel-egress`. Redis bị cấm Internet trên `omninovel-internal`.
+  - **G07 (Supabase Connection):** `/health/ready` báo `database: UP` kết nối Supabase Managed PostgreSQL qua `omninovel-egress`.
+  - **G08 (R2 Storage Live Round-Trip):** Thực hiện chu trình thật trên Cloudflare R2 bucket: `PUT -> HEAD -> DELETE` (verified size 39, cleanup hoàn toàn).
+  - **G09 (WebSocket /ws/ai):** Socket.IO client kết nối qua Nginx `/socket.io/` tới namespace `/ws/ai` nhận handshake thành công.
+  - **G10 (Rate Limiting 429):** Bắn tải burst 25 requests liên tục vào `/api/v1/auth/me` kích hoạt 19 responses `HTTP 429 Too Many Requests`.
+  - **G11 (Independent Lifecycle & Zero-Downtime Reload):** Nginx khởi động độc lập khi API stopped (Nginx running, port 80 ACME 404). Luồng reload traffic 24 requests liên tục đạt 24/24 HTTP 200 OK, 0 dropped.
+  - **G12 (Auto-Recovery & Real Dynamic DNS Re-resolve):** Recreate `ai-worker`: cache file volume tồn tại. Ép đổi IP API thật (`172.23.0.3` -> `172.23.0.4` qua container giữ chỗ): Docker DNS 127.0.0.11 cập nhật, Nginx tự re-resolve không reload và live probe 200 OK.
+  - **G13 (Non-Root Hardening):** Container `api` chạy UID 1000 (`node`), container `ai-worker` chạy UID 10001 (`appuser`).
+  - **G14 (Secret Hygiene):** Quét regex động dựa trên active env secrets và 3 regex patterns trên logs 4 containers: 0 rò rỉ credential verified. Zero secrets hardcoded trong repository.
+- [x] **PHASE 6.2 CHÍNH THỨC FROZEN & CLOSED CLEAN.**
 
 ### C. CI/CD Pipeline GitHub Actions (Phase 6.3)
 - [ ] Workflow kiểm thử tự động: Backend NestJS (TypeORM + Postgres service container), AI Worker (Pytest), Mobile (Flutter analyze + test).

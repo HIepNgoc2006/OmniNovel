@@ -109,10 +109,38 @@ jobs:
           done
 
       - name: Create MinIO Buckets
+        working-directory: services/api
         run: |
-          docker run --rm --net=host cgr.dev/chainguard/minio-client:latest alias set localminio http://127.0.0.1:9000 minioadmin miniopassword
-          docker run --rm --net=host cgr.dev/chainguard/minio-client:latest mb --ignore-existing localminio/manga-media
-          docker run --rm --net=host cgr.dev/chainguard/minio-client:latest mb --ignore-existing localminio/novel-media
+          node -e "
+          const { S3Client, CreateBucketCommand, ListBucketsCommand } = require('@aws-sdk/client-s3');
+          const s3 = new S3Client({
+            endpoint: 'http://127.0.0.1:9000',
+            region: 'us-east-1',
+            credentials: { accessKeyId: 'minioadmin', secretAccessKey: 'miniopassword' },
+            forcePathStyle: true,
+          });
+          async function init() {
+            for (const bucket of ['manga-media', 'novel-media']) {
+              try {
+                await s3.send(new CreateBucketCommand({ Bucket: bucket }));
+                console.log('Successfully created bucket:', bucket);
+              } catch (err) {
+                if (err.name === 'BucketAlreadyOwnedByYou' || err.name === 'BucketAlreadyExists') {
+                  console.log('Bucket already exists:', bucket);
+                } else {
+                  console.error('Failed to create bucket ' + bucket + ':', err);
+                  process.exit(1);
+                }
+              }
+            }
+            const res = await s3.send(new ListBucketsCommand({}));
+            console.log('Active MinIO buckets:', res.Buckets.map(b => b.Name));
+          }
+          init().catch(err => {
+            console.error('MinIO bucket initialization failed:', err);
+            process.exit(1);
+          });
+          "
 
       - name: Run Core API Unit Tests
         working-directory: services/api

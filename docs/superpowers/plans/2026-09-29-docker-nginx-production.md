@@ -301,7 +301,7 @@ Tạo file [deploy/nginx/Dockerfile](file:///e:/Workspace%202/Doctruyen_project/
 ```dockerfile
 FROM nginx:1.30.5-alpine
 
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl && rm -f /etc/nginx/conf.d/default.conf
 
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY conf.d/ /etc/nginx/conf.d/
@@ -376,6 +376,10 @@ server {
 
     location /.well-known/acme-challenge/ {
         root /var/www/certbot;
+    }
+
+    location /internal/ {
+        return 403;
     }
 
     include /etc/nginx/runtime/port80-mode.conf;

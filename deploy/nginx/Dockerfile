@@ -1,6 +1,6 @@
 FROM nginx:1.30.5-alpine
 
-RUN apk add --no-cache openssl
+RUN apk add --no-cache openssl && rm -f /etc/nginx/conf.d/default.conf
 
 COPY nginx.conf /etc/nginx/nginx.conf
 COPY conf.d/ /etc/nginx/conf.d/

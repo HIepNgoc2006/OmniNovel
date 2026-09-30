@@ -2,7 +2,7 @@
  * ==============================================================================
  * OmniNovel - Production Infrastructure Acceptance Runner (Phase 6.2)
  * Automated Verification for 14 Acceptance Gates (G01 -> G14)
- * Hardened & Sanitized: ZERO Hardcoded Credentials (Dynamic Env-Driven)
+ * Hardened & Sanitized: Real Exit Codes + Zero Hardcoded Credentials (Dynamic Env)
  * ==============================================================================
  */
 
@@ -29,6 +29,13 @@ if (!JWT_SECRET || !AI_WORKER_SECRET) {
   process.exit(1);
 }
 
+export interface CommandResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+  output: string;
+}
+
 interface GateResult {
   gate: string;
   name: string;
@@ -41,13 +48,16 @@ interface GateResult {
 const results: GateResult[] = [];
 const httpsAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: true });
 
-function runCommand(cmd: string): string {
+function runCommand(cmd: string): CommandResult {
   try {
-    return execSync(cmd, { stdio: ['pipe', 'pipe', 'pipe'] }).toString().trim();
+    const stdout = execSync(cmd, { stdio: ['pipe', 'pipe', 'pipe'] }).toString().trim();
+    return { exitCode: 0, stdout, stderr: '', output: stdout };
   } catch (err: any) {
-    if (err.stdout) return err.stdout.toString().trim();
-    if (err.stderr) return err.stderr.toString().trim();
-    return err.message;
+    const exitCode = typeof err.status === 'number' ? err.status : 1;
+    const stdout = err.stdout ? err.stdout.toString().trim() : '';
+    const stderr = err.stderr ? err.stderr.toString().trim() : '';
+    const output = [stdout, stderr].filter(Boolean).join('\n').trim() || err.message;
+    return { exitCode, stdout, stderr, output };
   }
 }
 
@@ -69,16 +79,16 @@ async function verifyAllGates() {
   console.log('  STARTING OMNINOVEL PHASE 6.2 - 14 ACCEPTANCE GATES RUNNER');
   console.log('================================================================\n');
 
-  // G01: Compose Config Valid (Secret-Safe)
+  // G01: Compose Config Valid (Secret-Safe & Exit Code Proof)
   try {
-    const output = runCommand('docker compose --env-file .env -f deploy/docker-compose.yml config --quiet');
-    const passed = output.length === 0;
+    const res = runCommand('docker compose --env-file .env -f deploy/docker-compose.yml config --quiet');
+    const passed = res.exitCode === 0 && res.output.length === 0;
     results.push({
       gate: 'G01',
       name: 'Compose Config Valid (Secret-Safe)',
       passed,
-      evidence: passed ? 'docker compose config --quiet exited 0 with zero output' : output,
-      assertion: 'Exit code === 0 && output.length === 0',
+      evidence: res.exitCode === 0 ? 'docker compose config --quiet exited 0 with zero output' : `Exit ${res.exitCode}: ${res.output}`,
+      assertion: 'res.exitCode === 0 && res.output.length === 0',
       failureMode: 'Invalid compose syntax, obsolete attributes or credentials rendered in output',
     });
   } catch (e: any) {
@@ -87,14 +97,15 @@ async function verifyAllGates() {
 
   // G02: Clean Multi-Stage Build & Migration Proof (Supabase Managed PostgreSQL)
   try {
-    const migrationOutput = runCommand('docker compose --env-file .env -f deploy/docker-compose.yml run --rm --no-deps api npm run migration:run:prod');
-    const passed = migrationOutput.includes('No migrations are pending') || migrationOutput.includes('has been executed successfully');
+    const res = runCommand('docker compose --env-file .env -f deploy/docker-compose.yml run --rm --no-deps api npm run migration:run:prod');
+    const hasSuccessMarker = res.output.includes('No migrations are pending') || res.output.includes('has been executed successfully');
+    const passed = res.exitCode === 0 && hasSuccessMarker;
     results.push({
       gate: 'G02',
       name: 'Clean Multi-Stage Build & Migration Proof',
       passed,
-      evidence: 'Isolated container executed migration on Supabase: ' + migrationOutput.split('\n').filter(l => l.includes('migrations') || l.includes('No migrations')).join(' | '),
-      assertion: 'migrationOutput includes "No migrations are pending"',
+      evidence: `Exit code ${res.exitCode} | Supabase output: ` + res.output.split('\n').filter(l => l.includes('migrations') || l.includes('No migrations')).join(' | '),
+      assertion: 'res.exitCode === 0 && res.output.includes("No migrations are pending")',
       failureMode: 'Database migration connection failed or migrations pending on Supabase',
     });
   } catch (e: any) {
@@ -108,15 +119,17 @@ async function verifyAllGates() {
     const workerPort = runCommand('docker port omninovel-prod-ai-worker');
     const redisPort = runCommand('docker port omninovel-prod-redis');
 
-    const nginxHasPorts = nginxPort.includes('80') && nginxPort.includes('443');
-    const backendIsolated = apiPort.length === 0 && workerPort.length === 0 && redisPort.length === 0;
+    const nginxHasPorts = nginxPort.exitCode === 0 && nginxPort.stdout.includes('80') && nginxPort.stdout.includes('443');
+    const backendIsolated = apiPort.exitCode === 0 && apiPort.stdout.length === 0 &&
+                            workerPort.exitCode === 0 && workerPort.stdout.length === 0 &&
+                            redisPort.exitCode === 0 && redisPort.stdout.length === 0;
     const passed = nginxHasPorts && backendIsolated;
 
     results.push({
       gate: 'G03',
       name: 'Strict Port Isolation',
       passed,
-      evidence: `Host bindings: Nginx has [80, 443] | API bindings: [${apiPort || 'none'}] | Worker bindings: [${workerPort || 'none'}] | Redis bindings: [${redisPort || 'none'}]`,
+      evidence: `Nginx bindings [Exit ${nginxPort.exitCode}]: ${nginxPort.stdout} | API [Exit ${apiPort.exitCode}]: [${apiPort.stdout || 'none'}] | Worker [Exit ${workerPort.exitCode}]: [${workerPort.stdout || 'none'}] | Redis [Exit ${redisPort.exitCode}]: [${redisPort.stdout || 'none'}]`,
       assertion: 'nginxHasPorts && backendIsolated === true',
       failureMode: 'Backend services (api, ai-worker, redis) publish ports directly to host interface',
     });
@@ -151,17 +164,17 @@ async function verifyAllGates() {
     const readyJson = JSON.parse(readyRes.body);
     const redisUp = readyJson?.services?.redis === 'UP';
 
-    // Automated fail-fast check: ephemeral container with empty REDIS_PASSWORD must exit with error
-    const failFastOutput = runCommand('docker run --rm redis:7-alpine sh -c ": \\"${REDIS_PASSWORD:?ERROR_REDIS_PASSWORD_REQUIRED}\\"" 2>&1');
-    const guardEnforced = failFastOutput.includes('ERROR_REDIS_PASSWORD_REQUIRED');
+    // Automated fail-fast check: ephemeral container with empty REDIS_PASSWORD must exit with nonzero exitCode
+    const failFastRes = runCommand('docker run --rm redis:7-alpine sh -c ": \\"${REDIS_PASSWORD:?ERROR_REDIS_PASSWORD_REQUIRED}\\""');
+    const guardEnforced = failFastRes.exitCode !== 0 && failFastRes.output.includes('ERROR_REDIS_PASSWORD_REQUIRED');
 
     const passed = redisUp && guardEnforced;
     results.push({
       gate: 'G05',
       name: 'API ↔ Redis Pass & Guard',
       passed,
-      evidence: `health/ready services: ${JSON.stringify(readyJson?.services)} | Empty password guard output: "${failFastOutput.trim()}"`,
-      assertion: 'redisUp === true && guardEnforced === true',
+      evidence: `health/ready services: ${JSON.stringify(readyJson?.services)} | Empty password guard [Exit ${failFastRes.exitCode}]: "${failFastRes.output.trim()}"`,
+      assertion: 'redisUp === true && failFastRes.exitCode !== 0 && failFastRes.output.includes("ERROR_REDIS_PASSWORD_REQUIRED")',
       failureMode: 'API cannot connect to password-protected Redis or Redis starts with empty password',
     });
   } catch (e: any) {
@@ -181,20 +194,23 @@ async function verifyAllGates() {
 
     // 3. Egress & Isolation test
     const r2Egress = runCommand('docker exec omninovel-prod-ai-worker curl -I -s -o /dev/null -w "%{http_code}" https://5647695aab5f1dfad2253715bf29531e.r2.cloudflarestorage.com');
-    const redisEgress = runCommand('docker exec omninovel-prod-redis ping -c 1 -W 2 1.1.1.1 2>&1');
+    const redisEgress = runCommand('docker exec omninovel-prod-redis ping -c 1 -W 2 1.1.1.1');
 
-    const authEnforced = (noKeyApi === '401' && wrongKeyApi === '401' && validKeyApi === '400') &&
-                         (noKeyWorker.includes('401') && validKeyWorker.includes('422'));
-    const egressAndIsolationValid = (r2Egress === '400' || r2Egress === '200' || r2Egress === '403') &&
-                                    (redisEgress.includes('Network unreachable') || redisEgress.includes('100% packet loss') || redisEgress.includes('bad address'));
+    const authEnforced = (noKeyApi.exitCode === 0 && noKeyApi.stdout === '401') &&
+                         (wrongKeyApi.exitCode === 0 && wrongKeyApi.stdout === '401') &&
+                         (validKeyApi.exitCode === 0 && validKeyApi.stdout === '400') &&
+                         (noKeyWorker.exitCode === 0 && noKeyWorker.stdout.includes('401')) &&
+                         (validKeyWorker.exitCode === 0 && validKeyWorker.stdout.includes('422'));
+    const egressAndIsolationValid = (r2Egress.exitCode === 0 && (r2Egress.stdout === '400' || r2Egress.stdout === '200' || r2Egress.stdout === '403')) &&
+                                    (redisEgress.exitCode !== 0 && (redisEgress.output.includes('Network unreachable') || redisEgress.output.includes('100% packet loss') || redisEgress.output.includes('bad address') || redisEgress.output.includes('56 data bytes')));
 
     const passed = authEnforced && egressAndIsolationValid;
     results.push({
       gate: 'G06',
       name: 'API ↔ AI Worker Authenticated RPC & Egress Isolation',
       passed,
-      evidence: `Auth Guards: AI->API [NoKey:${noKeyApi}, BadKey:${wrongKeyApi}, ValidKey:${validKeyApi}] | API->AI [NoKey:${noKeyWorker.trim()}, ValidKey:${validKeyWorker.trim()}] | R2 Egress: HTTP ${r2Egress} | Redis Internet Blocked: "${redisEgress.split('\n')[1] || redisEgress}"`,
-      assertion: 'noKey === 401 && wrongKey === 401 && r2Reachable && redisBlocked',
+      evidence: `Auth Guards: AI->API [NoKey:${noKeyApi.stdout}, BadKey:${wrongKeyApi.stdout}, ValidKey:${validKeyApi.stdout}] | API->AI [NoKey:${noKeyWorker.stdout.trim()}, ValidKey:${validKeyWorker.stdout.trim()}] | R2 Egress: HTTP ${r2Egress.stdout} [Exit ${r2Egress.exitCode}] | Redis Blocked: Exit ${redisEgress.exitCode}`,
+      assertion: 'authEnforced === true && r2Egress.exitCode === 0 && redisEgress.exitCode !== 0',
       failureMode: 'Internal RPC unauthenticated, AI worker cannot egress, or Redis reaches internet',
     });
   } catch (e: any) {
@@ -218,7 +234,7 @@ async function verifyAllGates() {
     results.push({ gate: 'G07', name: 'API Supabase Pass', passed: false, evidence: e.message, assertion: 'database === UP', failureMode: e.message });
   }
 
-  // G08: API <-> R2 Live Storage Round-Trip (Presigned PUT -> HEAD -> DELETE)
+  // G08: API <-> R2 Live Storage Round-Trip (Presigned PUT -> HEAD -> DELETE in finally -> Post-Delete 404)
   try {
     const r2Script = `
       const { S3Client, PutObjectCommand, HeadObjectCommand, DeleteObjectCommand } = require('@aws-sdk/client-s3');
@@ -234,23 +250,50 @@ async function verifyAllGates() {
       const body = Buffer.from('G08_R2_SMOKE_TEST_PAYLOAD_' + Date.now());
 
       async function run() {
-        await s3.send(new PutObjectCommand({ Bucket: process.env.S3_BUCKET_MANGA, Key: key, Body: body, ContentType: 'text/plain' }));
-        const head = await s3.send(new HeadObjectCommand({ Bucket: process.env.S3_BUCKET_MANGA, Key: key }));
-        await s3.send(new DeleteObjectCommand({ Bucket: process.env.S3_BUCKET_MANGA, Key: key }));
-        console.log('R2_ROUNDTRIP_OK:size=' + head.ContentLength);
+        let uploaded = false;
+        try {
+          await s3.send(new PutObjectCommand({ Bucket: process.env.S3_BUCKET_MANGA, Key: key, Body: body, ContentType: 'text/plain' }));
+          uploaded = true;
+          const head = await s3.send(new HeadObjectCommand({ Bucket: process.env.S3_BUCKET_MANGA, Key: key }));
+          if (head.ContentLength !== body.length) throw new Error('Size mismatch: ' + head.ContentLength);
+        } finally {
+          if (uploaded) {
+            try {
+              await s3.send(new DeleteObjectCommand({ Bucket: process.env.S3_BUCKET_MANGA, Key: key }));
+            } catch (delErr) {
+              console.error('DELETE_FAILED:' + delErr.message);
+            }
+          }
+        }
+
+        /* Post-delete verification: assert object returns 404 NotFound */
+        let postDelete404 = false;
+        try {
+          await s3.send(new HeadObjectCommand({ Bucket: process.env.S3_BUCKET_MANGA, Key: key }));
+        } catch (err) {
+          if (err.name === 'NotFound' || err.$metadata?.httpStatusCode === 404) {
+            postDelete404 = true;
+          }
+        }
+
+        if (!postDelete404) {
+          throw new Error('Object still exists after delete (zero-leak violated)');
+        }
+
+        console.log('R2_ROUNDTRIP_OK:verified_zero_leak:size=' + body.length);
       }
       run().catch(err => { console.error('R2_FAILED:' + err.message); process.exit(1); });
     `;
-    const r2Check = runCommand(`docker exec omninovel-prod-api node -e "${r2Script.replace(/\n\s+/g, ' ')}"`);
-    const passed = r2Check.includes('R2_ROUNDTRIP_OK:size=');
+    const r2Res = runCommand(`docker exec omninovel-prod-api node -e "${r2Script.replace(/\n\s+/g, ' ')}"`);
+    const passed = r2Res.exitCode === 0 && r2Res.output.includes('R2_ROUNDTRIP_OK:verified_zero_leak:size=');
 
     results.push({
       gate: 'G08',
-      name: 'API ↔ R2 Live Storage Round-Trip (PUT -> HEAD -> DELETE)',
+      name: 'API ↔ R2 Live Storage Round-Trip (PUT -> HEAD -> DELETE -> 404)',
       passed,
-      evidence: `Live Cloudflare R2 round-trip verification: ${r2Check.split('\n').find(l => l.includes('R2_ROUNDTRIP_OK')) || r2Check}`,
-      assertion: 'r2Check.includes("R2_ROUNDTRIP_OK")',
-      failureMode: 'R2 credential or endpoint configuration invalid, unable to perform live PUT/HEAD/DELETE on bucket',
+      evidence: `Exit code ${r2Res.exitCode} | Result: ${r2Res.output.split('\n').find(l => l.includes('R2_ROUNDTRIP_OK')) || r2Res.output}`,
+      assertion: 'r2Res.exitCode === 0 && r2Res.output.includes("R2_ROUNDTRIP_OK:verified_zero_leak")',
+      failureMode: 'R2 credential or endpoint configuration invalid, unable to perform live PUT/HEAD/DELETE or post-delete 404 failed',
     });
   } catch (e: any) {
     results.push({ gate: 'G08', name: 'API R2 Pass', passed: false, evidence: e.message, assertion: 'R2_ROUNDTRIP_OK', failureMode: e.message });
@@ -326,11 +369,11 @@ async function verifyAllGates() {
   // G11: Ingress Independent Lifecycle & Zero-Downtime Hot Reload
   try {
     // 1. Independent Lifecycle Proof: Stop API -> Restart Nginx -> Assert ACME serves 404 & proxy serves 502 -> Restart API
-    runCommand('docker stop omninovel-prod-api');
-    runCommand('docker restart omninovel-prod-nginx');
-    const nginxStatusWhenApiDown = runCommand('docker inspect omninovel-prod-nginx --format="{{.State.Status}}"').trim();
-    const acmeCodeWhenApiDown = runCommand('curl -s -o /dev/null -w "%{http_code}" http://localhost/.well-known/acme-challenge/independent-test');
-    runCommand('docker start omninovel-prod-api');
+    const stopRes = runCommand('docker stop omninovel-prod-api');
+    const restartNginxRes = runCommand('docker restart omninovel-prod-nginx');
+    const nginxInspect = runCommand('docker inspect omninovel-prod-nginx --format="{{.State.Status}}"');
+    const acmeRes = await httpGet('http://localhost/.well-known/acme-challenge/independent-test', false);
+    const startApiRes = runCommand('docker start omninovel-prod-api');
 
     // Wait until all Nginx worker processes have stably resolved api in zone api_backend
     const probeAgent = new https.Agent({ rejectUnauthorized: false, keepAlive: false });
@@ -384,8 +427,12 @@ async function verifyAllGates() {
     const count200 = streamResponses.filter((s) => s === 200).length;
     const droppedCount = streamResponses.filter((s) => s !== 200).length;
 
-    const passed = nginxStatusWhenApiDown === 'running' &&
-                   acmeCodeWhenApiDown === '404' &&
+    const passed = stopRes.exitCode === 0 &&
+                   restartNginxRes.exitCode === 0 &&
+                   nginxInspect.exitCode === 0 && nginxInspect.stdout === 'running' &&
+                   acmeRes.statusCode === 404 &&
+                   startApiRes.exitCode === 0 &&
+                   reloadOutput.exitCode === 0 &&
                    apiRecovered &&
                    totalRequests >= 15 &&
                    droppedCount === 0;
@@ -394,8 +441,8 @@ async function verifyAllGates() {
       gate: 'G11',
       name: 'Ingress Independent Lifecycle & Zero-Downtime Hot Reload',
       passed,
-      evidence: `Independent Lifecycle: [Nginx Status when API stopped: ${nginxStatusWhenApiDown}, ACME Port 80 Code: ${acmeCodeWhenApiDown}] | Zero-Downtime Reload: [${totalRequests} requests, ${count200} HTTP 200 OK, ${droppedCount} dropped]`,
-      assertion: 'nginxStatusWhenApiDown === "running" && acmeCode === 404 && droppedCount === 0',
+      evidence: `Independent Lifecycle [Exit ${nginxInspect.exitCode}]: Status ${nginxInspect.stdout}, ACME Port 80: HTTP ${acmeRes.statusCode} | Zero-Downtime Reload [Exit ${reloadOutput.exitCode}]: [${totalRequests} requests, ${count200} HTTP 200 OK, ${droppedCount} dropped]`,
+      assertion: 'nginxInspect.exitCode === 0 && acmeRes.statusCode === 404 && droppedCount === 0 && reloadOutput.exitCode === 0',
       failureMode: 'Nginx crashes when API is down or connections dropped during hot reload',
     });
   } catch (e: any) {
@@ -405,19 +452,21 @@ async function verifyAllGates() {
   // G12: Auto-Recovery, Cache Persistence & Real Dynamic DNS Re-resolution
   try {
     // 1. Check AI Model Cache persistence across recreate
-    runCommand('docker exec omninovel-prod-ai-worker sh -c "echo -n g12_cache_persistence_verified > /home/appuser/.cache/g12_test.txt"');
-    runCommand('docker compose --env-file .env -f deploy/docker-compose.yml up -d --force-recreate ai-worker');
-    const persisted = runCommand('docker exec omninovel-prod-ai-worker cat /home/appuser/.cache/g12_test.txt');
+    const writeRes = runCommand('docker exec omninovel-prod-ai-worker sh -c "echo -n g12_cache_persistence_verified > /home/appuser/.cache/g12_test.txt"');
+    const recreateWorkerRes = runCommand('docker compose --env-file .env -f deploy/docker-compose.yml up -d --force-recreate ai-worker');
+    const readRes = runCommand('docker exec omninovel-prod-ai-worker cat /home/appuser/.cache/g12_test.txt');
 
     // 2. Dynamic DNS Re-resolution with FORCED IP Change
-    const oldEdgeIp = runCommand('docker inspect omninovel-prod-api --format="{{range $k, $v := .NetworkSettings.Networks}}{{if eq $k \\"omninovel-edge\\"}}{{$v.IPAddress}}{{end}}{{end}}"').trim();
+    const oldIpRes = runCommand('docker inspect omninovel-prod-api --format="{{range $k, $v := .NetworkSettings.Networks}}{{if eq $k \\"omninovel-edge\\"}}{{$v.IPAddress}}{{end}}{{end}}"');
+    const oldEdgeIp = oldIpRes.stdout.trim();
 
     // Stop API, occupy old IP slot with placeholder container, recreate API to force a different IP assignment
     runCommand('docker stop omninovel-prod-api');
     runCommand('docker run -d --rm --network omninovel-edge --name omninovel-ip-holder alpine sleep 60');
     runCommand('docker compose --env-file .env -f deploy/docker-compose.yml up -d api');
 
-    const newEdgeIp = runCommand('docker inspect omninovel-prod-api --format="{{range $k, $v := .NetworkSettings.Networks}}{{if eq $k \\"omninovel-edge\\"}}{{$v.IPAddress}}{{end}}{{end}}"').trim();
+    const newIpRes = runCommand('docker inspect omninovel-prod-api --format="{{range $k, $v := .NetworkSettings.Networks}}{{if eq $k \\"omninovel-edge\\"}}{{$v.IPAddress}}{{end}}{{end}}"');
+    const newEdgeIp = newIpRes.stdout.trim();
     runCommand('docker rm -f omninovel-ip-holder');
 
     // Poll until api container completes initialization and Nginx DNS re-resolves
@@ -433,16 +482,22 @@ async function verifyAllGates() {
       } catch {}
     }
 
-    const nginxDns = runCommand('docker exec omninovel-prod-nginx nslookup api 127.0.0.11').split('\n').filter(l => l.includes('Address')).pop() || '';
+    const nginxDns = runCommand('docker exec omninovel-prod-nginx nslookup api 127.0.0.11');
+    const dnsLine = nginxDns.stdout.split('\n').filter(l => l.includes('Address')).pop() || '';
     const ipChanged = oldEdgeIp.length > 0 && newEdgeIp.length > 0 && oldEdgeIp !== newEdgeIp;
-    const passed = persisted === 'g12_cache_persistence_verified' && ipChanged && postRecreateStatusCode === 200;
+    const passed = writeRes.exitCode === 0 &&
+                   recreateWorkerRes.exitCode === 0 &&
+                   readRes.exitCode === 0 && readRes.stdout === 'g12_cache_persistence_verified' &&
+                   ipChanged &&
+                   postRecreateStatusCode === 200 &&
+                   nginxDns.exitCode === 0;
 
     results.push({
       gate: 'G12',
       name: 'Auto-Recovery, Cache Persistence & DNS Re-resolve (Actual IP Change)',
       passed,
-      evidence: `Cache Volume Survives Recreate: "${persisted}" | IP Changed: [Old: ${oldEdgeIp}, New: ${newEdgeIp}, Diff: ${ipChanged}] | Nginx Upstream DNS: "${nginxDns.trim()}" | Live Probe: HTTP ${postRecreateStatusCode}`,
-      assertion: 'persisted === "g12_cache_persistence_verified" && ipChanged === true && postRecreateStatusCode === 200',
+      evidence: `Cache Survives [Exit ${readRes.exitCode}]: "${readRes.stdout}" | IP Changed: [Old: ${oldEdgeIp}, New: ${newEdgeIp}, Diff: ${ipChanged}] | Nginx DNS [Exit ${nginxDns.exitCode}]: "${dnsLine.trim()}" | Live Probe: HTTP ${postRecreateStatusCode}`,
+      assertion: 'readRes.exitCode === 0 && ipChanged === true && postRecreateStatusCode === 200 && nginxDns.exitCode === 0',
       failureMode: 'Cache volume wiped on recreate, IP unchanged, or Nginx stuck on stale IP returning 502',
     });
   } catch (e: any) {
@@ -453,13 +508,13 @@ async function verifyAllGates() {
   try {
     const apiUid = runCommand('docker exec omninovel-prod-api id -u');
     const workerUid = runCommand('docker exec omninovel-prod-ai-worker id -u');
-    const passed = apiUid === '1000' && workerUid === '10001';
+    const passed = apiUid.exitCode === 0 && workerUid.exitCode === 0 && apiUid.stdout === '1000' && workerUid.stdout === '10001';
     results.push({
       gate: 'G13',
       name: 'Non-Root Container Hardening',
       passed,
-      evidence: `api container UID: ${apiUid} (node) | ai-worker container UID: ${workerUid} (appuser)`,
-      assertion: 'apiUid === "1000" && workerUid === "10001"',
+      evidence: `api container UID [Exit ${apiUid.exitCode}]: ${apiUid.stdout} (node) | ai-worker UID [Exit ${workerUid.exitCode}]: ${workerUid.stdout} (appuser)`,
+      assertion: 'apiUid.exitCode === 0 && apiUid.stdout === "1000" && workerUid.stdout === "10001"',
       failureMode: 'Container running with root privileges (UID 0)',
     });
   } catch (e: any) {
@@ -488,9 +543,16 @@ async function verifyAllGates() {
 
     let leakCount = 0;
     const leakDetails: string[] = [];
+    let allLogsAccessible = true;
 
     for (const c of containers) {
-      const logs = runCommand(`docker logs ${c}`);
+      const logRes = runCommand(`docker logs ${c}`);
+      if (logRes.exitCode !== 0) {
+        allLogsAccessible = false;
+        leakDetails.push(`${c}: docker logs failed with exit ${logRes.exitCode}`);
+        continue;
+      }
+      const logs = logRes.stdout + '\n' + logRes.stderr;
       for (const s of dynamicSecretsToCheck) {
         if (logs.includes(s)) {
           leakCount++;
@@ -505,13 +567,13 @@ async function verifyAllGates() {
       }
     }
 
-    const passed = leakCount === 0;
+    const passed = allLogsAccessible && leakCount === 0;
     results.push({
       gate: 'G14',
       name: 'Secret Hygiene in Logs',
       passed,
       evidence: `Dynamic regex scan across 4 containers (nginx, api, ai-worker, redis) against ${dynamicSecretsToCheck.length} active env secrets and 3 regex patterns found ${leakCount} leaked credentials. Details: ${leakDetails.length > 0 ? leakDetails.join(', ') : 'Zero leaks verified.'}`,
-      assertion: 'leakCount === 0',
+      assertion: 'allLogsAccessible === true && leakCount === 0',
       failureMode: 'Production credentials, connection URIs, or private keys printed to stdout/stderr logs',
     });
   } catch (e: any) {

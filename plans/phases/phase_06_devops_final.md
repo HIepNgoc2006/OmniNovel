@@ -68,21 +68,25 @@
 - [x] Hoàn thiện `deploy/docker-compose.yml` cho Production VPS: gồm 4 container cốt lõi (`nginx`, `api`, `ai-worker`, `redis`), 3-Network Topology (`edge`, `internal: true`, `egress`), 5 named volumes, Redis guard với `$$REDIS_PASSWORD`.
 - [x] Duy trì `deploy/docker-compose.dev.yml` cho Local Dev / CI: bổ sung `postgres` và `minio`.
 - [x] Cấu hình Nginx Production: SSL (Let's Encrypt / Certbot), HTTP/2, Gzip, Dynamic Upstream DNS (`zone api_backend 64k; server api:8000 resolve;`), Rate Limiting 429 (`api_general_limit: 30r/s`, `auth_limit: 5r/s`), WebSocket `/socket.io/` upgrade, TLS State Machine (Bootstrap vs Production) với zero-downtime hot reload.
-- [x] **[14 ACCEPTANCE GATES ĐÃ NGHIỆM THU PASS 100% - SANITIZED & HARDENED]** Chạy test suite tự động `deploy/test-acceptance-phase6-2.ts`:
-  - **G01 (Config Valid):** `docker compose config --quiet` exit 0 không render credentials.
-  - **G02 (Migration Proof):** Isolated runner `run --rm --no-deps api npm run migration:run:prod` chạy trên Supabase PostgreSQL thật báo 18 migrations `[X]` applied, `No migrations are pending`.
-  - **G03 (Port Isolation):** Chỉ Nginx mở `80` và `443`. Các cổng backend `8000`, `8001`, `6379` không publish ra host.
+- [x] **[14 ACCEPTANCE GATES ĐÃ NGHIỆM THU PASS 100% - EXIT CODE & ZERO-LEAK HARDENED]** Chạy test suite tự động `deploy/test-acceptance-phase6-2.ts`:
+  - **G01 (Config Valid):** `docker compose config --quiet` exit code 0 (`res.exitCode === 0 && res.output.length === 0`), không warning cú pháp, không render credentials.
+  - **G02 (Migration Proof):** Container cô lập thực thi migration trên Supabase Managed PostgreSQL: exit code 0 (`res.exitCode === 0`), 18 migrations applied, `No migrations are pending`.
+  - **G03 (Port Isolation):** Nginx mở `80` và `443` (exit 0). Các cổng backend `8000`, `8001`, `6379` không publish ra host (exit 0, empty binding).
   - **G04 (API Health & HSTS):** HTTP/80 trả 301 chuyển hướng HTTPS, HTTPS/443 trả 200 kèm HSTS `max-age=31536000; includeSubDomains`.
-  - **G05 (Redis Pass & Guard):** `/health/ready` báo `redis: UP`. Khi rỗng password: container ephemeral fail-fast exit code 2 với `ERROR_REDIS_PASSWORD_REQUIRED`.
-  - **G06 (AI Worker RPC & Egress):** Internal RPC với `x-internal-key` hợp lệ, cấm gọi không auth (401). AI Worker truy cập R2 qua `omninovel-egress`. Redis bị cấm Internet trên `omninovel-internal`.
+  - **G05 (Redis Pass & Guard):** `/health/ready` báo `redis: UP`. Khi rỗng password: container ephemeral fail-fast exit code 2 với `ERROR_REDIS_PASSWORD_REQUIRED` (`failFastRes.exitCode !== 0`).
+  - **G06 (AI Worker RPC & Egress):** Internal RPC với `x-internal-key` hợp lệ (exit 0), cấm gọi không auth (401). AI Worker truy cập R2 qua `omninovel-egress` (exit 0, HTTP 400). Redis bị cấm Internet trên `omninovel-internal` (`redisEgress.exitCode !== 0`).
   - **G07 (Supabase Connection):** `/health/ready` báo `database: UP` kết nối Supabase Managed PostgreSQL qua `omninovel-egress`.
-  - **G08 (R2 Storage Live Round-Trip):** Thực hiện chu trình thật trên Cloudflare R2 bucket: `PUT -> HEAD -> DELETE` (verified size 39, cleanup hoàn toàn).
+  - **G08 (R2 Storage Live Round-Trip & Zero-Leak):** Thực hiện chu trình thật trên Cloudflare R2 bucket: `PUT -> HEAD -> DELETE (in finally) -> Post-Delete HEAD (404 NotFound)` xác nhận payload 39 bytes được dọn dẹp sạch sẽ không để lại rác (exit code 0, `R2_ROUNDTRIP_OK:verified_zero_leak`).
   - **G09 (WebSocket /ws/ai):** Socket.IO client kết nối qua Nginx `/socket.io/` tới namespace `/ws/ai` nhận handshake thành công.
   - **G10 (Rate Limiting 429):** Bắn tải burst 25 requests liên tục vào `/api/v1/auth/me` kích hoạt 19 responses `HTTP 429 Too Many Requests`.
-  - **G11 (Independent Lifecycle & Zero-Downtime Reload):** Nginx khởi động độc lập khi API stopped (Nginx running, port 80 ACME 404). Luồng reload traffic 24 requests liên tục đạt 24/24 HTTP 200 OK, 0 dropped.
-  - **G12 (Auto-Recovery & Real Dynamic DNS Re-resolve):** Recreate `ai-worker`: cache file volume tồn tại. Ép đổi IP API thật (`172.23.0.3` -> `172.23.0.4` qua container giữ chỗ): Docker DNS 127.0.0.11 cập nhật, Nginx tự re-resolve không reload và live probe 200 OK.
-  - **G13 (Non-Root Hardening):** Container `api` chạy UID 1000 (`node`), container `ai-worker` chạy UID 10001 (`appuser`).
-  - **G14 (Secret Hygiene):** Quét regex động dựa trên active env secrets và 3 regex patterns trên logs 4 containers: 0 rò rỉ credential verified. Zero secrets hardcoded trong repository.
+  - **G11 (Independent Lifecycle & Zero-Downtime Reload):** Nginx khởi động độc lập khi API stopped (Nginx running, port 80 ACME trả HTTP 404). Luồng reload traffic 24 requests liên tục qua non-keepalive agent đạt 24/24 HTTP 200 OK, 0 dropped (`droppedCount === 0 && reloadOutput.exitCode === 0`).
+  - **G12 (Auto-Recovery & Real Dynamic DNS Re-resolve):** Recreate `ai-worker`: cache file volume tồn tại. Ép đổi IP API thật (`172.23.0.3` -> `172.23.0.4` qua container giữ chỗ): Docker DNS 127.0.0.11 cập nhật (exit 0), Nginx tự re-resolve không reload và live probe 200 OK.
+  - **G13 (Non-Root Hardening):** Container `api` chạy UID 1000 (`node`), container `ai-worker` chạy UID 10001 (`appuser`), exit code 0.
+  - **G14 (Secret Hygiene):** Quét regex động dựa trên active env secrets và 3 regex patterns trên logs 4 containers (exit 0): 0 rò rỉ credential verified. Zero secrets hardcoded trong repository.
+- [x] **[AN TOÀN BẢO MẬT & TRẠNG THÁI LỊCH SỬ GIT]:**
+  - Nhánh `main` đã được rewrite lịch sử (`git reset --soft` và force push) để loại bỏ commit cũ khỏi nhánh chính.
+  - Về mặt kỹ thuật, commit cũ `0c58746` hiện là một **dangling/unreachable commit object** trên máy chủ GitHub (có thể vẫn hiển thị nếu truy cập trực tiếp bằng SHA do cơ chế cached view của GitHub trước khi garbage collection chạy).
+  - Để đảm bảo an toàn tuyệt đối mà không phụ thuộc vào trạng thái cache của GitHub: **Toàn bộ credential xuất hiện trong commit cũ và transcript (Supabase Database Role, Redis Password, JWT Secrets, AI Worker Key) đã được thu hồi và rotate 100% sang giá trị mới**. Lỗ hổng rò rỉ credential đã được vô hiệu hóa triệt để tại gốc (Zero Trust).
 - [x] **PHASE 6.2 CHÍNH THỨC FROZEN & CLOSED CLEAN.**
 
 ### C. CI/CD Pipeline GitHub Actions (Phase 6.3)

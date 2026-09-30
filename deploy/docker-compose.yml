@@ -1,0 +1,113 @@
+
+services:
+  # 1. Nginx Reverse Proxy & TLS Ingress (Khởi động hoàn toàn độc lập, không depends_on api)
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    container_name: omninovel-prod-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN:-localhost}
+    volumes:
+      - certbot_acme_data:/var/www/certbot:ro
+      - nginx_ssl_certs:/etc/nginx/ssl
+      - nginx_runtime_config:/etc/nginx/runtime
+    networks:
+      - omninovel-edge
+
+  # 2. NestJS Core Backend API
+  api:
+    build:
+      context: ..
+      dockerfile: services/api/Dockerfile
+    container_name: omninovel-prod-api
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - NODE_ENV=production
+      - PORT=8000
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - AI_WORKER_BASE_URL=http://ai-worker:8001
+    networks:
+      - omninovel-edge
+      - omninovel-internal
+      - omninovel-egress
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # 3. Python FastAPI AI Translation Worker Engine (CPU Inference)
+  ai-worker:
+    build:
+      context: ..
+      dockerfile: services/ai-worker/Dockerfile
+    container_name: omninovel-prod-ai-worker
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    environment:
+      - ENV=production
+      - OCR_FORCE_CPU=true
+      - OCR_MAX_CONCURRENT_INFERENCES=1
+      - AI_WORKER_PORT=8001
+      - CORE_API_INTERNAL_URL=http://api:8000
+    volumes:
+      - ai_model_cache:/home/appuser/.cache
+    networks:
+      - omninovel-internal
+      - omninovel-egress
+
+  # 4. Redis 7 (Cache & BullMQ Job Queue)
+  redis:
+    image: redis:7-alpine
+    container_name: omninovel-prod-redis
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    entrypoint: >
+      /bin/sh -c '
+      : "$${REDIS_PASSWORD:?ERROR: REDIS_PASSWORD is required and cannot be empty}"
+      exec redis-server
+      --appendonly yes
+      --protected-mode yes
+      --requirepass "$$REDIS_PASSWORD"
+      '
+    volumes:
+      - redis_prod_data:/data
+    networks:
+      - omninovel-internal
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+networks:
+  omninovel-edge:
+    name: omninovel-edge
+    driver: bridge
+  omninovel-internal:
+    name: omninovel-internal
+    driver: bridge
+    internal: true
+  omninovel-egress:
+    name: omninovel-egress
+    driver: bridge
+
+volumes:
+  redis_prod_data:
+    name: omninovel_redis_prod_data
+  ai_model_cache:
+    name: omninovel_ai_model_cache
+  certbot_acme_data:
+    name: omninovel_certbot_acme_data
+  nginx_ssl_certs:
+    name: omninovel_nginx_ssl_certs
+  nginx_runtime_config:
+    name: omninovel_nginx_runtime_config

@@ -577,13 +577,11 @@ git push origin main
 - Consumes: Images từ Task 1, 2, 3; `.env` file; 3 mạng Docker; 4 named volumes cố định.
 - Produces: Production stack hoàn chỉnh, lệnh config `--quiet` hợp lệ không lộ credentials, Redis guard chống mật khẩu rỗng.
 
-- [ ] **Step 1: Tạo `deploy/docker-compose.yml`**
+- [x] **Step 1: Tạo `deploy/docker-compose.yml`**
 
 Tạo file [deploy/docker-compose.yml](file:///e:/Workspace%202/Doctruyen_project/deploy/docker-compose.yml):
 
 ```yaml
-version: '3.8'
-
 services:
   # 1. Nginx Reverse Proxy & TLS Ingress (Khởi động hoàn toàn độc lập, không depends_on api)
   nginx:
@@ -698,7 +696,7 @@ volumes:
     name: omninovel_nginx_runtime_config
 ```
 
-- [ ] **Step 2: Chạy kiểm tra cú pháp Compose bằng lệnh Secret-Safe**
+- [x] **Step 2: Chạy kiểm tra cú pháp Compose bằng lệnh Secret-Safe**
 
 Chạy từ thư mục gốc repository:
 ```bash
@@ -706,7 +704,7 @@ docker compose --env-file .env -f deploy/docker-compose.yml config --quiet
 ```
 Kỳ vọng: Lệnh thoát với exit code `0`, không có output lỗi và không in credentials ra terminal.
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add deploy/docker-compose.yml

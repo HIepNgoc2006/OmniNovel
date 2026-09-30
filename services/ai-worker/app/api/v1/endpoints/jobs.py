@@ -1,5 +1,6 @@
 import os
 import uuid
+import urllib.parse
 from typing import Optional, Dict, Any, List, Union
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -231,7 +232,19 @@ async def upload_file_to_presigned_url(
     """
     headers = {"Content-Type": content_type}
     if extra_headers:
-        headers.update(extra_headers)
+        # SigV4 query-string auth: Any header starting with 'x-amz-' MUST be signed in X-Amz-SignedHeaders.
+        # If the presigned URL already hoisted the parameter into query string and SignedHeaders
+        # does not include it, sending it as a request header causes MinIO/S3 400 AccessDenied:
+        # "There were headers present in the request which were not signed".
+        parsed = urllib.parse.urlparse(upload_url)
+        params = urllib.parse.parse_qs(parsed.query)
+        signed_headers_param = params.get("X-Amz-SignedHeaders", [""])[0]
+        signed_headers = [h.strip().lower() for h in signed_headers_param.split(";")] if signed_headers_param else None
+
+        for k, v in extra_headers.items():
+            if signed_headers is not None and k.lower().startswith("x-amz-") and k.lower() not in signed_headers:
+                continue
+            headers[k] = v
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.put(upload_url, content=data, headers=headers)

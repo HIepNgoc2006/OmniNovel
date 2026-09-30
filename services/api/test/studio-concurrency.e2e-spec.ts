@@ -35,6 +35,8 @@ describe('Studio Concurrency & Review Mutation E2E (#147, #156)', () => {
   let novelSourceVersionId: string;
   let projectId: string;
   let novelProjectId: string;
+  let comicArtifactId: string;
+  let novelArtifactId: string;
 
   let comicJobId: string;
   let seg1Id: string;
@@ -131,10 +133,17 @@ describe('Studio Concurrency & Review Mutation E2E (#147, #156)', () => {
     `);
     projectId = projRes[0].id;
 
+    const cArtRes = await dataSource.query(`
+      INSERT INTO chapter_artifacts (chapter_version_id, artifact_type, status)
+      VALUES ('${sourceVersionId}', 'TRANSLATION_SOURCE', 'READY')
+      RETURNING id;
+    `);
+    comicArtifactId = cArtRes[0].id;
+
     // Comic Translation Job in READY_FOR_REVIEW
     const jobRes = await dataSource.query(`
-      INSERT INTO translation_jobs (project_id, source_version_id, status, progress_percentage, review_revision, materialized_revision)
-      VALUES ('${projectId}', '${sourceVersionId}', '${TranslationJobStatus.READY_FOR_REVIEW}', 100, 0, 0)
+      INSERT INTO translation_jobs (project_id, source_version_id, source_artifact_id, status, progress_percentage, review_revision, materialized_revision)
+      VALUES ('${projectId}', '${sourceVersionId}', '${comicArtifactId}', '${TranslationJobStatus.READY_FOR_REVIEW}', 100, 0, 0)
       RETURNING id;
     `);
     comicJobId = jobRes[0].id;
@@ -194,9 +203,16 @@ describe('Studio Concurrency & Review Mutation E2E (#147, #156)', () => {
     `);
     novelProjectId = novelProjRes[0].id;
 
+    const nArtRes = await dataSource.query(`
+      INSERT INTO chapter_artifacts (chapter_version_id, artifact_type, status)
+      VALUES ('${novelSourceVersionId}', 'TRANSLATION_SOURCE', 'READY')
+      RETURNING id;
+    `);
+    novelArtifactId = nArtRes[0].id;
+
     const novelJobRes = await dataSource.query(`
-      INSERT INTO translation_jobs (project_id, source_version_id, status, progress_percentage, review_revision, materialized_revision)
-      VALUES ('${novelProjectId}', '${novelSourceVersionId}', '${TranslationJobStatus.READY_FOR_REVIEW}', 100, 0, 0)
+      INSERT INTO translation_jobs (project_id, source_version_id, source_artifact_id, status, progress_percentage, review_revision, materialized_revision)
+      VALUES ('${novelProjectId}', '${novelSourceVersionId}', '${novelArtifactId}', '${TranslationJobStatus.READY_FOR_REVIEW}', 100, 0, 0)
       RETURNING id;
     `);
     novelJobId = novelJobRes[0].id;
@@ -455,11 +471,11 @@ describe('Studio Concurrency & Review Mutation E2E (#147, #156)', () => {
       // Seed dedicated race job with comic projectId and sourceVersionId
       const raceJobRes = await dataSource.query(`
         INSERT INTO translation_jobs (
-          project_id, source_version_id, status, progress_percentage, review_revision, materialized_revision,
+          project_id, source_version_id, source_artifact_id, status, progress_percentage, review_revision, materialized_revision,
           provider, model_name, prompt_version, attempt_count, max_attempts, last_sequence,
           result_manifest
         ) VALUES (
-          '${projectId}', '${sourceVersionId}', '${TranslationJobStatus.READY_FOR_REVIEW}', 100, 0, 0,
+          '${projectId}', '${sourceVersionId}', '${comicArtifactId}', '${TranslationJobStatus.READY_FOR_REVIEW}', 100, 0, 0,
           'OPENAI', 'gpt-4o-mini', 'v1.0', 1, 3, 10,
           '{"version":1,"mediaFormat":"COMIC","pages":[{"page":1,"storageKey":"output-1.webp","previewKey":"output-1.webp","width":1200,"height":1800,"fileSizeBytes":2048}]}'::jsonb
         )

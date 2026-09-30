@@ -151,19 +151,27 @@ describe('Studio Foundation E2E (#144, #148, #155)', () => {
     );
     projectAId = prjARes[0].id;
 
+    const artARes = await dataSource.query(
+      `INSERT INTO chapter_artifacts (chapter_version_id, artifact_type, status)
+       VALUES ($1, 'TRANSLATION_SOURCE', 'READY')
+       RETURNING id`,
+      [versionAId],
+    );
+    const sourceArtifactAId = artARes[0].id;
+
     // Job A1 (READY_FOR_REVIEW with segments)
     const jobA1Res = await dataSource.query(
       `INSERT INTO translation_jobs (
-         project_id, source_version_id, status, progress_percentage, provider, model_name,
+         project_id, source_version_id, source_artifact_id, status, progress_percentage, provider, model_name,
          input_manifest, result_manifest, created_by
        )
-       VALUES ($1, $2, 'READY_FOR_REVIEW', 100, 'OPENAI', 'gpt-4o-mini',
+       VALUES ($1, $2, $3, 'READY_FOR_REVIEW', 100, 'OPENAI', 'gpt-4o-mini',
           '{"version":1,"sourceLang":"ja","targetLang":"vi","provider":"OPENAI","model":"gpt-4o-mini","promptVersion":"v1.0","glossarySnapshot":[{"sourceTerm":"こんにちは","targetTerm":"Xin chào","category":"COMMON"}],"glossaryHash":"sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855","externalConsent":{"consented":false,"consentedAt":null,"provider":"OPENAI"}}'::jsonb,
           '{"version":1,"mediaFormat":"COMIC","pages":[{"page":1,"storageKey":"ai/jobs/fake/page1.webp","previewKey":"ai/jobs/fake/page1.webp","width":1200,"height":1800,"fileSizeBytes":102400}]}'::jsonb,
-         $3
+         $4
        )
        RETURNING id`,
-      [projectAId, versionAId, ownerA.user.id],
+      [projectAId, versionAId, sourceArtifactAId, ownerA.user.id],
     );
     jobA1Id = jobA1Res[0].id;
 
@@ -230,15 +238,15 @@ describe('Studio Foundation E2E (#144, #148, #155)', () => {
     // Job A Failed (FAILED with internal errorTrace containing secret)
     const jobAFailRes = await dataSource.query(
       `INSERT INTO translation_jobs (
-         project_id, source_version_id, status, progress_percentage, provider, model_name,
+         project_id, source_version_id, source_artifact_id, status, progress_percentage, provider, model_name,
          error_trace, created_by
        )
-       VALUES ($1, $2, 'FAILED', 30, 'OPENAI', 'gpt-4o-mini',
+       VALUES ($1, $2, $3, 'FAILED', 30, 'OPENAI', 'gpt-4o-mini',
          'InternalSecurityException: Failed connecting to https://internal.cluster/v1?token=SUPER_SECRET_TOKEN\n at internal/socket.js:10:5',
-         $3
+         $4
        )
        RETURNING id`,
-      [projectAId, versionAId, ownerA.user.id],
+      [projectAId, versionAId, sourceArtifactAId, ownerA.user.id],
     );
     jobAFailedId = jobAFailRes[0].id;
 
@@ -287,13 +295,21 @@ describe('Studio Foundation E2E (#144, #148, #155)', () => {
     );
     projectBId = prjBRes[0].id;
 
+    const artBRes = await dataSource.query(
+      `INSERT INTO chapter_artifacts (chapter_version_id, artifact_type, status)
+       VALUES ($1, 'TRANSLATION_SOURCE', 'READY')
+       RETURNING id`,
+      [versionBId],
+    );
+    const sourceArtifactBId = artBRes[0].id;
+
     const jobB1Res = await dataSource.query(
       `INSERT INTO translation_jobs (
-         project_id, source_version_id, status, progress_percentage, provider, model_name, created_by
+         project_id, source_version_id, source_artifact_id, status, progress_percentage, provider, model_name, created_by
        )
-       VALUES ($1, $2, 'READY_FOR_REVIEW', 100, 'OPENAI', 'gpt-4o-mini', $3)
+       VALUES ($1, $2, $3, 'READY_FOR_REVIEW', 100, 'OPENAI', 'gpt-4o-mini', $4)
        RETURNING id`,
-      [projectBId, versionBId, userB.user.id],
+      [projectBId, versionBId, sourceArtifactBId, userB.user.id],
     );
     jobB1Id = jobB1Res[0].id;
 

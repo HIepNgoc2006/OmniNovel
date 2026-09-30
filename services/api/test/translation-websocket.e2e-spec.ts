@@ -123,11 +123,19 @@ describe('Translation WebSocket Gateway (/ws/ai) Security & RBAC Suite', () => {
       [editionAId, translatorAId],
     );
 
-    const jobRes = await dataSource.query(
-      `INSERT INTO translation_jobs (project_id, source_version_id, status, created_by, provider, attempt_count, max_attempts, last_sequence, progress_percentage)
-       VALUES ($1, $2, 'QUEUED', $3, 'OPENAI', 1, 3, 0, 0)
+    const artRes = await dataSource.query(
+      `INSERT INTO chapter_artifacts (chapter_version_id, artifact_type, status)
+       VALUES ($1, 'TRANSLATION_SOURCE', 'READY')
        RETURNING id`,
-      [projRes[0].id, versionAId, translatorAId],
+      [versionAId],
+    );
+    const sourceArtifactId = artRes[0].id;
+
+    const jobRes = await dataSource.query(
+      `INSERT INTO translation_jobs (project_id, source_version_id, source_artifact_id, status, created_by, provider, attempt_count, max_attempts, last_sequence, progress_percentage)
+       VALUES ($1, $2, $3, 'QUEUED', $4, 'OPENAI', 1, 3, 0, 0)
+       RETURNING id`,
+      [projRes[0].id, versionAId, sourceArtifactId, translatorAId],
     );
     jobAId = jobRes[0].id;
   });

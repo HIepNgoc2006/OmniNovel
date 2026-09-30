@@ -419,16 +419,17 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
     // 11. Negative Test: Từ chối apply job Novel nếu QA failed
     const failedQaJob = await dataSource.query(
       `INSERT INTO translation_jobs (
-         id, project_id, source_version_id, created_by, status, provider, model_name, prompt_version,
+         id, project_id, source_version_id, source_upload_session_id, created_by, status, provider, model_name, prompt_version,
          result_manifest, progress_percentage, attempt_count, max_attempts, last_sequence
        ) VALUES (
-         gen_random_uuid(), (SELECT project_id FROM translation_jobs WHERE id = $1), $2, $3,
+         gen_random_uuid(), (SELECT project_id FROM translation_jobs WHERE id = $1), $2, $3, $4,
          'READY_FOR_REVIEW', 'OPENAI', 'gpt-4o-mini', 'novel-ja-vi-v2',
-         $4, 100, 1, 3, 4
+         $5, 100, 1, 3, 4
        ) RETURNING id`,
       [
         jobId,
         rawVersionId,
+        uploadSessionId,
         ownerUser.id,
         JSON.stringify({
           version: 1,
@@ -454,16 +455,17 @@ describe('Real Python FastAPI Worker Novel Cross-Service Integration Spec (Slice
     // 12. Negative Test: Từ chối apply job Novel nếu manifest rỗng hoặc sai mediaFormat
     const emptyManifestJob = await dataSource.query(
       `INSERT INTO translation_jobs (
-         id, project_id, source_version_id, created_by, status, provider, model_name, prompt_version,
+         id, project_id, source_version_id, source_upload_session_id, created_by, status, provider, model_name, prompt_version,
          result_manifest, progress_percentage, attempt_count, max_attempts, last_sequence
        ) VALUES (
-         gen_random_uuid(), (SELECT project_id FROM translation_jobs WHERE id = $1), $2, $3,
+         gen_random_uuid(), (SELECT project_id FROM translation_jobs WHERE id = $1), $2, $3, $4,
          'READY_FOR_REVIEW', 'OPENAI', 'gpt-4o-mini', 'novel-ja-vi-v2',
-         $4, 100, 1, 3, 4
+         $5, 100, 1, 3, 4
        ) RETURNING id`,
       [
         jobId,
         rawVersionId,
+        uploadSessionId,
         ownerUser.id,
         null,
       ],

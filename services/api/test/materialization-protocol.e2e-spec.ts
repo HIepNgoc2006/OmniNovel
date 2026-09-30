@@ -49,6 +49,8 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
   let novelVersionId: string;
   let novelProjectId: string;
   let novelJobId: string;
+  let comicArtifactId: string;
+  let novelArtifactId: string;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -219,6 +221,20 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       RETURNING id;
     `);
     novelProjectId = nProjectRes[0].id;
+
+    const cArtRes = await dataSource.query(`
+      INSERT INTO chapter_artifacts (chapter_version_id, artifact_type, status)
+      VALUES ('${comicVersionId}', 'TRANSLATION_SOURCE', 'READY')
+      RETURNING id;
+    `);
+    comicArtifactId = cArtRes[0].id;
+
+    const nArtRes = await dataSource.query(`
+      INSERT INTO chapter_artifacts (chapter_version_id, artifact_type, status)
+      VALUES ('${novelVersionId}', 'TRANSLATION_SOURCE', 'READY')
+      RETURNING id;
+    `);
+    novelArtifactId = nArtRes[0].id;
   });
 
   afterAll(async () => {
@@ -247,12 +263,12 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
 
     const cJobRes = await dataSource.query(`
       INSERT INTO translation_jobs (
-        project_id, source_version_id,
+        project_id, source_version_id, source_artifact_id,
         status, review_revision, materialized_revision,
         result_manifest, created_by
       )
       VALUES (
-        '${comicProjectId}', '${comicVersionId}',
+        '${comicProjectId}', '${comicVersionId}', '${comicArtifactId}',
         '${TranslationJobStatus.READY_FOR_REVIEW}', 2, 1,
         '{"version": 1, "mediaFormat": "COMIC", "pages": [{"page": 1, "storageKey": "ai/jobs/c1/materializations/rev-1/page_1.webp", "previewKey": "ai/jobs/c1/materializations/rev-1/page_1.webp", "width": 1000, "height": 1500, "fileSizeBytes": 12345}], "cleanBases": [{"page": 1, "cleanBaseKey": "ai/jobs/c1/clean/p1.webp"}], "sourceReview": {"version": 1, "pages": [{"page": 1, "storageKey": "ai/jobs/c1/source_reviews/page_0001.webp", "width": 1000, "height": 1500}]}}',
         '${ownerId}'
@@ -275,12 +291,12 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
     // Reset novel job
     const nJobRes = await dataSource.query(`
       INSERT INTO translation_jobs (
-        project_id, source_version_id,
+        project_id, source_version_id, source_artifact_id,
         status, review_revision, materialized_revision,
         result_manifest, created_by
       )
       VALUES (
-        '${novelProjectId}', '${novelVersionId}',
+        '${novelProjectId}', '${novelVersionId}', '${novelArtifactId}',
         '${TranslationJobStatus.READY_FOR_REVIEW}', 2, 1,
         '{"version": 1, "mediaFormat": "NOVEL", "title": "Tiểu thuyết test", "language": "vi", "htmlKey": "ai/jobs/n1/materializations/rev-1/content.html", "htmlFileSizeBytes": 12345, "segmentCount": 1, "charCount": 100, "qa": {"passed": true, "score": 0.95, "fingerprintMatch": true, "issuesCount": 0}, "metrics": {"totalBlocks": 10, "totalBatches": 2, "glossaryHits": 5}, "structureSnapshot": {"version": 1, "sha256": "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890", "storageKey": "ai/jobs/n1/structure/abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890.json", "sourceStructureFingerprint": "sha256:f1f2f3f4f5f6f7f8f9f0f1f2f3f4f5f6f7f8f9f0f1f2f3f4f5f6f7f8f9f0f1f2", "segmenterVersion": "1.0.0"}}',
         '${ownerId}'

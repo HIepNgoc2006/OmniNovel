@@ -142,15 +142,24 @@ describe('Apply job idempotency & permission projection E2E (#152)', () => {
     );
     projectId = projectRows[0].id;
 
+    const artRows = await dataSource.query(
+      `INSERT INTO chapter_artifacts (chapter_version_id, artifact_type, status)
+       VALUES ($1, 'TRANSLATION_SOURCE', 'READY')
+       RETURNING id`,
+      [sourceVersionId],
+    );
+    const sourceArtifactId = artRows[0].id;
+
     const appliedRows = await dataSource.query(
       `INSERT INTO translation_jobs
-       (project_id, source_version_id, target_version_id, created_by, status,
+       (project_id, source_version_id, source_artifact_id, target_version_id, created_by, status,
         apply_idempotency_key, apply_mode, review_revision, materialized_revision)
-       VALUES ($1, $2, $3, $4, 'APPLIED', $5, $6, 1, 1)
+       VALUES ($1, $2, $3, $4, $5, 'APPLIED', $6, $7, 1, 1)
        RETURNING id`,
       [
         projectId,
         sourceVersionId,
+        sourceArtifactId,
         targetVersionId,
         ownerUser.id,
         sameKey,
@@ -161,11 +170,11 @@ describe('Apply job idempotency & permission projection E2E (#152)', () => {
 
     const legacyRows = await dataSource.query(
       `INSERT INTO translation_jobs
-       (project_id, source_version_id, target_version_id, created_by, status,
+       (project_id, source_version_id, source_artifact_id, target_version_id, created_by, status,
         apply_idempotency_key, apply_mode, review_revision, materialized_revision)
-       VALUES ($1, $2, $3, $4, 'APPLIED', $5, NULL, 1, 1)
+       VALUES ($1, $2, $3, $4, $5, 'APPLIED', $6, NULL, 1, 1)
        RETURNING id`,
-      [projectId, sourceVersionId, targetVersionId, ownerUser.id, legacyKey],
+      [projectId, sourceVersionId, sourceArtifactId, targetVersionId, ownerUser.id, legacyKey],
     );
     legacyJobId = legacyRows[0].id;
   });

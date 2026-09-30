@@ -2285,10 +2285,10 @@ describe('OmniNovel Backend Core API (e2e)', () => {
     it('Watchdog Reconciler: Stalled VALIDATING job (>30s) should be enqueued and marked QUEUED', async () => {
       const fortySecondsAgo = new Date(Date.now() - 40 * 1000);
       const stuckJob = await dataSource.query(
-        `INSERT INTO translation_jobs (project_id, source_version_id, status, created_at)
-         VALUES ($1, $2, 'VALIDATING', $3)
+        `INSERT INTO translation_jobs (project_id, source_version_id, source_upload_session_id, status, created_at)
+         VALUES ($1, $2, $3, 'VALIDATING', $4)
          RETURNING id`,
-        [projectId, versionA1Id, fortySecondsAgo],
+        [projectId, versionA1Id, promotedSessionId, fortySecondsAgo],
       );
 
       await watchdog.reconcileValidatingJobs();
@@ -2367,10 +2367,10 @@ describe('OmniNovel Backend Core API (e2e)', () => {
     it('POST /api/v1/ai/jobs/:id/apply with CREATE_ALTERNATE_VERSION should create new version while keeping active_version_id unchanged', async () => {
       // Chuẩn bị job ở trạng thái READY_FOR_REVIEW
       const altJob = await dataSource.query(
-        `INSERT INTO translation_jobs (project_id, source_version_id, status, result_manifest)
-         VALUES ($1, $2, 'READY_FOR_REVIEW', '{"version":1,"mediaFormat":"COMIC","pages":[{"page":1,"storageKey":"ai/jobs/alt/page-1.webp","previewKey":"ai/jobs/alt/page-1.webp","width":1200,"height":1800,"fileSizeBytes":102400}]}')
+        `INSERT INTO translation_jobs (project_id, source_version_id, source_upload_session_id, status, result_manifest)
+         VALUES ($1, $2, $3, 'READY_FOR_REVIEW', '{"version":1,"mediaFormat":"COMIC","pages":[{"page":1,"storageKey":"ai/jobs/alt/page-1.webp","previewKey":"ai/jobs/alt/page-1.webp","width":1200,"height":1800,"fileSizeBytes":102400}]}')
          RETURNING id`,
-        [projectId, versionA1Id],
+        [projectId, versionA1Id, promotedSessionId],
       );
 
       const beforeChapter = await dataSource.query(

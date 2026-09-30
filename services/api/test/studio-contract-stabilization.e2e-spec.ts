@@ -134,9 +134,16 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
     `);
     comicProjectId = cProjectRes[0].id;
 
+    const cArtRes = await dataSource.query(`
+      INSERT INTO chapter_artifacts (chapter_version_id, artifact_type, status)
+      VALUES ('${comicVersionId}', 'TRANSLATION_SOURCE', 'READY')
+      RETURNING id;
+    `);
+    const comicArtifactId = cArtRes[0].id;
+
     const cJobRes = await dataSource.query(`
-      INSERT INTO translation_jobs (project_id, source_version_id, status, attempt_count, max_attempts, last_sequence, created_by)
-      VALUES ('${comicProjectId}', '${comicVersionId}', '${TranslationJobStatus.QUALITY_CHECK}', 1, 3, 1, '${ownerId}')
+      INSERT INTO translation_jobs (project_id, source_version_id, source_artifact_id, status, attempt_count, max_attempts, last_sequence, created_by)
+      VALUES ('${comicProjectId}', '${comicVersionId}', '${comicArtifactId}', '${TranslationJobStatus.QUALITY_CHECK}', 1, 3, 1, '${ownerId}')
       RETURNING id;
     `);
     comicJobId = cJobRes[0].id;
@@ -182,9 +189,16 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
     `);
     novelProjectId = nProjectRes[0].id;
 
+    const nArtRes = await dataSource.query(`
+      INSERT INTO chapter_artifacts (chapter_version_id, artifact_type, status)
+      VALUES ('${novelVersionId}', 'TRANSLATION_SOURCE', 'READY')
+      RETURNING id;
+    `);
+    const novelArtifactId = nArtRes[0].id;
+
     const nJobRes = await dataSource.query(`
-      INSERT INTO translation_jobs (project_id, source_version_id, status, attempt_count, max_attempts, last_sequence, created_by)
-      VALUES ('${novelProjectId}', '${novelVersionId}', '${TranslationJobStatus.QUALITY_CHECK}', 1, 3, 1, '${ownerId}')
+      INSERT INTO translation_jobs (project_id, source_version_id, source_artifact_id, status, attempt_count, max_attempts, last_sequence, created_by)
+      VALUES ('${novelProjectId}', '${novelVersionId}', '${novelArtifactId}', '${TranslationJobStatus.QUALITY_CHECK}', 1, 3, 1, '${ownerId}')
       RETURNING id;
     `);
     novelJobId = nJobRes[0].id;

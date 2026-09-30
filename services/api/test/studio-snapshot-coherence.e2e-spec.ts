@@ -30,6 +30,7 @@ describe('Studio Snapshot Coherence & Workspace Revision Invariants (#182 RED 0 
   let editionId: string;
   let chapterId: string;
   let sourceVersionId: string;
+  let sourceArtifactId: string;
   let projectId: string;
   let testJobId: string;
   let segmentId: string;
@@ -116,10 +117,17 @@ describe('Studio Snapshot Coherence & Workspace Revision Invariants (#182 RED 0 
     `);
     projectId = projRes[0].id;
 
+    const artRes = await dataSource.query(`
+      INSERT INTO chapter_artifacts (chapter_version_id, artifact_type, status)
+      VALUES ('${sourceVersionId}', 'TRANSLATION_SOURCE', 'READY')
+      RETURNING id;
+    `);
+    sourceArtifactId = artRes[0].id;
+
     // Seed Comic Job in READY_FOR_REVIEW with workspace_revision = 1
     const jobRes = await dataSource.query(`
-      INSERT INTO translation_jobs (project_id, source_version_id, status, progress_percentage, review_revision, materialized_revision, workspace_revision)
-      VALUES ('${projectId}', '${sourceVersionId}', '${TranslationJobStatus.READY_FOR_REVIEW}', 100, 0, 0, 1)
+      INSERT INTO translation_jobs (project_id, source_version_id, source_artifact_id, status, progress_percentage, review_revision, materialized_revision, workspace_revision)
+      VALUES ('${projectId}', '${sourceVersionId}', '${sourceArtifactId}', '${TranslationJobStatus.READY_FOR_REVIEW}', 100, 0, 0, 1)
       RETURNING id;
     `);
     testJobId = jobRes[0].id;
@@ -227,8 +235,8 @@ describe('Studio Snapshot Coherence & Workspace Revision Invariants (#182 RED 0 
   describe('BE-6: Worker Event Callback Exactly-Once workspaceRevision Bump', () => {
     it('should bump workspace_revision exactly once on worker event callback', async () => {
       const workerJobRes = await dataSource.query(`
-        INSERT INTO translation_jobs (project_id, source_version_id, status, progress_percentage, attempt_count, max_attempts, last_sequence, workspace_revision)
-        VALUES ('${projectId}', '${sourceVersionId}', '${TranslationJobStatus.OCR}', 10, 1, 3, 1, 1)
+        INSERT INTO translation_jobs (project_id, source_version_id, source_artifact_id, status, progress_percentage, attempt_count, max_attempts, last_sequence, workspace_revision)
+        VALUES ('${projectId}', '${sourceVersionId}', '${sourceArtifactId}', '${TranslationJobStatus.OCR}', 10, 1, 3, 1, 1)
         RETURNING id;
       `);
       const workerJobId = workerJobRes[0].id;
@@ -312,8 +320,8 @@ describe('Studio Snapshot Coherence & Workspace Revision Invariants (#182 RED 0 
     it('should handle zero-row affected as benign lost race in watchdog without throwing 500', async () => {
       // Create test job in PREPROCESSING with expired heartbeat
       const staleJobRes = await dataSource.query(`
-        INSERT INTO translation_jobs (project_id, source_version_id, status, progress_percentage, attempt_count, max_attempts, heartbeat_at, workspace_revision)
-        VALUES ('${projectId}', '${sourceVersionId}', '${TranslationJobStatus.PREPROCESSING}', 10, 1, 3, NOW() - INTERVAL '15 minutes', 1)
+        INSERT INTO translation_jobs (project_id, source_version_id, source_artifact_id, status, progress_percentage, attempt_count, max_attempts, heartbeat_at, workspace_revision)
+        VALUES ('${projectId}', '${sourceVersionId}', '${sourceArtifactId}', '${TranslationJobStatus.PREPROCESSING}', 10, 1, 3, NOW() - INTERVAL '15 minutes', 1)
         RETURNING id;
       `);
       const staleJobId = staleJobRes[0].id;

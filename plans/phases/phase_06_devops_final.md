@@ -86,7 +86,9 @@
 - [x] **[AN TOÀN BẢO MẬT & TRẠNG THÁI LỊCH SỬ GIT]:**
   - Nhánh `main` đã được rewrite lịch sử (`git reset --soft` và force push) để loại bỏ commit cũ khỏi nhánh chính.
   - Về mặt kỹ thuật, commit cũ `0c58746` hiện là một **dangling/unreachable commit object** trên máy chủ GitHub (có thể vẫn hiển thị nếu truy cập trực tiếp bằng SHA do cơ chế cached view của GitHub trước khi garbage collection chạy).
-  - Để đảm bảo an toàn tuyệt đối mà không phụ thuộc vào trạng thái cache của GitHub: **Toàn bộ credential xuất hiện trong commit cũ và transcript (Supabase Database Role, Redis Password, JWT Secrets, AI Worker Key) đã được thu hồi và rotate 100% sang giá trị mới**. Lỗ hổng rò rỉ credential đã được vô hiệu hóa triệt để tại gốc (Zero Trust).
+  - Để đảm bảo an toàn tuyệt đối mà không phụ thuộc vào trạng thái cache của GitHub: **Toàn bộ credential xuất hiện trong commit cũ và transcript (Supabase Database Role, Redis Password, JWT Secrets, AI Worker Key, và Cloudflare R2 Storage Credentials) đã được thu hồi và rotate 100% sang giá trị mới**.
+    - **Cloudflare R2 Rotation Proof:** Token cũ `4ac511...916c` đã bị revoke trên Cloudflare Dashboard (xác nhận live probe phản hồi `HTTP 401 Unauthorized`). Token mới mang fingerprint `bb4032...8c98` đã được cập nhật vào `.env` cục bộ (không log secret), toàn bộ 4 containers đã recreate thành công, và toàn bộ 14 Acceptance Gates chạy lại đạt 100% PASS (G08 xác thực live PUT->HEAD->DELETE->404 thành công, G14 xác thực 0 leak trên toàn bộ logs 4 containers).
+    - Lỗ hổng rò rỉ credential đã được vô hiệu hóa triệt để tại gốc (Zero Trust).
 - [x] **PHASE 6.2 CHÍNH THỨC FROZEN & CLOSED CLEAN.**
 
 ### C. CI/CD Pipeline GitHub Actions (Phase 6.3)

@@ -45,6 +45,7 @@ describe('Reading Progress & Gamification Lifecycle', () => {
       earnedExp: 5,
       totalExp: '105',
       level: 2,
+      serverDateVN: '2026-09-30',
     });
   });
 

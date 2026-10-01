@@ -49,14 +49,21 @@ services:
       dockerfile: services/ai-worker/Dockerfile
     container_name: omninovel-prod-ai-worker
     restart: unless-stopped
-    env_file:
-      - ../.env
     environment:
       - ENV=production
+      - AI_WORKER_SECRET=${AI_WORKER_SECRET}
+      - CORE_API_INTERNAL_URL=http://api:8000
+      - AI_WORKER_PORT=8001
       - OCR_FORCE_CPU=true
       - OCR_MAX_CONCURRENT_INFERENCES=1
-      - AI_WORKER_PORT=8001
-      - CORE_API_INTERNAL_URL=http://api:8000
+      - STORAGE_PROVIDER=${STORAGE_PROVIDER:-r2}
+      - S3_ENDPOINT=${S3_ENDPOINT:-}
+      - S3_REGION=${S3_REGION:-auto}
+      - S3_BUCKET_MANGA=${S3_BUCKET_MANGA:-}
+      - S3_BUCKET_NOVEL=${S3_BUCKET_NOVEL:-}
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-localhost}
+      - MINIO_PORT=${MINIO_PORT:-9000}
+      - MINIO_USE_SSL=${MINIO_USE_SSL:-false}
     volumes:
       - ai_model_cache:/home/appuser/.cache
     networks:

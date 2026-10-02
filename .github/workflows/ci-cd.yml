@@ -380,14 +380,14 @@ jobs:
             mkdir -p ~/.ssh
             echo "$VPS_KEY" > ~/.ssh/id_rsa
             chmod 600 ~/.ssh/id_rsa
-            ssh -o StrictHostKeyChecking=no "${VPS_USER:-root}@$VPS_HOST" << 'EOF'
+            ssh -o StrictHostKeyChecking=no "${VPS_USER:-root}@$VPS_HOST" "
               set -e
               cd /opt/omninovel || cd ~/omninovel
               git pull origin main
               docker compose -f deploy/docker-compose.yml build
               docker compose -f deploy/docker-compose.yml up -d --remove-orphans
               docker compose -f deploy/docker-compose.yml ps
-            EOF
+            "
             echo "Deployment to VPS completed successfully!"
           else
             echo "=================================================================================="

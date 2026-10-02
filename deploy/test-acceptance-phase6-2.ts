@@ -1,7 +1,7 @@
 /**
  * ==============================================================================
  * OmniNovel - Production Infrastructure Acceptance Runner (Phase 6.2)
- * Automated Verification for 14 Acceptance Gates (G01 -> G14)
+ * Automated Verification for 15 Acceptance Gates (G00 + G01 -> G14)
  * Hardened & Sanitized: Real Exit Codes + Zero Hardcoded Credentials (Dynamic Env)
  * ==============================================================================
  */

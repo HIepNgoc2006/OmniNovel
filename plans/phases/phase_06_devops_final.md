@@ -17,6 +17,39 @@
 
 ---
 
+## 1.1. PRODUCTION DEPLOYMENT TARGET — `nagisakileon` (SELF-HOSTED UBUNTU LAPTOP)
+
+> **Operational reality:** Production target hiện tại không phải VPS cấu hình cao mà là laptop cũ self-hosted chạy Ubuntu. Các quyết định tối ưu tài nguyên phải dựa trên baseline này.
+
+| Hạng mục | Baseline thực tế |
+| :--- | :--- |
+| **Host** | Dell Latitude E6430s (`nagisakileon`) |
+| **OS** | Ubuntu 24.04.5 LTS, Linux 6.8.x, x86_64 |
+| **CPU** | Intel Core i5-3320M @ 2.60 GHz, 2 cores / 4 threads |
+| **RAM** | 8 GB DDR3 (~7.6 GiB usable) |
+| **Swap** | 4 GB |
+| **Storage** | 250 GB 5400 RPM HDD; khoảng 165 GB trống tại thời điểm ghi nhận |
+| **GPU** | Intel HD Graphics 4000 integrated |
+| **Network** | Gigabit Ethernet + Tailscale; địa chỉ cụ thể không lưu trong repo |
+| **Existing shared services** | Portainer CE, UpSnap, Homarr, MoneyPrinterTurbo |
+| **Expected operating mode** | Ubuntu headless/self-hosted, ưu tiên stability hơn build/start latency |
+
+### Resource Boundary trên `nagisakileon`
+- **Không chạy production PostgreSQL local:** Supabase Managed PostgreSQL gánh database, persistence, schema state và database storage.
+- **Không chạy production MinIO/object storage local:** Cloudflare R2 gánh manga/novel objects, media và artifact storage.
+- **Laptop chủ yếu gánh compute/orchestration:** Nginx, NestJS API, Redis/BullMQ, FastAPI AI Worker và (khi triển khai) Next.js web runtime.
+- **Disk local vẫn được dùng cho:** Docker images/layers, container writable layers, logs, Redis persistence nếu bật, AI model cache nếu dùng local inference, và swap.
+- **Hiện chấp nhận build/start/restart chậm hơn do HDD 5400 RPM**; chưa coi đây là blocker production.
+- **AI inference nặng là workload cần kiểm soát nhất:** giữ concurrency thấp ở profile hiện tại; hướng API-first AI bên dưới là phương án tối ưu tương lai để giảm CPU/RAM/model-cache local.
+- **Không tối ưu quá sớm:** deploy và đo CPU/RAM/swap/disk I/O thực tế trước khi quyết định nâng SSD/RAM hoặc tách service.
+
+### Development Workstation phụ trợ
+- Windows 11 IoT Enterprise LTSC.
+- Intel Core i5-9400F, 16 GB RAM, NVIDIA GTX 1050 Ti.
+- Vai trò: development/build/test workstation; **production không được phụ thuộc vào việc máy Windows phải bật**.
+
+---
+
 ## 2. NGUYÊN TẮC BẤT BIẾN TRIỂN KHAI (INVARIANTS)
 
 1. **Provider-Neutral Storage Contract:**

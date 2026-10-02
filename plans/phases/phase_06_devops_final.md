@@ -203,8 +203,18 @@
   - Thực thi deep audit scan đa trạng thái (`verified,unknown,unverified`) trên toàn bộ git tree reachable (4,949 chunks, 8.76MB, 0 verified leaks). Toàn bộ 13 unverified findings đã được triage và lập bảng Disposition Ledger chi tiết tại `plans/evidence/phase_06_trufflehog_reachable_audit.md`.
 - [x] **Gate 6.4.3 — Trivy Inspection, Governed Risk Register & Fail-Closed Gate:**
   - Trích xuất và phân tích toàn diện CVE CRITICAL/HIGH hiện hành trên 3 container images (`omninovel-api`, `omninovel-ai-worker`, `omninovel-nginx`).
-  - Xây dựng tài liệu Sổ đăng ký rủi ro ngoại lệ `deploy/security/trivy-exception-register.md` kèm file cấu hình `.trivyignore` có vòng đời kiểm soát và biện pháp bù đắp (Compensating Controls) chi tiết.
+  - Xây dựng tài liệu Sổ đăng ký rủi ro ngoại lệ `deploy/security/trivy-exception-register.md` kèm file cấu hình `.trivyignore` có vòng đời kiểm soát và biện pháp bù đắp (Compensating Controls) chi tiết. Bổ sung alias `GHSA-5p4m-2wfm-xmqj` cho finding `js-yaml@4.1.0` (kéo từ `@nestjs/swagger@7.4.2` trên runtime NestJS 10) với lý giải kỹ thuật rõ ràng.
   - Chuyển `exit-code: '1'` cho Trivy scan với tham số `trivyignores: .trivyignore` trong `.github/workflows/ci-cd.yml`, hoàn thiện cơ chế Fail-Closed Gate thực thụ.
+- [x] **BẰNG CHỨNG NGHIỆM THU HOSTED CI (GATES 6.4.1 – 6.4.3 CHÍNH THỨC FROZEN):**
+  - Run [`37030640645`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/37030640645) tại commit [`123e6fc`](https://github.com/HIepNgoc2006/OmniNovel/commit/123e6fc): **7/7 JOBS PASS 100%**:
+    1. `web-client-test`: **PASS** (3m30s)
+    2. `core-api-test`: **PASS** (3m6s)
+    3. `security-scan` (Gate 6.4.1 & 6.4.2): **PASS** (23s) — Two-layer pinning + reachable commits scan clean
+    4. `ai-worker-test`: **PASS** (2m25s)
+    5. `mobile-foundation-test`: **PASS** (3m4s)
+    6. `docker-build-scan` (Gate 6.4.3): **PASS** (5m26s) — 3 images built + 3 Trivy Fail-Closed scans pass exit-code 1 với `.trivyignore`
+    7. `deploy-vps`: **PASS** (6s) — Compose config exit 0 + topology dry-run verified
+  - **Kết luận:** Bộ ba Security Hardening Gates (6.4.1, 6.4.2, 6.4.3) chính thức **CLOSED / FROZEN** với bằng chứng hosted pipeline xanh 100%. Nền tảng an ninh đã được bảo đảm vững chắc trước khi tiến hành Observability.
 - [ ] **Gate 6.4.4 — Observability Baseline & Security Invariant:**
   - Tích hợp Prometheus client trong NestJS API (`http_requests_total`, histogram `http_request_duration_seconds`, gauges `bullmq_jobs_*`, process RSS).
   - Cấu hình mẫu Grafana Dashboard với PromQL quantile tính toán $p_{50}, p_{95}, p_{99}$ từ histogram buckets.

@@ -303,7 +303,9 @@ jobs:
           docker build -t omninovel-nginx:${{ github.sha }} -f deploy/nginx/Dockerfile deploy/nginx
 
       - name: Trivy Vulnerability Scan (Core API Image)
-        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0 pinned by SHA
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 verified pinned SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           image-ref: omninovel-api:${{ github.sha }}
           format: table
@@ -311,7 +313,9 @@ jobs:
           exit-code: '0'
 
       - name: Trivy Vulnerability Scan (AI Worker Image)
-        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0 pinned by SHA
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 verified pinned SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           image-ref: omninovel-ai-worker:${{ github.sha }}
           format: table
@@ -319,7 +323,9 @@ jobs:
           exit-code: '0'
 
       - name: Trivy Vulnerability Scan (Nginx Image)
-        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0 pinned by SHA
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 verified pinned SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           image-ref: omninovel-nginx:${{ github.sha }}
           format: table

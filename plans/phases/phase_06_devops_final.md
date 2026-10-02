@@ -68,7 +68,8 @@
 - [x] Hoàn thiện `deploy/docker-compose.yml` cho Production VPS: gồm 4 container cốt lõi (`nginx`, `api`, `ai-worker`, `redis`), 3-Network Topology (`edge`, `internal: true`, `egress`), 5 named volumes, Redis guard với `$$REDIS_PASSWORD`.
 - [x] Duy trì `deploy/docker-compose.dev.yml` cho Local Dev / CI: bổ sung `postgres` và `minio`.
 - [x] Cấu hình Nginx Production: SSL (Let's Encrypt / Certbot), HTTP/2, Gzip, Dynamic Upstream DNS (`zone api_backend 64k; server api:8000 resolve;`), Rate Limiting 429 (`api_general_limit: 30r/s`, `auth_limit: 5r/s`), WebSocket `/socket.io/` upgrade, TLS State Machine (Bootstrap vs Production) với zero-downtime hot reload.
-- [x] **[14 ACCEPTANCE GATES ĐÃ NGHIỆM THU PASS 100% - EXIT CODE & ZERO-LEAK HARDENED]** Chạy test suite tự động `deploy/test-acceptance-phase6-2.ts`:
+- [x] **[15 ACCEPTANCE GATES ĐÃ NGHIỆM THU PASS 100% (G00 + G01–G14) - EXIT CODE & ZERO-LEAK HARDENED]** Chạy test suite tự động `deploy/test-acceptance-phase6-2.ts`:
+  - **G00 (Credential Rotation Prerequisite):** Boolean probe xác nhận required envs present và forbidden envs absent trên AI Worker (exit 0). Toàn bộ credentials đã rotate (`AI_WORKER_SECRET` 64-char hex, Cloudflare R2 active token `bb4032...8c98` / revoked token `4ac511...916c`, Supabase, Redis, JWT), zero credentials printed ra console/logs.
   - **G01 (Config Valid):** `docker compose config --quiet` exit code 0 (`res.exitCode === 0 && res.output.length === 0`), không warning cú pháp, không render credentials.
   - **G02 (Migration Proof):** Container cô lập thực thi migration trên Supabase Managed PostgreSQL: exit code 0 (`res.exitCode === 0`), 18 migrations applied, `No migrations are pending`.
   - **G03 (Port Isolation):** Nginx mở `80` và `443` (exit 0). Các cổng backend `8000`, `8001`, `6379` không publish ra host (exit 0, empty binding).

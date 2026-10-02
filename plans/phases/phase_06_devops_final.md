@@ -152,7 +152,7 @@
 - [x] **Deliverable 2 — Immutable Reproducible MinIO S3 Image Pinning:**
   - Ghim chính xác mã băm SHA-256 bất biến của Chainguard MinIO trong CI runner: `cgr.dev/chainguard/minio@sha256:4692462f35d97d7e82c30371d82f057703c5d9489bcae726010594c812f2d285`.
 - [x] **Deliverable 3 — Workflow Build & Scan Bảo Mật (Docker Image Audit & Secret Scanning):**
-  - **Job `security-scan`:** Tích hợp TruffleHog OSS Secret Scan (`trufflesecurity/trufflehog@main` với `--only-verified`) kèm bước kiểm tra Git tracking hygiene (chặn đứng mọi file nhạy cảm `.env`, `.pem`, `.key`, `.crt` khỏi git index).
+  - **Job `security-scan`:** Tích hợp TruffleHog OSS Secret Scan (`trufflesecurity/trufflehog@main` với `--only-verified`) kèm bước kiểm tra Git tracking hygiene (CI gate phát hiện và từ chối baseline có tracked sensitive files `.env`, `.pem`, `.key`, `.crt`...).
     - *Nghiệm thu kỹ thuật chính xác:* TruffleHog báo cáo 0 verified / 0 unverified secrets trong phạm vi commit revision được quét (`base: 3d0173bb...`, `head: 5425f3f...`); Git tracking hygiene gate passed. Chưa thực hiện quét exhaustive toàn bộ lịch sử commit từ initial commit (được chuyển vào backlog hardening). Reference action hiện dùng `@main` mutable (được ghi nhận để pin SHA ở bước hardening). Thời gian: 12s.
   - **Job `docker-build-scan`:**
     - Đóng gói 3 container images production (`omninovel-api`, `omninovel-ai-worker`, `omninovel-nginx`) qua Docker Buildx.
@@ -168,7 +168,7 @@
     2. `core-api-test`: **PASS** (3m2s) — 50/50 suites, 634 passed, 18/18 migrations executed
     3. `web-client-test`: **PASS** (2m23s) — 580 Vitest + 31 Playwright passed
     4. `mobile-foundation-test`: **PASS** (3m1s) — 314 passed
-    5. `security-scan`: **PASS** (12s) — TruffleHog revision range 0 leaks + Git tracking hygiene clean
+    5. `security-scan`: **PASS** (12s) — 0 verified / 0 unverified secrets detected in scanned revision range + Git tracking hygiene clean
     6. `docker-build-scan`: **PASS** (3m28s) — 3 images built + 3 Trivy audit scans executed
     7. `deploy-vps`: **PASS** (9s) — Compose config exit 0 + topology dry-run verified
   - **KẾT LUẬN NGHIỆM THU:** Phase 6.3 chính thức **CLOSED / FROZEN** đối với phạm vi CI/CD implementation đã định nghĩa (automated testing, build, audit scanners, topology dry-run).

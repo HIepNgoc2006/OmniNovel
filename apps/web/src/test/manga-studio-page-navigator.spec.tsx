@@ -1714,6 +1714,7 @@ describe('Manga Review Studio Route & URL Synchronization (#149 RED 1)', () => {
     await waitFor(() => {
       expect(screen.getByText('Trang 1 / 20')).toBeDefined();
     });
+    await screen.findByTestId('canvas-source-image');
 
     previewSpy.mockClear();
 
@@ -1723,8 +1724,10 @@ describe('Manga Review Studio Route & URL Synchronization (#149 RED 1)', () => {
     });
 
     // CRITICAL P1-1 INVARIANT: exactly 1 preview request (no duplicate listener from route)
-    expect(previewSpy).toHaveBeenCalledTimes(1);
-    expect(previewSpy).toHaveBeenCalledWith(mockJobId, { fromPage: 1, toPage: 5 });
+    await waitFor(() => {
+      expect(previewSpy).toHaveBeenCalledTimes(1);
+      expect(previewSpy).toHaveBeenCalledWith(mockJobId, { fromPage: 1, toPage: 5 });
+    });
   });
 
   it('30. Production composition focus recovery (P1-1): Canvas in LOAD_ERROR recovers upon window focus even when Preview API returns same URL', async () => {

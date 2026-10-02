@@ -76,7 +76,7 @@ async function httpGet(url: string, isHttps = false): Promise<{ statusCode: numb
 
 async function verifyAllGates() {
   console.log('================================================================');
-  console.log('  STARTING OMNINOVEL PHASE 6.2 - 14 ACCEPTANCE GATES RUNNER');
+  console.log('  STARTING OMNINOVEL PHASE 6.2 - 15 ACCEPTANCE GATES RUNNER');
   console.log('================================================================\n');
 
   // G00: Credential Security Prerequisite (Automated Sanity + Manual Attestation)
@@ -103,15 +103,8 @@ async function verifyAllGates() {
                             workerHealth.exitCode === 0 && workerHealth.stdout.trim() === 'healthy';
 
     // 2. Manual attestation:
-    // - Exposed AI_WORKER_SECRET rotated (zero-output)
-    // - Old R2 credential revoked on Cloudflare Dashboard
-    // - DB/Redis/JWT rotations confirmed where applicable
-    const manualAttestation = {
-      aiWorkerSecretRotated: true,
-      oldR2Revoked: true,
-      rotationsConfirmed: true,
-    };
-    const manualAttestationConfirmed = manualAttestation.aiWorkerSecretRotated && manualAttestation.oldR2Revoked && manualAttestation.rotationsConfirmed;
+    // Explicit per-run operator attestation via environment variable (not stored in .env)
+    const manualAttestationConfirmed = process.env.PHASE62_SECURITY_ATTESTED === 'true';
 
     const passed = workerProbePassed && formatsSane && servicesHealthy && manualAttestationConfirmed;
 
@@ -119,9 +112,9 @@ async function verifyAllGates() {
       gate: 'G00',
       name: 'Credential Security Prerequisite',
       passed,
-      evidence: `Automated: Worker Probe [REQUIRED_PRESENT: True, FORBIDDEN_ABSENT: True] | Formats Sane: [AI_WORKER_SECRET(64 hex), JWT(len>=16), DB, Redis, R2] | Services Healthy: [api=${apiHealth.stdout.trim()}, ai-worker=${workerHealth.stdout.trim()}] | Manual Attestation: [AI_WORKER_SECRET re-rotated (zero-output), Old R2 revoked, DB/Redis/JWT rotations confirmed] | Secrets Printed: 0`,
-      assertion: 'workerProbePassed && formatsSane && servicesHealthy && manualAttestationConfirmed',
-      failureMode: 'Automated credential sanity checks failed, services unhealthy, or manual rotation attestation unconfirmed',
+      evidence: `Automated: Worker Probe [REQUIRED_PRESENT: True, FORBIDDEN_ABSENT: True] | Formats Sane: [AI_WORKER_SECRET(64 hex), JWT(len>=16), DB, Redis, R2] | Services Healthy: [api=${apiHealth.stdout.trim()}, ai-worker=${workerHealth.stdout.trim()}] | Manual Attestation: [PHASE62_SECURITY_ATTESTED=${manualAttestationConfirmed ? 'CONFIRMED' : 'MISSING'}] | Secrets Printed: 0`,
+      assertion: 'workerProbePassed && formatsSane && servicesHealthy && manualAttestationConfirmed === true',
+      failureMode: manualAttestationConfirmed ? 'Automated credential sanity checks failed or services unhealthy' : 'Operator security attestation required (set PHASE62_SECURITY_ATTESTED=true for execution)',
     });
   } catch (e: any) {
     results.push({ gate: 'G00', name: 'Credential Security Prerequisite', passed: false, evidence: e.message, assertion: 'Automated sanity & manual attestation pass', failureMode: e.message });
@@ -145,19 +138,20 @@ async function verifyAllGates() {
 
   // G02: Clean Multi-Stage Build & Migration Proof (Supabase Managed PostgreSQL)
   try {
-    const res = runCommand('docker compose --env-file .env -f deploy/docker-compose.yml run --rm --no-deps api npm run migration:run:prod');
-    const hasSuccessMarker = res.output.includes('No migrations are pending') || res.output.includes('has been executed successfully');
-    const passed = res.exitCode === 0 && hasSuccessMarker;
+    const buildRes = runCommand('docker compose --env-file .env -f deploy/docker-compose.yml build');
+    const migrationRes = runCommand('docker compose --env-file .env -f deploy/docker-compose.yml run --rm --no-deps api npm run migration:run:prod');
+    const hasSuccessMarker = migrationRes.output.includes('No migrations are pending') || migrationRes.output.includes('has been executed successfully');
+    const passed = buildRes.exitCode === 0 && migrationRes.exitCode === 0 && hasSuccessMarker;
     results.push({
       gate: 'G02',
       name: 'Clean Multi-Stage Build & Migration Proof',
       passed,
-      evidence: `Exit code ${res.exitCode} | Supabase output: ` + res.output.split('\n').filter(l => l.includes('migrations') || l.includes('No migrations')).join(' | '),
-      assertion: 'res.exitCode === 0 && res.output.includes("No migrations are pending")',
-      failureMode: 'Database migration connection failed or migrations pending on Supabase',
+      evidence: `Build [Exit ${buildRes.exitCode}]: multi-stage images built cleanly | Migration [Exit ${migrationRes.exitCode}]: ` + migrationRes.output.split('\n').filter(l => l.includes('migrations') || l.includes('No migrations')).join(' | '),
+      assertion: 'buildRes.exitCode === 0 && migrationRes.exitCode === 0 && migrationRes.output.includes("No migrations are pending")',
+      failureMode: 'Docker multi-stage build failed or database migration connection failed on Supabase',
     });
   } catch (e: any) {
-    results.push({ gate: 'G02', name: 'Migration Proof', passed: false, evidence: e.message, assertion: 'Migration executed', failureMode: e.message });
+    results.push({ gate: 'G02', name: 'Clean Multi-Stage Build & Migration Proof', passed: false, evidence: e.message, assertion: 'Build & Migration executed', failureMode: e.message });
   }
 
   // G03: Strict Host-Port Isolation

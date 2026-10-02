@@ -303,7 +303,7 @@ jobs:
           docker build -t omninovel-nginx:${{ github.sha }} -f deploy/nginx/Dockerfile deploy/nginx
 
       - name: Trivy Vulnerability Scan (Core API Image)
-        uses: aquasecurity/trivy-action@v0.30.0
+        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0 pinned by SHA
         with:
           image-ref: omninovel-api:${{ github.sha }}
           format: table
@@ -311,7 +311,7 @@ jobs:
           exit-code: '0'
 
       - name: Trivy Vulnerability Scan (AI Worker Image)
-        uses: aquasecurity/trivy-action@v0.30.0
+        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0 pinned by SHA
         with:
           image-ref: omninovel-ai-worker:${{ github.sha }}
           format: table
@@ -319,7 +319,7 @@ jobs:
           exit-code: '0'
 
       - name: Trivy Vulnerability Scan (Nginx Image)
-        uses: aquasecurity/trivy-action@v0.30.0
+        uses: aquasecurity/trivy-action@76071ef0d7ec797419534a183b498b4d6366cf37 # v0.31.0 pinned by SHA
         with:
           image-ref: omninovel-nginx:${{ github.sha }}
           format: table
@@ -338,7 +338,28 @@ jobs:
       - name: Validate Docker Compose Deployment Specification
         run: |
           echo "Validating deploy/docker-compose.yml configuration and environment bindings..."
-          DOMAIN=localhost REDIS_PASSWORD=dummy_pwd_for_config_validation docker compose -f deploy/docker-compose.yml config --quiet
+          cat << 'EOF' > .env
+          NODE_ENV=production
+          PORT=8000
+          DOMAIN=localhost
+          REDIS_HOST=redis
+          REDIS_PORT=6379
+          REDIS_PASSWORD=dummy_validation_redis_password_min8
+          JWT_SECRET=dummy_validation_jwt_secret_min16chars
+          JWT_REFRESH_SECRET=dummy_validation_jwt_refresh_min16chars
+          AI_WORKER_SECRET=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          STORAGE_PROVIDER=r2
+          S3_ENDPOINT=https://dummy.r2.cloudflarestorage.com
+          S3_REGION=auto
+          S3_BUCKET_MANGA=omninovel-manga
+          S3_BUCKET_NOVEL=omninovel-novel
+          S3_ACCESS_KEY_ID=dummy_access_key
+          S3_SECRET_ACCESS_KEY=dummy_secret_key
+          DATABASE_URL=postgresql://dummy_user:dummy_pwd@localhost:5432/dummy_db
+          DB_SSL=true
+          EOF
+          docker compose --env-file .env -f deploy/docker-compose.yml config --quiet
+          rm -f .env
           echo "Docker Compose production manifest: VALID (exit code 0)"
 
       - name: Deploy to VPS via SSH / Docker Compose

@@ -127,6 +127,22 @@
   - Tự động kích hoạt SSH deployment (`git pull`, `docker compose build`, `docker compose up -d`) khi có secrets `VPS_SSH_HOST` và `VPS_SSH_KEY`.
   - Tự động cung cấp chế độ Topology Dry-Run & Hướng dẫn thiết lập chi tiết khi secrets chưa được nạp, đảm bảo pipeline luôn thông suốt.
 
-### D. Giám Sát, Đo Lường & Hồ Sơ 5 Môn Học (Phase 6.4)
+
+### D. Ghi Chú Kiến Trúc Tương Lai — API-First AI Worker cho Self-Host Tài Nguyên Thấp (DEFERRED / NOT ACTIVE)
+- [ ] **Mục tiêu:** Tối ưu OmniNovel để có thể self-host trên **Ubuntu laptop cũ / máy cấu hình thấp**, giảm phụ thuộc vào CPU/RAM cục bộ cho inference AI.
+- [ ] **Giữ nguyên boundary hiện tại:** FastAPI `ai-worker` vẫn là service nội bộ đứng sau NestJS Core API; Web/Mobile không gọi trực tiếp model provider bên ngoài.
+- [ ] **Chuyển phần inference nặng sang external model APIs khi triển khai profile này:**
+  - OCR/Vision cho manga.
+  - Translation LLM cho manga/novel.
+  - Biên tập/ngữ cảnh/glossary-aware refinement khi cần.
+- [ ] **Các tác vụ nhẹ vẫn giữ local trong AI Worker:** orchestration job, validate/normalize response, retry/backoff, image/file post-processing nhẹ, R2 presigned download/upload, progress callback và materialization.
+- [ ] **Mục tiêu tài nguyên:** giảm đáng kể Docker image size, model cache, RAM idle và CPU load so với profile PyTorch + `manga-ocr` local; phù hợp deployment trên máy cá nhân chạy Ubuntu Server/headless.
+- [ ] **Provider-neutral contract trước khi triển khai:** xây abstraction cho model provider để có thể thay API vendor mà không đổi contract giữa NestJS ↔ AI Worker.
+- [ ] **Security/operational requirements:** API keys chỉ tồn tại trong AI Worker environment; không trả key xuống client; có timeout, retry/backoff, rate-limit/quota, circuit breaker, cost controls, request-size limits và redaction/logging-safe policy.
+- [ ] **Privacy:** trước khi bật provider ngoài cho production, phải xác định rõ loại nội dung nào được phép gửi ra external provider và retention/data-processing policy tương ứng.
+- [ ] **Fallback:** local inference hiện tại có thể được giữ như optional profile/fallback nếu phần cứng cho phép; API-first không bắt buộc xóa ngay local implementation.
+- [ ] **Trạng thái:** **Deferred architecture option** — chỉ ghi nhận hướng tối ưu tương lai, **không thay đổi Phase 6.2 frozen baseline và không mở rộng scope Phase 6.3 hiện tại**.
+
+### E. Giám Sát, Đo Lường & Hồ Sơ 5 Môn Học (Phase 6.4)
 - [ ] Thiết lập Prometheus metrics & Grafana Dashboard theo dõi API response time, BullMQ queue latency, Memory RSS.
 - [ ] Tổng hợp hồ sơ kỹ thuật và slide thuyết trình phục vụ bảo vệ 5 môn học.

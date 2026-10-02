@@ -43,5 +43,6 @@ Toàn bộ 24 tài liệu đặc tả kỹ thuật và theo dõi tiến độ th
 * [Phase 3: AI Translation Worker & Upload Queue](phases/phase_03_ai_worker.md) `[x] Đã hoàn thành (100% - Vertical Slice 1, 2, 3 FROZEN - 184/184 AI Worker Tests & 106/106 NestJS Tests - 290/290 Total Tests Passed)`
 * [Phase 4: Web Client (TruyenQQ & DocLN & AI Translation Studio)](phases/phase_04_web_client.md) `[x] Đã hoàn thành (100% - Toàn bộ Phase 4A, 4B, 4C, 4D FROZEN tại final main baseline)`
 * [Phase 5: Mobile App (Flutter Android-First & Offline)](phases/phase_05_mobile_app.md) `[/] Đang Triển Khai (5A, 5B & 5C hoàn thành [x] - Đang triển khai Phase 5D)`
-* [Phase 6: DevOps, CI/CD & Academic Defense](phases/phase_06_devops_final.md) `[/] Đang Triển Khai (Phase 6.1, 6.2 & 6.3 hoàn thành [x] - Chuẩn bị Phase 6.4)`
+* [Phase 6: DevOps, CI/CD & Academic Defense](phases/phase_06_devops_final.md) `[/] Đang Triển Khai (Phase 6.1, 6.2 & 6.3 hoàn thành [x] - Đang triển khai Phase 6.4)`
+  * [Kế hoạch Kỹ thuật Chi tiết Phase 6.4](phase_06_4_hardening_observability_plan.md)
 

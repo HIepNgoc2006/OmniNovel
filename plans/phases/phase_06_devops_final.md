@@ -197,7 +197,7 @@
   - Khóa quy chuẩn nghiệm thu 6 điểm P0: (1) Khóa hai lớp TruffleHog (SHA Action + CLI version); (2) Giới hạn chính xác phạm vi git scan thành "all commits reachable from main" kèm tuyên bố bằng chứng authoritative cho secret trong commit dangling là Revocation Proof; (3) Tách bạch CI blocking (verified) vs Audit Deep Triage Ledger (multi-status); (4) Trivy fail-closed có quy trình 3 bước (Audit ➔ Governed Risk Register + `.trivyignore` ➔ Kích hoạt `exit-code: '1'`); (5) Observability đúng bản chất PromQL histogram percentiles và invariant bảo mật chặn `/metrics` từ Internet qua Nginx; (6) Ma trận bằng chứng (Evidence Matrix) truy vết thực chứng tới source/test/commit. Đã thiết lập chi tiết tại `plans/phase_06_4_hardening_observability_plan.md`.
 - [x] **Gate 6.4.1 — TruffleHog Supply-Chain Two-Layer Pinning:**
   - Ghim full commit SHA `trufflesecurity/trufflehog@c1f2e912239240108482d79ea01ab25d90b27ac7` (v3.88.16).
-  - Ghim tường minh input `version: "3.88.16"` triệt tiêu hoàn toàn tag mutable `:latest`.
+  - Ghim tường minh input `version: "3.88.16"`. Action code immutable-pinned; CLI version explicitly pinned, eliminating dependence on `latest` and substantially reducing supply-chain mutability.
 - [x] **Gate 6.4.2 — Reachable-History Git Audit & Triage Ledger:**
   - Cấu hình CI: `base: ""` và `head: ${{ github.ref_name }}` với cờ `--only-verified`.
   - Thực thi deep audit scan đa trạng thái (`verified,unknown,unverified`) trên toàn bộ git tree reachable (4,949 chunks, 8.76MB, 0 verified leaks). Toàn bộ 13 unverified findings đã được triage và lập bảng Disposition Ledger chi tiết tại `plans/evidence/phase_06_trufflehog_reachable_audit.md`.

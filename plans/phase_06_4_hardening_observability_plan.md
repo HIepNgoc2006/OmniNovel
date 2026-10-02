@@ -37,14 +37,14 @@ graph TD
 ---
 
 ### Gate 6.4.1: TruffleHog Supply-Chain Two-Layer Pinning
-- **Mục tiêu:** Đảm bảo toàn bộ chuỗi cung ứng của scanner bí mật là bất biến (immutable), không phụ thuộc vào bất kỳ tag động nào (`@main`, `:latest`).
+- **Mục tiêu:** Khóa hai lớp chuỗi cung ứng của secret scanner: Action code immutable-pinned qua commit SHA; CLI version explicitly pinned, loại bỏ phụ thuộc vào `:latest` và giảm thiểu đáng kể tính khả biến (mutability) của chuỗi cung ứng.
 - **Triển khai:**
   - Trong `.github/workflows/ci-cd.yml` (job `security-scan`):
     - `uses: trufflesecurity/trufflehog@c1f2e912239240108482d79ea01ab25d90b27ac7` (commit SHA tương ứng với bản phát hành ổn định v3.88.16).
     - Khóa tường minh input `version: "3.88.16"`.
 - **Tiêu chuẩn nghiệm thu:**
   - Workflow chạy thành công với runner pull đúng image `ghcr.io/trufflesecurity/trufflehog:3.88.16`.
-  - Zero warning về tag mutable.
+  - Action code và CLI container tag đều được ghim cụ thể, không phụ thuộc vào ref mutable `@main` hay tag động `:latest`.
 
 ---
 

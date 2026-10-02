@@ -152,25 +152,26 @@
 - [x] **Deliverable 2 — Immutable Reproducible MinIO S3 Image Pinning:**
   - Ghim chính xác mã băm SHA-256 bất biến của Chainguard MinIO trong CI runner: `cgr.dev/chainguard/minio@sha256:4692462f35d97d7e82c30371d82f057703c5d9489bcae726010594c812f2d285`.
 - [x] **Deliverable 3 — Workflow Build & Scan Bảo Mật (Docker Image Audit & Secret Scanning):**
-  - **Job `security-scan`:** Tích hợp TruffleHog OSS Secret Scan (`trufflesecurity/trufflehog@main` với `--only-verified`) kèm bước kiểm tra Git tracking hygiene (chặn đứng mọi file nhạy cảm `.env`, `.pem`, `.key`, `.crt` khỏi git index). Thời gian: 12s.
+  - **Job `security-scan`:** Tích hợp TruffleHog OSS Secret Scan (`trufflesecurity/trufflehog@main` với `--only-verified`) kèm bước kiểm tra Git tracking hygiene (chặn đứng mọi file nhạy cảm `.env`, `.pem`, `.key`, `.crt` khỏi git index).
+    - *Nghiệm thu kỹ thuật chính xác:* TruffleHog báo cáo 0 verified / 0 unverified secrets trong phạm vi commit revision được quét (`base: 3d0173bb...`, `head: 5425f3f...`); Git tracking hygiene gate passed. Chưa thực hiện quét exhaustive toàn bộ lịch sử commit từ initial commit (được chuyển vào backlog hardening). Reference action hiện dùng `@main` mutable (được ghi nhận để pin SHA ở bước hardening). Thời gian: 12s.
   - **Job `docker-build-scan`:**
     - Đóng gói 3 container images production (`omninovel-api`, `omninovel-ai-worker`, `omninovel-nginx`) qua Docker Buildx.
     - Quét lỗ hổng bảo mật container tự động bằng Aqua Security Trivy ghim verified SHA `aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25` (v0.36.0) kèm `GITHUB_TOKEN` tránh rate-limit API cho cả 3 images (`omninovel-api`, `omninovel-ai-worker`, `omninovel-nginx`).
-    - Toàn bộ 3 bước Trivy scan và build hoàn tất thành công. Thời gian: 3m28s.
+    - *Nghiệm thu kỹ thuật chính xác:* Toàn bộ 3 bước Trivy HIGH/CRITICAL audit scan hoàn tất thực thi thành công với cấu hình `severity: CRITICAL,HIGH`, `exit-code: '0'`. Hiện tại đóng vai trò là **audit/informational scanner** (nhận diện và log các CVE hiện hữu, ví dụ `CVE-2026-4372` ở thư viện `transformers` của AI Worker và một số CVE ở OS base packages), **chưa phải là blocking gate** tự động ngắt pipeline khi phát hiện CVE. Đã ghi nhận chuyển đổi sang fail-closed gate có chính sách `.trivyignore` vào hardening task. Thời gian: 3m28s.
 - [x] **Deliverable 4 — Workflow Deployment Tự Động Lên VPS (CD Pipeline):**
   - **Job `deploy-vps`:**
     - Thẩm định tính toàn vẹn cú pháp và environment bindings của `deploy/docker-compose.yml` qua ephemeral `.env` chứa non-production dummy values: `docker compose --env-file .env -f deploy/docker-compose.yml config --quiet` đạt exit code 0, dọn dẹp sạch sẽ `rm -f .env` ngay sau khi validation xong (zero leaked secrets).
-    - Cú pháp SSH deployment tự động hóa hoàn thiện, xử lý an toàn fallback topology dry-run report khi chưa nạp secrets VPS SSH. Thời gian: 9s.
+    - *Nghiệm thu kỹ thuật chính xác:* Pipeline deployment path đã được cài đặt và kiểm chứng qua Topology Dry-Run (`Docker Compose production manifest: VALID (exit code 0)`). Do GitHub Secrets (`VPS_SSH_HOST`, `VPS_SSH_KEY`) chưa cấu hình nên pipeline kích hoạt an toàn nhánh fallback dry-run report; bằng chứng run này không bao gồm live VPS deployment rollout thực tế. Thời gian: 9s.
 - [x] **Tổng Hợp Bằng Chứng Nghiệm Thu Phase 6.3 (Hosted GitHub Actions SSoT):**
   - Run [`36963197949`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/36963197949) tại commit [`5425f3f`](https://github.com/HIepNgoc2006/OmniNovel/commit/5425f3f): **7/7 JOBS PASS 100% (completed success in 6m47s)**:
-    1. `ai-worker-test`: **PASS** (1m56s)
-    2. `core-api-test`: **PASS** (3m2s)
-    3. `web-client-test`: **PASS** (2m23s)
-    4. `mobile-foundation-test`: **PASS** (3m1s)
-    5. `security-scan`: **PASS** (12s)
-    6. `docker-build-scan`: **PASS** (3m28s)
-    7. `deploy-vps`: **PASS** (9s)
-  - **PHASE 6.3 CHÍNH THỨC FROZEN & CLOSED CLEAN.**
+    1. `ai-worker-test`: **PASS** (1m56s) — 323 passed
+    2. `core-api-test`: **PASS** (3m2s) — 50/50 suites, 634 passed, 18/18 migrations executed
+    3. `web-client-test`: **PASS** (2m23s) — 580 Vitest + 31 Playwright passed
+    4. `mobile-foundation-test`: **PASS** (3m1s) — 314 passed
+    5. `security-scan`: **PASS** (12s) — TruffleHog revision range 0 leaks + Git tracking hygiene clean
+    6. `docker-build-scan`: **PASS** (3m28s) — 3 images built + 3 Trivy audit scans executed
+    7. `deploy-vps`: **PASS** (9s) — Compose config exit 0 + topology dry-run verified
+  - **KẾT LUẬN NGHIỆM THU:** Phase 6.3 chính thức **CLOSED / FROZEN** đối với phạm vi CI/CD implementation đã định nghĩa (automated testing, build, audit scanners, topology dry-run).
 
 
 ### D. Ghi Chú Kiến Trúc Tương Lai — API-First AI Worker cho Self-Host Tài Nguyên Thấp (DEFERRED / NOT ACTIVE)
@@ -188,6 +189,10 @@
 - [ ] **Fallback:** local inference hiện tại có thể được giữ như optional profile/fallback nếu phần cứng cho phép; API-first không bắt buộc xóa ngay local implementation.
 - [ ] **Trạng thái:** **Deferred architecture option** — chỉ ghi nhận hướng tối ưu tương lai, **không thay đổi Phase 6.2 frozen baseline và không mở rộng scope Phase 6.3 hiện tại**.
 
-### E. Giám Sát, Đo Lường & Hồ Sơ 5 Môn Học (Phase 6.4)
+### E. Giám Sát, Đo Lường, Security Hardening & Hồ Sơ 5 Môn Học (Phase 6.4)
+- [ ] **DevOps & CI/CD Security Hardening (Chuyển Scanner sang Blocking Gate):**
+  - **Trivy Fail-Closed Gate:** Chuyển Trivy sang chế độ chặn thực thụ (`exit-code: '1'`) cho HIGH/CRITICAL kết hợp file cấu hình `.trivyignore` (có giải trình kỹ thuật và đánh giá rủi ro cho các CVE upstream chấp nhận tạm thời như `CVE-2026-4372` trong `transformers` hoặc OS base packages).
+  - **TruffleHog Supply-Chain Pinning:** Ghim commit SHA bất biến cho `trufflesecurity/trufflehog` (thay vì `@main` mutable) tương tự như đã pin cho `trivy-action`.
+  - **Exhaustive Secret History Scan:** Thực thi quét deep history toàn diện từ commit khởi tạo của repository để đưa vào hồ sơ nghiệm thu môn An toàn thông tin.
 - [ ] Thiết lập Prometheus metrics & Grafana Dashboard theo dõi API response time, BullMQ queue latency, Memory RSS.
 - [ ] Tổng hợp hồ sơ kỹ thuật và slide thuyết trình phục vụ bảo vệ 5 môn học.

@@ -1,7 +1,7 @@
 # 📋 Phase 6: Triển Khai DevOps, Hạ Tầng Đám Mây & Nghiệm Thu 5 Môn
 
 - **Mục tiêu:** Thiết lập hạ tầng triển khai thực tế đa môi trường (Local/CI vs Production Cloud), tự động hóa CI/CD, hệ thống giám sát và hồ sơ bảo vệ 5 môn học.
-- **Trạng thái:** [x] Phase 6.1 (CLOSED / FROZEN ✅) \| [x] Phase 6.2 (CLOSED / FROZEN ✅) \| [/] Phase 6.3 (IN PROGRESS 🟡 - CI Verification PASS, Hoàn thiện Security & CD) \| Sẵn sàng Phase 6.4 (CHƯA BẮT ĐẦU ⏳)
+- **Trạng thái:** [x] Phase 6.1 (CLOSED / FROZEN ✅) \| [x] Phase 6.2 (CLOSED / FROZEN ✅) \| [x] Phase 6.3 (CLOSED / FROZEN ✅ - 7/7 CI/CD Jobs PASS 100%) \| Sẵn sàng Phase 6.4 (CHƯA BẮT ĐẦU ⏳)
 
 ---
 
@@ -105,27 +105,39 @@
     - `Working tree`: **CLEAN**
     - `Evidence commit`: **PUSHED**
 
-### C. CI/CD Pipeline GitHub Actions (Phase 6.3 - Đang Hoàn Thiện Toàn Diện Scope)
+### C. CI/CD Pipeline GitHub Actions (Phase 6.3 - CLOSED / FROZEN ✅ - 7/7 JOBS PASS 100%)
 - [x] **Deliverable 1 — Monorepo CI Automated Testing (PASS 100% - 1,882 tests):**
-  - **Web Client Test Suite:** Sửa lỗi TypeScript `TS2345` trong `apps/web/src/test/reading-progress.spec.ts` (bổ sung `serverDateVN`). ESLint (0 errors) → Typecheck (0 errors) → 42 Vitest test files (**580 passed**) → Next.js Production Build thành công → Playwright E2E Smoke Suite (**31 passed**). Thời gian: 3m27s.
-  - **Mobile Client Test Suite:** Ghim Java 17 LTS qua `actions/setup-java@v5`. Flutter Analyze (0 issues) + Flutter Foundation & Concurrency Tests (**314 passed**). Thời gian: 2m53s.
-  - **AI Worker Test Suite:** Full Pytest suite (**323 passed**) + Real Manga OCR Model & Cache verify thành công. Thời gian: 2m3s.
+  - **Web Client Test Suite:** Sửa lỗi TypeScript `TS2345` trong `apps/web/src/test/reading-progress.spec.ts` (bổ sung `serverDateVN`). Khắc phục race condition canvas preview image test case 29 (`manga-studio-page-navigator.spec.tsx`). ESLint (0 errors) → Typecheck (0 errors) → 42 Vitest test files (**580 passed**) → Next.js Production Build thành công → Playwright E2E Smoke Suite (**31 passed**). Thời gian: 2m23s.
+  - **Mobile Client Test Suite:** Ghim Java 17 LTS qua `actions/setup-java@v5`. Flutter Analyze (0 issues) + Flutter Foundation & Concurrency Tests (**314 passed**). Thời gian: 3m1s.
+  - **AI Worker Test Suite:** Full Pytest suite (**323 passed**) + Real Manga OCR Model & Cache verify thành công. Thời gian: 1m56s.
   - **NestJS Core API Test Suite:**
     - Cập nhật 7 file fixture E2E tuân thủ ràng buộc `chk_translation_jobs_canonical_source` của Phase 5D.1.
     - Bổ sung `writeEpoch: 0` bắt buộc cho `UpdateReadingProgressDto` trong `app.e2e-spec.ts`.
     - Xử lý SigV4 Presigned PUT upload trong `upload_file_to_presigned_url` (`services/ai-worker/app/api/v1/endpoints/jobs.py`): Lọc bỏ header `x-amz-*` khi tham số đã được hoist vào query parameters của presigned URL.
     - Chạy sạch sẽ **18/18 migrations** (từ `0000` đến `0017`).
-    - 33 Unit test suites (**393 passed**, 1 skipped, 394 total) + 17 Integration/E2E test suites (**241 passed**) = **50/50 test suites, 634 tests passed 100%**. Thời gian: 3m5s.
-  - **Tổng Hợp CI Verification:** Run [`36766533155`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/36766533155) đạt **4/4 jobs PASS, 1,882 tests passed, 0 failed**.
+    - 33 Unit test suites (**393 passed**, 1 skipped, 394 total) + 17 Integration/E2E test suites (**241 passed**) = **50/50 test suites, 634 tests passed 100%**. Thời gian: 3m2s.
 - [x] **Deliverable 2 — Immutable Reproducible MinIO S3 Image Pinning:**
   - Ghim chính xác mã băm SHA-256 bất biến của Chainguard MinIO trong CI runner: `cgr.dev/chainguard/minio@sha256:4692462f35d97d7e82c30371d82f057703c5d9489bcae726010594c812f2d285`.
 - [x] **Deliverable 3 — Workflow Build & Scan Bảo Mật (Docker Image Audit & Secret Scanning):**
-  - **Job `security-scan`:** Tích hợp TruffleHog OSS Secret Scan (`trufflesecurity/trufflehog@main` với `--only-verified`) kèm bước kiểm tra Git tracking hygiene (chặn đứng mọi file nhạy cảm `.env`, `.pem`, `.key`, `.crt` khỏi git index).
-  - **Job `docker-build-scan`:** Đóng gói 3 container images production (`omninovel-api`, `omninovel-ai-worker`, `omninovel-nginx`) qua Docker Buildx và quét lỗ hổng bảo mật container tự động bằng Aqua Security Trivy (`aquasecurity/trivy-action@0.29.0`).
+  - **Job `security-scan`:** Tích hợp TruffleHog OSS Secret Scan (`trufflesecurity/trufflehog@main` với `--only-verified`) kèm bước kiểm tra Git tracking hygiene (chặn đứng mọi file nhạy cảm `.env`, `.pem`, `.key`, `.crt` khỏi git index). Thời gian: 12s.
+  - **Job `docker-build-scan`:**
+    - Đóng gói 3 container images production (`omninovel-api`, `omninovel-ai-worker`, `omninovel-nginx`) qua Docker Buildx.
+    - Quét lỗ hổng bảo mật container tự động bằng Aqua Security Trivy ghim verified SHA `aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25` (v0.36.0) kèm `GITHUB_TOKEN` tránh rate-limit API cho cả 3 images (`omninovel-api`, `omninovel-ai-worker`, `omninovel-nginx`).
+    - Toàn bộ 3 bước Trivy scan và build hoàn tất thành công. Thời gian: 3m28s.
 - [x] **Deliverable 4 — Workflow Deployment Tự Động Lên VPS (CD Pipeline):**
-  - **Job `deploy-vps`:** Thẩm định tính toàn vẹn cú pháp và environment bindings của `deploy/docker-compose.yml` (`docker compose config --quiet`).
-  - Tự động kích hoạt SSH deployment (`git pull`, `docker compose build`, `docker compose up -d`) khi có secrets `VPS_SSH_HOST` và `VPS_SSH_KEY`.
-  - Tự động cung cấp chế độ Topology Dry-Run & Hướng dẫn thiết lập chi tiết khi secrets chưa được nạp, đảm bảo pipeline luôn thông suốt.
+  - **Job `deploy-vps`:**
+    - Thẩm định tính toàn vẹn cú pháp và environment bindings của `deploy/docker-compose.yml` qua ephemeral `.env` chứa non-production dummy values: `docker compose --env-file .env -f deploy/docker-compose.yml config --quiet` đạt exit code 0, dọn dẹp sạch sẽ `rm -f .env` ngay sau khi validation xong (zero leaked secrets).
+    - Cú pháp SSH deployment tự động hóa hoàn thiện, xử lý an toàn fallback topology dry-run report khi chưa nạp secrets VPS SSH. Thời gian: 9s.
+- [x] **Tổng Hợp Bằng Chứng Nghiệm Thu Phase 6.3 (Hosted GitHub Actions SSoT):**
+  - Run [`36963197949`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/36963197949) tại commit [`5425f3f`](https://github.com/HIepNgoc2006/OmniNovel/commit/5425f3f): **7/7 JOBS PASS 100% (completed success in 6m47s)**:
+    1. `ai-worker-test`: **PASS** (1m56s)
+    2. `core-api-test`: **PASS** (3m2s)
+    3. `web-client-test`: **PASS** (2m23s)
+    4. `mobile-foundation-test`: **PASS** (3m1s)
+    5. `security-scan`: **PASS** (12s)
+    6. `docker-build-scan`: **PASS** (3m28s)
+    7. `deploy-vps`: **PASS** (9s)
+  - **PHASE 6.3 CHÍNH THỨC FROZEN & CLOSED CLEAN.**
 
 
 ### D. Ghi Chú Kiến Trúc Tương Lai — API-First AI Worker cho Self-Host Tài Nguyên Thấp (DEFERRED / NOT ACTIVE)

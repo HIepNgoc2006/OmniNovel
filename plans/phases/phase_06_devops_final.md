@@ -69,7 +69,10 @@
 - [x] Duy trì `deploy/docker-compose.dev.yml` cho Local Dev / CI: bổ sung `postgres` và `minio`.
 - [x] Cấu hình Nginx Production: SSL (Let's Encrypt / Certbot), HTTP/2, Gzip, Dynamic Upstream DNS (`zone api_backend 64k; server api:8000 resolve;`), Rate Limiting 429 (`api_general_limit: 30r/s`, `auth_limit: 5r/s`), WebSocket `/socket.io/` upgrade, TLS State Machine (Bootstrap vs Production) với zero-downtime hot reload.
 - [x] **[15 ACCEPTANCE GATES ĐÃ NGHIỆM THU PASS 100% (G00 + G01–G14) - EXIT CODE & ZERO-LEAK HARDENED]** Chạy test suite tự động `deploy/test-acceptance-phase6-2.ts`:
-  - **G00 (Credential Rotation Prerequisite):** Boolean probe xác nhận required envs present và forbidden envs absent trên AI Worker (exit 0). Toàn bộ credentials đã rotate (`AI_WORKER_SECRET` 64-char hex, Cloudflare R2 active token `bb4032...8c98` / revoked token `4ac511...916c`, Supabase, Redis, JWT), zero credentials printed ra console/logs.
+  - **G00 (Credential Security Prerequisite):**
+    - *Automated:* Boolean probe xác nhận required envs present và forbidden envs absent trên AI Worker (`REQUIRED_PRESENT: True`, `FORBIDDEN_ABSENT: True`, exit 0); định dạng và độ dài credential sanity check hợp lệ (`AI_WORKER_SECRET` 64-char hex, JWT/Refresh >= 16 chars, DB/Redis >= 8 chars, R2 credentials present); 2 service cốt lõi `api` và `ai-worker` đều `healthy`.
+    - *Manual Attestation:* Xác nhận `AI_WORKER_SECRET` đã được re-rotate lần nữa bằng quy trình zero-output (không in ra stdout/stderr); token Cloudflare R2 cũ đã thu hồi (revoked); DB/Redis/JWT credential rotations được xác nhận đầy đủ.
+    - *Zero Exposure:* Không in bất kỳ raw secret hay active credential fingerprint nào trong báo cáo hoặc acceptance summary (`Secrets printed = 0`).
   - **G01 (Config Valid):** `docker compose config --quiet` exit code 0 (`res.exitCode === 0 && res.output.length === 0`), không warning cú pháp, không render credentials.
   - **G02 (Migration Proof):** Container cô lập thực thi migration trên Supabase Managed PostgreSQL: exit code 0 (`res.exitCode === 0`), 18 migrations applied, `No migrations are pending`.
   - **G03 (Port Isolation):** Nginx mở `80` và `443` (exit 0). Các cổng backend `8000`, `8001`, `6379` không publish ra host (exit 0, empty binding).
@@ -88,9 +91,19 @@
   - Nhánh `main` đã được rewrite lịch sử (`git reset --soft` và force push) để loại bỏ commit cũ khỏi nhánh chính.
   - Về mặt kỹ thuật, commit cũ `0c58746` hiện là một **dangling/unreachable commit object** trên máy chủ GitHub (có thể vẫn hiển thị nếu truy cập trực tiếp bằng SHA do cơ chế cached view của GitHub trước khi garbage collection chạy).
   - Để đảm bảo an toàn tuyệt đối mà không phụ thuộc vào trạng thái cache của GitHub: **Toàn bộ credential xuất hiện trong commit cũ và transcript (Supabase Database Role, Redis Password, JWT Secrets, AI Worker Key, và Cloudflare R2 Storage Credentials) đã được thu hồi và rotate 100% sang giá trị mới**.
-    - **Cloudflare R2 Rotation Proof:** Thao tác Revoke token cũ `4ac511...916c` trên Cloudflare Dashboard là bằng chứng authoritative cho việc thu hồi; probe phản hồi `HTTP 401 Unauthorized` là bằng chứng bổ trợ xác nhận endpoint không còn chấp nhận truy cập. Token mới mang fingerprint `bb4032...8c98` đã được nạp vào `.env` cục bộ (không log secret), toàn bộ 4 containers đã recreate thành công, và toàn bộ 14 Acceptance Gates chạy lại đạt 100% PASS (G08 xác thực live PUT->HEAD->DELETE->404 thành công, G14 xác thực 0 leak trên toàn bộ logs 4 containers).
+    - **Cloudflare R2 Rotation Proof:** Thao tác Revoke token cũ `4ac511...916c` trên Cloudflare Dashboard là bằng chứng authoritative cho việc thu hồi; probe phản hồi `HTTP 401 Unauthorized` là bằng chứng bổ trợ xác nhận endpoint không còn chấp nhận truy cập. Token mới đã nạp vào `.env` cục bộ (không log secret), toàn bộ 4 containers đã recreate thành công, và toàn bộ 14 Acceptance Gates chạy lại đạt 100% PASS (G08 xác thực live PUT->HEAD->DELETE->404 thành công, G14 xác thực 0 leak trên toàn bộ logs 4 containers).
+    - **Remediation P0.1 & P0.2 / P1:** `AI_WORKER_SECRET` đã được re-rotate lần nữa bằng quy trình zero-output, recreate containers sạch; `dotenv` trong runner chuyển sang `override: false` bảo toàn nghiêm ngặt invariant Environment Precedence (`OS/Docker/CI > .env`); semantics G00 tách bạch rõ giữa automated sanity checks và manual rotation attestation, không in active fingerprints trong summary.
     - Lỗ hổng rò rỉ credential đã được vô hiệu hóa triệt để tại gốc (Zero Trust).
 - [x] **PHASE 6.2 CHÍNH THỨC FROZEN & CLOSED CLEAN.**
+  - **Tiêu chí nghiệm thu đóng sạch (Clean Closure Conditions):**
+    - `G00 manual + automated prerequisite`: **PASS**
+    - `G01–G14`: **14/14 PASS**
+    - `Failed gates`: **0**
+    - `Container-log leaks`: **0**
+    - `Acceptance-procedure secret prints`: **0**
+    - `Environment precedence`: **PRESERVED (`override: false`)**
+    - `Working tree`: **CLEAN**
+    - `Evidence commit`: **PUSHED**
 
 ### C. CI/CD Pipeline GitHub Actions (Phase 6.3 - Đang Hoàn Thiện Toàn Diện Scope)
 - [x] **Deliverable 1 — Monorepo CI Automated Testing (PASS 100% - 1,882 tests):**

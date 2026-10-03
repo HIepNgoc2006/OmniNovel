@@ -125,7 +125,7 @@ graph TD
 - **Nguyên tắc "Ranh giới Bằng chứng" (Boundary Defense):**
   - Bổ sung cột **"What this does NOT prove"** cho từng claim kỹ thuật.
   - Ngăn chặn slide nói quá bằng chứng (ví dụ: xác thực cú pháp `docker compose config` không được trình bày thành live VPS rollout; `flutter analyze` không chứng minh loại bỏ memory leak; CI chạy `migration:run` không chứng minh 18 migrations rollback sạch).
-  - Sử dụng GitHub Permalinks (commit SHA `53604b4`) cho toàn bộ source và test files để bảo đảm tính di động (portable).
+  - Sử dụng GitHub Permalinks (code baseline tại commit SHA [`53604b4`](https://github.com/HIepNgoc2006/OmniNovel/commit/53604b4), tài liệu quản trị và ma trận tại commit SHA [`9ef258b`](https://github.com/HIepNgoc2006/OmniNovel/commit/9ef258b)) cho toàn bộ source và test files để bảo đảm tính di động (portable).
 - **Trạng thái Gate 6.4.5:** **AMENDMENT IN PROGRESS (DRAFT AUDIT)**
 - **Điều kiện chốt FROZEN:** Gate 6.4.5 và toàn bộ Phase 6.4 chỉ được chốt hoàn thành 100% sau khi bộ slide thuyết trình và hồ sơ đồ án hoàn chỉnh được đối chiếu chéo (Cross-verification) thành công với ma trận bằng chứng.
 

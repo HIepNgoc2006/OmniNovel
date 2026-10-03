@@ -226,11 +226,13 @@
     - **Gate 6.4.4a (Supply-Chain Gate):** Ghim SHA256 digest bất biến cho `prom/prometheus:v3.15.0@sha256:...` và `grafana/grafana:13.2.3@sha256:...`; đưa cả hai vào quy trình quét Trivy fail-closed (`severity: CRITICAL,HIGH`, `exit-code: '1'`) trong CI. Các CVEs upstream được ghi nhận có vòng đời trong Sổ Quản trị Rủi ro `deploy/security/trivy-exception-register.md`.
     - **Evidence Hardening:** Chuẩn hóa Check 3 (assert counter delta `after > before`), Check 8 (Basic Auth header), Check 10 (Overlay config validation exit 0, isolation invariant & digest pinning).
   - Nghiệm thu tự động: `deploy/test-acceptance-gate-6-4-4.ts` đạt **10/10 CHECKS PASS**.
-- [/] **Gate 6.4.5 — Academic Defense Dossier & Evidence Matrix (5 Môn Học - DRAFT AUDIT):**
+- [x] **Gate 6.4.5 — Academic Defense Dossier & Evidence Matrix (5 Môn Học - FROZEN CLEAN ✅):**
   - Xây dựng bảng ma trận bằng chứng thực chứng 5 môn học tại [`plans/evidence_matrix_5_subjects.md`](../evidence_matrix_5_subjects.md):
     `Claim ➔ Source File ➔ Test/Gate ➔ Hosted Run ➔ Commit SHA ➔ Evidence Type ➔ Defense Talking Point ➔ What this does NOT prove ➔ Status`.
-  - Toàn bộ source và test files được liên kết qua **GitHub Permalinks (commit SHA `53604b4`)** bảo đảm 100% tính di động (portable) và auditability.
-  - Thiết lập ranh giới phòng thủ (Boundary Defense) với cột **"What this does NOT prove"** cho từng phát biểu kỹ thuật, ngăn chặn nói quá sự thật trước hội đồng giám khảo và bảo đảm tính trung thực học thuật.
-  - Trạng thái hiện tại: **DRAFT AUDIT** (16/16 claims kỹ thuật đạt chuẩn bằng chứng; QDA-03 giữ trạng thái IN PROGRESS chờ đối chiếu chéo khi xuất bản slide và báo cáo bảo vệ chính thức).
-  - **Phase 6.4 chưa chốt hoàn thành 100%** cho đến khi Gate 6.4.5 hoàn tất việc đối chiếu chéo này.
+  - Hoàn thiện tài liệu Hồ sơ Bảo vệ & Dàn ý 18 Slides tại [`plans/defense/academic_defense_dossier_and_slides.md`](../defense/academic_defense_dossier_and_slides.md) kèm Bảng kiểm tra chéo (Cross-Verification Table) 100% VERIFIED.
+  - Toàn bộ source và test files được liên kết qua **GitHub Permalinks (code baseline tại commit SHA `53604b4`, tài liệu quản trị và ma trận tại commit SHA `90e303b`)** bảo đảm 100% tính di động (portable) và auditability.
+  - Thiết lập ranh giới phòng thủ (Boundary Defense) với cột **"What this does NOT prove"** cho từng phát biểu kỹ thuật, ngăn chặn triệt để nguy cơ overclaiming trước hội đồng giám khảo ("Talking Point không bao giờ được tự động trở thành Benchmark Claim").
+  - 17/17 claims (16 technical claims + QDA-03) đều đạt trạng thái **PASS (100%)**.
+  - **Trạng thái Gate 6.4.5:** **CLOSED / FROZEN CLEAN ✅**.
+  - **KẾT LUẬN TOÀN BỘ PHASE 6.4:** **CHÍNH THỨC HOÀN THÀNH 100% & ĐÓNG BĂNG TOÀN DIỆN (FROZEN CLEAN) ✅**.
 

@@ -116,18 +116,20 @@ graph TD
 
 ---
 
-### Gate 6.4.5: Academic Defense Dossier & Evidence Matrix (5 Môn Học - DRAFT AUDIT)
+### Gate 6.4.5: Academic Defense Dossier & Evidence Matrix (5 Môn Học - FROZEN CLEAN ✅)
 - **Mục tiêu:** Chuẩn bị hồ sơ kỹ thuật hoàn chỉnh, không có claim "suông", sẵn sàng cho buổi bảo vệ đồ án 5 môn.
 - **Tài liệu Ma trận Bằng chứng Học thuật:** Đã ban hành tại [`plans/evidence_matrix_5_subjects.md`](../evidence_matrix_5_subjects.md).
+- **Hồ sơ Bảo vệ & Dàn ý 18 Slides:** Đã ban hành tại [`plans/defense/academic_defense_dossier_and_slides.md`](defense/academic_defense_dossier_and_slides.md).
 - **Cấu trúc Ma trận Bằng chứng (Ground-Truth Evidence Matrix):**
   Mỗi phát biểu trong báo cáo/slide tuân theo cấu trúc truy vết:
   $$\text{Môn học} \longrightarrow \text{Claim} \longrightarrow \text{Source File} \longrightarrow \text{Test/Gate} \longrightarrow \text{Hosted Run} \longrightarrow \text{Commit SHA} \longrightarrow \text{What this does NOT prove} \longrightarrow \text{Status}$$
 - **Nguyên tắc "Ranh giới Bằng chứng" (Boundary Defense):**
   - Bổ sung cột **"What this does NOT prove"** cho từng claim kỹ thuật.
   - Ngăn chặn slide nói quá bằng chứng (ví dụ: xác thực cú pháp `docker compose config` không được trình bày thành live VPS rollout; `flutter analyze` không chứng minh loại bỏ memory leak; CI chạy `migration:run` không chứng minh 18 migrations rollback sạch).
-  - Sử dụng GitHub Permalinks (code baseline tại commit SHA [`53604b4`](https://github.com/HIepNgoc2006/OmniNovel/commit/53604b4), tài liệu quản trị và ma trận tại commit SHA [`9ef258b`](https://github.com/HIepNgoc2006/OmniNovel/commit/9ef258b)) cho toàn bộ source và test files để bảo đảm tính di động (portable).
-- **Trạng thái Gate 6.4.5:** **AMENDMENT IN PROGRESS (DRAFT AUDIT)**
-- **Điều kiện chốt FROZEN:** Gate 6.4.5 và toàn bộ Phase 6.4 chỉ được chốt hoàn thành 100% sau khi bộ slide thuyết trình và hồ sơ đồ án hoàn chỉnh được đối chiếu chéo (Cross-verification) thành công với ma trận bằng chứng.
+  - Sử dụng GitHub Permalinks (code baseline tại commit SHA [`53604b4`](https://github.com/HIepNgoc2006/OmniNovel/commit/53604b4), tài liệu quản trị và ma trận tại commit SHA [`90e303b`](https://github.com/HIepNgoc2006/OmniNovel/commit/90e303b)) cho toàn bộ source và test files để bảo đảm tính di động (portable).
+- **Bảng đối chiếu chéo (Cross-Verification):** 18/18 slides đối chiếu trực tiếp 1-1 với 17/17 claims (16 technical claims + QDA-03) đều đạt trạng thái `VERIFIED & PASS`.
+- **Trạng thái Gate 6.4.5:** **CLOSED / FROZEN CLEAN ✅**
+- **Kết luận:** Toàn bộ Phase 6.4 chính thức **HOÀN THÀNH 100% & ĐÓNG BĂNG TOÀN DIỆN (FROZEN CLEAN) ✅**.
 
 ---
 
@@ -141,6 +143,8 @@ graph TD
 | **6.4.3** | Trivy Fail-Closed Gate & Sổ Quản trị Rủi ro | **COMPLETED** | `exit-code: '1'`, `deploy/security/trivy-exception-register.md` |
 | **6.4.4** | Nền tảng Giám sát & Bất biến An toàn `/metrics` | **FROZEN CLEAN** | 10/10 Acceptance Checks PASS, Run `37129675896` |
 | **6.4.4a** | Khóa chuỗi cung ứng Observability Containers | **FROZEN CLEAN** | Prometheus & Grafana digest pinning, Trivy scans, Basic Auth header, Run `37131693246` |
-| **6.4.5** | Ma trận Bằng chứng 5 Môn Học & Ranh giới | **DRAFT AUDIT** | `plans/evidence_matrix_5_subjects.md` (16/16 claims PASS, QDA-03 IN PROGRESS) |
+| **6.4.5** | Ma trận Bằng chứng 5 Môn Học & Hồ Sơ Bảo Vệ | **FROZEN CLEAN** | `plans/evidence_matrix_5_subjects.md` (17/17 claims PASS) & `plans/defense/academic_defense_dossier_and_slides.md` (18 slides cross-verified) |
+
+> 🏆 **PHASE 6.4: 100% COMPLETE & FROZEN CLEAN ✅**
 
 

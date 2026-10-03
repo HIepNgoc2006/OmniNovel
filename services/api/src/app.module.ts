@@ -14,6 +14,8 @@ import { StorageModule } from './modules/storage/storage.module';
 import { GamificationModule } from './modules/gamification/gamification.module';
 import { TranslationModule } from './modules/translation/translation.module';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
+import { MetricsModule } from './modules/metrics/metrics.module';
+import { MetricsMiddleware } from './modules/metrics/metrics.middleware';
 
 @Module({
   imports: [
@@ -43,10 +45,11 @@ import { CorrelationIdMiddleware } from './common/middleware/correlation-id.midd
     StorageModule,
     GamificationModule,
     TranslationModule,
+    MetricsModule,
   ],
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(CorrelationIdMiddleware).forRoutes('*');
+    consumer.apply(CorrelationIdMiddleware, MetricsMiddleware).forRoutes('*');
   }
 }

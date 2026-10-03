@@ -87,25 +87,26 @@ graph TD
 
 ---
 
-### Gate 6.4.4: Observability Baseline & Security Invariant
+### Gate 6.4.4: Observability Baseline & Security Invariant (COMPLETED & VERIFIED)
 - **Mục tiêu:** Giám sát thời gian thực các chỉ số tài nguyên, độ trễ và hàng đợi; đồng thời bảo vệ endpoint `/metrics` khỏi truy cập trái phép từ Internet.
 - **Triển khai Metrics:**
-  - Core API (`services/api`): Tích hợp Prometheus client chuẩn.
+  - Core API (`services/api`): Tích hợp Prometheus client chuẩn (`prom-client`).
     - `http_requests_total`: Counter (labels: `method`, `route`, `status_code`).
     - `http_request_duration_seconds`: Histogram (buckets chuẩn: `[0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]`).
-    - `bullmq_jobs_active`, `bullmq_jobs_waiting`, `bullmq_jobs_failed`: Gauges giám sát hàng đợi AI.
-    - Process metrics: Memory RSS, Heap Used, Event Loop Lag.
-- **Triển khai Dashboard & PromQL:**
-  - Grafana dashboard JSON template tính toán độ trễ chuẩn:
-    - $p_{50} = \text{histogram\_quantile}(0.50, \text{sum}(\text{rate}(\text{http\_request\_duration\_seconds\_bucket}[5m])) \text{ by } (le))$
-    - $p_{95} = \text{histogram\_quantile}(0.95, \text{sum}(\text{rate}(\text{http\_request\_duration\_seconds\_bucket}[5m])) \text{ by } (le))$
-    - $p_{99} = \text{histogram\_quantile}(0.99, \text{sum}(\text{rate}(\text{http\_request\_duration\_seconds\_bucket}[5m])) \text{ by } (le))$
-- **Security Invariant (Bắt buộc kiểm thử tự động):**
-  - Nginx cấu hình: Chặn tuyệt đối mọi request từ bên ngoài vào `/metrics` hoặc `/api/v1/metrics` (trả về HTTP 403 Forbidden hoặc HTTP 404 Not Found).
+    - `bullmq_jobs_active`, `bullmq_jobs_waiting`, `bullmq_jobs_failed`, `bullmq_jobs_completed`, `bullmq_jobs_delayed`: Gauges gắn nhãn `queue` cho cả 3 queue (`translation`, `translation-materialization`, `chapter-packaging`).
+    - Process metrics: Memory RSS, Heap Used, Event Loop Lag via `collectDefaultMetrics`.
+    - Cardinality Protection: Chuẩn hóa route pattern với utility `normalizeRoute` (thay thế UUID bằng `:id`, loại bỏ query string).
+- **Triển khai Overlay Docker Compose & Dashboard Grafana:**
+  - File overlay độc lập `deploy/docker-compose.observability.yml` tích hợp Prometheus `v2.51.0` và Grafana `10.4.1`, kết nối mạng nội bộ `omninovel-internal`.
+  - Tự động nạp qua Grafana Provisioning (`deploy/grafana/provisioning/` và dashboard `omninovel-telemetry.json`).
+  - PromQL quantile tính toán độ trễ chuẩn:
+    - $p_{50} = \text{histogram\_quantile}(0.50, \text{sum}(\text{rate}(\text{http\_request\_duration\_seconds\_bucket}[5m])) \text{ by } (le, route))$
+    - $p_{95} = \text{histogram\_quantile}(0.95, \text{sum}(\text{rate}(\text{http\_request\_duration\_seconds\_bucket}[5m])) \text{ by } (le, route))$
+    - $p_{99} = \text{histogram\_quantile}(0.99, \text{sum}(\text{rate}(\text{http\_request\_duration\_seconds\_bucket}[5m])) \text{ by } (le, route))$
+- **Security Invariant (Đã nghiệm thu tự động):**
+  - Nginx cấu hình: Chặn tuyệt đối mọi request từ bên ngoài vào `/metrics` (`location = /metrics { return 404; }` ở cả HTTP và HTTPS server).
   - Prometheus scrape container chỉ truy cập qua mạng nội bộ Docker (`omninovel-internal`).
-  - Viết test case tự động xác thực:
-    - External probe vào `http://localhost/metrics` ➔ **Bị từ chối (403/404)**.
-    - Internal probe qua mạng nội bộ ➔ **HTTP 200 OK kèm payload Prometheus valid**.
+  - Kịch bản nghiệm thu tự động `deploy/test-acceptance-gate-6-4-4.ts`: Đạt **10/10 Checks PASS**.
 
 ---
 

@@ -215,10 +215,13 @@
     6. `docker-build-scan` (Gate 6.4.3): **PASS** (5m26s) — 3 images built + 3 Trivy Fail-Closed scans pass exit-code 1 với `.trivyignore`
     7. `deploy-vps`: **PASS** (6s) — Compose config exit 0 + topology dry-run verified
   - **Kết luận:** Bộ ba Security Hardening Gates (6.4.1, 6.4.2, 6.4.3) chính thức **CLOSED / FROZEN** với bằng chứng hosted pipeline xanh 100%. Nền tảng an ninh đã được bảo đảm vững chắc trước khi tiến hành Observability.
-- [ ] **Gate 6.4.4 — Observability Baseline & Security Invariant:**
-  - Tích hợp Prometheus client trong NestJS API (`http_requests_total`, histogram `http_request_duration_seconds`, gauges `bullmq_jobs_*`, process RSS).
-  - Cấu hình mẫu Grafana Dashboard với PromQL quantile tính toán $p_{50}, p_{95}, p_{99}$ từ histogram buckets.
-  - **Security Invariant Gate:** Cấu hình Nginx chặn triệt để truy cập `/metrics` từ bên ngoài (403/404), chỉ cho phép Prometheus nội bộ scrape qua Docker network.
+- [x] **Gate 6.4.4 — Observability Baseline & Security Invariant:**
+  - Tích hợp Prometheus client trong NestJS API (`http_requests_total`, histogram `http_request_duration_seconds`, gauges `bullmq_jobs_*` gắn nhãn `queue` cho cả 3 hàng đợi `translation`, `translation-materialization`, `chapter-packaging`, và process metrics chuẩn từ `prom-client`).
+  - Chuẩn hóa route pattern với utility `normalizeRoute` chống bùng nổ cardinality (loại bỏ UUID, query params).
+  - Tách overlay Docker Compose `deploy/docker-compose.observability.yml` (Prometheus + Grafana) giữ nguyên vẹn baseline core 4 containers.
+  - Cấu hình tự động nạp Dashboard và Datasource qua Grafana Provisioning (`deploy/grafana/provisioning/`), template chuẩn hóa hiển thị $p_{50}, p_{95}, p_{99}$ bằng PromQL `histogram_quantile`.
+  - **Security Invariant Gate:** Nginx chặn triệt để `/metrics` từ Internet (`location = /metrics { return 404; }` ở cả HTTP 80 và HTTPS 443), Prometheus scrape trực tiếp qua `omninovel-internal`.
+  - Nghiệm thu tự động qua `deploy/test-acceptance-gate-6-4-4.ts`: Đạt **10/10 Checks PASS 100%**.
 - [ ] **Gate 6.4.5 — Academic Defense Dossier & Evidence Matrix (5 Môn Học):**
   - Xây dựng bảng ma trận bằng chứng thực chứng: `Claim ➔ Source File ➔ Test/Gate ➔ Hosted Run ➔ Commit SHA ➔ Trạng thái`.
   - Tổng hợp hồ sơ kỹ thuật và slide thuyết trình phản biện vững chắc cho 5 môn học.

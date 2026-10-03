@@ -27,7 +27,7 @@ async function bootstrap() {
 
   // 4. Global API Prefix
   app.setGlobalPrefix('api/v1', {
-    exclude: ['health/live', 'health/ready', 'internal/v1/(.*)'],
+    exclude: ['health/live', 'health/ready', 'internal/v1/(.*)', 'metrics'],
   });
 
   // 5. CORS

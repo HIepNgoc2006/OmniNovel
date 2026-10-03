@@ -45,7 +45,9 @@ export class BullmqMetricsCollector implements OnModuleInit {
           completed: counts.completed ?? 0,
           delayed: counts.delayed ?? 0,
         });
+        this.metricsService.recordQueueCollectionStatus(name, true, Math.floor(Date.now() / 1000));
       } catch (err: any) {
+        this.metricsService.recordQueueCollectionStatus(name, false);
         this.logger.debug(`Could not query BullMQ queue [${name}]: ${err?.message || err}`);
       }
     }

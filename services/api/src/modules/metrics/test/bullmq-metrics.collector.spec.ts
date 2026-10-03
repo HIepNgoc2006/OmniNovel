@@ -12,6 +12,7 @@ describe('BullmqMetricsCollector (Gate 6.4.4)', () => {
   beforeEach(() => {
     metricsService = new MetricsService();
     jest.spyOn(metricsService, 'updateQueueMetrics');
+    jest.spyOn(metricsService, 'recordQueueCollectionStatus');
 
     mockTranslationQueue = {
       getJobCounts: jest.fn().mockResolvedValue({
@@ -55,7 +56,7 @@ describe('BullmqMetricsCollector (Gate 6.4.4)', () => {
     metricsService.onModuleDestroy();
   });
 
-  it('should query all 3 queues and update metrics with queue label', async () => {
+  it('should query all 3 queues and update metrics with queue label and success status', async () => {
     await collector.collect();
 
     expect(mockTranslationQueue.getJobCounts).toHaveBeenCalled();
@@ -85,11 +86,18 @@ describe('BullmqMetricsCollector (Gate 6.4.4)', () => {
       completed: 15,
       delayed: 1,
     });
+
+    // Verify P1 success status tracking
+    expect(metricsService.recordQueueCollectionStatus).toHaveBeenCalledWith('translation', true, expect.any(Number));
+    expect(metricsService.recordQueueCollectionStatus).toHaveBeenCalledWith('translation-materialization', true, expect.any(Number));
+    expect(metricsService.recordQueueCollectionStatus).toHaveBeenCalledWith('chapter-packaging', true, expect.any(Number));
   });
 
-  it('should handle queue query errors gracefully without throwing', async () => {
+  it('should handle queue query errors gracefully and mark collection status as false (P1)', async () => {
     mockTranslationQueue.getJobCounts = jest.fn().mockRejectedValue(new Error('Redis connection timeout'));
 
     await expect(collector.collect()).resolves.not.toThrow();
+
+    expect(metricsService.recordQueueCollectionStatus).toHaveBeenCalledWith('translation', false);
   });
 });

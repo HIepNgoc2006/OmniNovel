@@ -1,12 +1,15 @@
 /**
- * OmniNovel - Gate 6.4.4 Acceptance Test Suite
- * Validates Observability Baseline, Prometheus Telemetry, Route Normalization,
- * BullMQ Queue Gauges, Grafana Auto-Provisioning, and Nginx Security Invariant.
+ * OmniNovel - Gate 6.4.4 Acceptance Test Suite (Hardened Edition)
+ * Validates Observability Baseline, Prometheus Telemetry, Route Normalization (Cardinality Defense),
+ * BullMQ Queue Gauges + Collection Health (P1), Grafana Auto-Provisioning (Dynamic Auth P0.2),
+ * Loopback & Network Boundary Isolation (P0.1), and Nginx Security Invariant.
  */
 
 import { spawnSync } from 'child_process';
 import * as http from 'http';
 import * as https from 'https';
+import * as fs from 'fs';
+import * as path from 'path';
 
 interface CheckResult {
   gate: string;
@@ -36,6 +39,33 @@ async function httpGet(url: string, rejectUnauthorized = false): Promise<{ statu
     req.on('error', reject);
     req.setTimeout(5000, () => req.destroy(new Error('Timeout')));
   });
+}
+
+function extractMetricValue(metricsOutput: string, metricPrefix: string): number | null {
+  const lines = metricsOutput.split('\n');
+  for (const line of lines) {
+    if (line.startsWith(metricPrefix)) {
+      const parts = line.trim().split(/\s+/);
+      const val = parseFloat(parts[parts.length - 1]);
+      if (!isNaN(val)) return val;
+    }
+  }
+  return null;
+}
+
+function getGrafanaAdminPassword(): string {
+  if (process.env.GRAFANA_ADMIN_PASSWORD) {
+    return process.env.GRAFANA_ADMIN_PASSWORD;
+  }
+  const envPath = path.resolve(process.cwd(), '.env');
+  if (fs.existsSync(envPath)) {
+    const content = fs.readFileSync(envPath, 'utf-8');
+    const match = content.match(/^GRAFANA_ADMIN_PASSWORD=(.*)$/m);
+    if (match && match[1].trim()) {
+      return match[1].trim();
+    }
+  }
+  throw new Error('GRAFANA_ADMIN_PASSWORD must be configured in environment or .env');
 }
 
 async function runAcceptanceGate644() {
@@ -75,21 +105,32 @@ async function runAcceptanceGate644() {
     results.push({ gate: 'Check 2', description: 'Nginx deny invariant', passed: false, evidence: err.message });
   }
 
-  // Check 3: HTTP probe increments http_requests_total
+  // Check 3: HTTP probe increments http_requests_total (Assert delta: after > before)
   try {
-    // Fire probe
+    const metricPrefix = 'http_requests_total{method="GET",route="/health/live",status_code="200"}';
+
+    // 1. Read value before probe
+    const beforeMetrics = runCommand('docker exec omninovel-obs-prometheus wget -q -O - http://api:8000/metrics');
+    const valBefore = extractMetricValue(beforeMetrics, metricPrefix) ?? 0;
+
+    // 2. Fire probe request
     await httpGet('https://localhost/health/live', false);
-    const metricsOutput = runCommand('docker exec omninovel-obs-prometheus wget -q -O - http://api:8000/metrics');
-    const hasCounter = metricsOutput.includes('http_requests_total{method="GET",route="/health/live",status_code="200"}');
+
+    // 3. Read value after probe
+    const afterMetrics = runCommand('docker exec omninovel-obs-prometheus wget -q -O - http://api:8000/metrics');
+    const valAfter = extractMetricValue(afterMetrics, metricPrefix) ?? 0;
+
+    const delta = valAfter - valBefore;
+    const passed = delta > 0;
 
     results.push({
       gate: 'Check 3',
-      description: 'HTTP probe correctly increments http_requests_total counter',
-      passed: hasCounter,
-      evidence: 'Counter series http_requests_total exists and increments on HTTP traffic.',
+      description: 'HTTP probe correctly increments http_requests_total counter (after > before)',
+      passed: passed,
+      evidence: `Counter value before: ${valBefore}, after probe: ${valAfter} (delta: +${delta} > 0). Verified counter actively increments.`,
     });
   } catch (err: any) {
-    results.push({ gate: 'Check 3', description: 'Counter verification', passed: false, evidence: err.message });
+    results.push({ gate: 'Check 3', description: 'Counter increment verification', passed: false, evidence: err.message });
   }
 
   // Check 4: Histogram duration buckets & PromQL quantile
@@ -113,7 +154,7 @@ async function runAcceptanceGate644() {
     results.push({ gate: 'Check 4', description: 'Histogram & PromQL quantile', passed: false, evidence: err.message });
   }
 
-  // Check 5: BullMQ gauges reflect 3 active queues with queue label
+  // Check 5: BullMQ gauges reflect 3 active queues + Collector Health Status Gauges (P1)
   try {
     const rawMetrics = runCommand('docker exec omninovel-obs-prometheus wget -q -O - http://api:8000/metrics');
     const hasTranslation = rawMetrics.includes('bullmq_jobs_active{queue="translation"}');
@@ -121,11 +162,15 @@ async function runAcceptanceGate644() {
     const hasPackaging = rawMetrics.includes('bullmq_jobs_active{queue="chapter-packaging"}');
     const all3Queues = hasTranslation && hasMaterialization && hasPackaging;
 
+    // Verify P1 collector health gauges
+    const hasHealthGauge = rawMetrics.includes('bullmq_metrics_collection_success{queue="translation"} 1');
+    const hasTimestampGauge = rawMetrics.includes('bullmq_metrics_last_success_timestamp_seconds{queue="translation"}');
+
     results.push({
       gate: 'Check 5',
-      description: 'BullMQ gauges reflect all 3 active queues (translation, translation-materialization, chapter-packaging)',
-      passed: all3Queues,
-      evidence: `translation: ${hasTranslation}, translation-materialization: ${hasMaterialization}, chapter-packaging: ${hasPackaging}`,
+      description: 'BullMQ gauges reflect 3 queues + Collector Health & Timestamp gauges present (P1)',
+      passed: all3Queues && hasHealthGauge && hasTimestampGauge,
+      evidence: `3 queues: ${all3Queues}, bullmq_metrics_collection_success: ${hasHealthGauge}, bullmq_metrics_last_success_timestamp_seconds: ${hasTimestampGauge}`,
     });
   } catch (err: any) {
     results.push({ gate: 'Check 5', description: 'BullMQ queue gauges', passed: false, evidence: err.message });
@@ -165,55 +210,105 @@ async function runAcceptanceGate644() {
     results.push({ gate: 'Check 7', description: 'Prometheus target health', passed: false, evidence: err.message });
   }
 
-  // Check 8: Grafana provisioning loads dashboard automatically
+  // Check 8: Grafana provisioning loads dashboard with dynamic credentials (P0.2)
   try {
-    const grafanaSearch = runCommand('docker exec omninovel-obs-grafana wget -q -O - http://admin:admin_omninovel_2026@localhost:3000/api/search');
+    const adminUser = process.env.GRAFANA_ADMIN_USER || 'admin';
+    const adminPassword = getGrafanaAdminPassword();
+
+    const grafanaSearch = runCommand(`docker exec omninovel-obs-grafana wget -q -O - http://${adminUser}:${adminPassword}@localhost:3000/api/search`);
     const dashboards = JSON.parse(grafanaSearch);
     const telemetryDash = dashboards.find((d: any) => d.uid === 'omninovel-telemetry-gate-6-4-4');
 
     results.push({
       gate: 'Check 8',
-      description: 'Grafana provisioning loads dashboard automatically without manual configuration',
+      description: 'Grafana auto-provisioning loaded dashboard (authenticated via dynamic environment credential, zero hardcoded password)',
       passed: !!telemetryDash,
-      evidence: `Found dashboard: "${telemetryDash?.title}", UID: ${telemetryDash?.uid}, folder: "${telemetryDash?.folderTitle}"`,
+      evidence: `Found dashboard: "${telemetryDash?.title}", UID: ${telemetryDash?.uid}, authenticated as user: ${adminUser}.`,
     });
   } catch (err: any) {
     results.push({ gate: 'Check 8', description: 'Grafana auto-provisioning', passed: false, evidence: err.message });
   }
 
-  // Check 9: Route normalization unit test verification
+  // Check 9: Route normalization & Cardinality Invariant (P0.3: Unmatched routes collapse to bounded /__unmatched__)
   try {
+    // 1. Send arbitrary garbage/scanner probes via proxied API path
+    const garbageProbes = [
+      '/api/v1/garbage-a8fj2ks',
+      '/api/v1/garbage-j28skq1',
+      '/api/v1/garbage-729ajdm',
+      '/api/v1/random-fuzzing-path',
+    ];
+    for (const p of garbageProbes) {
+      await httpGet(`https://localhost${p}`, false);
+    }
+
+    // 2. Fetch metrics
+    const rawMetrics = runCommand('docker exec omninovel-obs-prometheus wget -q -O - http://api:8000/metrics');
+
+    // 3. Verify NONE of the garbage paths appear in metrics labels
+    let leakedPath: string | null = null;
+    for (const p of garbageProbes) {
+      if (rawMetrics.includes(`route="${p}"`)) {
+        leakedPath = p;
+        break;
+      }
+    }
+
+    // 4. Verify unmatched route label exists
+    const hasUnmatchedLabel = rawMetrics.includes('route="/__unmatched__"');
+
+    // 5. Run route-normalizer unit test suite (with 500-URL adversarial fuzzing)
     const testOut = runCommand('npm --prefix services/api test -- src/modules/metrics/test/route-normalizer.spec.ts');
-    const passed = testOut.includes('PASS') && !testOut.includes('FAIL');
+    const unitTestPassed = testOut.includes('PASS') && !testOut.includes('FAIL');
+
+    const passed = leakedPath === null && hasUnmatchedLabel && unitTestPassed;
 
     results.push({
       gate: 'Check 9',
-      description: 'Automated test suite proves route normalization prevents cardinality explosion (no UUID/query)',
+      description: 'Route normalization strictly bounds cardinality: unmatched/garbage routes collapse to /__unmatched__ (P0.3)',
       passed: passed,
-      evidence: 'route-normalizer.spec.ts passed 100% verifying UUID and query parameter sanitization.',
+      evidence: `Leaked paths: ${leakedPath ?? 'NONE (100% blocked)'}, has /__unmatched__ label: ${hasUnmatchedLabel}, unit test 500-URL fuzzing: ${unitTestPassed ? 'PASS' : 'FAIL'}`,
     });
   } catch (err: any) {
-    results.push({ gate: 'Check 9', description: 'Route normalization unit tests', passed: false, evidence: err.message });
+    results.push({ gate: 'Check 9', description: 'Cardinality defense verification', passed: false, evidence: err.message });
   }
 
-  // Check 10: Docker Compose overlay configuration validity
+  // Check 10: Docker Compose Overlay & Network Isolation Invariant (P0.1 & P0.2)
   try {
+    // 1. Overlay config validation (merges with Phase 6.2 baseline cleanly)
     const configOut = runCommand('docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/docker-compose.observability.yml config --quiet');
-    const passed = configOut === '';
+    const configClean = configOut === '';
+
+    // 2. Verify containers only join omninovel-internal network (no omninovel-edge)
+    const promInspect = JSON.parse(runCommand('docker inspect omninovel-obs-prometheus'))[0];
+    const grafInspect = JSON.parse(runCommand('docker inspect omninovel-obs-grafana'))[0];
+
+    const promNetworks = Object.keys(promInspect?.NetworkSettings?.Networks || {});
+    const grafNetworks = Object.keys(grafInspect?.NetworkSettings?.Networks || {});
+
+    const promInternalOnly = promNetworks.includes('omninovel-internal') && !promNetworks.includes('omninovel-edge');
+    const grafInternalOnly = grafNetworks.includes('omninovel-internal') && !grafNetworks.includes('omninovel-edge');
+
+    // 3. Verify no hardcoded password fallback in docker-compose.observability.yml
+    const composeContent = fs.readFileSync(path.resolve(process.cwd(), 'deploy/docker-compose.observability.yml'), 'utf-8');
+    const noHardcodedPass = composeContent.includes('GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}') &&
+      !composeContent.includes('admin_omninovel_2026');
+
+    const passed = configClean && promInternalOnly && grafInternalOnly && noHardcodedPass;
 
     results.push({
       gate: 'Check 10',
-      description: 'Docker Compose overlay configuration merges with Phase 6.2 baseline cleanly (exit code 0)',
+      description: 'Docker Compose overlay config valid, networks strictly internal-only, zero hardcoded fallback (P0.1 & P0.2)',
       passed: passed,
-      evidence: 'Combined docker compose config validates with exit code 0.',
+      evidence: `Config exit 0: ${configClean}, Prometheus internal-only: ${promInternalOnly}, Grafana internal-only: ${grafInternalOnly}, Fail-closed password: ${noHardcodedPass}`,
     });
   } catch (err: any) {
-    results.push({ gate: 'Check 10', description: 'Compose overlay validation', passed: false, evidence: err.message });
+    results.push({ gate: 'Check 10', description: 'Compose overlay & isolation validation', passed: false, evidence: err.message });
   }
 
   // Summary Table
   console.log('\n================================================================================');
-  console.log('📋 GATE 6.4.4 ACCEPTANCE VERIFICATION RESULTS');
+  console.log('📋 GATE 6.4.4 ACCEPTANCE VERIFICATION RESULTS (HARDENED)');
   console.log('================================================================================');
   let allPassed = true;
   for (const r of results) {
@@ -223,7 +318,7 @@ async function runAcceptanceGate644() {
     console.log(`         Evidence: ${r.evidence}`);
   }
   console.log('================================================================================');
-  console.log(`FINAL RESULT: ${allPassed ? '🎉 10/10 CHECKS PASSED - GATE 6.4.4 COMPLETE!' : '❌ CHECKS FAILED'}`);
+  console.log(`FINAL RESULT: ${allPassed ? '🎉 10/10 CHECKS PASSED - GATE 6.4.4 HARDENING COMPLETE!' : '❌ CHECKS FAILED'}`);
   console.log('================================================================================\n');
 
   if (!allPassed) {

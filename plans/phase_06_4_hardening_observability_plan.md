@@ -87,28 +87,32 @@ graph TD
 
 ---
 
-### Gate 6.4.4: Observability Baseline & Security Invariant (COMPLETED & VERIFIED)
+### Gate 6.4.4: Observability Baseline & Security Invariant (ACCEPTANCE HARDENING REQUIRED)
 - **Mục tiêu:** Giám sát thời gian thực các chỉ số tài nguyên, độ trễ và hàng đợi; đồng thời bảo vệ endpoint `/metrics` khỏi truy cập trái phép từ Internet.
 - **Triển khai Metrics:**
   - Core API (`services/api`): Tích hợp Prometheus client chuẩn (`prom-client`).
     - `http_requests_total`: Counter (labels: `method`, `route`, `status_code`).
     - `http_request_duration_seconds`: Histogram (buckets chuẩn: `[0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10]`).
     - `bullmq_jobs_active`, `bullmq_jobs_waiting`, `bullmq_jobs_failed`, `bullmq_jobs_completed`, `bullmq_jobs_delayed`: Gauges gắn nhãn `queue` cho cả 3 queue (`translation`, `translation-materialization`, `chapter-packaging`).
+    - `bullmq_metrics_collection_success`, `bullmq_metrics_last_success_timestamp_seconds`: Giám sát sức khỏe collector, phân biệt queue=0 với scrape failure.
     - Process metrics: Memory RSS, Heap Used, Event Loop Lag via `collectDefaultMetrics`.
-    - Cardinality Protection: Chuẩn hóa route pattern với utility `normalizeRoute` (thay thế UUID bằng `:id`, loại bỏ query string).
+    - Cardinality Protection: Chuẩn hóa route pattern với utility `normalizeRoute` (thay thế UUID bằng `:id`, gom toàn bộ unmatched route `!req.route` về bounded label `/__unmatched__`).
 - **Triển khai Overlay Docker Compose & Dashboard Grafana:**
-  - File overlay độc lập `deploy/docker-compose.observability.yml` tích hợp Prometheus `v2.51.0` và Grafana `10.4.1`, kết nối mạng nội bộ `omninovel-internal`.
+  - File overlay độc lập `deploy/docker-compose.observability.yml` tích hợp Prometheus `v2.51.0` và Grafana `10.4.1`, kết nối duy nhất mạng nội bộ `omninovel-internal`.
+  - Loopback-only port binding: `127.0.0.1:9090` và `127.0.0.1:3001` (triệt tiêu nguy cơ bypass Nginx từ Internet).
+  - Loại bỏ hoàn toàn default hardcoded password: fail-closed `${GRAFANA_ADMIN_PASSWORD:?required}`.
   - Tự động nạp qua Grafana Provisioning (`deploy/grafana/provisioning/` và dashboard `omninovel-telemetry.json`).
   - PromQL quantile tính toán độ trễ chuẩn:
     - $p_{50} = \text{histogram\_quantile}(0.50, \text{sum}(\text{rate}(\text{http\_request\_duration\_seconds\_bucket}[5m])) \text{ by } (le, route))$
     - $p_{95} = \text{histogram\_quantile}(0.95, \text{sum}(\text{rate}(\text{http\_request\_duration\_seconds\_bucket}[5m])) \text{ by } (le, route))$
     - $p_{99} = \text{histogram\_quantile}(0.99, \text{sum}(\text{rate}(\text{http\_request\_duration\_seconds\_bucket}[5m])) \text{ by } (le, route))$
-- **Security Invariant (Đã nghiệm thu tự động):**
+- **Security Invariant:**
   - Nginx cấu hình: Chặn tuyệt đối mọi request từ bên ngoài vào `/metrics` (`location = /metrics { return 404; }` ở cả HTTP và HTTPS server).
-  - Kịch bản nghiệm thu tự động `deploy/test-acceptance-gate-6-4-4.ts`: Đạt **10/10 Checks PASS**.
-- **Bằng chứng Nghiệm thu Hosted CI (Gate 6.4.4 FROZEN):**
-  - Hosted Action Run [`37093635633`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/37093635633) tại commit [`61fe643`](https://github.com/HIepNgoc2006/OmniNovel/commit/61fe643): **7/7 JOBS PASS 100% (7m)**.
-  - Trạng thái Gate 6.4.4: **CLOSED / FROZEN**.
+  - Không expose port ra `0.0.0.0`.
+- **Trạng thái Nghiệm thu:**
+  - Trạng thái hiện tại: **ACCEPTANCE HARDENING REQUIRED**.
+  - Hosted Action Run trước [`37093635633`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/37093635633) tại commit [`61fe643`](https://github.com/HIepNgoc2006/OmniNovel/commit/61fe643) đã PASS 7/7 (chứng minh core logic và pipeline).
+  - Đang khắc phục remediation P0.1, P0.2, P0.3, P1 và chạy lại acceptance 10/10 trước khi freeze chính thức.
 
 ---
 

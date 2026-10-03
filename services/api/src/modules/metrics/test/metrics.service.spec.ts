@@ -82,4 +82,16 @@ describe('MetricsService (Gate 6.4.4)', () => {
     expect(hookExecuted).toBe(true);
     expect(exposition).toContain('bullmq_jobs_active{queue="translation"} 9');
   });
+
+  it('should initialize and update BullMQ collection status gauges (P1)', async () => {
+    let exposition = await service.getMetrics();
+    expect(exposition).toContain('bullmq_metrics_collection_success{queue="translation"} 1');
+    expect(exposition).toContain('bullmq_metrics_last_success_timestamp_seconds{queue="translation"}');
+
+    // Simulate failure on translation queue scrape (e.g. Redis disconnect)
+    service.recordQueueCollectionStatus('translation', false);
+
+    exposition = await service.getMetrics();
+    expect(exposition).toContain('bullmq_metrics_collection_success{queue="translation"} 0');
+  });
 });

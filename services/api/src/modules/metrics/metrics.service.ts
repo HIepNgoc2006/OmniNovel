@@ -22,6 +22,8 @@ export class MetricsService implements OnModuleDestroy {
   private readonly bullmqJobsFailed: client.Gauge<'queue'>;
   private readonly bullmqJobsCompleted: client.Gauge<'queue'>;
   private readonly bullmqJobsDelayed: client.Gauge<'queue'>;
+  private readonly bullmqCollectionSuccess: client.Gauge<'queue'>;
+  private readonly bullmqLastSuccessTimestamp: client.Gauge<'queue'>;
 
   private collectCallbacks: (() => Promise<void>)[] = [];
 
@@ -87,8 +89,24 @@ export class MetricsService implements OnModuleDestroy {
       registers: [this.registry],
     });
 
+    // 5. BullMQ Collector Health & Freshness Gauges (P1 Remediation)
+    this.bullmqCollectionSuccess = new client.Gauge({
+      name: 'bullmq_metrics_collection_success',
+      help: 'Status of BullMQ metrics collection for queue (1 = success, 0 = failure / Redis down)',
+      labelNames: ['queue'],
+      registers: [this.registry],
+    });
+
+    this.bullmqLastSuccessTimestamp = new client.Gauge({
+      name: 'bullmq_metrics_last_success_timestamp_seconds',
+      help: 'Unix timestamp in seconds of last successful BullMQ metrics scrape for queue',
+      labelNames: ['queue'],
+      registers: [this.registry],
+    });
+
     // Initialize the 3 core queues to 0 so gauges exist in exposition output from startup
     const initialQueues = ['translation', 'translation-materialization', 'chapter-packaging'];
+    const nowSeconds = Math.floor(Date.now() / 1000);
     for (const q of initialQueues) {
       this.updateQueueMetrics(q, {
         active: 0,
@@ -97,6 +115,8 @@ export class MetricsService implements OnModuleDestroy {
         completed: 0,
         delayed: 0,
       });
+      this.bullmqCollectionSuccess.set({ queue: q }, 1);
+      this.bullmqLastSuccessTimestamp.set({ queue: q }, nowSeconds);
     }
   }
 
@@ -133,6 +153,16 @@ export class MetricsService implements OnModuleDestroy {
     this.bullmqJobsFailed.set({ queue }, counts.failed);
     this.bullmqJobsCompleted.set({ queue }, counts.completed);
     this.bullmqJobsDelayed.set({ queue }, counts.delayed);
+  }
+
+  /**
+   * Records BullMQ collection success status and freshness timestamp (P1)
+   */
+  recordQueueCollectionStatus(queue: string, success: boolean, timestampSeconds?: number): void {
+    this.bullmqCollectionSuccess.set({ queue }, success ? 1 : 0);
+    if (success && timestampSeconds !== undefined) {
+      this.bullmqLastSuccessTimestamp.set({ queue }, timestampSeconds);
+    }
   }
 
   /**

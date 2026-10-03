@@ -31,6 +31,9 @@ WORKDIR /app
 ENV NODE_ENV=production \
     PORT=8000
 
+# Security Hardening: Remove unused global npm/npx from production runtime
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist
 COPY --from=builder /app/packages/shared/package.json ./packages/shared/package.json

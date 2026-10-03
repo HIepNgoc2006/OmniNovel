@@ -109,3 +109,5 @@ CVE-2026-88806
 CVE-2026-102276
 CVE-2026-102278
 CVE-2026-102599
+# http-cache-semantics in base node npm package
+CVE-2026-93748

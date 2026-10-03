@@ -105,8 +105,10 @@ graph TD
     - $p_{99} = \text{histogram\_quantile}(0.99, \text{sum}(\text{rate}(\text{http\_request\_duration\_seconds\_bucket}[5m])) \text{ by } (le, route))$
 - **Security Invariant (Đã nghiệm thu tự động):**
   - Nginx cấu hình: Chặn tuyệt đối mọi request từ bên ngoài vào `/metrics` (`location = /metrics { return 404; }` ở cả HTTP và HTTPS server).
-  - Prometheus scrape container chỉ truy cập qua mạng nội bộ Docker (`omninovel-internal`).
   - Kịch bản nghiệm thu tự động `deploy/test-acceptance-gate-6-4-4.ts`: Đạt **10/10 Checks PASS**.
+- **Bằng chứng Nghiệm thu Hosted CI (Gate 6.4.4 FROZEN):**
+  - Hosted Action Run [`37093635633`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/37093635633) tại commit [`61fe643`](https://github.com/HIepNgoc2006/OmniNovel/commit/61fe643): **7/7 JOBS PASS 100% (7m)**.
+  - Trạng thái Gate 6.4.4: **CLOSED / FROZEN**.
 
 ---
 

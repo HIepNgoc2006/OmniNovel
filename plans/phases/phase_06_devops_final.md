@@ -222,6 +222,16 @@
   - Cấu hình tự động nạp Dashboard và Datasource qua Grafana Provisioning (`deploy/grafana/provisioning/`), template chuẩn hóa hiển thị $p_{50}, p_{95}, p_{99}$ bằng PromQL `histogram_quantile`.
   - **Security Invariant Gate:** Nginx chặn triệt để `/metrics` từ Internet (`location = /metrics { return 404; }` ở cả HTTP 80 và HTTPS 443), Prometheus scrape trực tiếp qua `omninovel-internal`.
   - Nghiệm thu tự động qua `deploy/test-acceptance-gate-6-4-4.ts`: Đạt **10/10 Checks PASS 100%**.
+- [x] **BẰNG CHỨNG NGHIỆM THU HOSTED CI (GATE 6.4.4 CHÍNH THỨC FROZEN):**
+  - Run [`37093635633`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/37093635633) tại commit [`61fe643`](https://github.com/HIepNgoc2006/OmniNovel/commit/61fe643): **7/7 JOBS PASS 100% (completed success in 7m)**:
+    1. `web-client-test`: **PASS** (2m28s)
+    2. `core-api-test`: **PASS** (3m12s) — Bao gồm 4 bộ unit test mới cho Metrics (`route-normalizer`, `metrics.service`, `metrics.controller`, `bullmq-metrics.collector`)
+    3. `security-scan`: **PASS** (41s) — Two-layer pinning + reachable commits scan clean
+    4. `ai-worker-test`: **PASS** (1m59s)
+    5. `mobile-foundation-test`: **PASS** (2m28s)
+    6. `docker-build-scan`: **PASS** (4m5s) — 3 images built + 3 Trivy Fail-Closed scans pass exit-code 1 với `.trivyignore` (bao gồm ngoại lệ được kiểm soát `CVE-2026-93748` cho base node npm)
+    7. `deploy-vps`: **PASS** (10s) — Compose config exit 0 + topology dry-run verified
+  - **Kết luận:** Gate 6.4.4 chính thức **CLOSED / FROZEN** với đầy đủ bằng chứng kiểm thử tự động, tích hợp Prometheus/Grafana provisioning, bảo vệ Nginx invariant và pipeline CI/CD hosted xanh 7/7 jobs.
 - [ ] **Gate 6.4.5 — Academic Defense Dossier & Evidence Matrix (5 Môn Học):**
   - Xây dựng bảng ma trận bằng chứng thực chứng: `Claim ➔ Source File ➔ Test/Gate ➔ Hosted Run ➔ Commit SHA ➔ Trạng thái`.
   - Tổng hợp hồ sơ kỹ thuật và slide thuyết trình phản biện vững chắc cho 5 môn học.

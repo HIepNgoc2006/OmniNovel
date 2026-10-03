@@ -215,17 +215,25 @@
     6. `docker-build-scan` (Gate 6.4.3): **PASS** (5m26s) — 3 images built + 3 Trivy Fail-Closed scans pass exit-code 1 với `.trivyignore`
     7. `deploy-vps`: **PASS** (6s) — Compose config exit 0 + topology dry-run verified
   - **Kết luận:** Bộ ba Security Hardening Gates (6.4.1, 6.4.2, 6.4.3) chính thức **CLOSED / FROZEN** với bằng chứng hosted pipeline xanh 100%. Nền tảng an ninh đã được bảo đảm vững chắc trước khi tiến hành Observability.
-- [/] **Gate 6.4.4 — Observability Baseline & Security Invariant (ACCEPTANCE HARDENING REQUIRED):**
+- [x] **Gate 6.4.4 — Observability Baseline & Security Invariant (COMPLETED & HARDENED):**
   - Tích hợp Prometheus client trong NestJS API (`http_requests_total`, histogram `http_request_duration_seconds`, gauges `bullmq_jobs_*` gắn nhãn `queue` cho cả 3 hàng đợi `translation`, `translation-materialization`, `chapter-packaging`, và process metrics chuẩn từ `prom-client`).
-  - Đang khắc phục remediation theo đánh giá phản biện:
-    - **P0.1 (Network & Port Exposure):** Chuyển port publish Prometheus & Grafana sang loopback `127.0.0.1` only, gỡ bỏ `omninovel-edge`, chỉ tham gia `omninovel-internal`.
-    - **P0.2 (Credential Security):** Loại bỏ default password hardcoded trong Compose overlay, cấu hình fail-closed `${GRAFANA_ADMIN_PASSWORD:?required}`, cập nhật acceptance test lấy credential động từ environment.
-    - **P0.3 (Cardinality Defense):** Khóa triệt để cardinality explosion bằng cách gom toàn bộ unmatched routes (`!req.route`) về bounded label `/__unmatched__`.
+  - Hoàn tất 100% toàn bộ các điểm phản biện kỹ thuật:
+    - **P0.1 (Network & Port Exposure):** Chuyển port publish Prometheus & Grafana sang loopback `127.0.0.1` only, gỡ bỏ hoàn toàn `omninovel-edge`, chỉ tham gia `omninovel-internal`.
+    - **P0.2 (Credential Security):** Loại bỏ default password hardcoded trong Compose overlay, cấu hình fail-closed `${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}`, cập nhật acceptance test lấy credential động từ environment.
+    - **P0.3 (Cardinality Defense):** Khóa triệt để cardinality explosion bằng cách gom toàn bộ unmatched routes (`!req.route`) về bounded label `/__unmatched__` (kiểm chứng 500-URL adversarial fuzzing test).
     - **P1 (Stale Gauge Defense):** Bổ sung metric `bullmq_metrics_collection_success` và `bullmq_metrics_last_success_timestamp_seconds` để phân biệt giữa queue=0 và scrape failure.
-    - **Evidence Hardening:** Chuẩn hóa Check 3 (assert counter delta `after > before`), Check 8 (dynamic auth), Check 10 (tách rõ Overlay config validation với Hosted CI run).
-- [ ] **BẰNG CHỨNG NGHIỆM THU HOSTED CI (RUN TRƯỚC: 37093635633 - 7/7 PASS; CHỜ RUN TIẾP THEO SAU HARDENING ĐỂ FREEZE):**
-  - Run trước [`37093635633`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/37093635633) tại commit [`61fe643`](https://github.com/HIepNgoc2006/OmniNovel/commit/61fe643) đã đạt 7/7 JOBS PASS (chứng minh core logic, migrations và pipeline xanh).
-  - Cần chạy lại acceptance 10/10 cục bộ và kích hoạt hosted CI 7/7 run mới sau remediation để chính thức đóng Gate 6.4.4 sang Gate 6.4.5.
+    - **Evidence Hardening:** Chuẩn hóa Check 3 (assert counter delta `after > before`), Check 8 (dynamic auth), Check 10 (Overlay config validation exit 0 & isolation invariant).
+  - Nghiệm thu cục bộ: `deploy/test-acceptance-gate-6-4-4.ts` đạt **10/10 CHECKS PASS**.
+- [x] **BẰNG CHỨNG NGHIỆM THU HOSTED CI (GATE 6.4.4 CHÍNH THỨC FROZEN):**
+  - Hosted Action Run [`37129675896`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/37129675896) tại commit [`55ead91`](https://github.com/HIepNgoc2006/OmniNovel/commit/55ead91): **7/7 JOBS PASS 100% (9m)**.
+    1. `ai-worker-test`: **PASS** (2m7s)
+    2. `core-api-test`: **PASS** (3m14s) — 37/37 suites, 405 tests pass bao gồm các specs metrics, route normalizer, collector health
+    3. `web-client-test`: **PASS** (3m55s)
+    4. `mobile-client-test`: **PASS** (3m4s)
+    5. `security-audit`: **PASS** (24s)
+    6. `docker-build-scan`: **PASS** (4m58s) — 3 Docker images & Trivy blocking scans pass
+    7. `deploy-vps`: **PASS** (7s) — Compose topology & deployment verification
+  - **Kết luận:** Gate 6.4.4 chính thức **CLOSED / FROZEN** sau khi vượt qua toàn bộ các bài kiểm thử phản biện nghiêm ngặt nhất.
 - [ ] **Gate 6.4.5 — Academic Defense Dossier & Evidence Matrix (5 Môn Học):**
   - Xây dựng bảng ma trận bằng chứng thực chứng: `Claim ➔ Source File ➔ Test/Gate ➔ Hosted Run ➔ Commit SHA ➔ Trạng thái`.
   - Tổng hợp hồ sơ kỹ thuật và slide thuyết trình phản biện vững chắc cho 5 môn học.

@@ -1,7 +1,7 @@
 services:
   # 1. Prometheus Telemetry Scraper Engine
   prometheus:
-    image: prom/prometheus:v2.51.0
+    image: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
     container_name: omninovel-obs-prometheus
     restart: unless-stopped
     command:
@@ -19,7 +19,7 @@ services:
 
   # 2. Grafana Dashboard & Visualization Service
   grafana:
-    image: grafana/grafana:10.4.1
+    image: grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
     container_name: omninovel-obs-grafana
     restart: unless-stopped
     environment:

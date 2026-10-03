@@ -111,3 +111,19 @@ CVE-2026-102278
 CVE-2026-102599
 # http-cache-semantics in base node npm package
 CVE-2026-93748
+
+# ------------------------------------------------------------------------------
+# Category D: Observability Infrastructure (Prometheus & Grafana Images - Gate 6.4.4a)
+# Technical Justification: Upstream OSS monitoring containers. Both containers run
+# isolated on the omninovel-internal network (127.0.0.1 bind-only, zero edge ingress).
+# All listed CVEs affect unused remote-read engines or unused bundled plugins (Tempo,
+# Alertmanager, Graphite).
+# ------------------------------------------------------------------------------
+# Prometheus (prom/prometheus:v3.15.0) - Unused Remote Read endpoint
+CVE-2026-42154
+
+# Grafana (grafana/grafana:13.2.3) - Unused bundled plugins (Tempo, Alertmanager, Graphite)
+CVE-2026-84445
+CVE-2026-84304
+CVE-2026-21728
+CVE-2026-28377

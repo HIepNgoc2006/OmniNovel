@@ -338,6 +338,28 @@ jobs:
           trivyignores: .trivyignore
           exit-code: '1'
 
+      - name: Trivy Vulnerability Scan (Prometheus Observability Image - Gate 6.4.4a)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 verified pinned SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          image-ref: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+          format: table
+          severity: CRITICAL,HIGH
+          trivyignores: .trivyignore
+          exit-code: '1'
+
+      - name: Trivy Vulnerability Scan (Grafana Observability Image - Gate 6.4.4a)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0 verified pinned SHA
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          image-ref: grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
+          format: table
+          severity: CRITICAL,HIGH
+          trivyignores: .trivyignore
+          exit-code: '1'
+
   deploy-vps:
     name: VPS Production Deployment & Topology Verification
     needs: [docker-build-scan, security-scan]
@@ -369,10 +391,12 @@ jobs:
           S3_SECRET_ACCESS_KEY=dummy_secret_key
           DATABASE_URL=postgresql://dummy_user:dummy_pwd@localhost:5432/dummy_db
           DB_SSL=true
+          GRAFANA_ADMIN_PASSWORD=dummy_grafana_password_secure_min8
           EOF
           docker compose --env-file .env -f deploy/docker-compose.yml config --quiet
+          docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/docker-compose.observability.yml config --quiet
           rm -f .env
-          echo "Docker Compose production manifest: VALID (exit code 0)"
+          echo "Docker Compose production and observability manifests: VALID (exit code 0)"
 
       - name: Deploy to VPS via SSH / Docker Compose
         env:

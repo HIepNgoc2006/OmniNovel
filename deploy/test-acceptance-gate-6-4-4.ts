@@ -210,20 +210,21 @@ async function runAcceptanceGate644() {
     results.push({ gate: 'Check 7', description: 'Prometheus target health', passed: false, evidence: err.message });
   }
 
-  // Check 8: Grafana provisioning loads dashboard with dynamic credentials (P0.2)
+  // Check 8: Grafana provisioning loads dashboard with dynamic credentials & Basic Auth header (P0.2 & P1)
   try {
     const adminUser = process.env.GRAFANA_ADMIN_USER || 'admin';
     const adminPassword = getGrafanaAdminPassword();
+    const authHeader = Buffer.from(`${adminUser}:${adminPassword}`).toString('base64');
 
-    const grafanaSearch = runCommand(`docker exec omninovel-obs-grafana wget -q -O - http://${adminUser}:${adminPassword}@localhost:3000/api/search`);
+    const grafanaSearch = runCommand(`docker exec omninovel-obs-grafana wget -q -O - --header="Authorization: Basic ${authHeader}" http://127.0.0.1:3000/api/search`);
     const dashboards = JSON.parse(grafanaSearch);
     const telemetryDash = dashboards.find((d: any) => d.uid === 'omninovel-telemetry-gate-6-4-4');
 
     results.push({
       gate: 'Check 8',
-      description: 'Grafana auto-provisioning loaded dashboard (authenticated via dynamic environment credential, zero hardcoded password)',
+      description: 'Grafana auto-provisioning loaded dashboard (authenticated via dynamic Basic Auth header, zero hardcoded password)',
       passed: !!telemetryDash,
-      evidence: `Found dashboard: "${telemetryDash?.title}", UID: ${telemetryDash?.uid}, authenticated as user: ${adminUser}.`,
+      evidence: `Found dashboard: "${telemetryDash?.title}", UID: ${telemetryDash?.uid}, authenticated as user: ${adminUser} with Basic auth header.`,
     });
   } catch (err: any) {
     results.push({ gate: 'Check 8', description: 'Grafana auto-provisioning', passed: false, evidence: err.message });
@@ -273,7 +274,7 @@ async function runAcceptanceGate644() {
     results.push({ gate: 'Check 9', description: 'Cardinality defense verification', passed: false, evidence: err.message });
   }
 
-  // Check 10: Docker Compose Overlay & Network Isolation Invariant (P0.1 & P0.2)
+  // Check 10: Docker Compose Overlay, Digest Pinning & Network Isolation Invariant (6.4.4a)
   try {
     // 1. Overlay config validation (merges with Phase 6.2 baseline cleanly)
     const configOut = runCommand('docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/docker-compose.observability.yml config --quiet');
@@ -294,13 +295,17 @@ async function runAcceptanceGate644() {
     const noHardcodedPass = composeContent.includes('GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}') &&
       !composeContent.includes('admin_omninovel_2026');
 
-    const passed = configClean && promInternalOnly && grafInternalOnly && noHardcodedPass;
+    // 4. Verify both Prometheus and Grafana are pinned by sha256 digest (Supply Chain Invariant)
+    const digestsPinned = composeContent.includes('prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e') &&
+      composeContent.includes('grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572');
+
+    const passed = configClean && promInternalOnly && grafInternalOnly && noHardcodedPass && digestsPinned;
 
     results.push({
       gate: 'Check 10',
-      description: 'Docker Compose overlay config valid, networks strictly internal-only, zero hardcoded fallback (P0.1 & P0.2)',
+      description: 'Docker Compose overlay valid, supply chain digests pinned, networks strictly internal, fail-closed auth (6.4.4a)',
       passed: passed,
-      evidence: `Config exit 0: ${configClean}, Prometheus internal-only: ${promInternalOnly}, Grafana internal-only: ${grafInternalOnly}, Fail-closed password: ${noHardcodedPass}`,
+      evidence: `Config exit 0: ${configClean}, Digests pinned: ${digestsPinned}, Prometheus internal: ${promInternalOnly}, Grafana internal: ${grafInternalOnly}, Fail-closed password: ${noHardcodedPass}`,
     });
   } catch (err: any) {
     results.push({ gate: 'Check 10', description: 'Compose overlay & isolation validation', passed: false, evidence: err.message });

@@ -1,9 +1,9 @@
 # 🛡️ Sổ Đăng Ký Rủi Ro & Ngoại Lệ Quét Lỗ Hổng Trivy (Trivy Exception Risk Register)
 
-> **Mã tài liệu:** SEC-REG-6.4.3  
-> **Áp dụng cho:** Toàn bộ 3 Production Container Images (`omninovel-api`, `omninovel-ai-worker`, `omninovel-nginx`).  
+> **Mã tài liệu:** SEC-REG-6.4.4A  
+> **Áp dụng cho:** Toàn bộ 5 Container Images (3 Production: `omninovel-api`, `omninovel-ai-worker`, `omninovel-nginx` + 2 Observability: `prom/prometheus`, `grafana/grafana`).  
 > **Chính sách:** Fail-Closed Gate (`exit-code: '1'`) kết hợp ngoại lệ được kiểm soát có vòng đời (Governed Lifecycle Exceptions).  
-> **Chu kỳ rà soát:** Hàng quý (Đợt rà soát kế tiếp: **2026-11-01** đối với Python/Node dependencies; **2026-12-01** đối với Base OS images).
+> **Chu kỳ rà soát:** Hàng quý (Đợt rà soát kế tiếp: **2026-11-01** đối với Python/Node dependencies; **2026-12-01** đối với Base OS và Observability images).
 
 ---
 
@@ -56,10 +56,20 @@
 
 ---
 
-## 🛡️ III. KẾT LUẬN NGHIỆM THU GATE 6.4.3
+### Nhóm 4: Hạ Tầng Giám Sát & Đo Lường (Observability: Prometheus & Grafana - Gate 6.4.4a)
 
-1. **Hiệu lực Blocking Gate:**
-   - Khi kích hoạt `exit-code: '1'`, nếu xuất hiện bất kỳ CVE mới nào thuộc mức HIGH hoặc CRITICAL phát sinh ngoài danh mục trên, pipeline CI/CD sẽ **lập tức ngắt (fail-closed)** để bảo vệ hệ thống.
+| CVE ID | Image & Package | Bản chất lỗ hổng | Khả năng khai thác trong OmniNovel | Biện pháp kiểm soát bù đắp (Compensating Controls) | Chủ quản | Ngày hết hạn |
+| :--- | :--- | :--- | :--- | :--- | :---: | :---: |
+| **CVE-2026-42154** | `prom/prometheus:v3.15.0`<br>`storage/remote` | Flaw in remote-read chunk parser. | **KHÔNG THỂ.** OmniNovel chỉ dùng Prometheus để scrape nội bộ endpoint `http://api:8000/metrics`. Không bật tính năng Remote Read hay Remote Write từ mạng bên ngoài. | - Prometheus chạy trên mạng nội bộ `omninovel-internal`.<br>- Cổng 9090 bind loopback `127.0.0.1:9090`, không lộ ra public internet.<br>- File cấu hình `prometheus.yml` chỉ định nghĩa duy nhất scrape job `omninovel-api`. | DevOps | 2026-12-01 |
+| **CVE-2026-84445**<br>**CVE-2026-84304**<br>**CVE-2026-21728**<br>**CVE-2026-28377** | `grafana/grafana:13.2.3`<br>Bundled Plugins:<br>`alertmanager`, `tempo`, `graphite`, `cloudwatch` | XSS / Path traversal / Parser flaws trong các bundled data source plugins đi kèm của Grafana. | **KHÔNG THỂ.** Dự án chỉ cấu hình duy nhất Prometheus datasource nội bộ qua auto-provisioning. Các data sources Alertmanager, Tempo, Graphite, CloudWatch hoàn toàn không được kích hoạt hay cấu hình trong OmniNovel. | - Grafana chạy không có ingress công khai (bind `127.0.0.1:3000`).<br>- Mật khẩu quản trị fail-closed, bắt buộc truyền qua biến môi trường.<br>- Datasource provisioning chỉ kết nối tới Prometheus nội bộ (`http://prometheus:9090`). | DevOps | 2026-12-01 |
+
+---
+
+## 🛡️ III. KẾT LUẬN NGHIỆM THU GATE 6.4.3 & GATE 6.4.4a
+
+1. **Hiệu lực Blocking Gate Toàn Diện:**
+   - Áp dụng `exit-code: '1'`, `severity: CRITICAL,HIGH` trên toàn bộ 5 container images (3 production images + 2 observability images).
+   - Khi phát hiện bất kỳ CVE mới nào thuộc mức HIGH hoặc CRITICAL ngoài danh mục đã kiểm duyệt, pipeline CI/CD sẽ **lập tức ngắt (fail-closed)**.
 2. **Minh bạch Học thuật & An Toàn Thông Tin:**
    - 100% các CVE được ignore đều có mã định danh, lý do kỹ thuật chi tiết, đánh giá khả năng khai thác thực tế và cơ chế phòng thủ bù đắp (Defense-in-Depth).
    - Đáp ứng trọn vẹn tiêu chuẩn đánh giá khắt khe của môn **An toàn thông tin** và **Triển khai phần mềm**.

@@ -2,7 +2,7 @@
 
 > **Mã tài liệu:** DOSSIER-SLIDES-GATE-6.4.5  
 > **Dự án:** OmniNovel (MangaVerse) - Nền tảng Đọc truyện Đa phương thức & AI Translation Hub  
-> **Hệ quy chiếu bằng chứng:** [`plans/evidence_matrix_5_subjects.md`](https://github.com/HIepNgoc2006/OmniNovel/blob/90e303b/plans/evidence_matrix_5_subjects.md) (Commit [`90e303b`](https://github.com/HIepNgoc2006/OmniNovel/commit/90e303b))  
+> **Hệ quy chiếu bằng chứng:** [`plans/evidence_matrix_5_subjects.md`](https://github.com/HIepNgoc2006/OmniNovel/blob/311883d/plans/evidence_matrix_5_subjects.md) (Commit [`311883d`](https://github.com/HIepNgoc2006/OmniNovel/commit/311883d))  
 > **Nguyên tắc vàng khi bảo vệ:** **"Talking Point không bao giờ được tự động trở thành Benchmark Claim"**. Mọi phát biểu trên slide đều có con trỏ mã nguồn (permalink), kiểm thử tự động xác thực, và ranh giới bảo vệ (Boundary Defense) để triệt tiêu hoàn toàn nguy cơ overclaiming trước Hội đồng chấm thi.
 
 ---
@@ -158,7 +158,7 @@ Bộ slide được thiết kế tinh gọn gồm **18 Slides**, bao quát trọ
 
 ### PHẦN 3: MÔN TRIỂN KHAI PHẦN MỀM / DEVOPS (SOFTWARE DEPLOYMENT)
 
-#### SLIDE 08: Pipeline CI/CD Monorepo Đa Tầng Tự Động Hóa 100%
+#### SLIDE 08: Pipeline CI/CD 7 Jobs Tự Động Hóa Kiểm Thử, Quét Bảo Mật & Kiểm Chứng Triển Khai
 - **Tiêu đề Slide:** Monorepo Pipeline: Tự Động Hóa Kiểm Thử, Quét Bảo Mật & Đóng Gói
 - **Nội dung hiển thị trên Slide:**
   - *Mô hình 7 Jobs liên hoàn:*
@@ -333,7 +333,7 @@ Bộ slide được thiết kế tinh gọn gồm **18 Slides**, bao quát trọ
   - *Tác phong kỹ sư chuyên nghiệp:* Dám khẳng định những gì hệ thống làm được và thẳng thắn chỉ rõ những ranh giới hệ thống chưa kiểm nghiệm (Boundary Defense).
 - **Ánh xạ Claim ID:** **`QDA-03`** (Đủ điều kiện chuyển **PASS** sau khi hoàn tất Cross-Verification)
 - **Source Permalinks:**
-  - Source: [`plans/evidence_matrix_5_subjects.md`](https://github.com/HIepNgoc2006/OmniNovel/blob/90e303b/plans/evidence_matrix_5_subjects.md)
+  - Source: [`plans/evidence_matrix_5_subjects.md`](https://github.com/HIepNgoc2006/OmniNovel/blob/311883d/plans/evidence_matrix_5_subjects.md)
 - **Hosted Run:** Run [`37131693246`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/37131693246)
 - **Ranh giới (What this does NOT prove):**
   > ⚠️ **Tuyệt đối không nói:** *"Ma trận này thay thế cho việc trả lời chất vấn trực tiếp trước Hội đồng"*.  
@@ -362,7 +362,7 @@ Bộ slide được thiết kế tinh gọn gồm **18 Slides**, bao quát trọ
 | **05** | Ứng dụng di động | Mutex Token Refresh xử lý Race-Condition 401 | **MOB-01** | [`auth_interceptor.dart`](https://github.com/HIepNgoc2006/OmniNovel/blob/53604b4/apps/mobile/lib/core/api/interceptors/auth_interceptor.dart) | `auth_interceptor_concurrency_test.dart` | `37131693246` (PASS) | Không claim mạng rớt chập chờn | ✅ **VERIFIED** |
 | **06** | Ứng dụng di động | Reader Engine Webtoon/Novel bounded memory prefetch | **MOB-02** | [`apps/mobile/lib/features/reader/`](https://github.com/HIepNgoc2006/OmniNovel/blob/53604b4/apps/mobile/lib/features/reader/) | Flutter Foundation Tests | `37131693246` (PASS) | Không claim 120 FPS phần cứng thật | ✅ **VERIFIED** |
 | **07** | Ứng dụng di động | Flutter Analyze 0 errors sound-null-safety | **MOB-03** | [`apps/mobile/`](https://github.com/HIepNgoc2006/OmniNovel/blob/53604b4/apps/mobile/) | Flutter Analyze Step CI | `37131693246` (PASS) | Không claim memory leak elimination | ✅ **VERIFIED** |
-| **08** | Triển khai DevOps | CI/CD Monorepo đa tầng 7 jobs chạy ~8-9 phút | **DEP-01** | [`.github/workflows/ci-cd.yml`](https://github.com/HIepNgoc2006/OmniNovel/blob/53604b4/.github/workflows/ci-cd.yml) | GitHub Actions Hosted Run | `37131693246` (PASS) | Không claim on-premise K8s | ✅ **VERIFIED** |
+| **08** | Triển khai DevOps | Pipeline CI/CD 7 jobs tự động hóa test, quét bảo mật & kiểm chứng | **DEP-01** | [`.github/workflows/ci-cd.yml`](https://github.com/HIepNgoc2006/OmniNovel/blob/53604b4/.github/workflows/ci-cd.yml) | GitHub Actions Hosted Run | `37131693246` (PASS) | Không claim on-premise K8s | ✅ **VERIFIED** |
 | **09** | Triển khai DevOps | Nginx Dynamic DNS re-resolution không lỗi 502 | **DEP-02** | [`deploy/nginx/conf.d/omninovel.conf`](https://github.com/HIepNgoc2006/OmniNovel/blob/53604b4/deploy/nginx/conf.d/omninovel.conf) | Acceptance Gate G12 Test | Commit `4ac5118` (PASS) | Không claim multi-level cache | ✅ **VERIFIED** |
 | **10** | Triển khai DevOps | Compose Overlay giám sát tách biệt core baseline | **DEP-03** | [`docker-compose.observability.yml`](https://github.com/HIepNgoc2006/OmniNovel/blob/53604b4/deploy/docker-compose.observability.yml) | Check 10 & CI Step `deploy-vps` | `37131693246` (PASS) | Không claim live VPS rollout | ✅ **VERIFIED** |
 | **11** | An toàn thông tin | Two-Layer Pinning TruffleHog & Commit SHA Trivy | **SEC-01** | [`.github/workflows/ci-cd.yml`](https://github.com/HIepNgoc2006/OmniNovel/blob/53604b4/.github/workflows/ci-cd.yml#L277-L284) | CI Step TruffleHog Execution | `37131693246` (PASS) | Không claim miễn nhiễm 100% | ✅ **VERIFIED** |
@@ -371,15 +371,15 @@ Bộ slide được thiết kế tinh gọn gồm **18 Slides**, bao quát trọ
 | **14** | An toàn thông tin | Nginx deny `/metrics` 404 & Loopback isolation | **SEC-04** | [`deploy/nginx/conf.d/omninovel.conf`](https://github.com/HIepNgoc2006/OmniNovel/blob/53604b4/deploy/nginx/conf.d/omninovel.conf)<br>[`docker-compose.observability.yml`](https://github.com/HIepNgoc2006/OmniNovel/blob/53604b4/deploy/docker-compose.observability.yml) | Check 2 & Check 10 Suite | `37131693246` (PASS) | Không claim bảo vệ khi root host bị hack | ✅ **VERIFIED** |
 | **15** | Quản lý dự án | Scrum 4 Sprints, WBS 4 Cấp, RACI & Definition of Done | **QDA-01** | [`19_PROJECT_MANAGEMENT.md`](https://github.com/HIepNgoc2006/OmniNovel/blob/53604b4/plans/planning/19_PROJECT_MANAGEMENT.md)<br>[`20_RISK_AND_COST.md`](https://github.com/HIepNgoc2006/OmniNovel/blob/53604b4/plans/planning/20_RISK_AND_COST.md) | Sprint-Phase Mapping Schedule | Git History Phase 1-6.4 | Không claim triệt tiêu mọi rủi ro | ✅ **VERIFIED** |
 | **16** | Quản lý dự án | 16 Rủi ro (R1-R16), Unit Economics & Hồ sơ thu hồi | **QDA-02** | [`trivy-exception-register.md`](https://github.com/HIepNgoc2006/OmniNovel/blob/53604b4/deploy/security/trivy-exception-register.md)<br>[`phase_06_devops_final.md`](https://github.com/HIepNgoc2006/OmniNovel/blob/8cebc5b/plans/phases/phase_06_devops_final.md) | Post-Incident Audit Trail | Commit `5425f3f` / `53604b4` | Không claim có SLA phạt tiền | ✅ **VERIFIED** |
-| **17** | Quản lý dự án | Ma trận bằng chứng thực chứng phục vụ kiểm toán | **QDA-03** | [`plans/evidence_matrix_5_subjects.md`](https://github.com/HIepNgoc2006/OmniNovel/blob/90e303b/plans/evidence_matrix_5_subjects.md) | Cross-Verification hoàn tất 16/16 claims | `37131693246` (PASS) | Không thay thế trả lời vấn đáp | ✅ **VERIFIED & PASS** |
+| **17** | Quản lý dự án | Ma trận bằng chứng thực chứng phục vụ kiểm toán | **QDA-03** | [`plans/evidence_matrix_5_subjects.md`](https://github.com/HIepNgoc2006/OmniNovel/blob/311883d/plans/evidence_matrix_5_subjects.md) | 18 slides cross-verified, 100% claims traceable | `37131693246` (PASS) | Không thay thế trả lời vấn đáp | ✅ **VERIFIED & PASS** |
 
 ---
 
 ## 🏆 KẾT LUẬN NGHIỆM THU GATE 6.4.5 & PHASE 6.4
 
-Sau khi hoàn tất quá trình kiểm toán đối chiếu chéo (Cross-Verification) từng dòng nội dung slide đối sánh với mã nguồn thật, bài test, hosted run và ranh giới phòng thủ:
+Sau khi hoàn tất quá trình kiểm toán đối chiếu chéo (Cross-Verification) từng dòng nội dung slide đối sánh với mã nguồn thật, bài test, hosted run và ranh giới phòng thủ: 18/18 slides đã được cross-verified; toàn bộ 17/17 claims xuất hiện trong deck đều có traceability tới evidence tương ứng.
 
-1. **Ma Trận Bằng Chứng [`plans/evidence_matrix_5_subjects.md`](https://github.com/HIepNgoc2006/OmniNovel/blob/90e303b/plans/evidence_matrix_5_subjects.md):**
+1. **Ma Trận Bằng Chứng [`plans/evidence_matrix_5_subjects.md`](https://github.com/HIepNgoc2006/OmniNovel/blob/311883d/plans/evidence_matrix_5_subjects.md):**
    - 17 / 17 claims đều đạt trạng thái: **`PASS`** (Bao gồm cả claim `QDA-03` sau khi đã nghiệm thu bảng đối chiếu chéo độc lập).
 2. **Trạng thái Gate 6.4.5:** **`CLOSED / FROZEN CLEAN ✅`**
 3. **Trạng thái Toàn Bộ Phase 6.4 (Hardening, Observability & Hồ Sơ Bảo Vệ 5 Môn):**

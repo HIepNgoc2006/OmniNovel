@@ -126,8 +126,8 @@ graph TD
 - **Nguyên tắc "Ranh giới Bằng chứng" (Boundary Defense):**
   - Bổ sung cột **"What this does NOT prove"** cho từng claim kỹ thuật.
   - Ngăn chặn slide nói quá bằng chứng (ví dụ: xác thực cú pháp `docker compose config` không được trình bày thành live VPS rollout; `flutter analyze` không chứng minh loại bỏ memory leak; CI chạy `migration:run` không chứng minh 18 migrations rollback sạch).
-  - Sử dụng GitHub Permalinks (code baseline tại commit SHA [`53604b4`](https://github.com/HIepNgoc2006/OmniNovel/commit/53604b4), tài liệu quản trị và ma trận tại commit SHA [`90e303b`](https://github.com/HIepNgoc2006/OmniNovel/commit/90e303b)) cho toàn bộ source và test files để bảo đảm tính di động (portable).
-- **Bảng đối chiếu chéo (Cross-Verification):** 18/18 slides đối chiếu trực tiếp 1-1 với 17/17 claims (16 technical claims + QDA-03) đều đạt trạng thái `VERIFIED & PASS`.
+  - Sử dụng GitHub Permalinks (code baseline tại commit SHA [`53604b4`](https://github.com/HIepNgoc2006/OmniNovel/commit/53604b4), tài liệu quản trị, ma trận và hồ sơ bảo vệ tại commit SHA [`311883d`](https://github.com/HIepNgoc2006/OmniNovel/commit/311883d)) cho toàn bộ source và test files để bảo đảm tính di động (portable).
+- **Bảng đối chiếu chéo (Cross-Verification):** 18/18 slides đã được cross-verified; toàn bộ 17/17 claims xuất hiện trong deck đều có traceability tới evidence tương ứng và đạt trạng thái `VERIFIED & PASS`.
 - **Trạng thái Gate 6.4.5:** **CLOSED / FROZEN CLEAN ✅**
 - **Kết luận:** Toàn bộ Phase 6.4 chính thức **HOÀN THÀNH 100% & ĐÓNG BĂNG TOÀN DIỆN (FROZEN CLEAN) ✅**.
 

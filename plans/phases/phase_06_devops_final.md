@@ -229,8 +229,8 @@
 - [x] **Gate 6.4.5 — Academic Defense Dossier & Evidence Matrix (5 Môn Học - FROZEN CLEAN ✅):**
   - Xây dựng bảng ma trận bằng chứng thực chứng 5 môn học tại [`plans/evidence_matrix_5_subjects.md`](../evidence_matrix_5_subjects.md):
     `Claim ➔ Source File ➔ Test/Gate ➔ Hosted Run ➔ Commit SHA ➔ Evidence Type ➔ Defense Talking Point ➔ What this does NOT prove ➔ Status`.
-  - Hoàn thiện tài liệu Hồ sơ Bảo vệ & Dàn ý 18 Slides tại [`plans/defense/academic_defense_dossier_and_slides.md`](../defense/academic_defense_dossier_and_slides.md) kèm Bảng kiểm tra chéo (Cross-Verification Table) 100% VERIFIED.
-  - Toàn bộ source và test files được liên kết qua **GitHub Permalinks (code baseline tại commit SHA `53604b4`, tài liệu quản trị và ma trận tại commit SHA `90e303b`)** bảo đảm 100% tính di động (portable) và auditability.
+  - Hoàn thiện tài liệu Hồ sơ Bảo vệ & Dàn ý 18 Slides tại [`plans/defense/academic_defense_dossier_and_slides.md`](../defense/academic_defense_dossier_and_slides.md) kèm Bảng kiểm tra chéo (Cross-Verification Table) xác nhận 18/18 slides được cross-verified và toàn bộ 17/17 claims có traceability đầy đủ.
+  - Toàn bộ source và test files được liên kết qua **GitHub Permalinks (code baseline tại commit SHA `53604b4`, tài liệu quản trị, ma trận và hồ sơ bảo vệ tại commit SHA `311883d`)** bảo đảm 100% tính di động (portable) và auditability.
   - Thiết lập ranh giới phòng thủ (Boundary Defense) với cột **"What this does NOT prove"** cho từng phát biểu kỹ thuật, ngăn chặn triệt để nguy cơ overclaiming trước hội đồng giám khảo ("Talking Point không bao giờ được tự động trở thành Benchmark Claim").
   - 17/17 claims (16 technical claims + QDA-03) đều đạt trạng thái **PASS (100%)**.
   - **Trạng thái Gate 6.4.5:** **CLOSED / FROZEN CLEAN ✅**.

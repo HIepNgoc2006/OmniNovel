@@ -226,9 +226,11 @@
     - **Gate 6.4.4a (Supply-Chain Gate):** Ghim SHA256 digest bất biến cho `prom/prometheus:v3.15.0@sha256:...` và `grafana/grafana:13.2.3@sha256:...`; đưa cả hai vào quy trình quét Trivy fail-closed (`severity: CRITICAL,HIGH`, `exit-code: '1'`) trong CI. Các CVEs upstream được ghi nhận có vòng đời trong Sổ Quản trị Rủi ro `deploy/security/trivy-exception-register.md`.
     - **Evidence Hardening:** Chuẩn hóa Check 3 (assert counter delta `after > before`), Check 8 (Basic Auth header), Check 10 (Overlay config validation exit 0, isolation invariant & digest pinning).
   - Nghiệm thu tự động: `deploy/test-acceptance-gate-6-4-4.ts` đạt **10/10 CHECKS PASS**.
-- [x] **Gate 6.4.5 — Academic Defense Dossier & Evidence Matrix (5 Môn Học - COMPLETED):**
+- [/] **Gate 6.4.5 — Academic Defense Dossier & Evidence Matrix (5 Môn Học - DRAFT AUDIT):**
   - Xây dựng bảng ma trận bằng chứng thực chứng 5 môn học tại [`plans/evidence_matrix_5_subjects.md`](../evidence_matrix_5_subjects.md):
     `Claim ➔ Source File ➔ Test/Gate ➔ Hosted Run ➔ Commit SHA ➔ Evidence Type ➔ Defense Talking Point ➔ What this does NOT prove ➔ Status`.
-  - Thiết lập ranh giới phòng thủ (Boundary Defense) với cột **"What this does NOT prove"** cho từng phát biểu kỹ thuật, ngăn chặn nói quá sự thật trước hội đồng giám khảo và bảo đảm tính trung thực học thuật 100%.
-  - Toàn bộ 17/17 claims kỹ thuật của 5 môn học đều đạt trạng thái **PASS**.
+  - Toàn bộ source và test files được liên kết qua **GitHub Permalinks (commit SHA `53604b4`)** bảo đảm 100% tính di động (portable) và auditability.
+  - Thiết lập ranh giới phòng thủ (Boundary Defense) với cột **"What this does NOT prove"** cho từng phát biểu kỹ thuật, ngăn chặn nói quá sự thật trước hội đồng giám khảo và bảo đảm tính trung thực học thuật.
+  - Trạng thái hiện tại: **DRAFT AUDIT** (16/16 claims kỹ thuật đạt chuẩn bằng chứng; QDA-03 giữ trạng thái IN PROGRESS chờ đối chiếu chéo khi xuất bản slide và báo cáo bảo vệ chính thức).
+  - **Phase 6.4 chưa chốt hoàn thành 100%** cho đến khi Gate 6.4.5 hoàn tất việc đối chiếu chéo này.
 

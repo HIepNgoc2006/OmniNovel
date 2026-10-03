@@ -116,16 +116,18 @@ graph TD
 
 ---
 
-### Gate 6.4.5: Academic Defense Dossier & Evidence Matrix (5 Môn Học - COMPLETED)
+### Gate 6.4.5: Academic Defense Dossier & Evidence Matrix (5 Môn Học - DRAFT AUDIT)
 - **Mục tiêu:** Chuẩn bị hồ sơ kỹ thuật hoàn chỉnh, không có claim "suông", sẵn sàng cho buổi bảo vệ đồ án 5 môn.
-- **Tài liệu Ma trận Bằng chứng Học thuật:** Đã ban hành tại [`plans/evidence_matrix_5_subjects.md`](file:///e:/Workspace%202/Doctruyen_project/plans/evidence_matrix_5_subjects.md).
+- **Tài liệu Ma trận Bằng chứng Học thuật:** Đã ban hành tại [`plans/evidence_matrix_5_subjects.md`](../evidence_matrix_5_subjects.md).
 - **Cấu trúc Ma trận Bằng chứng (Ground-Truth Evidence Matrix):**
   Mỗi phát biểu trong báo cáo/slide tuân theo cấu trúc truy vết:
   $$\text{Môn học} \longrightarrow \text{Claim} \longrightarrow \text{Source File} \longrightarrow \text{Test/Gate} \longrightarrow \text{Hosted Run} \longrightarrow \text{Commit SHA} \longrightarrow \text{What this does NOT prove} \longrightarrow \text{Status}$$
 - **Nguyên tắc "Ranh giới Bằng chứng" (Boundary Defense):**
   - Bổ sung cột **"What this does NOT prove"** cho từng claim kỹ thuật.
-  - Ngăn chặn slide nói quá bằng chứng (ví dụ: xác thực cú pháp `docker compose config` không được trình bày thành live VPS rollout; mock redis không được trình bày thành 100k req/s RAM benchmark).
-- **Trạng thái Gate 6.4.5:** **COMPLETED ✅**
+  - Ngăn chặn slide nói quá bằng chứng (ví dụ: xác thực cú pháp `docker compose config` không được trình bày thành live VPS rollout; `flutter analyze` không chứng minh loại bỏ memory leak; CI chạy `migration:run` không chứng minh 18 migrations rollback sạch).
+  - Sử dụng GitHub Permalinks (commit SHA `53604b4`) cho toàn bộ source và test files để bảo đảm tính di động (portable).
+- **Trạng thái Gate 6.4.5:** **AMENDMENT IN PROGRESS (DRAFT AUDIT)**
+- **Điều kiện chốt FROZEN:** Gate 6.4.5 và toàn bộ Phase 6.4 chỉ được chốt hoàn thành 100% sau khi bộ slide thuyết trình và hồ sơ đồ án hoàn chỉnh được đối chiếu chéo (Cross-verification) thành công với ma trận bằng chứng.
 
 ---
 
@@ -138,6 +140,7 @@ graph TD
 | **6.4.2** | Kiểm toán toàn diện Git Reachable History | **COMPLETED** | TruffleHog reachability scan pass, 0 verified secrets |
 | **6.4.3** | Trivy Fail-Closed Gate & Sổ Quản trị Rủi ro | **COMPLETED** | `exit-code: '1'`, `deploy/security/trivy-exception-register.md` |
 | **6.4.4** | Nền tảng Giám sát & Bất biến An toàn `/metrics` | **FROZEN CLEAN** | 10/10 Acceptance Checks PASS, Run `37129675896` |
-| **6.4.4a** | Khóa chuỗi cung ứng Observability Containers | **FROZEN CLEAN** | Prometheus & Grafana digest pinning, Trivy scans, Basic Auth header |
-| **6.4.5** | Ma trận Bằng chứng 5 Môn Học & Ranh giới | **COMPLETED** | `plans/evidence_matrix_5_subjects.md` (17/17 claims PASS) |
+| **6.4.4a** | Khóa chuỗi cung ứng Observability Containers | **FROZEN CLEAN** | Prometheus & Grafana digest pinning, Trivy scans, Basic Auth header, Run `37131693246` |
+| **6.4.5** | Ma trận Bằng chứng 5 Môn Học & Ranh giới | **DRAFT AUDIT** | `plans/evidence_matrix_5_subjects.md` (16/16 claims PASS, QDA-03 IN PROGRESS) |
+
 

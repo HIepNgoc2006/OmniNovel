@@ -87,8 +87,8 @@ graph TD
 
 ---
 
-### Gate 6.4.4: Observability Baseline & Security Invariant (COMPLETED & HARDENED - FROZEN)
-- **Mục tiêu:** Giám sát thời gian thực các chỉ số tài nguyên, độ trễ và hàng đợi; đồng thời bảo vệ endpoint `/metrics` khỏi truy cập trái phép từ Internet.
+### Gate 6.4.4 & 6.4.4a: Observability Baseline & Supply-Chain Security Invariant (COMPLETED & FROZEN CLEAN)
+- **Mục tiêu:** Giám sát thời gian thực các chỉ số tài nguyên, độ trễ và hàng đợi; đồng thời bảo vệ endpoint `/metrics` khỏi truy cập trái phép từ Internet và khóa chuỗi cung ứng cho các observability images.
 - **Triển khai Metrics:**
   - Core API (`services/api`): Tích hợp Prometheus client chuẩn (`prom-client`).
     - `http_requests_total`: Counter (labels: `method`, `route`, `status_code`).
@@ -97,43 +97,47 @@ graph TD
     - `bullmq_metrics_collection_success`, `bullmq_metrics_last_success_timestamp_seconds`: Giám sát sức khỏe collector (P1), phân biệt rõ ràng queue=0 với scrape failure.
     - Process metrics: Memory RSS, Heap Used, Event Loop Lag via `collectDefaultMetrics`.
     - Cardinality Protection: Chuẩn hóa route pattern với utility `normalizeRoute` (thay thế UUID bằng `:id`, gom toàn bộ unmatched route `!req.route` về bounded label `/__unmatched__`, ngăn chặn triệt để tấn công nổ cardinality từ máy quét).
-- **Triển khai Overlay Docker Compose & Dashboard Grafana:**
-  - File overlay độc lập `deploy/docker-compose.observability.yml` tích hợp Prometheus `v2.51.0` và Grafana `10.4.1`, kết nối duy nhất mạng nội bộ `omninovel-internal`.
+- **Triển khai Overlay Docker Compose, Dashboard Grafana & Chuỗi Cung Ứng (Gate 6.4.4a):**
+  - File overlay độc lập `deploy/docker-compose.observability.yml` tích hợp Prometheus `v3.15.0@sha256:efd719c9...` và Grafana `13.2.3@sha256:b28bae15...`, kết nối duy nhất mạng nội bộ `omninovel-internal`.
   - Loopback-only port binding: `127.0.0.1:9090` và `127.0.0.1:3001` (triệt tiêu hoàn toàn nguy cơ bypass Nginx từ Internet qua direct host binding).
   - Loại bỏ hoàn toàn default hardcoded password: fail-closed `${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}`.
   - Tự động nạp qua Grafana Provisioning (`deploy/grafana/provisioning/` và dashboard `omninovel-telemetry.json`).
+  - **Khóa Chuỗi Cung Ứng 6.4.4a:** Cả Prometheus và Grafana đều được pin bằng SHA256 digest và quét Trivy fail-closed (`severity: CRITICAL,HIGH`, `exit-code: '1'`) trong CI. Các CVEs upstream không ảnh hưởng được ghi nhận minh bạch vào Category D của `deploy/security/trivy-exception-register.md`.
   - PromQL quantile tính toán độ trễ chuẩn:
     - $p_{50} = \text{histogram\_quantile}(0.50, \text{sum}(\text{rate}(\text{http\_request\_duration\_seconds\_bucket}[5m])) \text{ by } (le, route))$
     - $p_{95} = \text{histogram\_quantile}(0.95, \text{sum}(\text{rate}(\text{http\_request\_duration\_seconds\_bucket}[5m])) \text{ by } (le, route))$
     - $p_{99} = \text{histogram\_quantile}(0.99, \text{sum}(\text{rate}(\text{http\_request\_duration\_seconds\_bucket}[5m])) \text{ by } (le, route))$
-- **Security Invariant (Đã nghiệm thu tự động):**
+- **Security Invariant & Nghiệm Thu Tự Động:**
   - Nginx cấu hình: Chặn tuyệt đối mọi request từ bên ngoài vào `/metrics` (`location = /metrics { return 404; }` ở cả HTTP và HTTPS server).
-  - Không expose port ra `0.0.0.0`.
-  - Kịch bản nghiệm thu tự động `deploy/test-acceptance-gate-6-4-4.ts`: Đạt **10/10 Checks PASS** (bao gồm assert delta counter `after > before`, dynamic auth, 500-URL adversarial fuzzing test).
-- **Bằng chứng Nghiệm thu Hosted CI (Gate 6.4.4 FROZEN):**
-  - Hosted Action Run [`37129675896`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/37129675896) tại commit [`55ead91`](https://github.com/HIepNgoc2006/OmniNovel/commit/55ead91): **7/7 JOBS PASS 100% (9m)**.
-  - Trạng thái Gate 6.4.4: **CLOSED / FROZEN** (Chính thức nghiệm thu hoàn tất).
+  - Check 8: Sử dụng HTTP Basic Auth header (`Authorization: Basic ...`) thay vì nội suy mật khẩu vào shell command URL.
+  - Check 10: Xác thực toàn diện overlay config, network isolation và supply-chain digest pinning.
+  - Kịch bản nghiệm thu tự động `deploy/test-acceptance-gate-6-4-4.ts`: Đạt **10/10 Checks PASS**.
+- **Trạng thái Gate 6.4.4 & 6.4.4a:** **CLOSED / FROZEN CLEAN ✅**
 
 ---
 
-### Gate 6.4.5: Academic Defense Dossier & Evidence Matrix (5 Môn Học)
+### Gate 6.4.5: Academic Defense Dossier & Evidence Matrix (5 Môn Học - COMPLETED)
 - **Mục tiêu:** Chuẩn bị hồ sơ kỹ thuật hoàn chỉnh, không có claim "suông", sẵn sàng cho buổi bảo vệ đồ án 5 môn.
+- **Tài liệu Ma trận Bằng chứng Học thuật:** Đã ban hành tại [`plans/evidence_matrix_5_subjects.md`](file:///e:/Workspace%202/Doctruyen_project/plans/evidence_matrix_5_subjects.md).
 - **Cấu trúc Ma trận Bằng chứng (Ground-Truth Evidence Matrix):**
-  Mỗi phát biểu trong báo cáo/slide phải tuân theo cấu trúc truy vết:
-  $$\text{Claim} \longrightarrow \text{Source File} \longrightarrow \text{Automated Test/Gate} \longrightarrow \text{Hosted Action Run} \longrightarrow \text{Commit SHA} \longrightarrow \text{Trạng thái}$$
-
-  *Ví dụ:*
-  | Môn học | Tuyên bố (Claim) | Tệp mã nguồn | Bài kiểm thử / Gate | Hosted Run / Evidence | Commit SHA | Trạng thái |
-  | :--- | :--- | :--- | :--- | :--- | :--- | :---: |
-  | **Kỹ năng lập trình nâng cao** | Caching đa tầng L1 In-Memory + L2 Redis 7 | `services/api/src/modules/cache/...` | `cache.service.spec.ts` | Run `36963197949` (Job 2) | `5425f3f` | **PASS** |
-  | **Triển khai phần mềm** | Nginx độc lập, dynamic DNS re-resolve không reload | `deploy/nginx/nginx.conf` | Gate G12 (`test-acceptance-phase6-2.ts`) | Artifact Phase 6.2 report | `4ac5118` | **PASS** |
-  | **An toàn thông tin** | Zero-leak Git tracking hygiene | `.github/workflows/ci-cd.yml` | Step `Verify Git Tracking Hygiene` | Run `36963197949` (Job 5) | `5425f3f` | **PASS** |
+  Mỗi phát biểu trong báo cáo/slide tuân theo cấu trúc truy vết:
+  $$\text{Môn học} \longrightarrow \text{Claim} \longrightarrow \text{Source File} \longrightarrow \text{Test/Gate} \longrightarrow \text{Hosted Run} \longrightarrow \text{Commit SHA} \longrightarrow \text{What this does NOT prove} \longrightarrow \text{Status}$$
+- **Nguyên tắc "Ranh giới Bằng chứng" (Boundary Defense):**
+  - Bổ sung cột **"What this does NOT prove"** cho từng claim kỹ thuật.
+  - Ngăn chặn slide nói quá bằng chứng (ví dụ: xác thực cú pháp `docker compose config` không được trình bày thành live VPS rollout; mock redis không được trình bày thành 100k req/s RAM benchmark).
+- **Trạng thái Gate 6.4.5:** **COMPLETED ✅**
 
 ---
 
-## 🗓️ III. THỨ TỰ THỰC THI (EXECUTION PHASING)
+## 🗓️ III. TỔNG KẾT TIẾN ĐỘ THỰC THI (PHASE 6.4)
 
-1. **Bước 1 (Hôm nay):** Khóa hợp đồng nghiệm thu 6.4.0 và cập nhật roadmap `phase_06_devops_final.md`.
-2. **Bước 2 (Security Hardening):** Triển khai Gate 6.4.1 (TruffleHog 2-layer pin) & Gate 6.4.2 (Reachable audit) ➔ Triển khai Gate 6.4.3 (Trivy inspect, Risk Register & Fail-closed `exit-code: '1'`).
-3. **Bước 3 (Observability):** Triển khai Gate 6.4.4 (Prometheus `/metrics` + PromQL + Nginx Security Gate).
-4. **Bước 4 (Hồ Sơ Nghiệm Thu):** Triển khai Gate 6.4.5 (Ground-Truth Evidence Matrix & Slide Outline 5 môn).
+| Gate | Nội dung | Trạng thái | Bằng chứng kiểm chứng |
+| :---: | :--- | :---: | :--- |
+| **6.4.0** | Hợp đồng Nghiệm thu & Baseline | **COMPLETED** | `plans/phase_06_4_hardening_observability_plan.md` |
+| **6.4.1** | Khóa hai lớp chuỗi cung ứng TruffleHog | **COMPLETED** | `.github/workflows/ci-cd.yml` (pinned Action SHA & CLI 3.88.16) |
+| **6.4.2** | Kiểm toán toàn diện Git Reachable History | **COMPLETED** | TruffleHog reachability scan pass, 0 verified secrets |
+| **6.4.3** | Trivy Fail-Closed Gate & Sổ Quản trị Rủi ro | **COMPLETED** | `exit-code: '1'`, `deploy/security/trivy-exception-register.md` |
+| **6.4.4** | Nền tảng Giám sát & Bất biến An toàn `/metrics` | **FROZEN CLEAN** | 10/10 Acceptance Checks PASS, Run `37129675896` |
+| **6.4.4a** | Khóa chuỗi cung ứng Observability Containers | **FROZEN CLEAN** | Prometheus & Grafana digest pinning, Trivy scans, Basic Auth header |
+| **6.4.5** | Ma trận Bằng chứng 5 Môn Học & Ranh giới | **COMPLETED** | `plans/evidence_matrix_5_subjects.md` (17/17 claims PASS) |
+

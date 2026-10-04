@@ -193,11 +193,11 @@ git commit -m "feat(storage): define local storage contracts and bump OfflineDat
 - `GuestLibraryRepository`:
   - Quản lý bookmarks và history của guest profile hiện hành.
 
-- [ ] **Step 1: Viết unit tests cho IndexedDbClient và Guest Repositories (fake-indexeddb)**
-- [ ] **Step 2: Triển khai `indexed-db-client.ts` với đầy đủ transaction boundary và SSR guards**
-- [ ] **Step 3: Triển khai `guest-reading-state-repository.ts` và `guest-library-repository.ts`**
-- [ ] **Step 4: Chạy test xác nhận pass 100%**
-- [ ] **Step 5: Git commit**
+- [x] **Step 1: Viết unit tests cho `IndexedDbClient` và Guest Repositories (fake-indexeddb)**
+- [x] **Step 2: Triển khai `indexed-db-client.ts` với đầy đủ transaction boundary và SSR guards**
+- [x] **Step 3: Triển khai `guest-reading-state-repository.ts` và `guest-library-repository.ts`**
+- [x] **Step 4: Chạy test xác nhận pass 100%**
+- [x] **Step 5: Git commit**
 
 ```bash
 git add apps/web

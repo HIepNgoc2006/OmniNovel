@@ -695,3 +695,5 @@ export interface OfflineBundleManifest {
   files: OfflineBundleFileEntry[];
   novelMetadata?: OfflineNovelMetadata | null;
 }
+
+export * from './local-library';

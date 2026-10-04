@@ -157,11 +157,11 @@ git commit -m "feat(identity): implement InstallationIdentityProvider, GuestProf
   - Bổ sung 3 bảng: `local_library_bookmarks`, `local_reading_progress`, `local_reading_history` với cột `owner_scope TEXT NOT NULL`.
   - Tạo các index `idx_local_bookmarks_owner`, `idx_local_progress_owner`, `idx_local_history_owner_time`.
 
-- [ ] **Step 1: Khai báo Local Storage Contracts trong `packages/shared`**
-- [ ] **Step 2: Viết migration test v2 ➔ v3 cho `OfflineDatabase` kiểm tra bảo toàn dữ liệu v2**
-- [ ] **Step 3: Cập nhật `OfflineDatabase` lên v3 với 3 bảng local library mới**
-- [ ] **Step 4: Chạy test xác nhận migration pass và không chạm vào tables v2**
-- [ ] **Step 5: Git commit**
+- [x] **Step 1: Khai báo Local Storage Contracts trong `packages/shared`**
+- [x] **Step 2: Viết migration test v2 ➔ v3 cho `OfflineDatabase` kiểm tra bảo toàn dữ liệu v2**
+- [x] **Step 3: Cập nhật `OfflineDatabase` lên v3 với 3 bảng local library mới**
+- [x] **Step 4: Chạy test xác nhận migration pass và không chạm vào tables v2**
+- [x] **Step 5: Git commit**
 
 ```bash
 git add packages/shared apps/mobile

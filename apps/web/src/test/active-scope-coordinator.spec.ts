@@ -33,17 +33,33 @@ describe('Task 7A.1: Web Identity & ActiveScopeCoordinator', () => {
       expect(id2).toBe(id1);
     });
 
-    it('resolves concurrent getOrCreateInstallationId() calls to the identical canonical ID (Multi-tab race guard)', async () => {
-      const provider = new InstallationIdentityProvider();
-      const results = await Promise.all([
-        provider.getOrCreateInstallationId(),
-        provider.getOrCreateInstallationId(),
-        provider.getOrCreateInstallationId(),
+    it('resolves multiple separate provider instances concurrently to the identical canonical ID (Multi-tab race guard)', async () => {
+      const instanceA = new InstallationIdentityProvider();
+      const instanceB = new InstallationIdentityProvider();
+      const instanceC = new InstallationIdentityProvider();
+
+      const [idA, idB, idC] = await Promise.all([
+        instanceA.getOrCreateInstallationId(),
+        instanceB.getOrCreateInstallationId(),
+        instanceC.getOrCreateInstallationId(),
       ]);
 
-      expect(results[0]).toBe(results[1]);
-      expect(results[1]).toBe(results[2]);
-      expect(localStorage.getItem(INSTALLATION_ID_KEY)).toBe(results[0]);
+      expect(idA).toBe(idB);
+      expect(idB).toBe(idC);
+      expect(localStorage.getItem(INSTALLATION_ID_KEY)).toBe(idA);
+    });
+
+    it('fails closed when invoked in server environment (SSR Guard)', async () => {
+      const originalWindow = global.window;
+      // @ts-expect-error testing SSR environment
+      delete global.window;
+
+      const provider = new InstallationIdentityProvider();
+      await expect(provider.getOrCreateInstallationId()).rejects.toThrow(
+        /client-only and cannot be executed during SSR/i
+      );
+
+      global.window = originalWindow;
     });
   });
 
@@ -62,6 +78,19 @@ describe('Task 7A.1: Web Identity & ActiveScopeCoordinator', () => {
       expect(localStorage.getItem(GUEST_PROFILE_ID_KEY)).toBe(newProfileId);
     });
 
+    it('converges across multiple separate provider instances to the same guestProfileId (Multi-tab race guard)', async () => {
+      const instanceA = new GuestProfileIdentityProvider();
+      const instanceB = new GuestProfileIdentityProvider();
+
+      const [idA, idB] = await Promise.all([
+        instanceA.getOrCreateGuestProfileId(),
+        instanceB.getOrCreateGuestProfileId(),
+      ]);
+
+      expect(idA).toBe(idB);
+      expect(localStorage.getItem(GUEST_PROFILE_ID_KEY)).toBe(idA);
+    });
+
     it('quarantines old guest profile without silent destruction', async () => {
       const provider = new GuestProfileIdentityProvider();
       const profileToQuarantine = await provider.getOrCreateGuestProfileId();
@@ -73,6 +102,19 @@ describe('Task 7A.1: Web Identity & ActiveScopeCoordinator', () => {
       const raw = localStorage.getItem(QUARANTINED_PROFILES_KEY);
       expect(raw).toBeTruthy();
       expect(JSON.parse(raw!)).toContain(profileToQuarantine);
+    });
+
+    it('fails closed when invoked in server environment (SSR Guard)', async () => {
+      const originalWindow = global.window;
+      // @ts-expect-error testing SSR environment
+      delete global.window;
+
+      const provider = new GuestProfileIdentityProvider();
+      await expect(provider.getOrCreateGuestProfileId()).rejects.toThrow(
+        /client-only and cannot be executed during SSR/i
+      );
+
+      global.window = originalWindow;
     });
   });
 
@@ -99,7 +141,7 @@ describe('Task 7A.1: Web Identity & ActiveScopeCoordinator', () => {
       expect(coordinator.activeScope).toMatch(/^guest:[a-zA-Z0-9_-]+$/);
     });
 
-    it('transitions BOOTSTRAPPING -> ACCOUNT when auth hydrates as authenticated', async () => {
+    it('transitions BOOTSTRAPPING -> ACCOUNT when auth hydrates as authenticated with valid userId', async () => {
       const installProvider = new InstallationIdentityProvider();
       const guestProvider = new GuestProfileIdentityProvider();
       const coordinator = new ActiveScopeCoordinator(installProvider, guestProvider);
@@ -109,6 +151,27 @@ describe('Task 7A.1: Web Identity & ActiveScopeCoordinator', () => {
       expect(coordinator.state).toBe<ActiveScopeState>('ACCOUNT');
       expect(coordinator.canMutateUserState).toBe(true);
       expect(coordinator.activeScope).toBe('account:user-alpha-456');
+    });
+
+    it('FAILS CLOSED when auth status is authenticated but userId is missing or empty (Zero account:unknown)', async () => {
+      const installProvider = new InstallationIdentityProvider();
+      const guestProvider = new GuestProfileIdentityProvider();
+      const coordinator = new ActiveScopeCoordinator(installProvider, guestProvider);
+
+      // 1. Missing userId
+      await coordinator.onAuthStatusChanged('authenticated', undefined);
+      expect(coordinator.state).toBe<ActiveScopeState>('BOOTSTRAPPING');
+      expect(coordinator.activeScope).toBeNull();
+      expect(coordinator.canMutateUserState).toBe(false);
+
+      // 2. Empty string or whitespace userId
+      await coordinator.onAuthStatusChanged('authenticated', '   ');
+      expect(coordinator.state).toBe<ActiveScopeState>('BOOTSTRAPPING');
+      expect(coordinator.activeScope).toBeNull();
+      expect(coordinator.canMutateUserState).toBe(false);
+
+      // Never produced account:unknown
+      expect(coordinator.activeScope).not.toBe('account:unknown');
     });
 
     it('resolves multiple concurrent waitForResolvedScope() without hanging or mismatch', async () => {

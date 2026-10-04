@@ -4,7 +4,6 @@ function generateUUID(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
     return crypto.randomUUID();
   }
-  // Fallback RFC4122 v4 UUID generator using crypto.getRandomValues if available
   if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
     const bytes = new Uint8Array(16);
     crypto.getRandomValues(bytes);
@@ -13,7 +12,6 @@ function generateUUID(): string {
     const hex = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
-  // Generic fallback
   return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
     const r = (Math.random() * 16) | 0;
     const v = c === 'x' ? r : (r & 0x3) | 0x8;
@@ -37,16 +35,16 @@ export class InstallationIdentityProvider {
 
   /**
    * Retrieves existing installationId or creates a new stable UUIDv4.
-   * Concurrent invocations in the same or separate tabs converge on the same canonical ID.
+   * Multi-instance & multi-tab race guard ensures all callers converge on the single canonical ID.
    * This ID is NEVER reset or destroyed upon user logout.
    */
   async getOrCreateInstallationId(): Promise<string> {
-    if (this.cachedId) {
-      return this.cachedId;
+    if (typeof window === 'undefined') {
+      throw new Error('InstallationIdentityProvider is client-only and cannot be executed during SSR.');
     }
 
-    if (typeof window === 'undefined') {
-      return generateUUID();
+    if (this.cachedId) {
+      return this.cachedId;
     }
 
     const existing = localStorage.getItem(INSTALLATION_ID_KEY);
@@ -61,17 +59,33 @@ export class InstallationIdentityProvider {
 
     this.inFlightPromise = (async () => {
       try {
-        // Re-check storage in case another tab or asynchronous task wrote it
+        if (typeof navigator !== 'undefined' && navigator.locks) {
+          return await navigator.locks.request('omninovel_installation_lock', async () => {
+            const current = localStorage.getItem(INSTALLATION_ID_KEY);
+            if (current) {
+              this.cachedId = current;
+              return current;
+            }
+            const newId = generateUUID();
+            localStorage.setItem(INSTALLATION_ID_KEY, newId);
+            this.cachedId = newId;
+            return newId;
+          });
+        }
+
+        // Fallback for environments without Web Locks API (e.g., jsdom / older browsers):
+        // Re-read storage, write candidate, and read-back canonical persisted value.
         const current = localStorage.getItem(INSTALLATION_ID_KEY);
         if (current) {
           this.cachedId = current;
           return current;
         }
 
-        const newId = generateUUID();
-        localStorage.setItem(INSTALLATION_ID_KEY, newId);
-        this.cachedId = newId;
-        return newId;
+        const candidate = generateUUID();
+        localStorage.setItem(INSTALLATION_ID_KEY, candidate);
+        const canonical = localStorage.getItem(INSTALLATION_ID_KEY) || candidate;
+        this.cachedId = canonical;
+        return canonical;
       } finally {
         this.inFlightPromise = null;
       }

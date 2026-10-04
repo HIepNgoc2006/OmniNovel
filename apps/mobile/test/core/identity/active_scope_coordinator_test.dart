@@ -181,6 +181,40 @@ void main() {
       expect(coordinator.activeScope, 'account:user-mobile-999');
     });
 
+    test('fails closed when AuthStatus.authenticated with missing or empty userId (Zero account:unknown)', () async {
+      final prefs = await SharedPreferences.getInstance();
+      final installProvider = InstallationIdentityProvider(
+        secureStorage: mockSecureStorage,
+        prefs: prefs,
+      );
+      final guestProvider = GuestProfileIdentityProvider(prefs: prefs);
+      final coordinator = ActiveScopeCoordinator(
+        installProvider: installProvider,
+        guestProfileProvider: guestProvider,
+      );
+
+      // Missing userId
+      await coordinator.onAuthStatusChanged(
+        AuthStatus.authenticated,
+        userId: null,
+      );
+      expect(coordinator.state, ActiveScopeState.bootstrapping);
+      expect(coordinator.activeScope, isNull);
+      expect(coordinator.canMutateUserState, false);
+
+      // Whitespace userId
+      await coordinator.onAuthStatusChanged(
+        AuthStatus.authenticated,
+        userId: '   ',
+      );
+      expect(coordinator.state, ActiveScopeState.bootstrapping);
+      expect(coordinator.activeScope, isNull);
+      expect(coordinator.canMutateUserState, false);
+
+      // Never produced account:unknown
+      expect(coordinator.activeScope, isNot(equals('account:unknown')));
+    });
+
     test('resolves multiple concurrent waitForResolvedScope() without hanging', () async {
       final prefs = await SharedPreferences.getInstance();
       final installProvider = InstallationIdentityProvider(

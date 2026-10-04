@@ -36,14 +36,15 @@ export class GuestProfileIdentityProvider {
 
   /**
    * Retrieves active guestProfileId or creates a new one.
+   * Multi-instance & multi-tab race guard ensures all tabs converge on the canonical ID.
    */
   async getOrCreateGuestProfileId(): Promise<string> {
-    if (this.cachedProfileId) {
-      return this.cachedProfileId;
+    if (typeof window === 'undefined') {
+      throw new Error('GuestProfileIdentityProvider is client-only and cannot be executed during SSR.');
     }
 
-    if (typeof window === 'undefined') {
-      return generateUUID();
+    if (this.cachedProfileId) {
+      return this.cachedProfileId;
     }
 
     const existing = localStorage.getItem(GUEST_PROFILE_ID_KEY);
@@ -58,16 +59,32 @@ export class GuestProfileIdentityProvider {
 
     this.inFlightPromise = (async () => {
       try {
+        if (typeof navigator !== 'undefined' && navigator.locks) {
+          return await navigator.locks.request('omninovel_guest_profile_lock', async () => {
+            const current = localStorage.getItem(GUEST_PROFILE_ID_KEY);
+            if (current) {
+              this.cachedProfileId = current;
+              return current;
+            }
+            const newProfileId = generateUUID();
+            localStorage.setItem(GUEST_PROFILE_ID_KEY, newProfileId);
+            this.cachedProfileId = newProfileId;
+            return newProfileId;
+          });
+        }
+
+        // Fallback for environments without Web Locks API:
         const current = localStorage.getItem(GUEST_PROFILE_ID_KEY);
         if (current) {
           this.cachedProfileId = current;
           return current;
         }
 
-        const newProfileId = generateUUID();
-        localStorage.setItem(GUEST_PROFILE_ID_KEY, newProfileId);
-        this.cachedProfileId = newProfileId;
-        return newProfileId;
+        const candidate = generateUUID();
+        localStorage.setItem(GUEST_PROFILE_ID_KEY, candidate);
+        const canonical = localStorage.getItem(GUEST_PROFILE_ID_KEY) || candidate;
+        this.cachedProfileId = canonical;
+        return canonical;
       } finally {
         this.inFlightPromise = null;
       }
@@ -81,10 +98,12 @@ export class GuestProfileIdentityProvider {
    * Returns the new profile ID.
    */
   async rotateGuestProfileId(): Promise<string> {
-    const newProfileId = generateUUID();
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(GUEST_PROFILE_ID_KEY, newProfileId);
+    if (typeof window === 'undefined') {
+      throw new Error('GuestProfileIdentityProvider is client-only and cannot be executed during SSR.');
     }
+
+    const newProfileId = generateUUID();
+    localStorage.setItem(GUEST_PROFILE_ID_KEY, newProfileId);
     this.cachedProfileId = newProfileId;
     return newProfileId;
   }

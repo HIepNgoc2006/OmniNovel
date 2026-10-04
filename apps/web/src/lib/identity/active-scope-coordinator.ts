@@ -54,6 +54,10 @@ export class ActiveScopeCoordinator {
   /**
    * Consumes canonical AuthStatus from memoryAuthStore / AuthContext.
    * Enforces zero-race transition from BOOTSTRAPPING to GUEST or ACCOUNT.
+   * 
+   * P0 Invariant: Fail-closed on authenticated without valid userId.
+   * If status is 'authenticated' but userId is missing or empty, scope remains null
+   * and state stays BOOTSTRAPPING. NEVER create spoofed account:unknown.
    */
   async onAuthStatusChanged(status: AuthStatus, userId?: string): Promise<void> {
     if (status === 'initializing') {
@@ -73,8 +77,16 @@ export class ActiveScopeCoordinator {
     }
 
     if (status === 'authenticated') {
-      const resolvedUserId = userId || 'unknown';
-      this._activeScope = `account:${resolvedUserId}`;
+      const trimmedUserId = userId?.trim();
+      if (!trimmedUserId) {
+        // Fail-closed: Missing/invalid userId while authenticated must NOT create account:unknown!
+        this._state = 'BOOTSTRAPPING';
+        this._activeScope = null;
+        this._notifyListeners();
+        return;
+      }
+
+      this._activeScope = `account:${trimmedUserId}`;
       this._state = 'ACCOUNT';
       this._flushWaiters(this._activeScope);
       this._notifyListeners();

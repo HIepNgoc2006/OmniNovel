@@ -45,6 +45,9 @@ class ActiveScopeCoordinator extends ChangeNotifier {
   }
 
   /// Tiêu thụ trạng thái xác thực từ AuthService/AuthState.
+  ///
+  /// P0 Invariant: Fail closed nếu authenticated nhưng thiếu userId hợp lệ.
+  /// Tuyệt đối KHÔNG sinh scope giả 'account:unknown'.
   Future<void> onAuthStatusChanged(AuthStatus status, {String? userId}) async {
     switch (status) {
       case AuthStatus.initial:
@@ -68,8 +71,16 @@ class ActiveScopeCoordinator extends ChangeNotifier {
         break;
 
       case AuthStatus.authenticated:
-        final uid = userId ?? 'unknown';
-        _activeScope = 'account:$uid';
+        final trimmed = userId?.trim();
+        if (trimmed == null || trimmed.isEmpty) {
+          // Fail-closed: Auth báo authenticated nhưng userId rỗng -> ở lại bootstrapping, cấm ghi!
+          _state = ActiveScopeState.bootstrapping;
+          _activeScope = null;
+          notifyListeners();
+          break;
+        }
+
+        _activeScope = 'account:$trimmed';
         _state = ActiveScopeState.account;
         _flushWaiters(_activeScope!);
         notifyListeners();

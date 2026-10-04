@@ -25,10 +25,14 @@ Tài liệu này theo dõi tiến độ toàn diện của dự án **OmniNovel*
   - `[x]` 7.0.2. [Guest-to-Account Claim Protocol](product/guest_to_account_claim_protocol.md) (Two-step prepare & commit, zero client timestamp authority, anti-exploit gamification).
   - `[x]` 7.0.3. [Unified Sync Protocol](product/unified_sync_protocol.md) (Server revisions, client mutations queue, tombstones, anti-resurrection).
   - `[x]` 7.0.4. [Web ↔ Mobile Capability Parity Matrix](product/web_mobile_capability_matrix.md) (Next.js 16.3.3 / React 19.2 & Flutter, 8 system states).
-- **Phase 7A: Guest Local Runtime (Local-First Engine)** `[/] Đang Khởi Động`
-  - `[ ]` 7A.1. Web IndexedDB Primary Store (`omninovel_local_v2`) cho Bookmarks, Reading Progress, History.
-  - `[ ]` 7A.2. Mobile SQLite `owner_scope` Adapter cho Guest Isolation.
-  - `[ ]` 7A.3. Chế độ đọc hoàn chỉnh offline/local không phụ thuộc JWT.
+- **Phase 7A: Guest Local Runtime (Local-First Engine)** `[/] Đang Khởi Động (Amended Plan Approved)`
+  - `[ ]` 7A.1. Local Identity & ActiveScope Coordinator (Web & Mobile SSoT).
+  - `[ ]` 7A.2. Canonical Local Library Schema & Migration (IndexedDB v1, SQLite v3).
+  - `[ ]` 7A.3. Web Repository Layer & IndexedDB Implementation (`omninovel_local_v2`).
+  - `[ ]` 7A.4. Web Reader / Bookmark / History Integration (Repository Abstraction).
+  - `[ ]` 7A.5. Mobile Local Library Schema & Repository (SQLite v3 `owner_scope`).
+  - `[ ]` 7A.6. Mobile Guest Navigation & Reader Integration ("Continue as Guest").
+  - `[ ]` 7A.7. Identity Isolation / Persistence / Crash / Acceptance Verification.
 - **Phase 7B: Account Claim & Lifecycle Protocol** `[ ] Chưa làm`
   - `[ ]` 7B.1. Two-Step Claim Backend API (`POST /account/guest-claims/prepare` & `POST /account/guest-claims/:claimId/commit`).
   - `[ ]` 7B.2. Account Lifecycle APIs (`forgot-password`, `reset-password`, `change-password`, `GET/DELETE sessions`, `DELETE account`, `GET export-data`).

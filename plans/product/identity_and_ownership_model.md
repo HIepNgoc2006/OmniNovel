@@ -86,8 +86,8 @@ stateDiagram-v2
         CallPrepareAPI --> EvaluateConflicts: Nhận server snapshot & diff
     }
 
-    ClaimPreparing --> AuthenticatedAccount: Claim Commit thành công (Rebind local)
-    ClaimPreparing --> AuthenticatedAccount: Hủy Claim (Giữ cloud, dọn guest cũ)
+    ClaimPreparing --> AuthenticatedAccount: Claim Commit thành công (Purge/Rebind guest sang account)
+    ClaimPreparing --> AuthenticatedAccount: Hủy Claim (Giữ cloud, KHÔNG mutate guest data, giữ/cách ly guest scope)
     
     AuthenticatedAccount --> UnauthenticatedGuest: Đăng Xuất (Logout)
     
@@ -111,23 +111,27 @@ stateDiagram-v2
 
 #### Kịch bản 2: Guest đăng nhập / tạo tài khoản mới (Guest → Account Claim)
 - Người dùng thực hiện `login()` hoặc `register()`.
-- Client tạm giữ session mới, kích hoạt luồng **Two-Step Guest Claim Protocol** (đặc tả tại [guest_to_account_claim_protocol.md](file:///e:/Workspace%202/Doctruyen_project/plans/product/guest_to_account_claim_protocol.md)).
-- Sau khi Claim Commit thành công:
+- Client tạm giữ session mới, kích hoạt luồng **Two-Step Guest Claim Protocol** (đặc tả tại [guest_to_account_claim_protocol.md](guest_to_account_claim_protocol.md)).
+- **Trường hợp A: Claim Commit thành công (HTTP 200 từ commit endpoint):**
   - Đánh dấu trạng thái `guest:<installationId>` là `CLAIMED_AND_PURGED`.
   - Rebind các file offline hợp lệ sang `account:<userId>`.
   - `activeScope` chuyển sang `account:<userId>`.
+- **Trường hợp B: Người dùng HỦY Claim (Cancel Claim / Skip):**
+  - **TUYỆT ĐỐI KHÔNG MUTATE GUEST DATA.** Không tự ý xóa guest bookmarks/progress/history.
+  - Chuyển `activeScope` sang `account:<userId>`. Dữ liệu guest cũ được đưa vào trạng thái **Retained / Quarantined** (cô lập an toàn, không bị xóa âm thầm).
 
-#### Kịch bản 3: Người dùng đăng xuất (Account → Guest) — *P0 Invariant: Chống Ô Nhiễm Chéo*
+#### Kịch bản 3: Người dùng đăng xuất (Account → Fresh Guest) — *P0 Invariant: Chống Ô Nhiễm Chéo*
 - Người dùng bấm Đăng Xuất (`POST /auth/logout`).
 - Client thực hiện các bước sau theo thứ tự bắt buộc:
   1. Xóa toàn bộ token (`accessToken`, clear cookie `refreshToken`).
   2. **Detach và đóng hoàn toàn scope `account:<userId>`**. Dữ liệu cache của tài khoản này được khóa lại (lock/purge khỏi active memory).
   3. **TUYỆT ĐỐI KHÔNG copy hoặc chuyển đổi dữ liệu của `account:<userId>` thành `guest:<installationId>`.**
-  4. Khởi tạo một `guest:<newInstallationId>` tinh khiết (hoặc khôi phục guest scope rỗng).
+  4. Khởi tạo một **Fresh Guest Scope** hoàn toàn mới (`guest:<newInstallationId>`).
   5. UI chuyển về trạng thái Guest với thư viện rỗng, không chứa bất kỳ dấu vết nào của tài khoản vừa đăng xuất.
+  6. **Chính sách đối với Guest Scope trước login:** Nếu trước đó guest scope đã được claim thành công, nó đã bị purge/rebind; nếu claim bị cancel/abort, guest scope đó vẫn được giữ trong storage dạng quarantined/archived theo retention policy có kiểm soát (TTL hoặc dọn dẹp thủ công), tuyệt đối không bị destroy âm thầm ngay khi logout.
 
 #### Kịch bản 4: User A đăng xuất, User B đăng nhập trên cùng máy
-- Khi User A đăng xuất: cache của A bị cô lập hoàn toàn.
+- Khi User A đăng xuất: cache của A bị cô lập hoàn toàn, fresh guest được khởi tạo.
 - Khi User B đăng nhập: Client nhận `userId = B`. Scope chuyển thành `account:B`.
 - B chỉ thấy dữ liệu từ server của chính B và cache của chính B (nếu có từ trước).
 - **Tỉ lệ ô nhiễm dữ liệu từ A sang B: 0.00%**.

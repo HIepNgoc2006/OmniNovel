@@ -25,8 +25,8 @@ Tài liệu này theo dõi tiến độ toàn diện của dự án **OmniNovel*
   - `[x]` 7.0.2. [Guest-to-Account Claim Protocol](product/guest_to_account_claim_protocol.md) (Two-step prepare & commit, zero client timestamp authority, anti-exploit gamification).
   - `[x]` 7.0.3. [Unified Sync Protocol](product/unified_sync_protocol.md) (Server revisions, client mutations queue, tombstones, anti-resurrection).
   - `[x]` 7.0.4. [Web ↔ Mobile Capability Parity Matrix](product/web_mobile_capability_matrix.md) (Next.js 16.3.3 / React 19.2 & Flutter, 8 system states).
-- **Phase 7A: Guest Local Runtime (Local-First Engine)** `[/] Đang Khởi Động (Amended Plan Approved)`
-  - `[ ]` 7A.1. Local Identity & ActiveScope Coordinator (Web & Mobile SSoT).
+- **Phase 7A: Guest Local Runtime (Local-First Engine)** `[/] Đang Triển Khai (7A.1 Completed)`
+  - `[x]` 7A.1. Local Identity & ActiveScope Coordinator (Web & Mobile SSoT — 20/20 tests PASS ✅).
   - `[ ]` 7A.2. Canonical Local Library Schema & Migration (IndexedDB v1, SQLite v3).
   - `[ ]` 7A.3. Web Repository Layer & IndexedDB Implementation (`omninovel_local_v2`).
   - `[ ]` 7A.4. Web Reader / Bookmark / History Integration (Repository Abstraction).

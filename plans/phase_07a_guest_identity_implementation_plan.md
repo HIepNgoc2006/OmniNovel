@@ -120,11 +120,11 @@ Sau khi đối chiếu với codebase thực tế (`apps/mobile/lib/core/storage
       - `authenticated` ➔ `ACCOUNT` (gán `activeScope = account:<userId>`)
     - `onLogout()`: Chuyển sang `TRANSITIONING` ➔ gọi `rotateGuestProfileId()` ➔ chuyển sang `GUEST` với fresh profile.
 
-- [ ] **Step 1: Viết unit tests cho `InstallationIdentityProvider`, `GuestProfileIdentityProvider` và `ActiveScopeCoordinator` (Web & Mobile)**
-- [ ] **Step 2: Triển khai Identity Providers và Coordinator trên Web (`apps/web`)**
-- [ ] **Step 3: Triển khai Identity Providers và Coordinator trên Mobile (`apps/mobile`)**
-- [ ] **Step 4: Chạy test xác nhận pass 100% (bao gồm kịch bản bootstrap race)**
-- [ ] **Step 5: Git commit**
+- [x] **Step 1: Viết unit tests cho `InstallationIdentityProvider`, `GuestProfileIdentityProvider` và `ActiveScopeCoordinator` (Web & Mobile)**
+- [x] **Step 2: Triển khai Identity Providers và Coordinator trên Web (`apps/web`)**
+- [x] **Step 3: Triển khai Identity Providers và Coordinator trên Mobile (`apps/mobile`)**
+- [x] **Step 4: Chạy test xác nhận pass 100% (bao gồm kịch bản bootstrap race)**
+- [x] **Step 5: Git commit**
 
 ```bash
 git add apps/web apps/mobile

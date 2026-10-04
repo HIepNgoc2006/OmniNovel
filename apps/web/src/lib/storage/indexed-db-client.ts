@@ -35,8 +35,14 @@ export class InvalidGuestScopeException extends Error {
 }
 
 export function assertGuestScope(scope: string | null | undefined): asserts scope is string {
-  if (!scope || typeof scope !== 'string' || !scope.startsWith('guest:')) {
+  if (!scope || typeof scope !== 'string' || !scope.startsWith('guest:') || scope.slice(6).trim() === '') {
     throw new InvalidGuestScopeException(scope);
+  }
+}
+
+export function assertValidScope(scope: string | null | undefined): asserts scope is string {
+  if (!scope || typeof scope !== 'string' || !scope.trim()) {
+    throw new Error('ownerScope must be a non-empty string.');
   }
 }
 
@@ -103,16 +109,25 @@ export class IndexedDbClient {
 
         request.onerror = () => {
           this.openPromise = null;
-          reject(request.error || new IndexedDbUnavailableError('Failed to open IndexedDB.'));
+          const err = request.error;
+          if (err && err.name === 'QuotaExceededError') {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(new IndexedDbUnavailableError(err ? err.message : 'Failed to open IndexedDB.'));
+          }
         };
 
         request.onblocked = () => {
           this.openPromise = null;
           reject(new IndexedDbUnavailableError('IndexedDB open blocked by another open connection.'));
         };
-      } catch (err) {
+      } catch (err: any) {
         this.openPromise = null;
-        reject(err);
+        if (err instanceof IndexedDbUnavailableError || err instanceof QuotaExceededStorageError) {
+          reject(err);
+        } else {
+          reject(new IndexedDbUnavailableError(err instanceof Error ? err.message : String(err)));
+        }
       }
     });
 
@@ -136,6 +151,8 @@ export class IndexedDbClient {
     progress: LocalReadingProgress,
     history: LocalReadingHistory
   ): Promise<void> {
+    assertValidScope(progress.ownerScope);
+    assertValidScope(history.ownerScope);
     const db = await this.getDatabase();
 
     return new Promise<void>((resolve, reject) => {
@@ -153,7 +170,12 @@ export class IndexedDbClient {
       };
 
       tx.onabort = () => {
-        reject(tx.error || new Error('Transaction aborted.'));
+        const error = tx.error;
+        if (error && error.name === 'QuotaExceededError') {
+          reject(new QuotaExceededStorageError());
+        } else {
+          reject(error || new Error('Transaction aborted.'));
+        }
       };
 
       tx.oncomplete = () => {
@@ -183,11 +205,15 @@ export class IndexedDbClient {
 
             // 3. Put history with preserved monotonic progress
             historyStore.put(finalHistory);
-          } catch (err) {
+          } catch (err: any) {
             try {
               tx.abort();
             } catch (_) {}
-            reject(err);
+            if (err && (err.name === 'QuotaExceededError' || err.code === 22)) {
+              reject(new QuotaExceededStorageError());
+            } else {
+              reject(err);
+            }
           }
         };
 
@@ -197,11 +223,15 @@ export class IndexedDbClient {
           } catch (_) {}
           reject(getRequest.error || new Error('Failed to read existing history.'));
         };
-      } catch (err) {
+      } catch (err: any) {
         try {
           tx.abort();
         } catch (_) {}
-        reject(err);
+        if (err && (err.name === 'QuotaExceededError' || err.code === 22)) {
+          reject(new QuotaExceededStorageError());
+        } else {
+          reject(err);
+        }
       }
     });
   }
@@ -209,16 +239,41 @@ export class IndexedDbClient {
   // ==================== BOOKMARKS SCOPE-BOUND OPERATIONS ====================
 
   async putBookmark(bookmark: LocalBookmark): Promise<void> {
+    assertValidScope(bookmark.ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_BOOKMARKS, 'readwrite');
-      tx.objectStore(STORE_BOOKMARKS).put(bookmark);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+      try {
+        const tx = db.transaction(STORE_BOOKMARKS, 'readwrite');
+        tx.objectStore(STORE_BOOKMARKS).put(bookmark);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error);
+          }
+        };
+        tx.onabort = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Transaction aborted.'));
+          }
+        };
+      } catch (err: any) {
+        if (err && (err.name === 'QuotaExceededError' || err.code === 22)) {
+          reject(new QuotaExceededStorageError());
+        } else {
+          reject(err);
+        }
+      }
     });
   }
 
   async getBookmark(ownerScope: string, storyId: string): Promise<LocalBookmark | null> {
+    assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_BOOKMARKS, 'readonly');
@@ -229,6 +284,7 @@ export class IndexedDbClient {
   }
 
   async deleteBookmark(ownerScope: string, storyId: string): Promise<void> {
+    assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_BOOKMARKS, 'readwrite');
@@ -239,6 +295,7 @@ export class IndexedDbClient {
   }
 
   async getBookmarks(ownerScope: string): Promise<LocalBookmark[]> {
+    assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_BOOKMARKS, 'readonly');
@@ -268,6 +325,7 @@ export class IndexedDbClient {
   // ==================== READING PROGRESS SCOPE-BOUND OPERATIONS ====================
 
   async getProgress(ownerScope: string, storyId: string): Promise<LocalReadingProgress | null> {
+    assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_PROGRESS, 'readonly');
@@ -278,18 +336,43 @@ export class IndexedDbClient {
   }
 
   async putProgress(progress: LocalReadingProgress): Promise<void> {
+    assertValidScope(progress.ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_PROGRESS, 'readwrite');
-      tx.objectStore(STORE_PROGRESS).put(progress);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+      try {
+        const tx = db.transaction(STORE_PROGRESS, 'readwrite');
+        tx.objectStore(STORE_PROGRESS).put(progress);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error);
+          }
+        };
+        tx.onabort = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Transaction aborted.'));
+          }
+        };
+      } catch (err: any) {
+        if (err && (err.name === 'QuotaExceededError' || err.code === 22)) {
+          reject(new QuotaExceededStorageError());
+        } else {
+          reject(err);
+        }
+      }
     });
   }
 
   // ==================== READING HISTORY SCOPE-BOUND OPERATIONS ====================
 
   async getHistory(ownerScope: string): Promise<LocalReadingHistory[]> {
+    assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_HISTORY, 'readonly');
@@ -318,6 +401,7 @@ export class IndexedDbClient {
   }
 
   async deleteStoryHistory(ownerScope: string, storyId: string): Promise<void> {
+    assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_HISTORY, 'readwrite');
@@ -339,6 +423,7 @@ export class IndexedDbClient {
   }
 
   async clearAllHistory(ownerScope: string): Promise<void> {
+    assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_HISTORY, 'readwrite');
@@ -360,6 +445,7 @@ export class IndexedDbClient {
   }
 
   async purgeScope(ownerScope: string): Promise<void> {
+    assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
       const tx = db.transaction([STORE_BOOKMARKS, STORE_PROGRESS, STORE_HISTORY], 'readwrite');

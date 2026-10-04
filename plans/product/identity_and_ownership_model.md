@@ -23,13 +23,31 @@ graph TD
     G -.->|Chuyển giao 1 chiều qua Claim Protocol| A
 ```
 
-### 1.1. Guest Identity (`guest:<installationId>`)
-- **Định danh:** Mỗi thiết bị / profile trình duyệt tự sinh một chuỗi ngẫu nhiên duy nhất `installationId` (chuẩn UUIDv4) khi mở app lần đầu.
-- **Ranh giới:** `installationId` **CHỈ TỒN TẠI TẠI CLIENT**.
+### 1.1. Thiết Bị & Khách Vãng Lai (Device & Guest Identity Separation)
+
+Để tránh mâu thuẫn giữa việc định danh thiết bị ổn định và việc tạo phiên khách sạch (fresh guest), hệ thống phân tách thành **hai mã định danh độc lập**:
+
+```text
+installationId (Bền vững - Stable)
+│
+├── Đại diện cho cài đặt thiết bị / browser profile vật lý
+├── Tồn tại vĩnh viễn đến khi xóa ứng dụng hoặc clear site data
+├── KHÔNG BAO GIỜ bị thay đổi hay reset khi người dùng đăng xuất
+└── Gắn với scope thiết bị: device:<installationId>
+
+guestProfileId (Có thể luân chuyển - Rotatable)
+│
+├── Đại diện cho một phiên hồ sơ Khách (Guest Local Profile) cụ thể
+├── Có thể tạo mới (rotate) khi người dùng đăng xuất để tạo Fresh Guest
+├── Được quản lý vòng đời độc lập, hỗ trợ lưu trữ cách ly (Quarantine)
+└── Gắn với scope thư viện khách: guest:<guestProfileId>
+```
+
+- **Ranh giới:** Cả `installationId` và `guestProfileId` **CHỈ TỒN TẠI TẠI CLIENT**.
 - **Quy tắc tuyệt đối (P0 Security Invariant):**
   - **Không tạo bản ghi trong bảng `users` của PostgreSQL** khi có khách vãng lai, bot tìm kiếm hay tab ẩn danh truy cập.
-  - `installationId` **không phải là credential xác thực** và không được gửi lên các API yêu cầu xác thực (`JwtAuthGuard`).
-  - Web và Mobile của cùng một người dùng khi chưa đăng nhập là 2 Guest riêng biệt, **hoàn toàn không đồng bộ chéo**.
+  - `installationId` và `guestProfileId` **không phải là credential xác thực** và không được gửi lên các API yêu cầu xác thực (`JwtAuthGuard`).
+  - Web và Mobile của cùng một người dùng khi chưa đăng nhập là 2 Guest profiles riêng biệt, **hoàn toàn không đồng bộ chéo**.
 
 ### 1.2. Account Identity (`account:<userId>`)
 - **Định danh:** `userId` (UUIDv4) do PostgreSQL cấp phát thông qua đăng ký (`POST /auth/register`).
@@ -49,89 +67,93 @@ graph TD
 ### 2.1. Phân Vùng Lưu Trữ
 | Tầng Lưu Trữ | Định Dạng Khóa / Scope | Phạm Vi Dữ Liệu | Cơ Chế Dọn Dẹp / Cô Lập |
 |---|---|---|---|
-| **Guest Scope** | `guest:<installationId>` | Bookmarks, Reading Progress, Reading History, Local Preferences | Duy trì cho đến khi người dùng chủ động xóa app / clear site data hoặc được rebind sau claim. |
+| **Device Scope** | `device:<installationId>` | Theme preference, audio/haptic toggles, UI density, Sync Client Identity | **Bền vững:** Gắn liền với thiết bị, KHÔNG reset khi đăng xuất. |
+| **Guest Scope** | `guest:<guestProfileId>` | Bookmarks, Reading Progress, Reading History, Local Presentation Cache | **Luân chuyển:** Có thể chuyển sang Quarantine khi đăng nhập, hoặc tạo mới khi đăng xuất. |
 | **Account Scope** | `account:<userId>` | Bản sao đồng bộ (local replica) của dữ liệu Cloud | Khi Logout: **Lập tức detach và ẩn hoàn toàn**. Tuyệt đối không tái sinh (resurrect) thành Guest data. |
-| **Device Scope** | `device:<installationId>` | Theme preference, audio/haptic toggles, UI density | Không phụ thuộc người dùng đăng nhập, gắn liền với phần cứng thiết bị. |
 
 ### 2.2. Chi Tiết Thực Thi Trên Từng Nền Tảng
 
 #### Web Client (`apps/web`):
-- **Kho lưu trữ chính (Primary Store):** **IndexedDB** (sử dụng Dexie.js hoặc IDB wrapper chuẩn).
-  - Database: `omninovel_local_v2`
+- **Kho lưu trữ chính (Primary Store):** **IndexedDB** (`omninovel_local_v2`, version 1).
   - Object Stores:
-    - `guest_bookmarks` & `account_bookmarks` (hoặc store `bookmarks` có composite key `[ownerScope, storyId]`).
-    - `guest_progress` & `account_progress` (composite key `[ownerScope, storyId]`).
-    - `guest_history` & `account_history` (composite key `[ownerScope, storyId, chapterId]`).
-- **Kho lưu trữ phụ (Auxiliary):** `localStorage` **chỉ dùng cho `device:*` preferences cực nhỏ** (ví dụ: `theme_mode: 'DARK'`). Tuyệt đối không lưu dữ liệu tiến độ hay thư viện vào `localStorage` do giới hạn 5MB, tính đồng bộ chặn (synchronous blocking) và thiếu tính toàn vẹn transaction.
+    - `bookmarks` (composite key `[ownerScope, storyId]`).
+    - `progress` (composite key `[ownerScope, storyId]`).
+    - `history` (composite key `[ownerScope, storyId, chapterId]`).
+- **Kho lưu trữ phụ (Auxiliary):** `localStorage` **chỉ dùng cho `device:<installationId>` preferences cực nhỏ** (ví dụ: `theme_mode: 'DARK'`) và lưu `installationId`, `activeGuestProfileId`. Tuyệt đối không lưu dữ liệu tiến độ hay thư viện vào `localStorage`.
 
 #### Mobile Client (`apps/mobile`):
-- **Kho lưu trữ chính:** **Hạ tầng SQLite hiện hữu** (Floor / sqflite).
-- **Cơ chế Adapter Scope:** Thêm cột `owner_scope TEXT NOT NULL` vào các bảng hiện tại (`bookmarks`, `reading_progress`, `reading_history`, `downloaded_chapters`).
-- Mọi câu truy vấn DAO bắt buộc phải có điều kiện `WHERE owner_scope = :activeScope`.
-- Không dựng thêm file DB mới để tránh phân mảnh tài nguyên I/O.
+- **Kho lưu trữ chính:** **Hạ tầng SQLite hiện hữu mở rộng v3** (`omninovel_offline.db`).
+- **Phân định bảng:** Thêm 3 bảng `local_library_bookmarks`, `local_reading_progress`, `local_reading_history` với cột `owner_scope TEXT NOT NULL`.
+- Mọi câu truy vấn Local Library DAO bắt buộc phải có điều kiện `WHERE owner_scope = :activeScope`.
+- Các bảng offline v2 (`offline_chapters`, `download_tasks`, `offline_deletion_tombstones`) giữ nguyên cột `user_id` hiện tại để bảo toàn Phase 5D.
 
 ---
 
 ## 3. Máy Trạng Thái Định Danh & Ma Trận Chuyển Đổi (State Transitions)
 
+### 3.0. ActiveScopeCoordinator State Machine (P0 Anti-Race Invariant)
+
+Nhằm ngăn chặn triệt để **Auth Bootstrap Race** (khi trang vừa tải, auth đang refresh mà reader ghi nhầm tiến độ của User vào Guest store), `ActiveScopeCoordinator` quản lý 4 trạng thái rành mạch:
+
 ```mermaid
 stateDiagram-v2
-    [*] --> UnauthenticatedGuest: Mở Web / Cài App lần đầu
+    [*] --> BOOTSTRAPPING: Ứng dụng khởi động
 
-    UnauthenticatedGuest --> ClaimPreparing: Bấm Đăng Nhập / Đăng Ký
-    
-    state ClaimPreparing {
-        [*] --> InspectGuestData
-        InspectGuestData --> CallPrepareAPI: Gửi payload dirty items
-        CallPrepareAPI --> EvaluateConflicts: Nhận server snapshot & diff
+    state BOOTSTRAPPING {
+        desc: Auth hydrating (/auth/refresh hoặc SecureStorage read)
+        note: KHÔNG CHO PHÉP ghi persistent user-state (chặn bookmark/progress/history write)
     }
 
-    ClaimPreparing --> AuthenticatedAccount: Claim Commit thành công (Purge/Rebind guest sang account)
-    ClaimPreparing --> AuthenticatedAccount: Hủy Claim (Giữ cloud, KHÔNG mutate guest data, giữ/cách ly guest scope)
-    
-    AuthenticatedAccount --> UnauthenticatedGuest: Đăng Xuất (Logout)
-    
-    note right of UnauthenticatedGuest
-        Scope: guest:<installationId>
-        Dữ liệu cô lập 100%
-    end note
+    BOOTSTRAPPING --> GUEST: Auth Hydrated ➔ Anonymous (Không có token hợp lệ)
+    BOOTSTRAPPING --> ACCOUNT: Auth Hydrated ➔ Authenticated (Token hợp lệ)
 
-    note right of AuthenticatedAccount
-        Scope: account:<userId>
-        SSoT trên PostgreSQL
-    end note
+    GUEST --> TRANSITIONING: Bắt đầu Đăng nhập / Đăng ký
+    ACCOUNT --> TRANSITIONING: Bắt đầu Đăng xuất
+
+    TRANSITIONING --> ACCOUNT: Đăng nhập thành công (Claim Hoàn tất / Hủy)
+    TRANSITIONING --> GUEST: Đăng xuất hoàn tất (Tạo Fresh guestProfileId)
+
+    ACCOUNT --> GUEST: Đăng xuất (Tạo Fresh guestProfileId)
 ```
+
+> [!CRITICAL]
+> **P0 Invariant — Không đồng nhất `not authenticated` với `guest`:**
+> Coordinator tiêu thụ trực tiếp `AuthStatus` (`initializing` | `authenticated` | `anonymous`), **TUYỆT ĐỐI KHÔNG tiêu thụ riêng cờ `isAuthenticated: boolean`**.
+> Trong trạng thái `BOOTSTRAPPING`, reader có thể tải nội dung public nhưng mọi hành động ghi tiến độ đọc, bookmark hay history bắt buộc phải đợi Active Scope chuyển sang `GUEST` hoặc `ACCOUNT`.
 
 ### 3.1. Các Kịch Bản Chuyển Trạng Thái Chi Tiết
 
 #### Kịch bản 1: Người dùng mới mở Web/App (Guest Mode)
-- Client kiểm tra: nếu chưa có `installationId` trong SecureStorage/LocalStorage -> tạo mới `UUIDv4`.
-- `activeScope` được gán = `guest:<installationId>`.
+- Client kiểm tra: nếu chưa có `installationId` -> tạo mới UUIDv4 (bền vững).
+- Nếu chưa có `guestProfileId` -> tạo mới UUIDv4.
+- Sau khi Auth Bootstrap xác nhận `anonymous`: `activeScope` được gán = `guest:<guestProfileId>`.
 - Mọi hoạt động đọc, đánh dấu trang, lưu tiến độ chỉ ghi vào partition này.
 
 #### Kịch bản 2: Guest đăng nhập / tạo tài khoản mới (Guest → Account Claim)
-- Người dùng thực hiện `login()` hoặc `register()`.
+- Người dùng thực hiện `login()` hoặc `register()`. Scope chuyển sang `TRANSITIONING`.
 - Client tạm giữ session mới, kích hoạt luồng **Two-Step Guest Claim Protocol** (đặc tả tại [guest_to_account_claim_protocol.md](guest_to_account_claim_protocol.md)).
 - **Trường hợp A: Claim Commit thành công (HTTP 200 từ commit endpoint):**
-  - Đánh dấu trạng thái `guest:<installationId>` là `CLAIMED_AND_PURGED`.
+  - Đánh dấu trạng thái `guest:<guestProfileId>` là `CLAIMED_AND_PURGED`.
   - Rebind các file offline hợp lệ sang `account:<userId>`.
   - `activeScope` chuyển sang `account:<userId>`.
 - **Trường hợp B: Người dùng HỦY Claim (Cancel Claim / Skip):**
   - **TUYỆT ĐỐI KHÔNG MUTATE GUEST DATA.** Không tự ý xóa guest bookmarks/progress/history.
-  - Chuyển `activeScope` sang `account:<userId>`. Dữ liệu guest cũ được đưa vào trạng thái **Retained / Quarantined** (cô lập an toàn, không bị xóa âm thầm).
+  - Chuyển `guest:<guestProfileId>` vào danh sách **Quarantine / Retained Storage** để bảo toàn dữ liệu.
+  - `activeScope` chuyển sang `account:<userId>`.
 
 #### Kịch bản 3: Người dùng đăng xuất (Account → Fresh Guest) — *P0 Invariant: Chống Ô Nhiễm Chéo*
-- Người dùng bấm Đăng Xuất (`POST /auth/logout`).
+- Người dùng bấm Đăng Xuất (`POST /auth/logout`). Scope chuyển sang `TRANSITIONING`.
 - Client thực hiện các bước sau theo thứ tự bắt buộc:
   1. Xóa toàn bộ token (`accessToken`, clear cookie `refreshToken`).
   2. **Detach và đóng hoàn toàn scope `account:<userId>`**. Dữ liệu cache của tài khoản này được khóa lại (lock/purge khỏi active memory).
-  3. **TUYỆT ĐỐI KHÔNG copy hoặc chuyển đổi dữ liệu của `account:<userId>` thành `guest:<installationId>`.**
-  4. Khởi tạo một **Fresh Guest Scope** hoàn toàn mới (`guest:<newInstallationId>`).
-  5. UI chuyển về trạng thái Guest với thư viện rỗng, không chứa bất kỳ dấu vết nào của tài khoản vừa đăng xuất.
-  6. **Chính sách đối với Guest Scope trước login:** Nếu trước đó guest scope đã được claim thành công, nó đã bị purge/rebind; nếu claim bị cancel/abort, guest scope đó vẫn được giữ trong storage dạng quarantined/archived theo retention policy có kiểm soát (TTL hoặc dọn dẹp thủ công), tuyệt đối không bị destroy âm thầm ngay khi logout.
+  3. **TUYỆT ĐỐI KHÔNG copy hoặc chuyển đổi dữ liệu của `account:<userId>` thành `guest:*`.**
+  4. **Giữ nguyên `installationId` ổn định**, gọi `rotateGuestProfileId()` để sinh ra một `guestProfileId` mới tinh.
+  5. `activeScope` chuyển sang `guest:<newGuestProfileId>` (GUEST state).
+  6. UI hiển thị Thư viện rỗng sạch sẽ, không chứa bất kỳ dấu vết nào của tài khoản vừa đăng xuất.
+  7. **Chính sách đối với Guest Scope trước login:** Nếu trước đó guest scope đã được claim thành công, nó đã bị purge/rebind; nếu claim bị cancel/abort, guest scope đó vẫn được giữ trong storage dạng quarantined/archived theo retention policy có kiểm soát (TTL hoặc dọn dẹp thủ công), tuyệt đối không bị destroy âm thầm ngay khi logout.
 
 #### Kịch bản 4: User A đăng xuất, User B đăng nhập trên cùng máy
-- Khi User A đăng xuất: cache của A bị cô lập hoàn toàn, fresh guest được khởi tạo.
+- Khi User A đăng xuất: cache của A bị cô lập hoàn toàn, fresh guest profile được khởi tạo.
 - Khi User B đăng nhập: Client nhận `userId = B`. Scope chuyển thành `account:B`.
 - B chỉ thấy dữ liệu từ server của chính B và cache của chính B (nếu có từ trước).
 - **Tỉ lệ ô nhiễm dữ liệu từ A sang B: 0.00%**.

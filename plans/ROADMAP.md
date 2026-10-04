@@ -28,7 +28,7 @@ Tài liệu này theo dõi tiến độ toàn diện của dự án **OmniNovel*
 - **Phase 7A: Guest Local Runtime (Local-First Engine)** `[/] Đang Triển Khai (7A.1, 7A.2, 7A.3 Completed)`
   - `[x]` 7A.1. Local Identity & ActiveScope Coordinator (Web & Mobile SSoT — 25/25 tests PASS ✅).
   - `[x]` 7A.2. Canonical Local Library Schema & Migration (IndexedDB v1, SQLite v3 — All Invariants PASS ✅).
-  - `[x]` 7A.3. Web Repository Layer & IndexedDB Implementation (`omninovel_local_v2` — 12/12 tests PASS ✅).
+  - `[x]` 7A.3. Web Repository Layer & IndexedDB Implementation (`omninovel_local_v2` — 17/17 tests PASS, Full Invariants Locked ✅).
   - `[ ]` 7A.4. Web Reader / Bookmark / History Integration (Repository Abstraction).
   - `[ ]` 7A.5. Mobile Local Library Schema & Repository (SQLite v3 `owner_scope`).
   - `[ ]` 7A.6. Mobile Guest Navigation & Reader Integration ("Continue as Guest").

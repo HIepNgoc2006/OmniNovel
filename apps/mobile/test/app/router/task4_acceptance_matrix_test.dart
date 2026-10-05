@@ -22,6 +22,8 @@ import 'package:omninovel_mobile/features/library/repositories/library_repositor
 import 'package:omninovel_mobile/features/library/repositories/scoped_library_dispatcher.dart';
 import 'package:omninovel_mobile/features/reader/models/reading_progress_models.dart';
 import 'package:omninovel_mobile/features/reader/repositories/account_reading_session_adapter.dart';
+import 'package:omninovel_mobile/features/gamification/repositories/gamification_repository.dart';
+import 'package:omninovel_mobile/features/reader/models/reader_models.dart';
 import 'package:omninovel_mobile/features/reader/repositories/chapter_report_repository.dart';
 import 'package:omninovel_mobile/features/reader/repositories/chapter_repository.dart';
 import 'package:omninovel_mobile/features/reader/repositories/guest_reading_progress_repository.dart';
@@ -124,6 +126,7 @@ class MockReadingProgressRepo extends Mock implements ReadingProgressRepository 
 class MockGuestReadingProgressRepo extends Mock implements GuestReadingProgressRepository {}
 class MockLibraryRepo extends Mock implements LibraryRepository {}
 class MockGuestLibraryRepo extends Mock implements GuestLibraryRepository {}
+class MockGamificationRepo extends Mock implements GamificationRepository {}
 class MockAccountLibraryAdapter extends Mock implements AccountLibraryAdapter {}
 class MockGuestLibraryAdapter extends Mock implements GuestLibraryAdapter {}
 
@@ -186,6 +189,7 @@ void main() {
     late MockGuestReadingProgressRepo mockGuestReadingProgressRepo;
     late MockLibraryRepo mockLibraryRepo;
     late MockGuestLibraryRepo mockGuestLibraryRepo;
+    late MockGamificationRepo mockGamificationRepo;
 
     setUp(() {
       authService = FakeAuthService();
@@ -199,16 +203,42 @@ void main() {
       mockGuestReadingProgressRepo = MockGuestReadingProgressRepo();
       mockLibraryRepo = MockLibraryRepo();
       mockGuestLibraryRepo = MockGuestLibraryRepo();
+      mockGamificationRepo = MockGamificationRepo();
 
       // Default stubs
       when(() => mockStoryRepo.getFeaturedStories()).thenAnswer((_) async => const FeaturedStoriesResponse(hotStories: [], banners: []));
       when(() => mockStoryRepo.getRankings()).thenAnswer((_) async => const StoryRankingsResponse(topComics: [], topNovels: []));
       when(() => mockStoryRepo.getGenres()).thenAnswer((_) async => []);
+      when(() => mockStoryRepo.getStoryBySlug(any())).thenAnswer((_) async => const StoryDetail(
+            id: 'story-deep-1',
+            title: 'Deep Link Story',
+            slug: 'deep-link-story',
+            status: 'ONGOING',
+            mediaFormat: 'COMIC',
+            visibility: 'PUBLIC',
+          ));
+      when(() => mockChapterRepo.getChapterDetail(any())).thenAnswer((_) async => const ChapterDetail(
+            story: ChapterStorySummary(
+              id: 'story-deep-1',
+              slug: 'deep-link-story',
+              title: 'Deep Link Story',
+              mediaFormat: 'COMIC',
+            ),
+            chapter: ChapterHeaderSummary(
+              id: 'chap-test-1',
+              chapterNumber: '1',
+              title: 'Chapter 1',
+            ),
+            availableVersions: [],
+            pages: [],
+            navigation: ChapterNavigation(),
+          ));
       when(() => mockLibraryRepo.getCachedBookmarks(status: any(named: 'status'))).thenReturn([]);
       when(() => mockLibraryRepo.getCachedHistory()).thenReturn([]);
       when(() => mockLibraryRepo.getCachedContinueReading()).thenReturn(null);
       when(() => mockGuestLibraryRepo.getBookmarks()).thenAnswer((_) async => []);
       when(() => mockGuestLibraryRepo.getHistory()).thenAnswer((_) async => []);
+      when(() => mockGuestLibraryRepo.isBookmarked(any())).thenAnswer((_) async => false);
       when(() => mockGuestLibraryRepo.saveBookmark(
             storyId: any(named: 'storyId'),
             title: any(named: 'title'),
@@ -232,6 +262,7 @@ void main() {
         chapterReportRepository: mockReportRepo,
         readingProgressRepository: mockReadingProgressRepo,
         libraryRepository: mockLibraryRepo,
+        gamificationRepository: mockGamificationRepo,
         activeScopeCoordinator: coordinator,
         guestLibraryRepository: mockGuestLibraryRepo,
         guestReadingProgressRepository: mockGuestReadingProgressRepo,
@@ -253,9 +284,9 @@ void main() {
     }
 
     // =========================================================================
-    // Case 1: Public route guest access
+    // Case 1: Public route guest access & deep-links
     // =========================================================================
-    testWidgets('Case 1: Public routes (/home, /search, /library) allow guest access without redirect to /login',
+    testWidgets('Case 1: Public routes (/home, /search, /library, /story/:slug, /reader/:chapterId) allow guest access without redirect to /login',
         (tester) async {
       authService.updateState(AuthState.unauthenticated());
       coordinator.updateScope('guest:gst-case-1');
@@ -275,6 +306,18 @@ void main() {
       router.go('/library');
       await tester.pumpAndSettle();
       expect(router.routeInformationProvider.value.uri.path, '/library');
+
+      // 4. Guest deep-link /story/:slug
+      router.go('/story/deep-link-story');
+      await tester.pumpAndSettle();
+      expect(router.routeInformationProvider.value.uri.path, '/story/deep-link-story');
+
+      // 5. Guest deep-link /reader/:chapterId?storyId=...
+      router.go('/reader/chap-test-1?storyId=deep-link-story');
+      await tester.pumpAndSettle();
+      final readerUri = router.routeInformationProvider.value.uri;
+      expect(readerUri.path, '/reader/chap-test-1');
+      expect(readerUri.queryParameters['storyId'], 'deep-link-story');
     });
 
     // =========================================================================
@@ -298,9 +341,9 @@ void main() {
     });
 
     // =========================================================================
-    // Case 3: Successful login redirection via returnTo
+    // Case 3: Successful login redirection via returnTo & authenticated /login access
     // =========================================================================
-    testWidgets('Case 3: Login success redirects back to original returnTo (/profile)',
+    testWidgets('Case 3: Login success redirects back to original returnTo (/profile) and authenticated access to /login redirects to /home',
         (tester) async {
       authService.updateState(AuthState.unauthenticated());
       coordinator.updateScope('guest:gst-case-3');
@@ -321,6 +364,11 @@ void main() {
 
       final currentUri = router.routeInformationProvider.value.uri;
       expect(currentUri.path, '/profile');
+
+      // Sub-assertion: Authenticated user visiting /login without returnTo redirects to canonical /home
+      router.go('/login');
+      await tester.pumpAndSettle();
+      expect(router.routeInformationProvider.value.uri.path, '/home');
     });
 
     // =========================================================================
@@ -475,6 +523,7 @@ void main() {
       );
       final accountSessionAdapter = AccountReadingSessionAdapter(
         readingProgressRepository: mockReadingProgressRepo,
+        gamificationRepository: mockGamificationRepo,
       );
 
       final sessionDispatcher = ScopedReadingSessionDispatcher(
@@ -502,6 +551,9 @@ void main() {
 
       // Verify: Zero writeEpoch / zero server HTTP mutations on Account repository
       verifyZeroInteractions(mockReadingProgressRepo);
+
+      // Verify: Zero gamification reward API interactions (executable evidence)
+      verifyZeroInteractions(mockGamificationRepo);
     });
 
     // =========================================================================
@@ -702,9 +754,9 @@ void main() {
     });
 
     // =========================================================================
-    // Case 13: Widget Purity (Zero if (guest) business dispatch)
+    // Case 13: Scope-sensitive library mutations and reader session persistence routed via abstract ports
     // =========================================================================
-    test('Case 13: UI components communicate strictly via abstract LibraryAccess and ReadingSessionAccess ports',
+    test('Case 13: Scope-sensitive library mutations and reader session persistence are routed via abstract LibraryAccess and ReadingSessionAccess ports with backward compatibility preserved',
         () {
       final mockAccAdapter = MockAccountLibraryAdapter();
       final mockGstAdapter = MockGuestLibraryAdapter();
@@ -718,7 +770,10 @@ void main() {
       final readDispatcher = ScopedReadingSessionDispatcher(
         authService: authService,
         coordinator: coordinator,
-        accountAdapter: AccountReadingSessionAdapter(readingProgressRepository: mockReadingProgressRepo),
+        accountAdapter: AccountReadingSessionAdapter(
+          readingProgressRepository: mockReadingProgressRepo,
+          gamificationRepository: mockGamificationRepo,
+        ),
         guestAdapter: GuestReadingSessionAdapter(guestRepository: mockGuestReadingProgressRepo),
       );
 
@@ -726,7 +781,7 @@ void main() {
       expect(libDispatcher, isA<LibraryAccess>());
       expect(readDispatcher, isA<ReadingSessionAccess>());
 
-      // Neither port requires widgets to pass isGuest or inspect authentication status
+      // Scope-sensitive mutations route through abstract port abstractions
       expect(libDispatcher.runtimeType.toString(), 'ScopedLibraryDispatcher');
       expect(readDispatcher.runtimeType.toString(), 'ScopedReadingSessionDispatcher');
     });

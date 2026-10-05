@@ -26,11 +26,23 @@ export interface ReadingStateRepository {
   getReadChapterIds(storyId: string): Promise<string[]>;
 }
 
+export class ScopeNotResolvedError extends Error {
+  constructor(state: string) {
+    super(`Cannot get ReadingStateRepository: Active scope is not resolved (current state: "${state}").`);
+    this.name = 'ScopeNotResolvedError';
+  }
+}
+
 export function getReadingStateRepository(
-  coordinatorState: string
+  coordinatorState: string,
+  guestRepo: ReadingStateRepository = guestReadingStateRepository,
+  accountRepo: ReadingStateRepository = accountReadingStateRepository
 ): ReadingStateRepository {
   if (coordinatorState === 'ACCOUNT') {
-    return accountReadingStateRepository;
+    return accountRepo;
   }
-  return guestReadingStateRepository;
+  if (coordinatorState === 'GUEST') {
+    return guestRepo;
+  }
+  throw new ScopeNotResolvedError(coordinatorState);
 }

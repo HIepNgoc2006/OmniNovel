@@ -91,10 +91,12 @@ describe('7A.4a: Auth ↔ ActiveScope Runtime Bridge', () => {
       await Promise.resolve();
     });
 
-    // Coordinator fails closed
-    expect(activeScopeCoordinator.state).toBe('BOOTSTRAPPING');
-    expect(activeScopeCoordinator.activeScope).toBeNull();
-    expect(activeScopeCoordinator.canMutateUserState).toBe(false);
+    // Coordinator fails closed to anonymous/GUEST
+    expect(result.current.status).toBe('anonymous');
+    expect(result.current.isAuthenticated).toBe(false);
+    expect(result.current.user).toBeNull();
+    expect(activeScopeCoordinator.state).toBe('GUEST');
+    expect(activeScopeCoordinator.activeScope).toMatch(/^guest:/);
   });
 
   it('calls activeScopeCoordinator.onLogout() and rotates guestProfileId on logout', async () => {
@@ -168,5 +170,76 @@ describe('7A.4a: Auth ↔ ActiveScope Runtime Bridge', () => {
     expect(onAuthStatusSpy).toHaveBeenCalledWith('authenticated', 'usr-new-login');
     expect(activeScopeCoordinator.state).toBe('ACCOUNT');
     expect(activeScopeCoordinator.activeScope).toBe('account:usr-new-login');
+  });
+
+  it('fails-closed to anonymous/GUEST if hydrateSession returns profile with missing id', async () => {
+    vi.spyOn(clientApi, 'refreshAccessToken').mockResolvedValue('jwt-corrupted-token');
+    vi.spyOn(authApi, 'getMeApi').mockResolvedValue({
+      // Missing id!
+      username: 'corrupted_user',
+      email: 'corrupted@omninovel.com',
+      role: 'READER',
+    } as any);
+
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <AuthProvider>{children}</AuthProvider>
+    );
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // INVARIANT: Never leave session authenticated with null scope!
+    expect(result.current.status).toBe('anonymous');
+    expect(result.current.isAuthenticated).toBe(false);
+    expect(result.current.user).toBeNull();
+    expect(activeScopeCoordinator.state).toBe('GUEST');
+    expect(activeScopeCoordinator.activeScope).toMatch(/^guest:/);
+  });
+
+  it('fails-closed and throws error if login() returns user with missing id', async () => {
+    vi.spyOn(clientApi, 'refreshAccessToken').mockResolvedValue(null);
+    vi.spyOn(authApi, 'loginApi').mockResolvedValue({
+      accessToken: 'jwt-bad-token',
+      user: {
+        // Missing id!
+        username: 'bad_user',
+        email: 'bad@omninovel.com',
+        role: 'READER',
+      } as any,
+    });
+
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <AuthProvider>{children}</AuthProvider>
+    );
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    await expect(
+      act(async () => {
+        await result.current.login({ identifier: 'bad@omninovel.com', password: 'Password123!' });
+      })
+    ).rejects.toThrow('Thông tin người dùng không hợp lệ');
+
+    expect(result.current.status).toBe('anonymous');
+    expect(result.current.isAuthenticated).toBe(false);
+    expect(activeScopeCoordinator.state).toBe('GUEST');
+  });
+
+  it('getReadingStateRepository throws ScopeNotResolvedError on BOOTSTRAPPING or TRANSITIONING', async () => {
+    const { getReadingStateRepository, ScopeNotResolvedError } = await import(
+      '../lib/storage/reading-state-repository'
+    );
+
+    expect(() => getReadingStateRepository('BOOTSTRAPPING')).toThrow(ScopeNotResolvedError);
+    expect(() => getReadingStateRepository('TRANSITIONING')).toThrow(ScopeNotResolvedError);
+    expect(() => getReadingStateRepository('GUEST')).not.toThrow();
+    expect(() => getReadingStateRepository('ACCOUNT')).not.toThrow();
   });
 });

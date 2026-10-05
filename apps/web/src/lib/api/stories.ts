@@ -221,6 +221,51 @@ export async function getBookmarksApi(query?: {
   return response.data;
 }
 
+export interface ReadingHistoryItem {
+  storyId: string;
+  storyTitle: string;
+  storySlug?: string;
+  storyCoverUrl?: string;
+  storyMediaFormat?: MediaFormat | string;
+  chapterId: string;
+  chapterNumber: number | string;
+  chapterTitle?: string | null;
+  chapterVersionId?: string | null;
+  readingMode: string;
+  progressPercentage: number;
+  scrollPosition: number;
+  pageIndex: number;
+  updatedAt: string;
+}
+
+export interface ReadingHistoryListResponse {
+  items: ReadingHistoryItem[];
+  meta: {
+    totalItems: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  };
+}
+
+export async function getReadingHistoryApi(query?: {
+  page?: number;
+  limit?: number;
+}): Promise<ReadingHistoryListResponse> {
+  const response = await apiClient.get<ReadingHistoryListResponse>('/library/history', {
+    params: query,
+  });
+  return response.data;
+}
+
+export async function deleteStoryReadingHistoryApi(storyId: string): Promise<void> {
+  await apiClient.delete(`/library/history/${storyId}`);
+}
+
+export async function clearAllReadingHistoryApi(): Promise<void> {
+  await apiClient.delete('/library/history');
+}
+
 export async function saveReadingProgressApi(
   dto: UpdateReadingProgressDto,
 ): Promise<ReadingProgressResponse> {

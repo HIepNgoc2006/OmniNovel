@@ -12,6 +12,12 @@ import { ReadingHistoryMetadata } from '../storage/guest-reading-state-repositor
 import { accountReadingStateRepository } from '../storage/account-reading-state-repository';
 import { ReadChapterRewardResponse } from '../api/gamification';
 
+export interface ReadingResumeState extends ServerResumeState {
+  pageIndex?: number;
+  anchorBlockId?: string | null;
+  textOffset?: number | null;
+}
+
 export interface UseReadingProgressOptions {
   storyId: string;
   chapterId: string;
@@ -40,7 +46,7 @@ export function useReadingProgress({
   const [readingDuration, setReadingDuration] = useState(0);
   const [scrollProgress, setScrollProgress] = useState(0);
   const [readChapterIds, setReadChapterIds] = useState<string[]>([]);
-  const [serverResume, setServerResume] = useState<ServerResumeState | null>(null);
+  const [serverResume, setServerResume] = useState<ReadingResumeState | null>(null);
   const [rewardStatus, setRewardStatus] = useState<ReadChapterRewardResponse | null>(null);
   const [showRewardToast, setShowRewardToast] = useState(false);
   const [persistenceStatus, setPersistenceStatus] = useState<PersistenceStatus>('ready');
@@ -82,6 +88,9 @@ export function useReadingProgress({
             readingMode: progress.readingMode,
             scrollPosition: progress.scrollPosition || 0,
             progressPercentage: progress.progressPercentage || 0,
+            pageIndex: progress.pageIndex ?? 1,
+            anchorBlockId: progress.anchorBlockId || null,
+            textOffset: progress.textOffset || null,
           });
         }
       } catch {

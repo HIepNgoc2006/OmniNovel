@@ -68,8 +68,12 @@ export function MangaReader({ initialData, allChapters = [] }: MangaReaderProps)
           }, 50);
           return () => clearTimeout(timer);
         } else if (settings.manga.mode === 'paged') {
-          const targetPage = Math.max(1, Math.min(totalPages, Math.round(serverResume.scrollPosition || 1)));
-          setCurrentPage(targetPage);
+          const targetPage =
+            serverResume.pageIndex != null && serverResume.pageIndex > 0
+              ? serverResume.pageIndex
+              : (serverResume.scrollPosition > 0 ? Math.round(serverResume.scrollPosition) : 1);
+          const restoredPage = Math.max(1, Math.min(totalPages, targetPage));
+          setCurrentPage(restoredPage);
         }
       }
     }
@@ -116,7 +120,7 @@ export function MangaReader({ initialData, allChapters = [] }: MangaReaderProps)
       const percentage = totalPages > 0 ? (targetPage / totalPages) * 100 : 0;
       updateProgress({
         progressPercentage: percentage,
-        scrollPosition: 0,
+        scrollPosition: targetPage,
         pageIndex: targetPage,
         storyTitle: data.story.title,
         storySlug: data.story.slug,

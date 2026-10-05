@@ -14,7 +14,14 @@ import {
 import { Button } from '../../../../components/ui/button';
 import { activeScopeCoordinator } from '../../../../lib/identity/active-scope-coordinator';
 import { guestLibraryRepository } from '../../../../lib/storage/guest-library-repository';
-import { getBookmarksApi, setBookmarkApi, Story } from '../../../../lib/api/stories';
+import {
+  getBookmarksApi,
+  setBookmarkApi,
+  getReadingHistoryApi,
+  deleteStoryReadingHistoryApi,
+  clearAllReadingHistoryApi,
+  Story,
+} from '../../../../lib/api/stories';
 import { LocalBookmark, LocalReadingHistory } from '@omninovel/shared';
 
 type LibraryTab = 'bookmarks' | 'history';
@@ -27,10 +34,25 @@ interface UnifiedBookmarkItem {
   createdAt?: string;
 }
 
+interface UnifiedHistoryItem {
+  storyId: string;
+  storyTitle: string;
+  storySlug?: string;
+  storyCoverUrl?: string;
+  chapterId: string;
+  chapterNumber: number | string;
+  chapterTitle?: string | null;
+  readingMode?: string;
+  progressPercentage: number;
+  scrollPosition?: number;
+  pageIndex?: number;
+  updatedAt?: string;
+}
+
 export default function LibraryPage() {
   const [activeTab, setActiveTab] = useState<LibraryTab>('bookmarks');
   const [bookmarks, setBookmarks] = useState<UnifiedBookmarkItem[]>([]);
-  const [history, setHistory] = useState<LocalReadingHistory[]>([]);
+  const [history, setHistory] = useState<UnifiedHistoryItem[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [activeScope, setActiveScope] = useState<string | null>(activeScopeCoordinator.activeScope);
 
@@ -54,12 +76,27 @@ export default function LibraryPage() {
             createdAt: b.createdAt,
           }))
         );
-        setHistory(hist);
+        setHistory(
+          hist.map((h) => ({
+            storyId: h.storyId,
+            storyTitle: h.storyTitle,
+            storySlug: h.storySlug,
+            storyCoverUrl: h.storyCoverUrl,
+            chapterId: h.chapterId,
+            chapterNumber: h.chapterNumber,
+            chapterTitle: h.chapterTitle,
+            progressPercentage: h.progressPercentage,
+            lastReadAt: h.lastReadAt,
+          }))
+        );
       } else if (scope.startsWith('account:')) {
         try {
-          const res = await getBookmarksApi({ page: 1, limit: 50 });
+          const [bmsRes, histRes] = await Promise.all([
+            getBookmarksApi({ page: 1, limit: 50 }).catch(() => ({ items: [] })),
+            getReadingHistoryApi({ page: 1, limit: 50 }).catch(() => ({ items: [] })),
+          ]);
           setBookmarks(
-            res.items.map((s: Story) => ({
+            (bmsRes?.items || []).map((s: Story) => ({
               storyId: s.id,
               title: s.title,
               slug: s.slug,
@@ -67,10 +104,26 @@ export default function LibraryPage() {
               createdAt: s.createdAt,
             }))
           );
+          setHistory(
+            (histRes?.items || []).map((h) => ({
+              storyId: h.storyId,
+              storyTitle: h.storyTitle,
+              storySlug: h.storySlug,
+              storyCoverUrl: h.storyCoverUrl,
+              chapterId: h.chapterId,
+              chapterNumber: h.chapterNumber,
+              chapterTitle: h.chapterTitle,
+              readingMode: h.readingMode,
+              progressPercentage: h.progressPercentage,
+              scrollPosition: h.scrollPosition,
+              pageIndex: h.pageIndex,
+              updatedAt: h.updatedAt,
+            }))
+          );
         } catch {
           setBookmarks([]);
+          setHistory([]);
         }
-        setHistory([]);
       }
     } catch {
       // Safe fallback
@@ -107,7 +160,12 @@ export default function LibraryPage() {
 
   const handleDeleteHistory = async (storyId: string) => {
     try {
-      await guestLibraryRepository.deleteStoryHistory(storyId);
+      const scope = await activeScopeCoordinator.waitForResolvedScope();
+      if (scope.startsWith('guest:')) {
+        await guestLibraryRepository.deleteStoryHistory(storyId);
+      } else if (scope.startsWith('account:')) {
+        await deleteStoryReadingHistoryApi(storyId);
+      }
       setHistory((prev) => prev.filter((h) => h.storyId !== storyId));
     } catch {
       // safe error handling
@@ -116,7 +174,12 @@ export default function LibraryPage() {
 
   const handleClearAllHistory = async () => {
     try {
-      await guestLibraryRepository.clearAllHistory();
+      const scope = await activeScopeCoordinator.waitForResolvedScope();
+      if (scope.startsWith('guest:')) {
+        await guestLibraryRepository.clearAllHistory();
+      } else if (scope.startsWith('account:')) {
+        await clearAllReadingHistoryApi();
+      }
       setHistory([]);
     } catch {
       // safe error handling

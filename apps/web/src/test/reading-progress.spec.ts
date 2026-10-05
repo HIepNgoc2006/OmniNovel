@@ -309,4 +309,94 @@ describe('7A.4b/c/f: Repository-Driven Reading Progress Hook', () => {
       });
     });
   });
+
+  describe('5. Manga Paged Resume Contract (P0 Hotfix)', () => {
+    it('preserves exact pageIndex across reload in Guest mode without dropping it', async () => {
+      await activeScopeCoordinator.onAuthStatusChanged('anonymous');
+
+      const { result, unmount } = renderHook(() =>
+        useReadingProgress({
+          storyId: 'story-manga-paged-guest',
+          chapterId: 'chap-paged-1',
+          readingMode: 'MANGA_PAGED',
+        })
+      );
+
+      // Read to page 27
+      await act(async () => {
+        result.current.updateProgress({
+          progressPercentage: 54.0,
+          scrollPosition: 27,
+          pageIndex: 27,
+        });
+      });
+
+      await waitFor(() => {
+        expect(result.current.persistenceStatus).toBe('ready');
+      });
+
+      unmount();
+
+      // Simulate tab reload / remount
+      const reloaded = renderHook(() =>
+        useReadingProgress({
+          storyId: 'story-manga-paged-guest',
+          chapterId: 'chap-paged-1',
+          readingMode: 'MANGA_PAGED',
+        })
+      );
+
+      await waitFor(() => {
+        expect(reloaded.result.current.serverResume?.pageIndex).toBe(27);
+      });
+      expect(reloaded.result.current.serverResume?.chapterId).toBe('chap-paged-1');
+    });
+
+    it('Account mode encodes and decodes paged position for backward compatibility', async () => {
+      await activeScopeCoordinator.onAuthStatusChanged('authenticated', 'usr-paged-account');
+
+      const saveSpy = vi.spyOn(storiesApi, 'saveReadingProgressApi').mockResolvedValue({} as any);
+
+      // Test repository saveProgress
+      await accountReadingStateRepository.saveProgress({
+        storyId: 'story-acc-paged',
+        chapterId: 'chap-acc-paged',
+        chapterVersionId: null,
+        readingMode: 'MANGA_PAGED',
+        progressPercentage: 60.0,
+        scrollPosition: 0,
+        pageIndex: 27,
+        anchorBlockId: null,
+        textOffset: null,
+        updatedAt: new Date().toISOString(),
+        deviceTimestamp: Date.now(),
+      });
+
+      expect(saveSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          storyId: 'story-acc-paged',
+          chapterId: 'chap-acc-paged',
+          readingMode: 'MANGA_PAGED',
+          scrollPosition: 27, // Encoded for legacy backend DTOs
+          pageIndex: 27,
+        })
+      );
+
+      // Test repository getProgress decoding
+      vi.spyOn(storiesApi, 'getReadingProgressApi').mockResolvedValue({
+        storyId: 'story-acc-paged',
+        chapterId: 'chap-acc-paged',
+        chapterVersionId: null,
+        readingMode: 'MANGA_PAGED',
+        progressPercentage: 60.0,
+        scrollPosition: 27, // legacy backend returned scrollPosition as pageIndex
+        updatedAt: new Date().toISOString(),
+        readChapterIds: [],
+      });
+
+      const restored = await accountReadingStateRepository.getProgress('story-acc-paged');
+      expect(restored?.pageIndex).toBe(27);
+      expect(restored?.scrollPosition).toBe(0);
+    });
+  });
 });

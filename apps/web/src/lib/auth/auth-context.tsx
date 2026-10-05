@@ -50,10 +50,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (token) {
         // 2. Hydrate thông tin user profile
         const profile = await getMeApi();
-        setUser(profile);
-        memoryAuthStore.setAccessToken(token);
-        setStatus('authenticated');
-        await activeScopeCoordinator.onAuthStatusChanged('authenticated', profile?.id);
+        if (profile && profile.id) {
+          // Bắt buộc resolve identity ở coordinator TRƯỚC KHI publish session authenticated
+          await activeScopeCoordinator.onAuthStatusChanged('authenticated', profile.id);
+          memoryAuthStore.setAccessToken(token);
+          setUser(profile);
+          setStatus('authenticated');
+        } else {
+          // Thiếu profile.id -> Fail-closed về anonymous sạch sẽ
+          memoryAuthStore.clear();
+          setUser(null);
+          setStatus('anonymous');
+          await activeScopeCoordinator.onAuthStatusChanged('anonymous');
+        }
       } else {
         // 3. Không có refresh cookie hợp lệ -> ANONYMOUS sạch sẽ, không báo lỗi
         memoryAuthStore.clear();
@@ -75,10 +84,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const login = async (data: LoginRequest) => {
     const res = await loginApi(data);
+    if (!res.user || !res.user.id) {
+      memoryAuthStore.clear();
+      setUser(null);
+      setStatus('anonymous');
+      await activeScopeCoordinator.onAuthStatusChanged('anonymous');
+      throw new Error('Đăng nhập thất bại: Thông tin người dùng không hợp lệ.');
+    }
+    // Update coordinator trước khi publish session authenticated
+    await activeScopeCoordinator.onAuthStatusChanged('authenticated', res.user.id);
     memoryAuthStore.setAccessToken(res.accessToken);
     setUser(res.user);
     setStatus('authenticated');
-    await activeScopeCoordinator.onAuthStatusChanged('authenticated', res.user?.id);
   };
 
   const logout = async () => {
@@ -99,9 +116,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     if (memoryAuthStore.getAccessToken()) {
       try {
         const profile = await getMeApi();
-        setUser(profile);
-        if (profile?.id) {
+        if (profile && profile.id) {
           await activeScopeCoordinator.onAuthStatusChanged('authenticated', profile.id);
+          setUser(profile);
+        } else {
+          memoryAuthStore.clear();
+          setUser(null);
+          setStatus('anonymous');
+          await activeScopeCoordinator.onAuthStatusChanged('anonymous');
         }
       } catch {
         // ignore

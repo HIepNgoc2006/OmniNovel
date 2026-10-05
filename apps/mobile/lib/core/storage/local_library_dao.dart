@@ -172,28 +172,57 @@ class LocalLibraryDao {
     return rows.map((r) => LocalReadingHistory.fromMap(r)).toList();
   }
 
-  /// Xóa lịch sử đọc của một truyện.
-  Future<void> deleteStoryHistory({
+  /// Xóa đồng thời cả tiến độ đọc (local_reading_progress) và lịch sử đọc (local_reading_history) của một truyện.
+  /// Invariant: Bookmark (local_library_bookmarks) tuyệt đối không bị ảnh hưởng.
+  Future<void> deleteStoryReadingState({
     required String ownerScope,
     required String storyId,
   }) async {
-    await _db.delete(
-      'local_reading_history',
-      where: 'owner_scope = ? AND story_id = ?',
-      whereArgs: [ownerScope, storyId],
-    );
+    await _db.transaction((txn) async {
+      await txn.delete(
+        'local_reading_progress',
+        where: 'owner_scope = ? AND story_id = ?',
+        whereArgs: [ownerScope, storyId],
+      );
+      await txn.delete(
+        'local_reading_history',
+        where: 'owner_scope = ? AND story_id = ?',
+        whereArgs: [ownerScope, storyId],
+      );
+    });
   }
 
-  /// Xóa toàn bộ lịch sử đọc của một scope.
-  Future<void> clearAllHistory({
+  /// Xóa đồng thời cả tiến độ đọc và lịch sử đọc của tất cả truyện thuộc ownerScope.
+  /// Invariant: Bookmark (local_library_bookmarks) tuyệt đối không bị ảnh hưởng.
+  Future<void> clearAllReadingState({
     required String ownerScope,
   }) async {
-    await _db.delete(
-      'local_reading_history',
-      where: 'owner_scope = ?',
-      whereArgs: [ownerScope],
-    );
+    await _db.transaction((txn) async {
+      await txn.delete(
+        'local_reading_progress',
+        where: 'owner_scope = ?',
+        whereArgs: [ownerScope],
+      );
+      await txn.delete(
+        'local_reading_history',
+        where: 'owner_scope = ?',
+        whereArgs: [ownerScope],
+      );
+    });
   }
+
+  /// Xóa lịch sử đọc của một truyện (xóa đồng bộ progress + history).
+  Future<void> deleteStoryHistory({
+    required String ownerScope,
+    required String storyId,
+  }) =>
+      deleteStoryReadingState(ownerScope: ownerScope, storyId: storyId);
+
+  /// Xóa toàn bộ lịch sử đọc của một scope (xóa đồng bộ progress + history).
+  Future<void> clearAllHistory({
+    required String ownerScope,
+  }) =>
+      clearAllReadingState(ownerScope: ownerScope);
 
   /// Lấy danh sách ID các chương đã đọc đạt ngưỡng threshold (mặc định 80%).
   Future<List<String>> getReadChapterIds({

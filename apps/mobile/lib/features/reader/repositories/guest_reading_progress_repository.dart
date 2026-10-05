@@ -20,7 +20,8 @@ class GuestReadingProgressRepository {
   })  : _coordinator = coordinator,
         _dao = dao;
 
-  /// Giải quyết active scope và kiểm tra nghiêm ngặt tiền tố `guest:`.
+  /// Đợi active scope resolve (chống race condition khi khởi động app);
+  /// sau đó ném [InvalidGuestScopeException] nếu scope không phải Guest (`guest:*`).
   Future<String> _getGuestScope() async {
     final scope = await _coordinator.waitForResolvedScope();
     if (!scope.startsWith('guest:') || scope.length <= 6) {

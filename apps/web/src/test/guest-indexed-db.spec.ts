@@ -609,13 +609,21 @@ describe('Task 7A.3: Web IndexedDB Client & Guest Repositories Invariants', () =
       expect(await libraryRepo.getBookmark('story-b1')).toBeNull();
     });
 
-    it('deletes history for a specific story', async () => {
+    it('deletes history for a specific story and ALSO deletes its reading progress while leaving bookmarks intact', async () => {
+      // 1. Setup bookmark
+      await libraryRepo.saveBookmark({
+        storyId: 'story-del-1',
+        title: 'Del 1 Bookmarked',
+        createdAt: new Date().toISOString(),
+      });
+
+      // 2. Setup reading sessions
       await readingRepo.recordSession(
         {
           storyId: 'story-del-1',
           chapterId: 'chap-1',
           readingMode: 'WEBTOON',
-          progressPercentage: 50,
+          progressPercentage: 85,
           scrollPosition: 500,
           pageIndex: 1,
           updatedAt: new Date().toISOString(),
@@ -638,20 +646,40 @@ describe('Task 7A.3: Web IndexedDB Client & Guest Repositories Invariants', () =
         { storyTitle: 'Keep 2', chapterNumber: '2' }
       );
 
+      expect(await readingRepo.getProgress('story-del-1')).not.toBeNull();
+      expect(await readingRepo.getReadChapterIds('story-del-1')).toContain('chap-1');
+
+      // 3. Delete story history
       await libraryRepo.deleteStoryHistory('story-del-1');
 
+      // 4. Invariant: history removed for story-del-1, kept for story-keep-2
       const remainingHistory = await libraryRepo.getHistory();
       expect(remainingHistory.some((h) => h.storyId === 'story-del-1')).toBe(false);
       expect(remainingHistory.some((h) => h.storyId === 'story-keep-2')).toBe(true);
+
+      // 5. Invariant: progress for story-del-1 is GONE (no resurrection on resume)
+      expect(await readingRepo.getProgress('story-del-1')).toBeNull();
+      expect(await readingRepo.getProgress('story-keep-2')).not.toBeNull();
+      expect(await readingRepo.getReadChapterIds('story-del-1')).toHaveLength(0);
+
+      // 6. Invariant: bookmark for story-del-1 remains completely intact
+      expect(await libraryRepo.getBookmark('story-del-1')).not.toBeNull();
     });
 
-    it('clears all history for the active guest scope', async () => {
+    it('clears all history for the active guest scope and ALSO clears all reading progress while leaving bookmarks intact', async () => {
+      // 1. Setup bookmark
+      await libraryRepo.saveBookmark({
+        storyId: 'story-clear-1',
+        title: 'Clear 1 Bookmarked',
+        createdAt: new Date().toISOString(),
+      });
+
       await readingRepo.recordSession(
         {
           storyId: 'story-clear-1',
           chapterId: 'chap-1',
           readingMode: 'WEBTOON',
-          progressPercentage: 50,
+          progressPercentage: 90,
           scrollPosition: 500,
           pageIndex: 1,
           updatedAt: new Date().toISOString(),
@@ -660,9 +688,19 @@ describe('Task 7A.3: Web IndexedDB Client & Guest Repositories Invariants', () =
         { storyTitle: 'Clear 1', chapterNumber: '1' }
       );
 
+      expect(await readingRepo.getProgress('story-clear-1')).not.toBeNull();
+
+      // 2. Clear all history
       await libraryRepo.clearAllHistory();
+
+      // 3. Invariants: history empty, progress empty, readChapterIds empty
       const history = await libraryRepo.getHistory();
       expect(history).toHaveLength(0);
+      expect(await readingRepo.getProgress('story-clear-1')).toBeNull();
+      expect(await readingRepo.getReadChapterIds('story-clear-1')).toHaveLength(0);
+
+      // 4. Invariant: bookmark remains intact
+      expect(await libraryRepo.getBookmark('story-clear-1')).not.toBeNull();
     });
   });
 });

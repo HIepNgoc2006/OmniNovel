@@ -219,11 +219,38 @@ void main() {
       expect(g1History.first.chapterId, 'chap-1');
     });
 
-    test('4. History Management: deleteStoryHistory and clearAllHistory are strictly scope-bound', () async {
+    test('4. History Management: deleteStoryHistory and clearAllHistory delete BOTH history and progress while leaving bookmarks intact', () async {
       await coordinator.onAuthStatusChanged(AuthStatus.unauthenticated);
       final currentScope = coordinator.activeScope!;
-
       final now = DateTime.now().toUtc();
+
+      // 1. Save bookmarks for story-alpha and story-beta
+      await repository.saveBookmark(storyId: 'story-alpha', title: 'Story Alpha');
+      await repository.saveBookmark(storyId: 'story-beta', title: 'Story Beta');
+
+      // 2. Save progress for story-alpha and story-beta
+      await dao.saveProgress(LocalReadingProgress(
+        ownerScope: currentScope,
+        storyId: 'story-alpha',
+        chapterId: 'c1',
+        progressPercentage: 85.0,
+        scrollPosition: 800.0,
+        pageIndex: 1,
+        updatedAt: now,
+        deviceTimestamp: now,
+      ));
+      await dao.saveProgress(LocalReadingProgress(
+        ownerScope: currentScope,
+        storyId: 'story-beta',
+        chapterId: 'c1',
+        progressPercentage: 40.0,
+        scrollPosition: 400.0,
+        pageIndex: 1,
+        updatedAt: now,
+        deviceTimestamp: now,
+      ));
+
+      // 3. Save history for story-alpha and story-beta
       await dao.saveHistory(LocalReadingHistory(
         ownerScope: currentScope,
         storyId: 'story-alpha',
@@ -246,16 +273,30 @@ void main() {
       expect((await repository.getHistory()).length, 2);
       expect(await repository.getReadChapterIds('story-alpha'), contains('c1'));
       expect(await repository.getReadChapterIds('story-beta'), isEmpty);
+      expect(await dao.getProgress(ownerScope: currentScope, storyId: 'story-alpha'), isNotNull);
 
-      // Delete single story history
+      // 4. Delete single story history: Invariant: deletes history AND progress, leaves bookmark
       await repository.deleteStoryHistory('story-alpha');
       final histAfterDelete = await repository.getHistory();
       expect(histAfterDelete.length, 1);
       expect(histAfterDelete.first.storyId, 'story-beta');
 
-      // Clear all history
+      // Progress for story-alpha is deleted (no resurrection on resume)
+      expect(await dao.getProgress(ownerScope: currentScope, storyId: 'story-alpha'), isNull);
+      expect(await dao.getProgress(ownerScope: currentScope, storyId: 'story-beta'), isNotNull);
+      expect(await repository.getReadChapterIds('story-alpha'), isEmpty);
+
+      // Bookmark for story-alpha remains completely intact!
+      expect(await repository.isBookmarked('story-alpha'), isTrue);
+
+      // 5. Clear all history: deletes remaining history AND progress, leaves bookmarks
       await repository.clearAllHistory();
       expect(await repository.getHistory(), isEmpty);
+      expect(await dao.getProgress(ownerScope: currentScope, storyId: 'story-beta'), isNull);
+
+      // Both bookmarks remain completely intact!
+      expect(await repository.isBookmarked('story-alpha'), isTrue);
+      expect(await repository.isBookmarked('story-beta'), isTrue);
     });
   });
 }

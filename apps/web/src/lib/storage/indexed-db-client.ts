@@ -404,10 +404,12 @@ export class IndexedDbClient {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_HISTORY, 'readwrite');
-      const store = tx.objectStore(STORE_HISTORY);
+      const tx = db.transaction([STORE_HISTORY, STORE_PROGRESS], 'readwrite');
+      
+      // 1. Delete all history records for (ownerScope, storyId)
+      const histStore = tx.objectStore(STORE_HISTORY);
       const range = IDBKeyRange.bound([ownerScope, storyId, ''], [ownerScope, storyId, '\uffff']);
-      const req = store.openCursor(range);
+      const req = histStore.openCursor(range);
 
       req.onsuccess = () => {
         const cursor = req.result;
@@ -416,6 +418,10 @@ export class IndexedDbClient {
           cursor.continue();
         }
       };
+
+      // 2. Also delete current reading progress for (ownerScope, storyId) to prevent resurrection
+      const progStore = tx.objectStore(STORE_PROGRESS);
+      progStore.delete([ownerScope, storyId]);
 
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
@@ -426,13 +432,28 @@ export class IndexedDbClient {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_HISTORY, 'readwrite');
-      const store = tx.objectStore(STORE_HISTORY);
-      const range = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
-      const req = store.openCursor(range);
+      const tx = db.transaction([STORE_HISTORY, STORE_PROGRESS], 'readwrite');
 
-      req.onsuccess = () => {
-        const cursor = req.result;
+      // 1. Delete all history records for ownerScope
+      const histStore = tx.objectStore(STORE_HISTORY);
+      const histRange = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+      const histReq = histStore.openCursor(histRange);
+
+      histReq.onsuccess = () => {
+        const cursor = histReq.result;
+        if (cursor) {
+          cursor.delete();
+          cursor.continue();
+        }
+      };
+
+      // 2. Delete all progress records for ownerScope
+      const progStore = tx.objectStore(STORE_PROGRESS);
+      const progRange = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+      const progReq = progStore.openCursor(progRange);
+
+      progReq.onsuccess = () => {
+        const cursor = progReq.result;
         if (cursor) {
           cursor.delete();
           cursor.continue();

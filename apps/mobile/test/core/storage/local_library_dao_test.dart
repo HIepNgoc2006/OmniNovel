@@ -285,7 +285,7 @@ void main() {
       expect(await dao.isBookmarked(ownerScope: 'guest:profile-A', storyId: 'story-shared-id'), isFalse);
       expect(await dao.isBookmarked(ownerScope: 'guest:profile-B', storyId: 'story-shared-id'), isTrue);
 
-      // Delete history on Profile A only
+      // Delete history on Profile A only: Invariant: deletes BOTH history AND progress, leaves bookmark intact
       await dao.deleteStoryHistory(ownerScope: 'guest:profile-A', storyId: 'story-shared-id');
       final histA = await dao.getHistory(ownerScope: 'guest:profile-A');
       final histB = await dao.getHistory(ownerScope: 'guest:profile-B');
@@ -293,9 +293,17 @@ void main() {
       expect(histB.length, 1);
       expect(histB.first.chapterId, 'chap-B');
 
-      // Clear all history on Profile B
+      // Progress for Profile A is deleted, Profile B progress is completely untouched
+      expect(await dao.getProgress(ownerScope: 'guest:profile-A', storyId: 'story-shared-id'), isNull);
+      final remainingProgB = await dao.getProgress(ownerScope: 'guest:profile-B', storyId: 'story-shared-id');
+      expect(remainingProgB, isNotNull);
+      expect(remainingProgB!.chapterId, 'chap-B');
+
+      // Clear all history on Profile B: deletes BOTH history and progress, leaves bookmarks intact
       await dao.clearAllHistory(ownerScope: 'guest:profile-B');
       expect(await dao.getHistory(ownerScope: 'guest:profile-B'), isEmpty);
+      expect(await dao.getProgress(ownerScope: 'guest:profile-B', storyId: 'story-shared-id'), isNull);
+      expect(await dao.isBookmarked(ownerScope: 'guest:profile-B', storyId: 'story-shared-id'), isTrue);
     });
 
     test('Atomic reading session: atomically commits progress and history with monotonic max', () async {

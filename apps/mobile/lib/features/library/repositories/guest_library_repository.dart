@@ -17,7 +17,8 @@ class GuestLibraryRepository {
   })  : _coordinator = coordinator,
         _dao = dao;
 
-  /// Giải quyết active scope và kiểm tra nghiêm ngặt tiền tố `guest:`.
+  /// Đợi active scope resolve (chống race condition khi khởi động app);
+  /// sau đó ném [InvalidGuestScopeException] nếu scope không phải Guest (`guest:*`).
   Future<String> _getGuestScope() async {
     final scope = await _coordinator.waitForResolvedScope();
     if (!scope.startsWith('guest:') || scope.length <= 6) {
@@ -83,16 +84,18 @@ class GuestLibraryRepository {
     return _dao.getHistory(ownerScope: scope);
   }
 
-  /// Xóa toàn bộ lịch sử đọc của một truyện trong phạm vi Guest hiện tại.
+  /// Xóa toàn bộ lịch sử đọc và tiến độ đọc của một truyện trong phạm vi Guest hiện tại.
+  /// Invariant: Bookmark hoàn toàn không bị ảnh hưởng.
   Future<void> deleteStoryHistory(String storyId) async {
     final scope = await _getGuestScope();
-    await _dao.deleteStoryHistory(ownerScope: scope, storyId: storyId);
+    await _dao.deleteStoryReadingState(ownerScope: scope, storyId: storyId);
   }
 
-  /// Xóa sạch toàn bộ lịch sử đọc của Guest hiện tại.
+  /// Xóa sạch toàn bộ lịch sử đọc và tiến độ đọc của Guest hiện tại.
+  /// Invariant: Bookmark hoàn toàn không bị ảnh hưởng.
   Future<void> clearAllHistory() async {
     final scope = await _getGuestScope();
-    await _dao.clearAllHistory(ownerScope: scope);
+    await _dao.clearAllReadingState(ownerScope: scope);
   }
 
   /// Lấy danh sách ID các chương mà Guest đã đọc đạt ngưỡng threshold (mặc định 80%).

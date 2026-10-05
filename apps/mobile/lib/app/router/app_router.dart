@@ -104,13 +104,9 @@ class AppRouter {
 
     return GoRouter(
       initialLocation: '/home',
-      refreshListenable: activeScopeCoordinator != null
-          ? Listenable.merge([authService, activeScopeCoordinator])
-          : authService,
+      refreshListenable: authService,
       redirect: (BuildContext context, GoRouterState state) {
         final authState = authService.state;
-        final isPreviouslyAuth = wasAuthenticated;
-        wasAuthenticated = authState.isAuthenticated;
 
         // Đang kiểm tra token ở khởi động
         if (authState.status == AuthStatus.initial) {
@@ -124,16 +120,20 @@ class AppRouter {
         // 1. Account-only route: /profile
         if (isProfile) {
           if (authState.isAuthenticated) {
+            wasAuthenticated = true;
             return null;
           }
           // Explicit logout từ /profile -> canonical /home
-          if (isPreviouslyAuth) {
+          if (wasAuthenticated) {
             return '/home';
           }
           // Guest truy cập /profile -> login + returnTo
           final target = Uri.encodeComponent(state.uri.toString());
           return '/login?returnTo=$target';
         }
+
+        // Cập nhật trạng thái auth sau khi đã rời khỏi /profile
+        wasAuthenticated = authState.isAuthenticated;
 
         // 2. Màn hình /login
         if (isLoggingIn) {

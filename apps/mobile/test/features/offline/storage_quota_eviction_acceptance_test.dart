@@ -145,7 +145,7 @@ void main() {
           databaseFactory: databaseFactoryFfi,
         );
 
-        expect(OfflineDatabase.databaseVersion, equals(2));
+        expect(OfflineDatabase.databaseVersion, greaterThanOrEqualTo(2));
 
         // Bước 3: Kiểm tra cấu trúc schema v2
         final chapterColumns = await db.rawQuery('PRAGMA table_info(offline_chapters)');

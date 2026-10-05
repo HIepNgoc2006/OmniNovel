@@ -58,6 +58,11 @@ class PreferencesService implements IPreferencesService {
 
   @override
   Future<void> clearPreferences() async {
-    await _prefs.clear();
+    final keys = _prefs.getKeys();
+    for (final key in keys) {
+      if (!key.startsWith('omninovel_')) {
+        await _prefs.remove(key);
+      }
+    }
   }
 }

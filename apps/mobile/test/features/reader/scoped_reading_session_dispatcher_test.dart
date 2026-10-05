@@ -43,6 +43,7 @@ void main() {
           user: User(id: 'usr-456', email: 'acc@test.com', username: 'acc456', role: 'READER'),
         ),
       );
+      when(() => mockCoordinator.state).thenReturn(ActiveScopeState.account);
       when(() => mockCoordinator.activeScope).thenReturn('account:usr-456');
 
       when(() => mockAccountAdapter.recordProgress(
@@ -91,6 +92,7 @@ void main() {
 
     test('2. Coherent Guest: dispatches progress to GuestReadingSessionAdapter only', () async {
       when(() => mockAuth.state).thenReturn(AuthState.unauthenticated());
+      when(() => mockCoordinator.state).thenReturn(ActiveScopeState.guest);
       when(() => mockCoordinator.activeScope).thenReturn('guest:gst-reader-999');
 
       when(() => mockGuestAdapter.recordProgress(
@@ -141,6 +143,7 @@ void main() {
     test('3. Scope mismatch / transitioning: Fail-Closed on recordProgress', () async {
       // Ví dụ: AuthService đã unauthenticated nhưng coordinator vẫn còn account:usr-456
       when(() => mockAuth.state).thenReturn(AuthState.unauthenticated());
+      when(() => mockCoordinator.state).thenReturn(ActiveScopeState.account);
       when(() => mockCoordinator.activeScope).thenReturn('account:usr-456');
 
       expect(
@@ -160,6 +163,7 @@ void main() {
 
     test('4. Bootstrapping / null scope: Fail-Closed on recordProgress', () async {
       when(() => mockAuth.state).thenReturn(AuthState.initial());
+      when(() => mockCoordinator.state).thenReturn(ActiveScopeState.bootstrapping);
       when(() => mockCoordinator.activeScope).thenReturn(null);
 
       expect(
@@ -168,6 +172,48 @@ void main() {
           chapterId: 'c4',
           flutterPageIndex: 0,
           progressPercentage: 0.0,
+          scrollPosition: 0.0,
+        ),
+        throwsA(isA<ScopeCoherenceException>()),
+      );
+
+      verifyZeroInteractions(mockAccountAdapter);
+      verifyZeroInteractions(mockGuestAdapter);
+    });
+
+    test('5. Race Guard: AuthStatus.authenticating + stale activeScope=guest:G => recordProgress fail-closed', () async {
+      when(() => mockAuth.state).thenReturn(
+        const AuthState(status: AuthStatus.authenticating),
+      );
+      when(() => mockCoordinator.state).thenReturn(ActiveScopeState.guest);
+      when(() => mockCoordinator.activeScope).thenReturn('guest:gst-stale-333');
+
+      expect(
+        () => dispatcher.recordProgress(
+          storyId: 's-race-1',
+          chapterId: 'c-race-1',
+          flutterPageIndex: 1,
+          progressPercentage: 10.0,
+          scrollPosition: 0.0,
+        ),
+        throwsA(isA<ScopeCoherenceException>()),
+      );
+
+      verifyZeroInteractions(mockAccountAdapter);
+      verifyZeroInteractions(mockGuestAdapter);
+    });
+
+    test('6. Race Guard: AuthStatus.unauthenticated + coordinator.state=transitioning + stale activeScope=guest:G => recordProgress fail-closed', () async {
+      when(() => mockAuth.state).thenReturn(AuthState.unauthenticated());
+      when(() => mockCoordinator.state).thenReturn(ActiveScopeState.transitioning);
+      when(() => mockCoordinator.activeScope).thenReturn('guest:gst-stale-444');
+
+      expect(
+        () => dispatcher.recordProgress(
+          storyId: 's-race-2',
+          chapterId: 'c-race-2',
+          flutterPageIndex: 2,
+          progressPercentage: 20.0,
           scrollPosition: 0.0,
         ),
         throwsA(isA<ScopeCoherenceException>()),

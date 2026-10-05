@@ -44,6 +44,7 @@ void main() {
           user: User(id: 'usr-123', email: 'u@test.com', username: 'usr123', role: 'READER'),
         ),
       );
+      when(() => mockCoordinator.state).thenReturn(ActiveScopeState.account);
       when(() => mockCoordinator.activeScope).thenReturn('account:usr-123');
 
       const mutation = BookmarkMutation(storyId: 's1', isBookmarked: true, title: 'T1');
@@ -65,6 +66,7 @@ void main() {
 
     test('2. Coherent Guest: dispatches mutations and reads to GuestLibraryAdapter only', () async {
       when(() => mockAuth.state).thenReturn(AuthState.unauthenticated());
+      when(() => mockCoordinator.state).thenReturn(ActiveScopeState.guest);
       when(() => mockCoordinator.activeScope).thenReturn('guest:gst-xyz-789');
 
       const mutation = BookmarkMutation(storyId: 's2', isBookmarked: true, title: 'T2');
@@ -86,6 +88,7 @@ void main() {
 
     test('3. Race / Mismatch Guard (Auth unauthenticated nhưng Coordinator còn account:U): Fail-Closed on mutation', () async {
       when(() => mockAuth.state).thenReturn(AuthState.unauthenticated());
+      when(() => mockCoordinator.state).thenReturn(ActiveScopeState.account);
       when(() => mockCoordinator.activeScope).thenReturn('account:usr-123'); // Mismatch!
 
       const mutation = BookmarkMutation(storyId: 's3', isBookmarked: true, title: 'T3');
@@ -114,9 +117,48 @@ void main() {
 
     test('4. Bootstrapping / Unresolved scope: Fail-Closed on mutation', () async {
       when(() => mockAuth.state).thenReturn(AuthState.initial());
+      when(() => mockCoordinator.state).thenReturn(ActiveScopeState.bootstrapping);
       when(() => mockCoordinator.activeScope).thenReturn(null); // Unresolved!
 
       const mutation = BookmarkMutation(storyId: 's4', isBookmarked: true, title: 'T4');
+
+      expect(
+        () => dispatcher.setBookmark(mutation),
+        throwsA(isA<ScopeCoherenceException>()),
+      );
+
+      verifyZeroInteractions(mockAccountAdapter);
+      verifyZeroInteractions(mockGuestAdapter);
+    });
+
+    test('5. Race Guard: AuthStatus.authenticating + stale activeScope=guest:G => mutation fail-closed', () async {
+      when(() => mockAuth.state).thenReturn(
+        const AuthState(status: AuthStatus.authenticating),
+      );
+      when(() => mockCoordinator.state).thenReturn(ActiveScopeState.guest);
+      when(() => mockCoordinator.activeScope).thenReturn('guest:gst-stale-111');
+
+      const mutation = BookmarkMutation(storyId: 's5', isBookmarked: true, title: 'T5');
+
+      expect(
+        () => dispatcher.setBookmark(mutation),
+        throwsA(isA<ScopeCoherenceException>()),
+      );
+      expect(
+        () => dispatcher.deleteStoryHistory('s5'),
+        throwsA(isA<ScopeCoherenceException>()),
+      );
+
+      verifyZeroInteractions(mockAccountAdapter);
+      verifyZeroInteractions(mockGuestAdapter);
+    });
+
+    test('6. Race Guard: AuthStatus.unauthenticated + coordinator.state=transitioning + stale activeScope=guest:G => mutation fail-closed', () async {
+      when(() => mockAuth.state).thenReturn(AuthState.unauthenticated());
+      when(() => mockCoordinator.state).thenReturn(ActiveScopeState.transitioning);
+      when(() => mockCoordinator.activeScope).thenReturn('guest:gst-stale-222');
+
+      const mutation = BookmarkMutation(storyId: 's6', isBookmarked: true, title: 'T6');
 
       expect(
         () => dispatcher.setBookmark(mutation),

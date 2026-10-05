@@ -1,5 +1,6 @@
 import 'package:flutter/foundation.dart';
 import '../../../core/auth/auth_service.dart';
+import '../../../core/auth/auth_state.dart';
 import '../../../core/identity/active_scope_coordinator.dart';
 import '../models/library_models.dart';
 import 'account_library_adapter.dart';
@@ -19,13 +20,15 @@ class ScopeCoherenceException implements Exception {
 ///
 /// Invariant P0.4:
 /// - Dispatch Account CHỈ KHI:
-///     `auth.isAuthenticated` &&
+///     `auth.status == AuthStatus.authenticated` &&
+///     `coordinator.state == ActiveScopeState.account` &&
 ///     `coordinator.activeScope == 'account:${auth.user?.id}'`
 /// - Dispatch Guest CHỈ KHI:
-///     `!auth.isAuthenticated` &&
+///     `auth.status == AuthStatus.unauthenticated` &&
+///     `coordinator.state == ActiveScopeState.guest` &&
 ///     `coordinator.activeScope.startsWith('guest:')`
 /// - Mismatch, transitioning hoặc bootstrapping:
-///     Mutation FAIL-CLOSED (ném [ScopeCoherenceException] hoặc [StateError]).
+///     Mutation FAIL-CLOSED (ném [ScopeCoherenceException]).
 ///     Read trả về safe fallback / empty snapshot.
 class ScopedLibraryDispatcher extends ChangeNotifier implements LibraryAccess {
   final AuthService _authService;
@@ -60,8 +63,11 @@ class ScopedLibraryDispatcher extends ChangeNotifier implements LibraryAccess {
   bool _isAccountCoherent() {
     final auth = _authService.state;
     final activeScope = _coordinator.activeScope;
-    final userId = auth.user?.id;
-    return auth.isAuthenticated &&
+    final coordState = _coordinator.state;
+    final userId = auth.user?.id.trim();
+
+    return auth.status == AuthStatus.authenticated &&
+        coordState == ActiveScopeState.account &&
         userId != null &&
         userId.isNotEmpty &&
         activeScope == 'account:$userId';
@@ -70,7 +76,10 @@ class ScopedLibraryDispatcher extends ChangeNotifier implements LibraryAccess {
   bool _isGuestCoherent() {
     final auth = _authService.state;
     final activeScope = _coordinator.activeScope;
-    return !auth.isAuthenticated &&
+    final coordState = _coordinator.state;
+
+    return auth.status == AuthStatus.unauthenticated &&
+        coordState == ActiveScopeState.guest &&
         activeScope != null &&
         activeScope.startsWith('guest:') &&
         activeScope.length > 6;
@@ -82,7 +91,8 @@ class ScopedLibraryDispatcher extends ChangeNotifier implements LibraryAccess {
     }
     throw ScopeCoherenceException(
       'Không thể thực hiện mutation thư viện khi trạng thái scope không nhất quán: '
-      'auth.isAuthenticated=${_authService.state.isAuthenticated}, '
+      'auth.status=${_authService.state.status}, '
+      'coordState=${_coordinator.state}, '
       'activeScope=${_coordinator.activeScope}.',
     );
   }

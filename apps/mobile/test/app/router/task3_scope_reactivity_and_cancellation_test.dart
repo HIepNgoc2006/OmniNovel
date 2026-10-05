@@ -9,6 +9,7 @@ import 'package:omninovel_mobile/features/library/models/library_models.dart';
 import 'package:omninovel_mobile/features/library/presentation/library_screen.dart';
 import 'package:omninovel_mobile/features/library/repositories/account_library_adapter.dart';
 import 'package:omninovel_mobile/features/library/repositories/guest_library_adapter.dart';
+import 'package:omninovel_mobile/features/library/repositories/library_access.dart';
 import 'package:omninovel_mobile/features/library/repositories/scoped_library_dispatcher.dart';
 import 'package:omninovel_mobile/features/reader/models/reading_progress_models.dart';
 import 'package:omninovel_mobile/features/reader/repositories/account_reading_session_adapter.dart';
@@ -35,15 +36,30 @@ class FakeAuthService extends ChangeNotifier implements AuthService {
 class FakeCoordinator extends ChangeNotifier implements ActiveScopeCoordinator {
   String? _scope;
   bool _transitioning = false;
+  ActiveScopeState _state = ActiveScopeState.bootstrapping;
+
+  @override
+  ActiveScopeState get state => _state;
 
   @override
   String? get activeScope => _scope;
 
   bool get isTransitioning => _transitioning;
 
-  void updateScope(String? newScope, {bool isTransitioning = false}) {
+  void updateScope(String? newScope, {bool isTransitioning = false, ActiveScopeState? state}) {
     _scope = newScope;
     _transitioning = isTransitioning;
+    if (state != null) {
+      _state = state;
+    } else if (isTransitioning) {
+      _state = ActiveScopeState.transitioning;
+    } else if (newScope == null) {
+      _state = ActiveScopeState.bootstrapping;
+    } else if (newScope.startsWith('account:')) {
+      _state = ActiveScopeState.account;
+    } else if (newScope.startsWith('guest:')) {
+      _state = ActiveScopeState.guest;
+    }
     notifyListeners();
   }
 
@@ -286,6 +302,115 @@ void main() {
             limit: any(named: 'limit'),
             status: any(named: 'status'),
           )).called(greaterThanOrEqualTo(1));
+    });
+  });
+
+  group('Task 3 Mini-Remediation: Scope-Coherence Guard with Explicit AuthStatus and State', () {
+    late FakeAuthService authService;
+    late FakeCoordinator coordinator;
+    late MockAccountLibraryAdapter mockAccountLibraryAdapter;
+    late MockGuestLibraryAdapter mockGuestLibraryAdapter;
+    late MockProgressRepo mockProgressRepo;
+    late MockGuestProgressRepo mockGuestProgressRepo;
+    late AccountReadingSessionAdapter accountSessionAdapter;
+    late GuestReadingSessionAdapter guestSessionAdapter;
+    late ScopedLibraryDispatcher libraryDispatcher;
+    late ScopedReadingSessionDispatcher readingDispatcher;
+
+    setUp(() {
+      authService = FakeAuthService();
+      coordinator = FakeCoordinator();
+      mockAccountLibraryAdapter = MockAccountLibraryAdapter();
+      mockGuestLibraryAdapter = MockGuestLibraryAdapter();
+      mockProgressRepo = MockProgressRepo();
+      mockGuestProgressRepo = MockGuestProgressRepo();
+
+      libraryDispatcher = ScopedLibraryDispatcher(
+        authService: authService,
+        coordinator: coordinator,
+        accountAdapter: mockAccountLibraryAdapter,
+        guestAdapter: mockGuestLibraryAdapter,
+      );
+
+      accountSessionAdapter = AccountReadingSessionAdapter(
+        readingProgressRepository: mockProgressRepo,
+      );
+      guestSessionAdapter = GuestReadingSessionAdapter(
+        guestRepository: mockGuestProgressRepo,
+      );
+
+      readingDispatcher = ScopedReadingSessionDispatcher(
+        authService: authService,
+        coordinator: coordinator,
+        accountAdapter: accountSessionAdapter,
+        guestAdapter: guestSessionAdapter,
+      );
+    });
+
+    tearDown(() {
+      libraryDispatcher.dispose();
+      readingDispatcher.dispose();
+    });
+
+    test('AuthStatus.authenticating + activeScope=guest:G => setBookmark & recordProgress FAIL-CLOSED', () async {
+      authService.updateState(const AuthState(status: AuthStatus.authenticating));
+      // Coordinator vẫn giữ stale guest scope và trạng thái guest
+      coordinator.updateScope('guest:gst-stale-test', isTransitioning: false);
+
+      const mutation = BookmarkMutation(storyId: 's-race', isBookmarked: true, title: 'Title');
+
+      // 1. Library mutation throws ScopeCoherenceException
+      expect(
+        () => libraryDispatcher.setBookmark(mutation),
+        throwsA(isA<ScopeCoherenceException>()),
+      );
+
+      // 2. Reading session recordProgress throws ScopeCoherenceException
+      expect(
+        () => readingDispatcher.recordProgress(
+          storyId: 's-race',
+          chapterId: 'c-race',
+          flutterPageIndex: 1,
+          progressPercentage: 10.0,
+          scrollPosition: 0.0,
+        ),
+        throwsA(isA<ScopeCoherenceException>()),
+      );
+
+      // 3. ZERO interaction with both Guest and Account adapters
+      verifyZeroInteractions(mockAccountLibraryAdapter);
+      verifyZeroInteractions(mockGuestLibraryAdapter);
+      verifyZeroInteractions(mockProgressRepo);
+      verifyZeroInteractions(mockGuestProgressRepo);
+    });
+
+    test('AuthStatus.unauthenticated + coordinator.state=transitioning + stale activeScope=guest:G => FAIL-CLOSED', () async {
+      authService.updateState(AuthState.unauthenticated());
+      // Coordinator đang transitioning
+      coordinator.updateScope('guest:gst-stale-transitioning', isTransitioning: true);
+
+      const mutation = BookmarkMutation(storyId: 's-trans', isBookmarked: true, title: 'Title');
+
+      expect(
+        () => libraryDispatcher.setBookmark(mutation),
+        throwsA(isA<ScopeCoherenceException>()),
+      );
+
+      expect(
+        () => readingDispatcher.recordProgress(
+          storyId: 's-trans',
+          chapterId: 'c-trans',
+          flutterPageIndex: 2,
+          progressPercentage: 20.0,
+          scrollPosition: 0.0,
+        ),
+        throwsA(isA<ScopeCoherenceException>()),
+      );
+
+      verifyZeroInteractions(mockAccountLibraryAdapter);
+      verifyZeroInteractions(mockGuestLibraryAdapter);
+      verifyZeroInteractions(mockProgressRepo);
+      verifyZeroInteractions(mockGuestProgressRepo);
     });
   });
 }

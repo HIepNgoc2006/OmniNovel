@@ -1,24 +1,35 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import '../../core/api/api_client.dart';
 import '../../core/auth/auth_service.dart';
 import '../../core/auth/auth_state.dart';
-import '../../core/api/api_client.dart';
+import '../../core/identity/active_scope_coordinator.dart';
 import '../../features/auth/presentation/login_screen.dart';
+import '../../features/gamification/repositories/gamification_repository.dart';
 import '../../features/home/presentation/home_screen.dart';
 import '../../features/library/presentation/library_screen.dart';
+import '../../features/library/repositories/account_library_adapter.dart';
+import '../../features/library/repositories/guest_library_adapter.dart';
+import '../../features/library/repositories/guest_library_repository.dart';
+import '../../features/library/repositories/library_access.dart';
 import '../../features/library/repositories/library_repository.dart';
+import '../../features/library/repositories/scoped_library_dispatcher.dart';
+import '../../features/profile/presentation/profile_screen.dart';
+import '../../features/reader/models/manga_reading_mode.dart';
+import '../../features/reader/presentation/reader_screen.dart';
+import '../../features/reader/repositories/account_reading_session_adapter.dart';
+import '../../features/reader/repositories/chapter_report_repository.dart';
+import '../../features/reader/repositories/chapter_repository.dart';
+import '../../features/reader/repositories/guest_reading_progress_repository.dart';
+import '../../features/reader/repositories/guest_reading_session_adapter.dart';
+import '../../features/reader/repositories/media_repository.dart';
+import '../../features/reader/repositories/reading_progress_repository.dart';
+import '../../features/reader/repositories/reading_session_access.dart';
+import '../../features/reader/repositories/scoped_reading_session_dispatcher.dart';
 import '../../features/search/presentation/search_screen.dart';
 import '../../features/story/presentation/story_detail_screen.dart';
 import '../../features/story/repositories/story_repository.dart';
-import '../../features/reader/models/manga_reading_mode.dart';
-import '../../features/reader/presentation/reader_screen.dart';
-import '../../features/gamification/repositories/gamification_repository.dart';
-import '../../features/profile/presentation/profile_screen.dart';
-import '../../features/reader/repositories/chapter_report_repository.dart';
-import '../../features/reader/repositories/chapter_repository.dart';
-import '../../features/reader/repositories/media_repository.dart';
-import 'package:shared_preferences/shared_preferences.dart';
-import '../../features/reader/repositories/reading_progress_repository.dart';
 
 class AppRouter {
   static GoRouter create({
@@ -32,6 +43,11 @@ class AppRouter {
     LibraryRepository? libraryRepository,
     GamificationRepository? gamificationRepository,
     ChapterReportRepository? chapterReportRepository,
+    ActiveScopeCoordinator? activeScopeCoordinator,
+    GuestLibraryRepository? guestLibraryRepository,
+    GuestReadingProgressRepository? guestReadingProgressRepository,
+    LibraryAccess? libraryAccess,
+    ReadingSessionAccess? readingSessionAccess,
   }) {
     final effectiveStoryRepo =
         storyRepository ?? StoryRepository(apiClient: apiClient);
@@ -56,28 +72,85 @@ class AppRouter {
     final effectiveGamificationRepo = gamificationRepository ??
         GamificationRepository(apiClient: apiClient);
 
+    final effectiveLibraryAccess = libraryAccess ??
+        (activeScopeCoordinator != null && guestLibraryRepository != null
+            ? ScopedLibraryDispatcher(
+                authService: authService,
+                coordinator: activeScopeCoordinator,
+                accountAdapter: AccountLibraryAdapter(repository: effectiveLibraryRepo),
+                guestAdapter: GuestLibraryAdapter(guestRepository: guestLibraryRepository),
+              )
+            : AccountLibraryAdapter(repository: effectiveLibraryRepo));
+
+    final effectiveSessionAccess = readingSessionAccess ??
+        (activeScopeCoordinator != null && guestReadingProgressRepository != null
+            ? ScopedReadingSessionDispatcher(
+                authService: authService,
+                coordinator: activeScopeCoordinator,
+                accountAdapter: AccountReadingSessionAdapter(
+                  readingProgressRepository: effectiveProgressRepo,
+                  gamificationRepository: effectiveGamificationRepo,
+                ),
+                guestAdapter: GuestReadingSessionAdapter(
+                  guestRepository: guestReadingProgressRepository,
+                ),
+              )
+            : AccountReadingSessionAdapter(
+                readingProgressRepository: effectiveProgressRepo,
+                gamificationRepository: effectiveGamificationRepo,
+              ));
+
+    bool wasAuthenticated = authService.state.isAuthenticated;
+
     return GoRouter(
       initialLocation: '/home',
-      refreshListenable: authService,
+      refreshListenable: activeScopeCoordinator != null
+          ? Listenable.merge([authService, activeScopeCoordinator])
+          : authService,
       redirect: (BuildContext context, GoRouterState state) {
         final authState = authService.state;
-        final isLoggingIn = state.matchedLocation == '/login';
+        final isPreviouslyAuth = wasAuthenticated;
+        wasAuthenticated = authState.isAuthenticated;
 
         // Đang kiểm tra token ở khởi động
         if (authState.status == AuthStatus.initial) {
           return null;
         }
 
-        // Chưa đăng nhập mà truy cập route khác ngoài login
-        if (!authState.isAuthenticated) {
-          return isLoggingIn ? null : '/login';
+        final location = state.matchedLocation;
+        final isLoggingIn = location == '/login';
+        final isProfile = location == '/profile';
+
+        // 1. Account-only route: /profile
+        if (isProfile) {
+          if (authState.isAuthenticated) {
+            return null;
+          }
+          // Explicit logout từ /profile -> canonical /home
+          if (isPreviouslyAuth) {
+            return '/home';
+          }
+          // Guest truy cập /profile -> login + returnTo
+          final target = Uri.encodeComponent(state.uri.toString());
+          return '/login?returnTo=$target';
         }
 
-        // Đã đăng nhập mà đang ở màn login -> đưa về home
+        // 2. Màn hình /login
         if (isLoggingIn) {
-          return '/home';
+          if (authState.isAuthenticated) {
+            final returnTo = state.uri.queryParameters['returnTo'];
+            if (returnTo != null &&
+                returnTo.isNotEmpty &&
+                returnTo.startsWith('/') &&
+                !returnTo.startsWith('/login')) {
+              return returnTo;
+            }
+            return '/home';
+          }
+          return null;
         }
 
+        // 3. Public whitelist và unknown routes (để GoRouter tự xử lý 404, không ép về /login)
         return null;
       },
       routes: [
@@ -91,12 +164,16 @@ class AppRouter {
             authService: authService,
             storyRepository: effectiveStoryRepo,
             libraryRepository: effectiveLibraryRepo,
+            libraryAccess: effectiveLibraryAccess,
+            scopeCoordinator: activeScopeCoordinator,
           ),
         ),
         GoRoute(
           path: '/library',
           builder: (context, state) => LibraryScreen(
+            libraryAccess: effectiveLibraryAccess,
             libraryRepository: effectiveLibraryRepo,
+            scopeCoordinator: activeScopeCoordinator,
           ),
         ),
         GoRoute(
@@ -132,6 +209,8 @@ class AppRouter {
               storyRepository: effectiveStoryRepo,
               readingProgressRepository: effectiveProgressRepo,
               libraryRepository: effectiveLibraryRepo,
+              libraryAccess: effectiveLibraryAccess,
+              scopeCoordinator: activeScopeCoordinator,
             );
           },
         ),
@@ -166,6 +245,7 @@ class AppRouter {
               chapterRepository: effectiveChapterRepo,
               mediaRepository: effectiveMediaRepo,
               readingProgressRepository: effectiveProgressRepo,
+              sessionAccess: effectiveSessionAccess,
               gamificationRepository: effectiveGamificationRepo,
               authService: authService,
               reportRepository: effectiveReportRepo,
@@ -176,4 +256,3 @@ class AppRouter {
     );
   }
 }
-

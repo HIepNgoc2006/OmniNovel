@@ -30,7 +30,20 @@ class ScopedReadingSessionDispatcher implements ReadingSessionAccess {
   })  : _authService = authService,
         _coordinator = coordinator,
         _accountAdapter = accountAdapter,
-        _guestAdapter = guestAdapter;
+        _guestAdapter = guestAdapter {
+    _coordinator.addListener(_onScopeChanged);
+    _authService.addListener(_onScopeChanged);
+  }
+
+  void _onScopeChanged() {
+    // Invariant: No deferred side effect may outlive the scope under which it was scheduled
+    if (!_isAccountCoherent()) {
+      _accountAdapter.cancelPendingEffects();
+    }
+    if (!_isGuestCoherent()) {
+      _guestAdapter.cancelPendingEffects();
+    }
+  }
 
   bool _isAccountCoherent() {
     final auth = _authService.state;
@@ -137,6 +150,8 @@ class ScopedReadingSessionDispatcher implements ReadingSessionAccess {
 
   @override
   void dispose() {
+    _coordinator.removeListener(_onScopeChanged);
+    _authService.removeListener(_onScopeChanged);
     _accountAdapter.dispose();
     _guestAdapter.dispose();
   }

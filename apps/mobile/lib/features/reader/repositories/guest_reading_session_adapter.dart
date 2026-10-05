@@ -105,10 +105,16 @@ class GuestReadingSessionAdapter implements ReadingSessionAccess {
     }
   }
 
+  /// Hủy bỏ ngay lập tức các hiệu ứng hoãn lại (debounce) khi scope bị rotate/hủy.
+  void cancelPendingEffects() {
+    _debounceTimer?.cancel();
+    _pendingProgress = null;
+    _pendingHistory = null;
+  }
+
   @override
   void dispose() {
     _disposed = true;
-    _debounceTimer?.cancel();
-    unawaited(flush());
+    cancelPendingEffects();
   }
 }

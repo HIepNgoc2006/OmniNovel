@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import '../../../core/auth/auth_service.dart';
 import '../../../app/theme/app_colors.dart';
 
@@ -190,6 +191,18 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           )
                         : const Text('Đăng nhập'),
+                  ),
+                  const SizedBox(height: 12),
+                  OutlinedButton(
+                    key: const Key('login_continue_as_guest_button'),
+                    onPressed: _isLoading ? null : () => context.go('/home'),
+                    style: OutlinedButton.styleFrom(
+                      side: const BorderSide(color: AppColors.primary),
+                    ),
+                    child: const Text(
+                      'Tiếp tục với tư cách Khách',
+                      style: TextStyle(color: AppColors.primary),
+                    ),
                   ),
                 ],
               ),

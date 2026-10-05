@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import '../models/novel_block_models.dart';
+import '../repositories/reading_session_access.dart';
 import 'novel_geometry_calculator.dart';
 import 'novel_layout_metrics.dart';
 import 'novel_settings_controller.dart';
@@ -19,7 +20,8 @@ class NovelReaderView extends StatefulWidget {
   final String chapterId;
   final String? chapterVersionId;
   final List<NovelBlockItem> blocks;
-  final ReadingProgressCoordinator coordinator;
+  final ReadingProgressCoordinator? coordinator;
+  final ReadingSessionAccess? sessionAccess;
   final NovelSettingsController settingsController;
   final String? initialAnchorBlockId;
   final double? initialScrollPosition;
@@ -35,7 +37,8 @@ class NovelReaderView extends StatefulWidget {
     required this.chapterId,
     this.chapterVersionId,
     required this.blocks,
-    required this.coordinator,
+    this.coordinator,
+    this.sessionAccess,
     required this.settingsController,
     this.initialAnchorBlockId,
     this.initialScrollPosition,
@@ -169,17 +172,31 @@ class _NovelReaderViewState extends State<NovelReaderView> {
     final maxScroll = notification.metrics.maxScrollExtent;
     final progressPercentage = maxScroll > 0.0 ? (offset / maxScroll * 100.0).clamp(0.0, 100.0) : 0.0;
 
-    widget.coordinator.recordProgress(
-      storyId: widget.storyId,
-      chapterId: widget.chapterId,
-      chapterVersionId: widget.chapterVersionId,
-      readingMode: 'NOVEL',
-      flutterPageIndex: 0,
-      progressPercentage: progressPercentage,
-      scrollPosition: offset,
-      anchorBlockId: currentBlock.anchorBlockId,
-      textOffset: 0,
-    );
+    if (widget.sessionAccess != null) {
+      widget.sessionAccess!.recordProgress(
+        storyId: widget.storyId,
+        chapterId: widget.chapterId,
+        chapterVersionId: widget.chapterVersionId,
+        readingMode: 'NOVEL',
+        flutterPageIndex: 0,
+        progressPercentage: progressPercentage,
+        scrollPosition: offset,
+        anchorBlockId: currentBlock.anchorBlockId,
+        textOffset: 0,
+      );
+    } else {
+      widget.coordinator?.recordProgress(
+        storyId: widget.storyId,
+        chapterId: widget.chapterId,
+        chapterVersionId: widget.chapterVersionId,
+        readingMode: 'NOVEL',
+        flutterPageIndex: 0,
+        progressPercentage: progressPercentage,
+        scrollPosition: offset,
+        anchorBlockId: currentBlock.anchorBlockId,
+        textOffset: 0,
+      );
+    }
   }
 
   @override

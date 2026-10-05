@@ -7,6 +7,9 @@ import '../../library/models/library_models.dart';
 import '../../library/repositories/library_repository.dart';
 import '../../story/models/story_models.dart';
 import '../../story/repositories/story_repository.dart';
+import '../../library/repositories/library_access.dart';
+import '../../library/repositories/account_library_adapter.dart';
+import '../../../core/identity/active_scope_coordinator.dart';
 import 'widgets/home_carousel_banner.dart';
 import 'widgets/home_latest_section.dart';
 import 'widgets/home_ranking_section.dart';
@@ -15,12 +18,16 @@ class HomeScreen extends StatefulWidget {
   final AuthService authService;
   final StoryRepository storyRepository;
   final LibraryRepository? libraryRepository;
+  final LibraryAccess? libraryAccess;
+  final ActiveScopeCoordinator? scopeCoordinator;
 
   const HomeScreen({
     super.key,
     required this.authService,
     required this.storyRepository,
     this.libraryRepository,
+    this.libraryAccess,
+    this.scopeCoordinator,
   });
 
   @override
@@ -36,11 +43,35 @@ class _HomeScreenState extends State<HomeScreen> {
   bool _isLoading = true;
   String? _errorMessage;
 
+  LibraryAccess? get _effectiveLibraryAccess =>
+      widget.libraryAccess ??
+      (widget.libraryRepository != null
+          ? AccountLibraryAdapter(repository: widget.libraryRepository!)
+          : null);
+
   @override
   void initState() {
     super.initState();
-    _continueReading = widget.libraryRepository?.getCachedContinueReading();
+    _continueReading = _effectiveLibraryAccess?.getCachedContinueReading();
+    widget.scopeCoordinator?.addListener(_onScopeChanged);
+    if (widget.libraryAccess is ChangeNotifier) {
+      (widget.libraryAccess as ChangeNotifier).addListener(_onScopeChanged);
+    }
     _loadHomeData();
+  }
+
+  void _onScopeChanged() {
+    if (!mounted) return;
+    _loadHomeData();
+  }
+
+  @override
+  void dispose() {
+    widget.scopeCoordinator?.removeListener(_onScopeChanged);
+    if (widget.libraryAccess is ChangeNotifier) {
+      (widget.libraryAccess as ChangeNotifier).removeListener(_onScopeChanged);
+    }
+    super.dispose();
   }
 
   Future<void> _loadHomeData() async {
@@ -50,14 +81,15 @@ class _HomeScreenState extends State<HomeScreen> {
     });
 
     try {
+      final libraryAccess = _effectiveLibraryAccess;
       final results = await Future.wait([
         widget.storyRepository.getFeaturedStories(),
         widget.storyRepository.getRankings(),
         widget.storyRepository.getStories(
           const FindStoriesParams(sort: 'LATEST', limit: 10),
         ),
-        if (widget.libraryRepository != null)
-          widget.libraryRepository!.getContinueReading()
+        if (libraryAccess != null)
+          libraryAccess.getContinueReading()
         else
           Future.value(null),
       ]);

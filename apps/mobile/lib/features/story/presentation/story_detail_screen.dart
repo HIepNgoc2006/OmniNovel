@@ -13,6 +13,9 @@ import '../../studio/models/studio_models.dart';
 import '../../studio/presentation/studio_quick_approval_sheet.dart';
 import '../../studio/presentation/widgets/studio_job_chooser_dialog.dart';
 import '../../studio/repositories/studio_repository.dart';
+import '../../library/repositories/library_access.dart';
+import '../../library/repositories/account_library_adapter.dart';
+import '../../../core/identity/active_scope_coordinator.dart';
 import '../models/story_models.dart';
 import '../repositories/story_repository.dart';
 
@@ -21,6 +24,8 @@ class StoryDetailScreen extends StatefulWidget {
   final StoryRepository storyRepository;
   final ReadingProgressRepository readingProgressRepository;
   final LibraryRepository? libraryRepository;
+  final LibraryAccess? libraryAccess;
+  final ActiveScopeCoordinator? scopeCoordinator;
   final StudioRepository? studioRepository;
   final OfflineContentResolver? offlineResolver;
 
@@ -30,6 +35,8 @@ class StoryDetailScreen extends StatefulWidget {
     required this.storyRepository,
     required this.readingProgressRepository,
     this.libraryRepository,
+    this.libraryAccess,
+    this.scopeCoordinator,
     this.studioRepository,
     this.offlineResolver,
   });
@@ -53,6 +60,12 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
   bool _isAscending = true; // Sắp xếp cũ nhất -> mới nhất (chương 1 -> ...)
   bool _isSummaryExpanded = false;
 
+  LibraryAccess? get _effectiveLibraryAccess =>
+      widget.libraryAccess ??
+      (widget.libraryRepository != null
+          ? AccountLibraryAdapter(repository: widget.libraryRepository!)
+          : null);
+
   @override
   void initState() {
     super.initState();
@@ -60,11 +73,18 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
       repository: widget.readingProgressRepository,
     );
     _progressCoordinator.init();
+    widget.scopeCoordinator?.addListener(_onScopeChanged);
+    _loadStoryAndProgress();
+  }
+
+  void _onScopeChanged() {
+    if (!mounted) return;
     _loadStoryAndProgress();
   }
 
   @override
   void dispose() {
+    widget.scopeCoordinator?.removeListener(_onScopeChanged);
     _progressCoordinator.dispose();
     super.dispose();
   }
@@ -80,10 +100,10 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
       final story = await widget.storyRepository.getStoryBySlug(widget.slug);
 
       // Pha 2: Chạy song song 1 lần duy nhất (Gate 8: Khử duplicate getProgress)
-      final libraryRepo = widget.libraryRepository;
+      final libraryAccess = _effectiveLibraryAccess;
       final results = await Future.wait([
-        if (libraryRepo != null)
-          libraryRepo.getBookmarkStatus(story.id)
+        if (libraryAccess != null)
+          libraryAccess.getBookmarkStatus(story.id)
         else
           Future.value(const BookmarkStatusResponse(isBookmarked: false)),
         () async {
@@ -202,8 +222,8 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
 
   Future<void> _toggleBookmark() async {
     if (_story == null || _isTogglingBookmark) return;
-    final libraryRepo = widget.libraryRepository;
-    if (libraryRepo == null) return;
+    final libraryAccess = _effectiveLibraryAccess;
+    if (libraryAccess == null) return;
 
     _isTogglingBookmark = true;
     final prevStatus = _isBookmarked;
@@ -218,7 +238,15 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
     });
 
     try {
-      final res = await libraryRepo.setBookmark(_story!.id, newStatus);
+      final res = await libraryAccess.setBookmark(
+        BookmarkMutation(
+          storyId: _story!.id,
+          isBookmarked: newStatus,
+          title: _story!.title,
+          slug: _story!.slug,
+          coverUrl: _story!.coverUrl,
+        ),
+      );
       if (mounted) {
         setState(() {
           _isBookmarked = res.isBookmarked;

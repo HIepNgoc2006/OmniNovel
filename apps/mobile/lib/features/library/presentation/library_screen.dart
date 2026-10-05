@@ -2,16 +2,24 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/theme/app_colors.dart';
 import '../../../core/theme/theme_tokens.dart';
+import '../../../core/identity/active_scope_coordinator.dart';
 import '../models/library_models.dart';
 import '../repositories/library_repository.dart';
+import '../repositories/library_access.dart';
+import '../repositories/account_library_adapter.dart';
 
 class LibraryScreen extends StatefulWidget {
-  final LibraryRepository libraryRepository;
+  final LibraryAccess? libraryAccess;
+  final LibraryRepository? libraryRepository;
+  final ActiveScopeCoordinator? scopeCoordinator;
 
   const LibraryScreen({
     super.key,
-    required this.libraryRepository,
-  });
+    this.libraryAccess,
+    this.libraryRepository,
+    this.scopeCoordinator,
+  }) : assert(libraryAccess != null || libraryRepository != null,
+            'Phải truyền libraryAccess hoặc libraryRepository');
 
   @override
   State<LibraryScreen> createState() => _LibraryScreenState();
@@ -20,6 +28,10 @@ class LibraryScreen extends StatefulWidget {
 class _LibraryScreenState extends State<LibraryScreen>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController;
+
+  LibraryAccess get _access =>
+      widget.libraryAccess ??
+      AccountLibraryAdapter(repository: widget.libraryRepository!);
 
   // State Bookmarks
   List<BookmarkedStoryItem> _bookmarks = [];
@@ -43,21 +55,42 @@ class _LibraryScreenState extends State<LibraryScreen>
       if (mounted) setState(() {});
     });
 
-    // 1. Stale-While-Revalidate: Nạp snapshot tức thì từ SharedPreferences
-    _bookmarks = widget.libraryRepository.getCachedBookmarks();
-    _history = widget.libraryRepository.getCachedHistory();
-    _continueReading = widget.libraryRepository.getCachedContinueReading();
+    widget.scopeCoordinator?.addListener(_onScopeChanged);
+    if (widget.libraryAccess is Listenable) {
+      (widget.libraryAccess as Listenable).addListener(_onScopeChanged);
+    }
 
-    // Nếu đã có cache thì không cần hiện màn hình loading trắng
+    // 1. Stale-While-Revalidate: Nạp snapshot tức thì từ storage
+    _bookmarks = _access.getCachedBookmarks();
+    _history = _access.getCachedHistory();
+    _continueReading = _access.getCachedContinueReading();
+
     if (_bookmarks.isNotEmpty) _isLoadingBookmarks = false;
     if (_history.isNotEmpty) _isLoadingHistory = false;
 
-    // 2. Kích hoạt revalidate ngầm từ backend
+    // 2. Kích hoạt revalidate ngầm từ backend / sqlite
+    _revalidateAll();
+  }
+
+  void _onScopeChanged() {
+    if (!mounted) return;
+    setState(() {
+      _bookmarks = _access.getCachedBookmarks();
+      _history = _access.getCachedHistory();
+      _continueReading = _access.getCachedContinueReading();
+      if (_bookmarks.isEmpty) {
+        _isLoadingBookmarks = true;
+      }
+    });
     _revalidateAll();
   }
 
   @override
   void dispose() {
+    widget.scopeCoordinator?.removeListener(_onScopeChanged);
+    if (widget.libraryAccess is Listenable) {
+      (widget.libraryAccess as Listenable).removeListener(_onScopeChanged);
+    }
     _tabController.dispose();
     super.dispose();
   }
@@ -71,7 +104,7 @@ class _LibraryScreenState extends State<LibraryScreen>
   }
 
   Future<void> _fetchContinueReading() async {
-    final item = await widget.libraryRepository.getContinueReading();
+    final item = await _access.getContinueReading();
     if (mounted) {
       setState(() {
         _continueReading = item;
@@ -81,7 +114,7 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   Future<void> _fetchBookmarks() async {
     try {
-      final res = await widget.libraryRepository.fetchBookmarks(
+      final res = await _access.fetchBookmarks(
         page: 1,
         limit: 20,
         status: _selectedFilter.apiValue,
@@ -105,7 +138,7 @@ class _LibraryScreenState extends State<LibraryScreen>
 
   Future<void> _fetchHistory() async {
     try {
-      final res = await widget.libraryRepository.fetchHistory(page: 1, limit: 20);
+      final res = await _access.fetchHistory(page: 1, limit: 20);
       if (mounted) {
         setState(() {
           _history = res.data;
@@ -126,7 +159,7 @@ class _LibraryScreenState extends State<LibraryScreen>
   void _onFilterChanged(LibraryStatusFilter filter) {
     setState(() {
       _selectedFilter = filter;
-      _bookmarks = widget.libraryRepository.getCachedBookmarks(status: filter.apiValue);
+      _bookmarks = _access.getCachedBookmarks(status: filter.apiValue);
       _isLoadingBookmarks = true;
     });
     _fetchBookmarks();
@@ -158,7 +191,7 @@ class _LibraryScreenState extends State<LibraryScreen>
 
     if (confirmed == true && mounted) {
       try {
-        await widget.libraryRepository.deleteStoryHistory(item.story.id);
+        await _access.deleteStoryHistory(item.story.id);
         setState(() {
           _history.removeWhere((e) => e.story.id == item.story.id);
           if (_continueReading?.story.id == item.story.id) {
@@ -204,7 +237,7 @@ class _LibraryScreenState extends State<LibraryScreen>
 
     if (confirmed == true && mounted) {
       try {
-        await widget.libraryRepository.clearAllHistory();
+        await _access.clearAllHistory();
         setState(() {
           _history.clear();
           _continueReading = null;

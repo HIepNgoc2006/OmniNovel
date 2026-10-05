@@ -46,7 +46,7 @@ void main() {
       when(() => mockSecure.read(key: any(named: 'key')))
           .thenAnswer((inv) async => secureData[inv.namedArguments[#key]]);
       when(() => mockSecure.write(key: any(named: 'key'), value: any(named: 'value')))
-          .thenAnswer((inv) async => secureData[inv.namedArguments[#key]] = inv.namedArguments[#value]);
+          .thenAnswer((inv) async => secureData[inv.namedArguments[#key] as String] = inv.namedArguments[#value] as String);
 
       final installProvider = InstallationIdentityProvider(secureStorage: mockSecure, prefs: prefs);
       final guestProvider = GuestProfileIdentityProvider(prefs: prefs);

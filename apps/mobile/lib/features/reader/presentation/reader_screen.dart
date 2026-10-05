@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../app/theme/app_colors.dart';
@@ -14,6 +15,8 @@ import '../repositories/chapter_repository.dart';
 import '../repositories/media_repository.dart';
 import '../repositories/novel_content_repository.dart';
 import '../repositories/reading_progress_repository.dart';
+import '../repositories/reading_session_access.dart';
+import '../repositories/account_reading_session_adapter.dart';
 import 'chapter_report_sheet.dart';
 import 'manga_paged_reader_view.dart';
 import 'novel_content_parser.dart';
@@ -50,6 +53,7 @@ class ReaderScreen extends StatefulWidget {
   final OfflineContentResolver? offlineContentResolver;
   final ReaderLeaseManager? readerLeaseManager;
   final StudioRepository? studioRepository;
+  final ReadingSessionAccess? sessionAccess;
 
   const ReaderScreen({
     super.key,
@@ -72,6 +76,7 @@ class ReaderScreen extends StatefulWidget {
     this.offlineContentResolver,
     this.readerLeaseManager,
     this.studioRepository,
+    this.sessionAccess,
   });
 
   @override
@@ -81,7 +86,9 @@ class ReaderScreen extends StatefulWidget {
 class _ReaderScreenState extends State<ReaderScreen> {
   late final ReaderImageCacheCoordinator _imageCacheCoordinator;
   late final ReaderSessionController _sessionController;
-  late final ReadingProgressCoordinator _progressCoordinator;
+  late final ReadingSessionAccess _sessionAccess;
+  late final bool _ownsSessionAccess;
+  ReadingProgressCoordinator? _progressCoordinator;
   late final NovelSettingsController _novelSettingsController;
   late final NovelContentRepository _novelContentRepository;
   late MangaReadingMode _currentMode;
@@ -117,11 +124,22 @@ class _ReaderScreenState extends State<ReaderScreen> {
       offlineContentResolver: widget.offlineContentResolver,
       readerLeaseManager: widget.readerLeaseManager,
     );
-    _progressCoordinator = ReadingProgressCoordinator(
-      repository: widget.readingProgressRepository,
-      gamificationRepository: widget.gamificationRepository,
-    );
-    _progressCoordinator.init();
+    if (widget.sessionAccess != null) {
+      _sessionAccess = widget.sessionAccess!;
+      _ownsSessionAccess = false;
+      _progressCoordinator = null;
+    } else {
+      final coordinator = ReadingProgressCoordinator(
+        repository: widget.readingProgressRepository,
+        gamificationRepository: widget.gamificationRepository,
+      );
+      coordinator.init();
+      _progressCoordinator = coordinator;
+      _sessionAccess = AccountReadingSessionAdapter(
+        coordinator: coordinator,
+      );
+      _ownsSessionAccess = true;
+    }
 
     _sessionController.addListener(_onSessionStateChanged);
     _novelSettingsController.addListener(_onNovelSettingsChanged);
@@ -141,18 +159,14 @@ class _ReaderScreenState extends State<ReaderScreen> {
   void _onSessionStateChanged() {
     if (_sessionController.state.status == ReaderStatus.ready) {
       final isOffline = _sessionController.state.isOffline;
-      // P0.1 Global Zero-Network: Tắt hoàn toàn network side effects (gamification, sync, epoch) khi offline
-      _progressCoordinator.setNetworkSideEffectsEnabled(!isOffline);
-
-      final currentChapter = _sessionController.state.chapterDetail;
-      if (currentChapter != null) {
-        _progressCoordinator.onChapterReady(currentChapter.chapter.id);
+      if (_progressCoordinator != null) {
+        _progressCoordinator!.setNetworkSideEffectsEnabled(!isOffline);
+        final currentChapter = _sessionController.state.chapterDetail;
+        if (currentChapter != null) {
+          _progressCoordinator!.onChapterReady(currentChapter.chapter.id);
+        }
       }
-      if (!isOffline) {
-        _progressCoordinator.startSession(widget.storyId);
-      } else {
-        _progressCoordinator.startOfflineSession(widget.storyId);
-      }
+      _sessionAccess.initSession(storyId: widget.storyId);
       if (_isNovel) {
         _loadNovelIfNeeded();
       } else {
@@ -261,7 +275,11 @@ class _ReaderScreenState extends State<ReaderScreen> {
     if (widget.novelSettingsController == null) {
       _novelSettingsController.dispose();
     }
-    _progressCoordinator.dispose();
+    if (_ownsSessionAccess) {
+      _sessionAccess.dispose();
+    } else {
+      unawaited(_sessionAccess.flush());
+    }
     _sessionController.dispose();
     _pageController?.dispose();
     super.dispose();
@@ -307,14 +325,19 @@ class _ReaderScreenState extends State<ReaderScreen> {
   }
 
   void _onProgressChanged(int pageIndex, double progressPercentage, double scrollOffset) {
-    _progressCoordinator.recordProgress(
+    final detail = _sessionController.state.chapterDetail;
+    _sessionAccess.recordProgress(
       storyId: widget.storyId,
       chapterId: widget.chapterId,
-      chapterVersionId: _sessionController.state.chapterDetail?.activeVersion?.id,
+      chapterVersionId: detail?.activeVersion?.id,
       readingMode: _currentMode.canonicalReadingMode,
       flutterPageIndex: pageIndex,
       progressPercentage: progressPercentage,
       scrollPosition: scrollOffset,
+      storyTitle: detail?.story.title,
+      storySlug: detail?.story.slug,
+      chapterNumber: detail?.chapter.chapterNumber.toString(),
+      chapterTitle: detail?.chapter.title,
     );
   }
 
@@ -360,7 +383,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                     IconButton(
                       icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
                       onPressed: () {
-                        _progressCoordinator.flush();
+                        _sessionAccess.flush();
                         context.pop();
                       },
                     ),
@@ -586,7 +609,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                             TextButton.icon(
                               onPressed: nav?.previous != null
                                   ? () {
-                                      _progressCoordinator.flush();
+                                      _sessionAccess.flush();
                                       final navUrl = _isNovel
                                           ? '/reader/${nav!.previous!.id}?storyId=${widget.storyId}'
                                           : '/reader/${nav!.previous!.id}?storyId=${widget.storyId}&pageIndex=0&mode=${_currentMode.name}';
@@ -599,7 +622,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
                             TextButton.icon(
                               onPressed: nav?.next != null
                                   ? () {
-                                      _progressCoordinator.flush();
+                                      _sessionAccess.flush();
                                       final navUrl = _isNovel
                                           ? '/reader/${nav!.next!.id}?storyId=${widget.storyId}'
                                           : '/reader/${nav!.next!.id}?storyId=${widget.storyId}&pageIndex=0&mode=${_currentMode.name}';
@@ -677,6 +700,7 @@ class _ReaderScreenState extends State<ReaderScreen> {
       chapterVersionId: _sessionController.state.chapterDetail?.activeVersion?.id,
       blocks: _novelBlocks!,
       coordinator: _progressCoordinator,
+      sessionAccess: _sessionAccess,
       settingsController: _novelSettingsController,
       initialAnchorBlockId: widget.initialAnchorBlockId,
       initialScrollPosition: widget.initialScrollPosition,

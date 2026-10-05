@@ -38,9 +38,9 @@ void main() {
 
     test('1. Coherent Account: dispatches progress to AccountReadingSessionAdapter only', () async {
       when(() => mockAuth.state).thenReturn(
-        AuthState(
+        const AuthState(
           status: AuthStatus.authenticated,
-          user: const User(id: 'usr-456', email: 'acc@test.com', username: 'acc456', role: 'READER'),
+          user: User(id: 'usr-456', email: 'acc@test.com', username: 'acc456', role: 'READER'),
         ),
       );
       when(() => mockCoordinator.activeScope).thenReturn('account:usr-456');

@@ -153,6 +153,9 @@ class AppBootstrap {
       apiClient: apiClient,
       prefs: rawPrefs,
       gamificationRepository: gamificationRepository,
+      activeScopeCoordinator: activeScopeCoordinator,
+      guestLibraryRepository: guestLibraryRepository,
+      guestReadingProgressRepository: guestReadingProgressRepository,
     );
 
     logger.i('Khởi động OmniNovel Mobile thành công. Scope: ${activeScopeCoordinator.activeScope}');

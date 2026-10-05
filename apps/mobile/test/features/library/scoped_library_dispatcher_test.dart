@@ -39,9 +39,9 @@ void main() {
 
     test('1. Coherent Account: dispatches mutations and reads to AccountLibraryAdapter only', () async {
       when(() => mockAuth.state).thenReturn(
-        AuthState(
+        const AuthState(
           status: AuthStatus.authenticated,
-          user: const User(id: 'usr-123', email: 'u@test.com', username: 'usr123', role: 'READER'),
+          user: User(id: 'usr-123', email: 'u@test.com', username: 'usr123', role: 'READER'),
         ),
       );
       when(() => mockCoordinator.activeScope).thenReturn('account:usr-123');

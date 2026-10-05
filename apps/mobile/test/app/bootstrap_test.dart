@@ -147,6 +147,9 @@ void main() {
       expect(Provider.of<GuestLibraryRepository>(context, listen: false), isNotNull);
       expect(Provider.of<GuestReadingProgressRepository>(context, listen: false), isNotNull);
       expect(Provider.of<LocalLibraryDao>(context, listen: false), isNotNull);
+
+      // Xả hết timer timeout kết nối mạng do HomeScreen khởi tạo khi render công khai
+      await tester.pump(const Duration(seconds: 35));
     });
   });
 }

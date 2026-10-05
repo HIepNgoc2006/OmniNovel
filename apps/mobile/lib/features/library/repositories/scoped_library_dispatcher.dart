@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import '../../../core/auth/auth_service.dart';
 import '../../../core/identity/active_scope_coordinator.dart';
 import '../models/library_models.dart';
@@ -26,7 +27,7 @@ class ScopeCoherenceException implements Exception {
 /// - Mismatch, transitioning hoặc bootstrapping:
 ///     Mutation FAIL-CLOSED (ném [ScopeCoherenceException] hoặc [StateError]).
 ///     Read trả về safe fallback / empty snapshot.
-class ScopedLibraryDispatcher implements LibraryAccess {
+class ScopedLibraryDispatcher extends ChangeNotifier implements LibraryAccess {
   final AuthService _authService;
   final ActiveScopeCoordinator _coordinator;
   final AccountLibraryAdapter _accountAdapter;
@@ -40,7 +41,21 @@ class ScopedLibraryDispatcher implements LibraryAccess {
   })  : _authService = authService,
         _coordinator = coordinator,
         _accountAdapter = accountAdapter,
-        _guestAdapter = guestAdapter;
+        _guestAdapter = guestAdapter {
+    _coordinator.addListener(_onScopeChanged);
+    _authService.addListener(_onScopeChanged);
+  }
+
+  void _onScopeChanged() {
+    notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _coordinator.removeListener(_onScopeChanged);
+    _authService.removeListener(_onScopeChanged);
+    super.dispose();
+  }
 
   bool _isAccountCoherent() {
     final auth = _authService.state;

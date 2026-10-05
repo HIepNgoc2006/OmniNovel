@@ -18,6 +18,7 @@ import {
   Sliders,
   CalendarCheck,
   ShieldCheck,
+  Bookmark,
 } from 'lucide-react';
 import { GlobalRole } from '@omninovel/shared';
 
@@ -68,6 +69,9 @@ export function Header() {
             <nav className="hidden md:flex items-center gap-4 text-sm font-semibold text-slate-300">
               <Link href="/" className="hover:text-white transition-colors">
                 Trang Chủ
+              </Link>
+              <Link href="/library" className="hover:text-white transition-colors">
+                Thư Viện
               </Link>
               <Link href="/search?format=COMIC" className="hover:text-white transition-colors">
                 Manga / Comic
@@ -195,6 +199,14 @@ export function Header() {
                       >
                         <User className="w-4 h-4" />
                         <span>Hồ Sơ & Cấp Độ</span>
+                      </Link>
+
+                      <Link
+                        href="/library"
+                        className="flex items-center gap-2 px-4 py-2 text-xs text-slate-300 hover:text-white hover:bg-slate-800 transition-colors"
+                      >
+                        <Bookmark className="w-4 h-4 text-amber-400" />
+                        <span>Thư Viện Của Tôi</span>
                       </Link>
 
                       {(user.role === GlobalRole.TRANSLATOR || user.role === GlobalRole.ADMIN) && (

@@ -3,7 +3,7 @@
 import React from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { Home, Compass, BookOpen, Sliders, User } from 'lucide-react';
+import { Home, Compass, BookOpen, Sliders, User, Bookmark } from 'lucide-react';
 import { useAuth } from '../../lib/auth/auth-context';
 import { GlobalRole } from '@omninovel/shared';
 
@@ -18,6 +18,7 @@ export function MobileNav() {
 
   const navItems = [
     { href: '/', label: 'Trang Chủ', icon: Home },
+    { href: '/library', label: 'Thư Viện', icon: Bookmark },
     { href: '/search?format=COMIC', label: 'Manga', icon: Compass },
     { href: '/search?format=NOVEL', label: 'Novel', icon: BookOpen },
     ...(isTranslatorOrAdmin

@@ -27,15 +27,14 @@ import {
   ChevronDown,
   ChevronUp,
 } from 'lucide-react';
+import { StoryLibraryButton } from '@/components/story/story-library-button';
 
 export default function StoryDetailPage() {
   const params = useParams();
   const router = useRouter();
   const slug = params?.slug as string;
 
-  const { user } = useAuth();
   const { data: story, isLoading, error } = useStoryBySlug(slug);
-  const [isFollowing, setIsFollowing] = useState(false);
   const [followersCount, setFollowersCount] = useState(0);
   const [copiedLink, setCopiedLink] = useState(false);
   const [isSynopsisExpanded, setIsSynopsisExpanded] = useState(false);
@@ -45,14 +44,6 @@ export default function StoryDetailPage() {
       setFollowersCount(story.followersCount || 0);
     }
   }, [story]);
-
-  React.useEffect(() => {
-    if (story?.id && user) {
-      getBookmarkStatusApi(story.id)
-        .then((res) => setIsFollowing(res.isBookmarked))
-        .catch(() => {});
-    }
-  }, [story?.id, user]);
 
   if (isLoading) {
     return (
@@ -115,25 +106,6 @@ export default function StoryDetailPage() {
     }
   };
 
-  const handleToggleFollow = async () => {
-    if (!story) return;
-    const nextState = !isFollowing;
-    setIsFollowing(nextState);
-    setFollowersCount((prev) => (nextState ? prev + 1 : Math.max(0, prev - 1)));
-
-    try {
-      const res = await setBookmarkApi({ storyId: story.id, isBookmarked: nextState });
-      setIsFollowing(res.isBookmarked);
-      if (typeof res.followersCount === 'number') {
-        setFollowersCount(res.followersCount);
-      }
-    } catch {
-      // Revert if failed
-      setIsFollowing(!nextState);
-      setFollowersCount((prev) => (!nextState ? prev + 1 : Math.max(0, prev - 1)));
-    }
-  };
-
   const synopsisText =
     story.summary ||
     story.synopsis ||
@@ -188,7 +160,7 @@ export default function StoryDetailPage() {
                 <span>{views.toLocaleString()}</span>
               </div>
               <div className="flex items-center gap-1 text-rose-400">
-                <Heart className={`w-3.5 h-3.5 ${isFollowing ? 'fill-rose-500 text-rose-500' : 'fill-rose-500/20'}`} />
+                <Heart className="w-3.5 h-3.5 fill-rose-500/20 text-rose-500" />
                 <span>{followersCount.toLocaleString()}</span>
               </div>
             </div>
@@ -300,16 +272,15 @@ export default function StoryDetailPage() {
                 </Link>
               )}
 
-              {/* Follow Button */}
-              <Button
-                variant={isFollowing ? 'secondary' : 'outline'}
+              {/* Story Library Button (Bookmark) */}
+              <StoryLibraryButton
+                storyId={story.id}
+                storyTitle={story.title}
+                storySlug={story.slug}
+                storyCoverUrl={coverUrl}
+                onFollowersCountChange={(count) => setFollowersCount(count)}
                 size="lg"
-                onClick={handleToggleFollow}
-                className={`gap-2 ${isFollowing ? 'text-rose-400 border-rose-500/40' : ''}`}
-              >
-                <Heart className={`w-4 h-4 ${isFollowing ? 'fill-rose-500 text-rose-500' : ''}`} />
-                <span>{isFollowing ? 'Đã Theo Dõi' : 'Theo Dõi'}</span>
-              </Button>
+              />
 
               {/* Share Button */}
               <Button variant="ghost" size="lg" onClick={handleShare} className="gap-2 text-slate-300">

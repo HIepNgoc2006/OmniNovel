@@ -45,8 +45,15 @@ export class GuestReadingStateRepository {
 
   /**
    * Saves reading resume position for a story under active guest scope.
+   * If historyMeta is provided, atomically records both progress and history.
    */
-  async saveProgress(progress: Omit<LocalReadingProgress, 'ownerScope'>): Promise<void> {
+  async saveProgress(
+    progress: Omit<LocalReadingProgress, 'ownerScope'>,
+    historyMeta?: ReadingHistoryMetadata
+  ): Promise<void> {
+    if (historyMeta) {
+      return this.recordSession(progress, historyMeta);
+    }
     const scope = await this.getGuestScope();
     const fullProgress: LocalReadingProgress = {
       ...progress,

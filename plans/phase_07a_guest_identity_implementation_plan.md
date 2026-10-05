@@ -226,11 +226,11 @@ git commit -m "feat(web): implement IndexedDB client and guest library repositor
 - Nút Bookmark: Guest click -> lưu/xóa trong IndexedDB ngay lập tức, không redirect sang Login, không 401.
 - Trang Thư viện: Hiển thị danh sách truyện từ IndexedDB kèm presentation metadata (`title`, `coverUrl`).
 
-- [ ] **Step 1: Viết test cho `useReadingProgress` ở chế độ Guest và Account**
-- [ ] **Step 2: Refactor `use-reading-progress.ts` sử dụng `ReadingStateRepository`**
-- [ ] **Step 3: Tích hợp Bookmark button và Library page với Guest Store**
-- [ ] **Step 4: Chạy test xác nhận pass**
-- [ ] **Step 5: Git commit**
+- [x] **Step 1: Viết test cho `useReadingProgress` ở chế độ Guest và Account**
+- [x] **Step 2: Refactor `use-reading-progress.ts` sử dụng `ReadingStateRepository`**
+- [x] **Step 3: Tích hợp Bookmark button và Library page với Guest Store**
+- [x] **Step 4: Chạy test xác nhận pass**
+- [x] **Step 5: Git commit**
 
 ```bash
 git add apps/web

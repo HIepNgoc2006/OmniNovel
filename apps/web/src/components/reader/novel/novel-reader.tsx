@@ -47,6 +47,11 @@ export function NovelReader({ initialData, allChapters = [] }: NovelReaderProps)
     chapterId: data.chapter.id,
     chapterVersionId: data.activeVersion?.id,
     readingMode: 'NOVEL',
+    storyTitle: data.story.title,
+    storySlug: data.story.slug,
+    storyCoverUrl: (data.story as any)?.coverUrl || (data.story as any)?.coverImageUrl || undefined,
+    chapterNumber: data.chapter.chapterNumber,
+    chapterTitle: data.chapter.title || undefined,
   });
 
   // Reset scroll restore flag on chapter change
@@ -128,7 +133,18 @@ export function NovelReader({ initialData, allChapters = [] }: NovelReaderProps)
       const docHeight = document.documentElement.scrollHeight - window.innerHeight;
       const progress = docHeight > 0 ? (currentScrollY / docHeight) * 100 : 0;
 
-      updateProgress(progress, currentScrollY);
+      updateProgress({
+        progressPercentage: progress,
+        scrollPosition: currentScrollY,
+        pageIndex: 1,
+        anchorBlockId: null,
+        textOffset: null,
+        storyTitle: data.story.title,
+        storySlug: data.story.slug,
+        storyCoverUrl: (data.story as any)?.coverUrl || (data.story as any)?.coverImageUrl || undefined,
+        chapterNumber: data.chapter.chapterNumber,
+        chapterTitle: data.chapter.title || undefined,
+      });
 
       if (currentScrollY > lastScrollYRef.current + 25) {
         setIsHudVisible(false);
@@ -140,7 +156,13 @@ export function NovelReader({ initialData, allChapters = [] }: NovelReaderProps)
 
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
-  }, [updateProgress]);
+  }, [
+    updateProgress,
+    data.story.title,
+    data.story.slug,
+    data.chapter.chapterNumber,
+    data.chapter.title,
+  ]);
 
   // 4. Phím tắt bàn phím
   useEffect(() => {

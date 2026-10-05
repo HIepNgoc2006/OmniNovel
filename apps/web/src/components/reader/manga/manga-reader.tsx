@@ -45,6 +45,11 @@ export function MangaReader({ initialData, allChapters = [] }: MangaReaderProps)
     chapterId: data.chapter.id,
     chapterVersionId: data.activeVersion?.id,
     readingMode: settings.manga.mode.toUpperCase(),
+    storyTitle: data.story.title,
+    storySlug: data.story.slug,
+    storyCoverUrl: (data.story as any)?.coverUrl || (data.story as any)?.coverImageUrl || undefined,
+    chapterNumber: data.chapter.chapterNumber,
+    chapterTitle: data.chapter.title || undefined,
   });
 
   // Reset scroll restore flag on chapter change
@@ -52,18 +57,18 @@ export function MangaReader({ initialData, allChapters = [] }: MangaReaderProps)
     hasRestoredScrollRef.current = false;
   }, [data.chapter.id]);
 
-  // Phục hồi vị trí đọc từ Server Resume
+  // Phục hồi vị trí đọc từ Server/Local Resume
   useEffect(() => {
     if (serverResume && !hasRestoredScrollRef.current) {
-      if (serverResume.chapterId === data.chapter.id && serverResume.scrollPosition > 0) {
+      if (serverResume.chapterId === data.chapter.id) {
         hasRestoredScrollRef.current = true;
-        if (settings.manga.mode === 'webtoon') {
+        if (settings.manga.mode === 'webtoon' && serverResume.scrollPosition > 0) {
           const timer = setTimeout(() => {
             window.scrollTo({ top: serverResume.scrollPosition, behavior: 'instant' });
           }, 50);
           return () => clearTimeout(timer);
         } else if (settings.manga.mode === 'paged') {
-          const targetPage = Math.max(1, Math.min(totalPages, Math.round(serverResume.scrollPosition)));
+          const targetPage = Math.max(1, Math.min(totalPages, Math.round(serverResume.scrollPosition || 1)));
           setCurrentPage(targetPage);
         }
       }
@@ -79,7 +84,15 @@ export function MangaReader({ initialData, allChapters = [] }: MangaReaderProps)
       const docHeight = document.documentElement.scrollHeight - window.innerHeight;
       const progress = docHeight > 0 ? (currentScrollY / docHeight) * 100 : 0;
 
-      updateProgress(progress, currentScrollY);
+      updateProgress({
+        progressPercentage: progress,
+        scrollPosition: currentScrollY,
+        pageIndex: 1,
+        storyTitle: data.story.title,
+        storySlug: data.story.slug,
+        chapterNumber: data.chapter.chapterNumber,
+        chapterTitle: data.chapter.title || undefined,
+      });
 
       if (currentScrollY > lastScrollYRef.current + 20) {
         // Cuộn xuống -> Ẩn HUD
@@ -93,7 +106,7 @@ export function MangaReader({ initialData, allChapters = [] }: MangaReaderProps)
 
     window.addEventListener('scroll', handleScroll, { passive: true });
     return () => window.removeEventListener('scroll', handleScroll);
-  }, [settings.manga.mode, updateProgress]);
+  }, [data.chapter.chapterNumber, data.chapter.title, data.story.slug, data.story.title, settings.manga.mode, updateProgress]);
 
   // 2. Cập nhật tiến độ đọc khi lật trang trong chế độ Paged
   const handlePageChange = useCallback(
@@ -101,9 +114,17 @@ export function MangaReader({ initialData, allChapters = [] }: MangaReaderProps)
       const targetPage = Math.max(1, Math.min(totalPages, page));
       setCurrentPage(targetPage);
       const percentage = totalPages > 0 ? (targetPage / totalPages) * 100 : 0;
-      updateProgress(percentage, targetPage);
+      updateProgress({
+        progressPercentage: percentage,
+        scrollPosition: 0,
+        pageIndex: targetPage,
+        storyTitle: data.story.title,
+        storySlug: data.story.slug,
+        chapterNumber: data.chapter.chapterNumber,
+        chapterTitle: data.chapter.title || undefined,
+      });
     },
-    [totalPages, updateProgress],
+    [data.chapter.chapterNumber, data.chapter.title, data.story.slug, data.story.title, totalPages, updateProgress],
   );
 
   // 3. Phím tắt điều hướng bàn phím thông minh

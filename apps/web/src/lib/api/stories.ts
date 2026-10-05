@@ -200,6 +200,27 @@ export async function getBookmarkStatusApi(storyId: string): Promise<BookmarkSta
   return response.data;
 }
 
+export interface BookmarkListResponse {
+  items: Story[];
+  meta: {
+    totalItems: number;
+    page: number;
+    limit: number;
+    totalPages: number;
+  };
+}
+
+export async function getBookmarksApi(query?: {
+  page?: number;
+  limit?: number;
+  status?: string;
+}): Promise<BookmarkListResponse> {
+  const response = await apiClient.get<BookmarkListResponse>('/library/bookmarks', {
+    params: query,
+  });
+  return response.data;
+}
+
 export async function saveReadingProgressApi(
   dto: UpdateReadingProgressDto,
 ): Promise<ReadingProgressResponse> {

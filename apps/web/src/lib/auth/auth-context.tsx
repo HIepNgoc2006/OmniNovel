@@ -4,6 +4,7 @@ import React, { createContext, useContext, useEffect, useState, useCallback } fr
 import { memoryAuthStore, AuthStatus } from './auth-store';
 import { loginApi, logoutApi, getMeApi, UserProfile, LoginRequest } from '../api/auth';
 import { refreshAccessToken } from '../api/client';
+import { activeScopeCoordinator, ActiveScopeState } from '../identity/active-scope-coordinator';
 import { purgeOfflineCache } from '../reader/offline-cache';
 
 interface AuthContextType {
@@ -11,6 +12,8 @@ interface AuthContextType {
   user: UserProfile | null;
   isAuthenticated: boolean;
   isLoading: boolean;
+  activeScope?: string | null;
+  activeScopeState?: ActiveScopeState;
   login: (data: LoginRequest) => Promise<void>;
   logout: () => Promise<void>;
   refetchUser: () => Promise<void>;
@@ -21,6 +24,16 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('initializing');
   const [user, setUser] = useState<UserProfile | null>(null);
+  const [activeScope, setActiveScope] = useState<string | null>(activeScopeCoordinator.activeScope);
+  const [activeScopeState, setActiveScopeState] = useState<ActiveScopeState>(activeScopeCoordinator.state);
+
+  // Sync state with coordinator
+  useEffect(() => {
+    return activeScopeCoordinator.subscribe((scope, state) => {
+      setActiveScope(scope);
+      setActiveScopeState(state);
+    });
+  }, []);
 
   // Sync state with memory store
   useEffect(() => {
@@ -30,6 +43,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const hydrateSession = useCallback(async () => {
+    activeScopeCoordinator.onAuthStatusChanged('initializing');
     try {
       // 1. Gửi request POST /auth/refresh để lấy lại accessToken nếu có HttpOnly refresh cookie
       const token = await refreshAccessToken();
@@ -39,16 +53,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setUser(profile);
         memoryAuthStore.setAccessToken(token);
         setStatus('authenticated');
+        await activeScopeCoordinator.onAuthStatusChanged('authenticated', profile?.id);
       } else {
         // 3. Không có refresh cookie hợp lệ -> ANONYMOUS sạch sẽ, không báo lỗi
         memoryAuthStore.clear();
         setUser(null);
         setStatus('anonymous');
+        await activeScopeCoordinator.onAuthStatusChanged('anonymous');
       }
     } catch {
       memoryAuthStore.clear();
       setUser(null);
       setStatus('anonymous');
+      await activeScopeCoordinator.onAuthStatusChanged('anonymous');
     }
   }, []);
 
@@ -61,6 +78,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     memoryAuthStore.setAccessToken(res.accessToken);
     setUser(res.user);
     setStatus('authenticated');
+    await activeScopeCoordinator.onAuthStatusChanged('authenticated', res.user?.id);
   };
 
   const logout = async () => {
@@ -72,6 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       memoryAuthStore.clear();
       setUser(null);
       setStatus('anonymous');
+      await activeScopeCoordinator.onLogout();
       purgeOfflineCache().catch(() => {});
     }
   };
@@ -81,6 +100,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const profile = await getMeApi();
         setUser(profile);
+        if (profile?.id) {
+          await activeScopeCoordinator.onAuthStatusChanged('authenticated', profile.id);
+        }
       } catch {
         // ignore
       }
@@ -94,6 +116,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         user,
         isAuthenticated: status === 'authenticated',
         isLoading: status === 'initializing',
+        activeScope,
+        activeScopeState,
         login,
         logout,
         refetchUser,

@@ -26,6 +26,34 @@ class ResumePointer {
     this.textOffset,
     required this.isFromLocal,
   });
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ResumePointer &&
+          runtimeType == other.runtimeType &&
+          chapterId == other.chapterId &&
+          chapterVersionId == other.chapterVersionId &&
+          flutterPageIndex == other.flutterPageIndex &&
+          serverPageIndex == other.serverPageIndex &&
+          progressPercentage == other.progressPercentage &&
+          scrollPosition == other.scrollPosition &&
+          anchorBlockId == other.anchorBlockId &&
+          textOffset == other.textOffset &&
+          isFromLocal == other.isFromLocal;
+
+  @override
+  int get hashCode => Object.hash(
+        chapterId,
+        chapterVersionId,
+        flutterPageIndex,
+        serverPageIndex,
+        progressPercentage,
+        scrollPosition,
+        anchorBlockId,
+        textOffset,
+        isFromLocal,
+      );
 }
 
 /// Bộ điều phối tiến độ đọc truyện (ReadingProgressCoordinator):
@@ -522,7 +550,7 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
   }
 
   /// Hàm thuần túy đối chiếu Local Checkpoint vs Server Progress (Khử duplicate GET)
-  ResumePointer? resolveResumePointerFrom({
+  static ResumePointer? resolvePointer({
     required LocalReadingCheckpoint? local,
     required ReadingProgressResponse? server,
   }) {
@@ -592,6 +620,12 @@ class ReadingProgressCoordinator with WidgetsBindingObserver {
       );
     }
   }
+
+  /// Phiên bản instance tương thích ngược
+  ResumePointer? resolveResumePointerFrom({
+    required LocalReadingCheckpoint? local,
+    required ReadingProgressResponse? server,
+  }) => resolvePointer(local: local, server: server);
 
   /// Tiện ích lấy ResumePointer khi gọi độc lập
   Future<ResumePointer?> resolveResumePointer(String storyId) async {

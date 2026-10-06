@@ -26,7 +26,11 @@ import '../../features/reader/repositories/guest_reading_session_adapter.dart';
 import '../../features/reader/repositories/media_repository.dart';
 import '../../features/reader/repositories/reading_progress_repository.dart';
 import '../../features/reader/repositories/reading_session_access.dart';
+import '../../features/reader/repositories/reading_state_access.dart';
+import '../../features/reader/repositories/account_reading_state_adapter.dart';
+import '../../features/reader/repositories/guest_reading_state_adapter.dart';
 import '../../features/reader/repositories/scoped_reading_session_dispatcher.dart';
+import '../../features/reader/repositories/scoped_reading_state_dispatcher.dart';
 import '../../features/search/presentation/search_screen.dart';
 import '../../features/story/presentation/story_detail_screen.dart';
 import '../../features/story/repositories/story_repository.dart';
@@ -48,6 +52,7 @@ class AppRouter {
     GuestReadingProgressRepository? guestReadingProgressRepository,
     LibraryAccess? libraryAccess,
     ReadingSessionAccess? readingSessionAccess,
+    ReadingStateAccess? readingStateAccess,
   }) {
     final effectiveStoryRepo =
         storyRepository ?? StoryRepository(apiClient: apiClient);
@@ -98,6 +103,22 @@ class AppRouter {
             : AccountReadingSessionAdapter(
                 readingProgressRepository: effectiveProgressRepo,
                 gamificationRepository: effectiveGamificationRepo,
+              ));
+
+    final effectiveReadingStateAccess = readingStateAccess ??
+        (activeScopeCoordinator != null && guestReadingProgressRepository != null
+            ? ScopedReadingStateDispatcher(
+                authService: authService,
+                coordinator: activeScopeCoordinator,
+                accountAdapter: AccountReadingStateAdapter(
+                  repository: effectiveProgressRepo,
+                ),
+                guestAdapter: GuestReadingStateAdapter(
+                  guestRepository: guestReadingProgressRepository,
+                ),
+              )
+            : AccountReadingStateAdapter(
+                repository: effectiveProgressRepo,
               ));
 
     bool wasAuthenticated = authService.state.isAuthenticated;
@@ -208,6 +229,7 @@ class AppRouter {
               slug: slug,
               storyRepository: effectiveStoryRepo,
               readingProgressRepository: effectiveProgressRepo,
+              readingStateAccess: effectiveReadingStateAccess,
               libraryRepository: effectiveLibraryRepo,
               libraryAccess: effectiveLibraryAccess,
               scopeCoordinator: activeScopeCoordinator,

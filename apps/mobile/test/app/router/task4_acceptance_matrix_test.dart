@@ -32,7 +32,12 @@ import 'package:omninovel_mobile/features/reader/repositories/media_repository.d
 import 'package:omninovel_mobile/features/reader/repositories/reading_progress_repository.dart';
 import 'package:omninovel_mobile/features/reader/repositories/reading_session_access.dart';
 import 'package:omninovel_mobile/features/reader/repositories/scoped_reading_session_dispatcher.dart';
+import 'package:omninovel_mobile/features/reader/repositories/reading_state_access.dart';
+import 'package:omninovel_mobile/features/reader/repositories/account_reading_state_adapter.dart';
+import 'package:omninovel_mobile/features/reader/repositories/guest_reading_state_adapter.dart';
+import 'package:omninovel_mobile/features/reader/repositories/scoped_reading_state_dispatcher.dart';
 import 'package:omninovel_mobile/features/story/models/story_models.dart' hide PaginationMeta;
+import 'package:omninovel_mobile/features/story/presentation/story_detail_screen.dart';
 import 'package:omninovel_mobile/features/story/repositories/story_repository.dart';
 
 class FakeThemeController extends ChangeNotifier implements ThemeController {
@@ -216,6 +221,17 @@ void main() {
             status: 'ONGOING',
             mediaFormat: 'COMIC',
             visibility: 'PUBLIC',
+            editions: [
+              StoryEdition(
+                id: 'ed-1',
+                editionName: 'Default',
+                isDefault: true,
+                chapters: [
+                  ChapterItemSummary(id: 'chap-test-1', chapterNumber: '1', title: 'Chapter 1'),
+                  ChapterItemSummary(id: 'chap-test-2', chapterNumber: '2', title: 'Chapter 2'),
+                ],
+              ),
+            ],
           ));
       when(() => mockChapterRepo.getChapterDetail(any())).thenAnswer((_) async => const ChapterDetail(
             story: ChapterStorySummary(
@@ -236,6 +252,9 @@ void main() {
       when(() => mockLibraryRepo.getCachedBookmarks(status: any(named: 'status'))).thenReturn([]);
       when(() => mockLibraryRepo.getCachedHistory()).thenReturn([]);
       when(() => mockLibraryRepo.getCachedContinueReading()).thenReturn(null);
+      when(() => mockLibraryRepo.getBookmarkStatus(any())).thenAnswer(
+        (_) async => const BookmarkStatusResponse(isBookmarked: false),
+      );
       when(() => mockGuestLibraryRepo.getBookmarks()).thenAnswer((_) async => []);
       when(() => mockGuestLibraryRepo.getHistory()).thenAnswer((_) async => []);
       when(() => mockGuestLibraryRepo.isBookmarked(any())).thenAnswer((_) async => false);
@@ -250,6 +269,8 @@ void main() {
             history: any(named: 'history'),
           )).thenAnswer((_) async => {});
       when(() => mockGuestReadingProgressRepo.getProgress(any())).thenAnswer((_) async => null);
+      when(() => mockGuestReadingProgressRepo.getReadChapterIds(any())).thenAnswer((_) async => []);
+      when(() => mockReadingProgressRepo.getLocalCheckpoint(any())).thenAnswer((_) async => null);
     });
 
     GoRouter buildRouter({String? initialLocation}) {
@@ -777,13 +798,195 @@ void main() {
         guestAdapter: GuestReadingSessionAdapter(guestRepository: mockGuestReadingProgressRepo),
       );
 
+      final stateDispatcher = ScopedReadingStateDispatcher(
+        authService: authService,
+        coordinator: coordinator,
+        accountAdapter: AccountReadingStateAdapter(repository: mockReadingProgressRepo),
+        guestAdapter: GuestReadingStateAdapter(guestRepository: mockGuestReadingProgressRepo),
+      );
+
       // Verify polymorphism: Dispatchers implement domain port interfaces
       expect(libDispatcher, isA<LibraryAccess>());
       expect(readDispatcher, isA<ReadingSessionAccess>());
+      expect(stateDispatcher, isA<ReadingStateAccess>());
 
-      // Scope-sensitive mutations route through abstract port abstractions
+      // Scope-sensitive mutations & state reads route through abstract port abstractions
       expect(libDispatcher.runtimeType.toString(), 'ScopedLibraryDispatcher');
       expect(readDispatcher.runtimeType.toString(), 'ScopedReadingSessionDispatcher');
+      expect(stateDispatcher.runtimeType.toString(), 'ScopedReadingStateDispatcher');
+    });
+
+    // =========================================================================
+    // Case 14: Guest /story/:slug -> ZERO account progress calls
+    // =========================================================================
+    testWidgets('Case 14: Guest accessing /story/:slug triggers ZERO account progress calls',
+        (tester) async {
+      authService.updateState(AuthState.unauthenticated());
+      coordinator.updateScope('guest:gst-case-14');
+
+      final router = buildRouter();
+      await pumpRouterApp(tester, router);
+
+      // Navigate to /story/:slug as Guest
+      router.go('/story/deep-link-story');
+      await tester.pumpAndSettle();
+
+      expect(router.routeInformationProvider.value.uri.path, '/story/deep-link-story');
+      expect(find.byType(StoryDetailScreen), findsOneWidget);
+
+      // Invariant P0: Zero account reading progress interaction
+      verifyZeroInteractions(mockReadingProgressRepo);
+      verify(() => mockGuestReadingProgressRepo.getProgress('story-deep-1')).called(1);
+      verify(() => mockGuestReadingProgressRepo.getReadChapterIds('story-deep-1')).called(1);
+    });
+
+    // =========================================================================
+    // Case 15: Guest resume loads from guest:G1 SQLite partition
+    // =========================================================================
+    testWidgets('Case 15: Guest resume loads from guest:G1 SQLite partition and displays G1 resume pointer',
+        (tester) async {
+      authService.updateState(AuthState.unauthenticated());
+      coordinator.updateScope('guest:G1');
+
+      when(() => mockGuestReadingProgressRepo.getProgress('story-deep-1')).thenAnswer(
+        (_) async => LocalReadingProgress(
+          ownerScope: 'guest:G1',
+          storyId: 'story-deep-1',
+          chapterId: 'chap-test-1',
+          pageIndex: 5,
+          progressPercentage: 50.0,
+          scrollPosition: 150.0,
+          updatedAt: DateTime.now(),
+          deviceTimestamp: DateTime.now(),
+        ),
+      );
+      when(() => mockGuestReadingProgressRepo.getReadChapterIds('story-deep-1')).thenAnswer(
+        (_) async => ['chap-test-1'],
+      );
+
+      final router = buildRouter();
+      await pumpRouterApp(tester, router);
+
+      router.go('/story/deep-link-story');
+      await tester.pumpAndSettle();
+
+      // UI reflects guest:G1 resume pointer & read chapter badge
+      expect(find.byKey(const Key('resume_reading_button')), findsOneWidget);
+      expect(find.text('Đọc tiếp (Trang 5)'), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle), findsOneWidget);
+
+      // Zero account progress calls
+      verifyZeroInteractions(mockReadingProgressRepo);
+    });
+
+    // =========================================================================
+    // Case 16: Logout G1/account -> fresh G2 (G2 sees zero history/resume from G1)
+    // =========================================================================
+    testWidgets('Case 16: Account/G1 logout rotates to fresh G2 — G2 sees zero history/resume from previous identity',
+        (tester) async {
+      // Bắt đầu với Guest G1 đã có tiến độ đọc
+      authService.updateState(AuthState.unauthenticated());
+      coordinator.updateScope('guest:G1');
+
+      when(() => mockGuestReadingProgressRepo.getProgress('story-deep-1')).thenAnswer(
+        (_) async {
+          // Chỉ trả dữ liệu khi scope là G1
+          if (coordinator.activeScope == 'guest:G1') {
+            return LocalReadingProgress(
+              ownerScope: 'guest:G1',
+              storyId: 'story-deep-1',
+              chapterId: 'chap-test-1',
+              pageIndex: 5,
+              progressPercentage: 50.0,
+              scrollPosition: 150.0,
+              updatedAt: DateTime.now(),
+              deviceTimestamp: DateTime.now(),
+            );
+          }
+          return null;
+        },
+      );
+      when(() => mockGuestReadingProgressRepo.getReadChapterIds('story-deep-1')).thenAnswer(
+        (_) async {
+          if (coordinator.activeScope == 'guest:G1') {
+            return ['chap-test-1'];
+          }
+          return [];
+        },
+      );
+
+      final router = buildRouter();
+      await pumpRouterApp(tester, router);
+
+      router.go('/story/deep-link-story');
+      await tester.pumpAndSettle();
+
+      // G1 nhìn thấy resume pointer
+      expect(find.byKey(const Key('resume_reading_button')), findsOneWidget);
+
+      // Chuyển sang fresh guest G2 (hoặc sau logout)
+      coordinator.updateScope('guest:G2');
+      await tester.pumpAndSettle();
+
+      // G2 là profile mới toanh -> không thấy resume pointer của G1
+      expect(find.byKey(const Key('resume_reading_button')), findsNothing);
+      expect(find.byKey(const Key('read_from_start_button')), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle), findsNothing);
+
+      // Vẫn tuyệt đối zero account network call
+      verifyZeroInteractions(mockReadingProgressRepo);
+    });
+
+    // =========================================================================
+    // Case 17: Account StoryDetail uses account semantics with zero guest interaction
+    // =========================================================================
+    testWidgets('Case 17: Account StoryDetail uses account semantics (server progress + checkpoint) with ZERO guest repository interaction',
+        (tester) async {
+      authService.updateState(const AuthState(
+        status: AuthStatus.authenticated,
+        user: User(id: 'usr-acc-1', email: 'acc@test.com', username: 'accUser', role: 'READER'),
+      ));
+      coordinator.updateScope('account:usr-acc-1');
+
+      when(() => mockReadingProgressRepo.getProgress('story-deep-1')).thenAnswer(
+        (_) async => const ReadingProgressResponse(
+          storyId: 'story-deep-1',
+          chapterId: 'chap-test-1',
+          pageIndex: 8,
+          progressPercentage: 80.0,
+          scrollPosition: 220.0,
+          readChapterIds: ['chap-test-1'],
+          writeEpoch: 88,
+        ),
+      );
+      when(() => mockReadingProgressRepo.getLocalCheckpoint('story-deep-1')).thenAnswer(
+        (_) async => null,
+      );
+      when(() => mockReadingProgressRepo.setServerEpoch('story-deep-1', 88)).thenReturn(null);
+
+      // Reset guest repo interactions
+      reset(mockGuestReadingProgressRepo);
+      when(() => mockGuestReadingProgressRepo.getProgress(any())).thenAnswer((_) async => null);
+      when(() => mockGuestReadingProgressRepo.getReadChapterIds(any())).thenAnswer((_) async => []);
+
+      final router = buildRouter();
+      await pumpRouterApp(tester, router);
+
+      router.go('/story/deep-link-story');
+      await tester.pumpAndSettle();
+
+      // Hiển thị resume pointer từ Account Server Progress (Trang 8)
+      expect(find.byKey(const Key('resume_reading_button')), findsOneWidget);
+      expect(find.text('Đọc tiếp (Trang 8)'), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle), findsOneWidget);
+
+      // Account repository được gọi đúng semantics
+      verify(() => mockReadingProgressRepo.getProgress('story-deep-1')).called(1);
+      verify(() => mockReadingProgressRepo.getLocalCheckpoint('story-deep-1')).called(1);
+      verify(() => mockReadingProgressRepo.setServerEpoch('story-deep-1', 88)).called(1);
+
+      // Zero guest reading progress interactions
+      verifyZeroInteractions(mockGuestReadingProgressRepo);
     });
   });
 }

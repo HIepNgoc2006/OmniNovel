@@ -5,9 +5,11 @@ import '../../../app/theme/app_colors.dart';
 import '../../../core/theme/theme_tokens.dart';
 import '../../library/models/library_models.dart';
 import '../../library/repositories/library_repository.dart';
-import '../../reader/models/reading_progress_models.dart';
+import '../../reader/models/story_reading_state.dart';
 import '../../reader/presentation/reading_progress_coordinator.dart';
 import '../../reader/repositories/reading_progress_repository.dart';
+import '../../reader/repositories/reading_state_access.dart';
+import '../../reader/repositories/account_reading_state_adapter.dart';
 import '../../offline/services/offline_content_resolver.dart';
 import '../../studio/models/studio_models.dart';
 import '../../studio/presentation/studio_quick_approval_sheet.dart';
@@ -22,7 +24,8 @@ import '../repositories/story_repository.dart';
 class StoryDetailScreen extends StatefulWidget {
   final String slug;
   final StoryRepository storyRepository;
-  final ReadingProgressRepository readingProgressRepository;
+  final ReadingProgressRepository? readingProgressRepository;
+  final ReadingStateAccess? readingStateAccess;
   final LibraryRepository? libraryRepository;
   final LibraryAccess? libraryAccess;
   final ActiveScopeCoordinator? scopeCoordinator;
@@ -33,20 +36,23 @@ class StoryDetailScreen extends StatefulWidget {
     super.key,
     required this.slug,
     required this.storyRepository,
-    required this.readingProgressRepository,
+    this.readingProgressRepository,
+    this.readingStateAccess,
     this.libraryRepository,
     this.libraryAccess,
     this.scopeCoordinator,
     this.studioRepository,
     this.offlineResolver,
-  });
+  }) : assert(
+          readingStateAccess != null || readingProgressRepository != null,
+          'Phải cung cấp ít nhất readingStateAccess hoặc readingProgressRepository',
+        );
 
   @override
   State<StoryDetailScreen> createState() => _StoryDetailScreenState();
 }
 
 class _StoryDetailScreenState extends State<StoryDetailScreen> {
-  late final ReadingProgressCoordinator _progressCoordinator;
   StoryDetail? _story;
   ResumePointer? _resumePointer;
   Set<String> _readChapterIds = {};
@@ -66,13 +72,15 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
           ? AccountLibraryAdapter(repository: widget.libraryRepository!)
           : null);
 
+  ReadingStateAccess get _effectiveReadingStateAccess =>
+      widget.readingStateAccess ??
+      AccountReadingStateAdapter(
+        repository: widget.readingProgressRepository!,
+      );
+
   @override
   void initState() {
     super.initState();
-    _progressCoordinator = ReadingProgressCoordinator(
-      repository: widget.readingProgressRepository,
-    );
-    _progressCoordinator.init();
     widget.scopeCoordinator?.addListener(_onScopeChanged);
     _loadStoryAndProgress();
   }
@@ -85,7 +93,6 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
   @override
   void dispose() {
     widget.scopeCoordinator?.removeListener(_onScopeChanged);
-    _progressCoordinator.dispose();
     super.dispose();
   }
 
@@ -101,36 +108,18 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
 
       // Pha 2: Chạy song song 1 lần duy nhất (Gate 8: Khử duplicate getProgress)
       final libraryAccess = _effectiveLibraryAccess;
+      final readingStateAccess = _effectiveReadingStateAccess;
+
       final results = await Future.wait([
         if (libraryAccess != null)
           libraryAccess.getBookmarkStatus(story.id)
         else
           Future.value(const BookmarkStatusResponse(isBookmarked: false)),
-        () async {
-          try {
-            return await widget.readingProgressRepository.getProgress(story.id);
-          } catch (_) {
-            return null;
-          }
-        }(),
-        widget.readingProgressRepository.getLocalCheckpoint(story.id),
+        readingStateAccess.getStoryReadingState(story.id),
       ]);
 
       final bookmarkRes = results[0] as BookmarkStatusResponse;
-      final serverProgress = results[1] as ReadingProgressResponse?;
-      final localCheckpoint = results[2] as LocalReadingCheckpoint?;
-
-      // Hydrate server epoch CHỈ KHI getProgress() thành công (tránh zero-fallback)
-      if (serverProgress != null) {
-        widget.readingProgressRepository
-            .setServerEpoch(story.id, serverProgress.writeEpoch);
-      }
-
-      // Phân giải resume pointer từ hàm thuần túy với cùng 1 snapshot
-      final pointer = _progressCoordinator.resolveResumePointerFrom(
-        local: localCheckpoint,
-        server: serverProgress,
-      );
+      final readingState = results[1] as StoryReadingState;
 
       // Pha 3: Lấy danh sách Translation Jobs READY_FOR_REVIEW theo chapter nếu có studioRepository
       Map<String, List<TranslationJobSummaryDto>> readyJobs = {};
@@ -146,9 +135,8 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
       if (mounted) {
         setState(() {
           _story = story;
-          _resumePointer = pointer;
-          _readChapterIds =
-              serverProgress?.readChapterIds.toSet() ?? const <String>{};
+          _resumePointer = readingState.resume;
+          _readChapterIds = readingState.readChapterIds;
           _readyJobsByChapterId = readyJobs;
           _isBookmarked = bookmarkRes.isBookmarked;
           _followersCount = story.followersCount;

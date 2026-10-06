@@ -307,30 +307,47 @@ git commit -m "feat(mobile): enable Continue as Guest navigation and wire reader
 - Create: `apps/web/src/test/guest-identity-isolation.spec.ts`
 - Create: `apps/mobile/test/features/library/guest_identity_isolation_test.dart`
 
-**Bộ Tiêu Chí Nghiệm Thu (Acceptance Criteria):**
-1. **Scenario 1 (Persistence & Offline Availability):**
-   - Guest đọc truyện, bookmark truyện -> Tắt tab / Đóng app / Ngắt mạng hoàn toàn -> Mở lại app: Tiến độ, trang đọc, bookmark vẫn hiển thị đầy đủ và chính xác từ IndexedDB / SQLite.
-2. **Scenario 2 (Zero Server Pollution & Zero Bearer Leakage):**
-   - 0 requests gửi lên `/library/*` hoặc `/reading-progress`.
-   - 0 Bearer tokens rác được đính kèm.
-   - 0 bản ghi User hay Progress nặc danh sinh ra trong PostgreSQL.
-3. **Scenario 3 (P0 Cross-Contamination Prevention):**
-   - User A đăng nhập, có bookmark truyện X.
-   - User A đăng xuất -> `onLogout()` xoay `guestProfileId` mới -> active scope thành `guest:<newGuestProfileId>`.
-   - Thư viện hiển thị rỗng hoàn toàn, không có truyện X.
-   - Guest mới đọc truyện Y.
-   - User B đăng nhập trên cùng máy -> User B chỉ thấy dữ liệu của B, không thấy truyện X của A và không thấy truyện Y của Guest.
-4. **Scenario 4 (Auth Bootstrap Race Prevention):**
-   - Khởi động app với auth ở trạng thái `BOOTSTRAPPING`: Reader tải trang nhưng ghi tiến độ bị giữ lại cho đến khi auth hydrate xong. Không xảy ra việc ghi nhầm tiến độ User A vào guest partition.
+**Bộ Tiêu Chí Nghiệm Thu Đã Chuẩn Hóa (Final Amended Acceptance Criteria):**
+1. **Scenario 1 (Crash & Restart Persistence - Metadata Only):**
+   - Chỉ nghiệm thu persistence của bookmark / progress / history / resume metadata (không phải offline content cache của Phase 7D.1).
+   - Mô phỏng crash/restart thông qua process/runtime reconstruction: dispose/close repository/DB, tạo lại coordinator và repository từ storage vật lý (IndexedDB / SQLite), xác nhận:
+     - `installationId` giữ nguyên;
+     - `guestProfileId` giữ nguyên (nếu chưa logout);
+     - Bookmark, progress, history khôi phục chính xác 100%;
+     - Không phụ thuộc vào cache RAM hay instance singleton cũ.
+2. **Scenario 2 (Zero Client-Side Server Pollution & Zero Bearer Leakage):**
+   - Chứng minh zero client-side mutation calls lên `/library/*` hoặc `/reading-progress` ở chế độ Guest.
+   - Zero Bearer token đính kèm.
+   - Zero account repository / network client invocations.
+3. **Scenario 3 (Cross-Contamination Prevention - Hidden But Preserved):**
+   - Luồng chuẩn: `account:A có X` -> `logout` -> `fresh guest:G tạo Y` -> `login account:B` -> `B không thấy X và không thấy Y`.
+   - Bất biến 7A: Dữ liệu Y của `guest:G` vẫn được bảo toàn nguyên vẹn trong storage phân vùng `guest:G` (không bị tự động xóa hoặc auto-claim ngầm; việc claim/quarantine thuộc Phase 7B).
+4. **Scenario 4 (Auth Bootstrap Race Prevention - Frozen Fail-Closed Semantics):**
+   - Khi ở trạng thái `BOOTSTRAPPING` (auth đang hydrate / refresh token / secure storage):
+     - Mọi mutation không được persist, zero write vào guest/account partition (Mobile ném `ScopeCoherenceException`).
+     - Khi scope đã resolved: mutation mới hoặc retry rõ ràng ghi chính xác vào resolved scope.
 
-- [ ] **Step 1: Viết test suites tích hợp bao phủ cả 4 kịch bản nghiệm thu trên Web**
-- [ ] **Step 2: Viết test suites tích hợp bao phủ cả 4 kịch bản nghiệm thu trên Mobile**
-- [ ] **Step 3: Chạy toàn bộ test suites và ghi nhận kết quả**
-- [ ] **Step 4: Cập nhật ROADMAP.md và phase status**
-- [ ] **Step 5: Git commit & push**
+**Ma Trận Nghiệm Thu (Cross-Platform Acceptance Matrix):**
+
+| Gate | Web (`guest-identity-isolation.spec.ts`) | Mobile (`guest_identity_isolation_test.dart`) |
+|---|---|---|
+| **Crash/restart persistence** | Recreate IndexedDB client, repositories, coordinator | Reopen SQLite connection, DAO, repositories, coordinator |
+| **Stable identity across crash** | `installationId` + `guestProfileId` giữ nguyên từ localStorage | `installationId` + `guestProfileId` giữ nguyên từ SharedPreferences |
+| **Guest zero-network** | Spy fetch / API client, verify zero mutation & zero Bearer | Mock ApiClient, verify zero API invocation & zero Bearer |
+| **A → fresh G → B isolation** | Account/guest partitions riêng biệt | `owner_scope` riêng biệt |
+| **Guest data preserved after B login** | IndexedDB `guest:G` rows vẫn tồn tại sau khi B đăng nhập | SQLite `guest:G` rows vẫn tồn tại sau khi B đăng nhập |
+| **Bootstrap fail-closed** | `canMutateUserState === false`, zero IDB mutation | `ScopeCoherenceException`, zero SQLite/API mutation |
+| **Post-bootstrap retry** | Ghi chính xác vào resolved scope | Ghi chính xác vào resolved scope |
+
+- [x] **Step 1: Viết test suites tích hợp bao phủ ma trận nghiệm thu trên Web**
+- [x] **Step 2: Viết test suites tích hợp bao phủ ma trận nghiệm thu trên Mobile**
+- [x] **Step 3: Chạy toàn bộ test suites và ghi nhận kết quả**
+- [x] **Step 4: Cập nhật ROADMAP.md và phase status (Phase 7A 100% Complete)**
+- [x] **Step 5: Git commit & push**
 
 ```bash
 git add apps/web apps/mobile plans
 git commit -m "test: comprehensive acceptance tests for guest identity isolation and storage resilience"
 git push origin main
 ```
+

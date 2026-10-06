@@ -13,7 +13,7 @@
 - **Scope Coherence Guard (P0):**
   - Account dispatch yêu cầu: `auth == authenticated` && `coordinator.activeScope == 'account:${userId}'`.
   - Guest dispatch yêu cầu: `auth == unauthenticated` && `coordinator.activeScope.startsWith('guest:')`.
-  - Mismatch, transitioning hoặc bootstrapping: **fail-closed** đối với mọi mutation (`StateError`).
+  - Mismatch, transitioning hoặc bootstrapping: **fail-closed** đối với mọi mutation (`ScopeCoherenceException`).
 - **Metadata-Rich Bookmarks (P0):** `BookmarkMutation` mang đủ `storyId`, `isBookmarked`, `title`, `slug`, `coverUrl`. Account gửi API, Guest ghi trực tiếp `LocalBookmark`.
 - **Zero-Server-Semantics for Guest Reader (P0):** Guest Reader ghi thẳng `LocalReadingProgress` + `LocalReadingHistory` vào SQLite qua `GuestReadingProgressRepository.recordReadingSession()`, zero server epoch, zero fake responses, zero HTTP PUT.
 - **Explicit Route Whitelist (P0):** Public whitelist gồm `/home`, `/search`, `/library`, `/story/:slug`, `/reader/:chapterId`, `/login`. Account-only gồm `/profile`. Route lạ để GoRouter tự xử lý 404 (không redirect sang `/login`).
@@ -44,8 +44,8 @@
 // Kiểm tra:
 // 1. Scope Coherence: auth=unauthenticated & coordinator=guest:<G> -> dispatch guest adapter, ghi SQLite
 // 2. Scope Coherence: auth=authenticated & coordinator=account:<U> -> dispatch account adapter, gọi LibraryRepository
-// 3. Fail-Closed: auth=unauthenticated nhưng coordinator vẫn còn account:<U> (race condition) -> mutation ném StateError
-// 4. Fail-Closed: coordinator=bootstrapping -> mutation ném StateError
+// 3. Fail-Closed: auth=unauthenticated nhưng coordinator vẫn còn account:<U> (race condition) -> mutation ném ScopeCoherenceException
+// 4. Fail-Closed: coordinator=bootstrapping -> mutation ném ScopeCoherenceException
 // 5. BookmarkMutation chuyển đủ title/slug/coverUrl vào LocalBookmark của SQLite
 ```
 
@@ -87,7 +87,7 @@ File: `apps/mobile/lib/features/library/repositories/guest_library_adapter.dart`
 
 File: `apps/mobile/lib/features/library/repositories/scoped_library_dispatcher.dart`
 - Kiểm tra tính nhất quán giữa `authService.state` và `coordinator.activeScope`.
-- Nếu mismatch hoặc unresolved: read trả về empty snapshot an toàn, mutation ném `StateError('Scope coherence violation')`.
+- Nếu mismatch hoặc unresolved: read trả về empty snapshot an toàn, mutation ném `ScopeCoherenceException`.
 
 - [x] **Step 6: Chạy lại test xác nhận PASS**
 
@@ -277,7 +277,7 @@ Bao gồm:
 10. `logout` tại `/library` -> route giữ nguyên, repository chuyển sang `guest:<new_G>` rỗng hoàn toàn.
 11. `guest library mutation` -> chỉ ghi SQLite `owner_scope = guest:<G>`, zero API.
 12. `account library/progress mutation` -> chỉ ghi API / Account Cache, không bao giờ chạm `guest:<G>`.
-13. `bootstrapping` / scope unresolved -> mutation ném `StateError` (fail-closed).
+13. `bootstrapping` / scope unresolved -> mutation ném `ScopeCoherenceException` (fail-closed).
 
 - [x] **Step 2: Chạy test để xác nhận FAIL**
 

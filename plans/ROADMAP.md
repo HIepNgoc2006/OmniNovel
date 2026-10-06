@@ -25,11 +25,11 @@ Tài liệu này theo dõi tiến độ toàn diện của dự án **OmniNovel*
   - `[x]` 7.0.2. [Guest-to-Account Claim Protocol](product/guest_to_account_claim_protocol.md) (Two-step prepare & commit, zero client timestamp authority, anti-exploit gamification).
   - `[x]` 7.0.3. [Unified Sync Protocol](product/unified_sync_protocol.md) (Server revisions, client mutations queue, tombstones, anti-resurrection).
   - `[x]` 7.0.4. [Web ↔ Mobile Capability Parity Matrix](product/web_mobile_capability_matrix.md) (Next.js 16.3.3 / React 19.2 & Flutter, 8 system states).
-- **Phase 7A: Guest Local Runtime (Local-First Engine)** `[/] Đang Triển Khai (7A.1, 7A.2, 7A.3, 7A.5, 7A.6 Completed)`
+- **Phase 7A: Guest Local Runtime (Local-First Engine)** `[/] Đang Triển Khai (7A.1, 7A.2, 7A.3, 7A.4, 7A.5, 7A.6 Completed)`
   - `[x]` 7A.1. Local Identity & ActiveScope Coordinator (Web & Mobile SSoT — 25/25 tests PASS ✅).
   - `[x]` 7A.2. Canonical Local Library Schema & Migration (IndexedDB v1, SQLite v3 — All Invariants PASS ✅).
   - `[x]` 7A.3. Web Repository Layer & IndexedDB Implementation (`omninovel_local_v2` — 17/17 tests PASS, Full Invariants Locked ✅).
-  - `[ ]` 7A.4. Web Reader / Bookmark / History Integration (Repository Abstraction).
+  - `[x]` 7A.4. Web Reader / Bookmark / History Integration (Repository Abstraction — FROZEN at `8b6f1fb` ✅).
   - `[x]` 7A.5. Mobile Local Library Schema & Repository (SQLite v3 `owner_scope` — LocalLibraryDao & Guest Repositories Completed ✅).
   - `[x]` 7A.6. Mobile Guest Navigation & Reader Integration ("Continue as Guest" — Step 1 & Step 2 FROZEN CLEAN at `903d718` ✅).
   - `[ ]` 7A.7. Identity Isolation / Persistence / Crash / Acceptance Verification.

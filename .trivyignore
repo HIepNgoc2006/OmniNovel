@@ -111,6 +111,8 @@ CVE-2026-102278
 CVE-2026-102599
 # http-cache-semantics in base node npm package
 CVE-2026-93748
+# proxy-addr via express in @nestjs/platform-express
+CVE-2026-90711
 
 # ------------------------------------------------------------------------------
 # Category D: Observability Infrastructure (Prometheus & Grafana Images - Gate 6.4.4a)

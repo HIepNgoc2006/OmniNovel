@@ -20,6 +20,11 @@ import {
 } from '../lib/storage/indexed-db-client';
 import { GuestLibraryRepository } from '../lib/storage/guest-library-repository';
 import { GuestReadingStateRepository } from '../lib/storage/guest-reading-state-repository';
+import { AccountReadingStateRepository } from '../lib/storage/account-reading-state-repository';
+import {
+  getReadingStateRepository,
+  ScopeNotResolvedError,
+} from '../lib/storage/reading-state-repository';
 import * as storiesApi from '../lib/api/stories';
 import * as gamificationApi from '../lib/api/gamification';
 
@@ -29,11 +34,12 @@ vi.mock('../lib/api/stories', () => ({
   getBookmarkStatusApi: vi.fn().mockResolvedValue({ isBookmarked: false }),
   getReadingProgressApi: vi.fn().mockResolvedValue({
     storyId: 'story-1',
-    chapterId: null,
+    chapterId: '' as any,
     chapterVersionId: null,
     readingMode: 'WEBTOON',
     progressPercentage: 0,
     scrollPosition: 0,
+    updatedAt: new Date().toISOString(),
     readChapterIds: [],
   }),
   saveReadingProgressApi: vi.fn().mockResolvedValue({}),
@@ -57,6 +63,18 @@ describe('Task 7A.7 (Web): Identity Isolation, Storage Resilience & Acceptance V
     localStorage.clear();
     indexedDB = new IDBFactory();
     vi.clearAllMocks();
+    vi.mocked(storiesApi.getBookmarksApi).mockResolvedValue({ items: [], meta: { totalItems: 0, page: 1, limit: 20, totalPages: 0 } });
+    vi.mocked(storiesApi.getReadingHistoryApi).mockResolvedValue({ items: [], meta: { totalItems: 0, page: 1, limit: 20, totalPages: 0 } });
+    vi.mocked(storiesApi.getReadingProgressApi).mockResolvedValue({
+      storyId: 'story-1',
+      chapterId: '' as any,
+      chapterVersionId: null,
+      readingMode: 'WEBTOON',
+      progressPercentage: 0,
+      scrollPosition: 0,
+      updatedAt: new Date().toISOString(),
+      readChapterIds: [],
+    });
   });
 
   afterEach(() => {
@@ -174,15 +192,6 @@ describe('Task 7A.7 (Web): Identity Isolation, Storage Resilience & Acceptance V
 
       await coordinator.onAuthStatusChanged('anonymous');
 
-      const setBookmarkSpy = vi.spyOn(storiesApi, 'setBookmarkApi');
-      const getBookmarksSpy = vi.spyOn(storiesApi, 'getBookmarksApi');
-      const saveProgressSpy = vi.spyOn(storiesApi, 'saveReadingProgressApi');
-      const getProgressSpy = vi.spyOn(storiesApi, 'getReadingProgressApi');
-      const getHistorySpy = vi.spyOn(storiesApi, 'getReadingHistoryApi');
-      const deleteHistorySpy = vi.spyOn(storiesApi, 'deleteStoryReadingHistoryApi');
-      const clearHistorySpy = vi.spyOn(storiesApi, 'clearAllReadingHistoryApi');
-      const rewardSpy = vi.spyOn(gamificationApi, 'rewardReadChapterApi');
-
       // 1. Bookmark mutation (add & delete)
       await guestLibRepo.saveBookmark({
         storyId: 'story-g-zero-net',
@@ -210,14 +219,14 @@ describe('Task 7A.7 (Web): Identity Isolation, Storage Resilience & Acceptance V
       await guestLibRepo.clearAllHistory();
 
       // INVARIANT: Zero client-side server-pollution path
-      expect(setBookmarkSpy).toHaveBeenCalledTimes(0);
-      expect(getBookmarksSpy).toHaveBeenCalledTimes(0);
-      expect(saveProgressSpy).toHaveBeenCalledTimes(0);
-      expect(getProgressSpy).toHaveBeenCalledTimes(0);
-      expect(getHistorySpy).toHaveBeenCalledTimes(0);
-      expect(deleteHistorySpy).toHaveBeenCalledTimes(0);
-      expect(clearHistorySpy).toHaveBeenCalledTimes(0);
-      expect(rewardSpy).toHaveBeenCalledTimes(0);
+      expect(storiesApi.setBookmarkApi).toHaveBeenCalledTimes(0);
+      expect(storiesApi.getBookmarksApi).toHaveBeenCalledTimes(0);
+      expect(storiesApi.saveReadingProgressApi).toHaveBeenCalledTimes(0);
+      expect(storiesApi.getReadingProgressApi).toHaveBeenCalledTimes(0);
+      expect(storiesApi.getReadingHistoryApi).toHaveBeenCalledTimes(0);
+      expect(storiesApi.deleteStoryReadingHistoryApi).toHaveBeenCalledTimes(0);
+      expect(storiesApi.clearAllReadingHistoryApi).toHaveBeenCalledTimes(0);
+      expect(gamificationApi.rewardReadChapterApi).toHaveBeenCalledTimes(0);
 
       idbClient.close();
     });
@@ -266,12 +275,29 @@ describe('Task 7A.7 (Web): Identity Isolation, Storage Resilience & Acceptance V
       // 4. User Bob đăng nhập trên cùng máy
       await coordinator.onAuthStatusChanged('authenticated', 'usr-bob');
       expect(coordinator.activeScope).toBe('account:usr-bob');
+      expect(coordinator.state).toBe('ACCOUNT');
 
       // INVARIANT 1: User Bob không được phép bind dữ liệu của Guest G2 hay Alice
       expect(coordinator.activeScope).not.toBe(guestScopeG2);
       expect(coordinator.activeScope).not.toBe('account:usr-alice');
 
-      // INVARIANT 2 (HIDDEN BUT PRESERVED):
+      // INVARIANT 2: Application-layer isolation (Bob-facing repository)
+      // Khi truy xuất qua tầng abstraction của Bob, Bob đọc ra zero dữ liệu từ Alice hay Guest G2:
+      const accountReadingRepo = new AccountReadingStateRepository(coordinator);
+      const bobProgress = await accountReadingRepo.getProgress('story-guest-preserved');
+      expect(bobProgress).toBeNull(); // Không dính chap-preserved-1 của G2!
+
+      // Guest repositories lập tức ném InvalidGuestScopeException khi bị gọi trong session của Bob:
+      await expect(guestLibRepo.getBookmark('story-guest-preserved')).rejects.toThrow(InvalidGuestScopeException);
+      await expect(guestReadingRepo.getProgress('story-guest-preserved')).rejects.toThrow(InvalidGuestScopeException);
+
+      // Thư viện Bob đọc từ Account API hoàn toàn sạch, zero items từ G2 hay Alice:
+      const bobBookmarks = await storiesApi.getBookmarksApi({ page: 1, limit: 50 });
+      expect(bobBookmarks.items).toHaveLength(0);
+      const bobHistory = await storiesApi.getReadingHistoryApi({ page: 1, limit: 50 });
+      expect(bobHistory.items).toHaveLength(0);
+
+      // INVARIANT 3 (HIDDEN BUT PRESERVED):
       // Dữ liệu của Guest G2 KHÔNG bị auto-delete và KHÔNG bị auto-claim ngầm vào Bob.
       // Trực tiếp query IndexedDB với partition guestScopeG2 để xác nhận dữ liệu vẫn còn nguyên:
       const db = await idbClient.getDatabase();
@@ -320,10 +346,13 @@ describe('Task 7A.7 (Web): Identity Isolation, Storage Resilience & Acceptance V
       expect(coordinator.canMutateUserState).toBe(false);
       expect(coordinator.activeScope).toBeNull();
 
-      // INVARIANT: Scope assertion fails closed
+      // INVARIANT 1: Application mutation abstraction fails closed when BOOTSTRAPPING
+      expect(() => getReadingStateRepository(coordinator.state)).toThrow(ScopeNotResolvedError);
+
+      // INVARIANT 2: Scope assertion fails closed
       expect(() => assertGuestScope(coordinator.activeScope)).toThrow(InvalidGuestScopeException);
 
-      // 2. Cố gắng ghi trực tiếp vào store khi chưa resolved scope -> throw Error & ZERO IDB mutation
+      // Cố gắng ghi trực tiếp vào store khi chưa resolved scope -> throw Error & ZERO IDB mutation
       await expect(
         idbClient.putProgress({
           ownerScope: coordinator.activeScope as any,
@@ -338,24 +367,33 @@ describe('Task 7A.7 (Web): Identity Isolation, Storage Resilience & Acceptance V
         })
       ).rejects.toThrow();
 
-      // INVARIANT: Zero records written to IndexedDB progress store
+      // INVARIANT 3: Zero records written to IndexedDB progress and bookmark stores
       const db = await idbClient.getDatabase();
-      const tx1 = db.transaction([STORE_PROGRESS], 'readonly');
+      const tx1 = db.transaction([STORE_PROGRESS, STORE_BOOKMARKS], 'readonly');
       const progressStore1 = tx1.objectStore(STORE_PROGRESS);
-      const allProgress = await new Promise<any[]>((resolve) => {
-        const req = progressStore1.getAll();
-        req.onsuccess = () => resolve(req.result);
-      });
+      const bookmarkStore1 = tx1.objectStore(STORE_BOOKMARKS);
+      const [allProgress, allBookmarks] = await Promise.all([
+        new Promise<any[]>((resolve) => {
+          const req = progressStore1.getAll();
+          req.onsuccess = () => resolve(req.result);
+        }),
+        new Promise<any[]>((resolve) => {
+          const req = bookmarkStore1.getAll();
+          req.onsuccess = () => resolve(req.result);
+        }),
+      ]);
       expect(allProgress.length).toBe(0);
+      expect(allBookmarks.length).toBe(0);
 
-      // 3. Auth giải quyết xong sang anonymous (GUEST)
+      // 2. Auth giải quyết xong sang anonymous (GUEST)
       await coordinator.onAuthStatusChanged('anonymous');
       expect(coordinator.state).toBe('GUEST');
       expect(coordinator.canMutateUserState).toBe(true);
       const resolvedScope = coordinator.activeScope!;
 
-      // 4. Retry mutation hợp lệ
-      await guestReadingRepo.saveProgress({
+      // 3. Retry mutation hợp lệ qua application abstraction
+      const resolvedRepo = getReadingStateRepository(coordinator.state, guestReadingRepo);
+      await resolvedRepo.saveProgress({
         storyId: 'story-boot-fail',
         chapterId: 'chap-1',
         readingMode: 'WEBTOON',
@@ -366,7 +404,7 @@ describe('Task 7A.7 (Web): Identity Isolation, Storage Resilience & Acceptance V
         deviceTimestamp: Date.now(),
       });
 
-      // INVARIANT: Dữ liệu ghi chính xác vào resolved scope
+      // INVARIANT 4: Dữ liệu ghi chính xác vào resolved scope
       const savedProgress = await guestReadingRepo.getProgress('story-boot-fail');
       expect(savedProgress).not.toBeNull();
       expect(savedProgress?.chapterId).toBe('chap-1');

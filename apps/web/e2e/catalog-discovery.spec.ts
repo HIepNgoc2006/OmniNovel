@@ -312,11 +312,11 @@ test.describe('Discovery, Catalog & Story Details E2E Flow (Phase 4B)', () => {
     await expect(page.getByRole('button', { name: /Đọc Từ Đầu/i })).toBeVisible();
     await expect(page.getByRole('button', { name: /Đọc Mới Nhất/i })).toBeVisible();
 
-    // Toggle Theo Dõi
-    const followBtn = page.getByRole('button', { name: /Theo Dõi/i });
-    await expect(followBtn).toBeVisible();
-    await followBtn.click();
-    await expect(page.getByText('Đã Theo Dõi')).toBeVisible();
+    // Toggle Lưu Vào Thư Viện (Bookmark)
+    const libraryBtn = page.getByRole('button', { name: /Lưu Vào Thư Viện/i });
+    await expect(libraryBtn).toBeVisible();
+    await libraryBtn.click();
+    await expect(page.getByText('Đã Lưu Vào Thư Viện')).toBeVisible();
 
     // 3. Danh Sách Chương
     await expect(page.getByText('Danh Sách Chương')).toBeVisible();

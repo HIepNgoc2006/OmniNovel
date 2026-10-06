@@ -11,12 +11,15 @@ import 'package:omninovel_mobile/core/identity/installation_identity_provider.da
 import 'package:omninovel_mobile/core/storage/local_library_dao.dart';
 import 'package:omninovel_mobile/core/storage/local_library_models.dart';
 import 'package:omninovel_mobile/core/storage/offline_database.dart';
+import 'package:omninovel_mobile/features/auth/models/auth_models.dart';
+import 'package:omninovel_mobile/features/library/models/library_models.dart';
 import 'package:omninovel_mobile/features/library/repositories/account_library_adapter.dart';
 import 'package:omninovel_mobile/features/library/repositories/guest_library_adapter.dart';
 import 'package:omninovel_mobile/features/library/repositories/guest_library_repository.dart';
 import 'package:omninovel_mobile/features/library/repositories/library_access.dart';
 import 'package:omninovel_mobile/features/library/repositories/library_repository.dart';
 import 'package:omninovel_mobile/features/library/repositories/scoped_library_dispatcher.dart';
+import 'package:omninovel_mobile/features/reader/models/reading_progress_models.dart';
 import 'package:omninovel_mobile/features/reader/repositories/account_reading_session_adapter.dart';
 import 'package:omninovel_mobile/features/reader/repositories/guest_reading_progress_repository.dart';
 import 'package:omninovel_mobile/features/reader/repositories/guest_reading_session_adapter.dart';
@@ -320,7 +323,79 @@ void main() {
       expect(coordinator.activeScope, isNot(equals(guestScopeG2)));
       expect(coordinator.activeScope, isNot(equals('account:usr-alice')));
 
-      // INVARIANT 2 (HIDDEN BUT PRESERVED):
+      // INVARIANT 2: Bob-facing repository & dispatcher isolation
+      // Kiểm tra trực tiếp qua Scoped Dispatchers từ góc nhìn của User Bob:
+      final mockAccountLibRepo = MockLibraryRepository();
+      final mockAccountProgressRepo = MockReadingProgressRepository();
+      when(() => mockAccountLibRepo.getBookmarkStatus('story-preserved-mob'))
+          .thenAnswer((_) async => const BookmarkStatusResponse(isBookmarked: false));
+      when(() => mockAccountLibRepo.fetchBookmarks(
+            page: any(named: 'page'),
+            limit: any(named: 'limit'),
+            status: any(named: 'status'),
+          ))
+          .thenAnswer((_) async => const PaginatedBookmarksResponse(
+                data: [],
+                pagination: PaginationMeta(page: 1, limit: 20, totalItems: 0, totalPages: 0),
+              ));
+      when(() => mockAccountLibRepo.fetchHistory(
+            page: any(named: 'page'),
+            limit: any(named: 'limit'),
+            updateCache: any(named: 'updateCache'),
+          ))
+          .thenAnswer((_) async => const PaginatedReadingHistoryResponse(
+                data: [],
+                pagination: PaginationMeta(page: 1, limit: 20, totalItems: 0, totalPages: 0),
+              ));
+      when(() => mockAccountProgressRepo.getProgress('story-preserved-mob'))
+          .thenAnswer((_) async => const ReadingProgressResponse(
+                storyId: 'story-preserved-mob',
+                chapterId: null,
+                writeEpoch: 0,
+              ));
+
+      final authService = FakeAuthService();
+      authService.updateState(AuthState.authenticated(
+        user: const User(id: 'usr-bob', email: 'bob@test.com', username: 'bob', role: 'READER'),
+        accessToken: 'token-bob',
+      ));
+
+      final bobLibraryDispatcher = ScopedLibraryDispatcher(
+        accountAdapter: AccountLibraryAdapter(repository: mockAccountLibRepo),
+        guestAdapter: GuestLibraryAdapter(guestRepository: guestLibRepo),
+        authService: authService,
+        coordinator: coordinator,
+      );
+      final bobSessionDispatcher = ScopedReadingSessionDispatcher(
+        accountAdapter: AccountReadingSessionAdapter(readingProgressRepository: mockAccountProgressRepo),
+        guestAdapter: GuestReadingSessionAdapter(guestRepository: guestProgressRepo),
+        authService: authService,
+        coordinator: coordinator,
+      );
+
+      // Bob kiểm tra bookmark truyện của G2 qua dispatcher -> false, zero data leaked
+      final bobBookmarkStatus = await bobLibraryDispatcher.getBookmarkStatus('story-preserved-mob');
+      expect(bobBookmarkStatus.isBookmarked, isFalse);
+
+      final bobBookmarks = await bobLibraryDispatcher.fetchBookmarks();
+      expect(bobBookmarks.data, isEmpty);
+
+      final bobHistory = await bobLibraryDispatcher.fetchHistory();
+      expect(bobHistory.data, isEmpty);
+
+      // Guest repositories lập tức ném InvalidGuestScopeException khi bị gọi trong session của Bob
+      expect(
+        () => guestLibRepo.getBookmark('story-preserved-mob'),
+        throwsA(isA<InvalidGuestScopeException>()),
+      );
+      expect(
+        () => guestProgressRepo.getProgress('story-preserved-mob'),
+        throwsA(isA<InvalidGuestScopeException>()),
+      );
+
+      bobSessionDispatcher.dispose();
+
+      // INVARIANT 3 (HIDDEN BUT PRESERVED):
       // Dữ liệu của Guest G2 KHÔNG bị auto-delete và KHÔNG bị auto-claim ngầm vào Bob.
       // Trực tiếp query SQLite DAO với ownerScope = guestScopeG2 để xác nhận dữ liệu vẫn còn nguyên:
       final g2Bookmarks = await dao.getBookmarks(ownerScope: guestScopeG2);

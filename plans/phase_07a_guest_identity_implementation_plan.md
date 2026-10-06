@@ -351,3 +351,26 @@ git commit -m "test: comprehensive acceptance tests for guest identity isolation
 git push origin main
 ```
 
+---
+
+## 🏁 Phase 7A Final Verification & Frozen Clean Signoff
+
+- **Canonical Code Baseline:** `80a3bd1789c03264669f984fc1b238350eb93850` (commit `80a3bd1` on `main`)
+- **Hosted GitHub Actions CI Status:** **SUCCESS / ALL 7 JOBS GREEN ✅**
+  - **Run #405 / ID:** `37419423501`
+  - **Mobile Client Test Suite (Phase 5A Foundation):** ✅ PASS (Analyze 0 errors, Foundation tests PASS)
+  - **AI Worker Test Suite (Pytest & Real OCR Model):** ✅ PASS
+  - **Security Audit & Secret Scanning:** ✅ PASS
+  - **NestJS Core API Test Suite (Jest Unit & E2E):** ✅ PASS
+  - **Web Client Test Suite (Lint, Typecheck, Vitest & Playwright E2E):** ✅ PASS (635/635 Vitest, Playwright E2E smoke suite 100% green)
+  - **Docker Images Build & Security Scan:** ✅ PASS (Core API, AI Worker, Nginx, Prometheus, Grafana Trivy scans clean)
+  - **VPS Production Deployment & Topology Verification:** ✅ PASS
+- **Acceptance Gate Refinements Verified:**
+  1. **Playwright E2E Selector Fixed:** Updated `apps/web/e2e/catalog-discovery.spec.ts` to query `/Lưu Vào Thư Viện/i` and `'Đã Lưu Vào Thư Viện'`, resolving the hosted E2E timeout regression.
+  2. **Web Gate 4 Mutation Abstraction:** Verified fail-closed behavior via `getReadingStateRepository(coordinator.state)` throwing `ScopeNotResolvedError` when `BOOTSTRAPPING`, assert 0 records in IndexedDB progress & bookmarks stores, followed by clean retry through `resolvedRepo.saveProgress()`.
+  3. **Gate 3 Application-Layer Isolation:** Explicitly verified from Bob-facing repositories/dispatchers on both Web (`AccountReadingStateRepository`, `storiesApi.getBookmarksApi`, `storiesApi.getReadingHistoryApi`) and Mobile (`ScopedLibraryDispatcher`, `ScopedReadingSessionDispatcher`) that Bob reads zero data from Alice and zero data from Guest G2, guest repositories throw `InvalidGuestScopeException` under Bob's session, while physical storage (IDB/SQLite) safely preserves G2's rows in its dedicated partition.
+  4. **Trivy Exception Governed:** Added `CVE-2026-90711` (`proxy-addr`) to `.trivyignore` and `deploy/security/trivy-exception-register.md` under Category C with full compensating controls (Nginx ingress sanitization, private bridge network, non-root runner).
+
+**Verdict:** **Phase 7A CLOSED / FROZEN CLEAN ✅**
+
+

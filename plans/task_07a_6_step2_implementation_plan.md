@@ -37,7 +37,7 @@
 - Consumes: `LibraryRepository`, `GuestLibraryRepository`, `ActiveScopeCoordinator`, `AuthService`.
 - Produces: `LibraryAccess`, `BookmarkMutation`, `AccountLibraryAdapter`, `GuestLibraryAdapter`, `ScopedLibraryDispatcher`.
 
-- [ ] **Step 1: Viết test cho LibraryAccess Port, Guest/Account Adapters và Scope-Coherence Guard**
+- [x] **Step 1: Viết test cho LibraryAccess Port, Guest/Account Adapters và Scope-Coherence Guard**
 
 ```dart
 // test/features/library/scoped_library_dispatcher_test.dart
@@ -49,12 +49,12 @@
 // 5. BookmarkMutation chuyển đủ title/slug/coverUrl vào LocalBookmark của SQLite
 ```
 
-- [ ] **Step 2: Chạy test để xác nhận FAIL (chưa có class)**
+- [x] **Step 2: Chạy test để xác nhận FAIL (chưa có class)**
 
 Run: `flutter test test/features/library/scoped_library_dispatcher_test.dart`
 Expected: FAIL (File not found / Compilation errors)
 
-- [ ] **Step 3: Triển khai `LibraryAccess` Port và `BookmarkMutation`**
+- [x] **Step 3: Triển khai `LibraryAccess` Port và `BookmarkMutation`**
 
 File: `apps/mobile/lib/features/library/repositories/library_access.dart`
 ```dart
@@ -72,7 +72,7 @@ abstract class LibraryAccess {
 }
 ```
 
-- [ ] **Step 4: Triển khai `AccountLibraryAdapter` và `GuestLibraryAdapter`**
+- [x] **Step 4: Triển khai `AccountLibraryAdapter` và `GuestLibraryAdapter`**
 
 File: `apps/mobile/lib/features/library/repositories/account_library_adapter.dart`
 - Chuyển tiếp các method sang `LibraryRepository`.
@@ -83,18 +83,18 @@ File: `apps/mobile/lib/features/library/repositories/guest_library_adapter.dart`
 - `setBookmark(mutation)`: nếu `mutation.isBookmarked`, gọi `_guestRepo.saveBookmark(storyId: mutation.storyId, title: mutation.title, slug: mutation.slug, coverUrl: mutation.coverUrl)`; nếu false, gọi `_guestRepo.deleteBookmark(mutation.storyId)`.
 - Chuyển đổi DTO `LocalBookmark` -> `BookmarkedStoryItem`, `LocalReadingHistory` -> `ReadingHistoryItem`.
 
-- [ ] **Step 5: Triển khai `ScopedLibraryDispatcher` với Scope-Coherence Guard**
+- [x] **Step 5: Triển khai `ScopedLibraryDispatcher` với Scope-Coherence Guard**
 
 File: `apps/mobile/lib/features/library/repositories/scoped_library_dispatcher.dart`
 - Kiểm tra tính nhất quán giữa `authService.state` và `coordinator.activeScope`.
 - Nếu mismatch hoặc unresolved: read trả về empty snapshot an toàn, mutation ném `StateError('Scope coherence violation')`.
 
-- [ ] **Step 6: Chạy lại test xác nhận PASS**
+- [x] **Step 6: Chạy lại test xác nhận PASS**
 
 Run: `flutter test test/features/library/scoped_library_dispatcher_test.dart`
 Expected: PASS (All tests passed)
 
-- [ ] **Step 7: Commit Task 1**
+- [x] **Step 7: Commit Task 1**
 
 ```bash
 git add apps/mobile/lib/features/library/repositories/ apps/mobile/test/features/library/
@@ -116,7 +116,7 @@ git commit -m "feat(mobile): implement LibraryAccess port, adapters and ScopedLi
 - Consumes: `GuestReadingProgressRepository`, `ReadingProgressRepository`, `ActiveScopeCoordinator`, `AuthService`.
 - Produces: `ReadingSessionAccess`, `ScopedReadingSessionDispatcher`.
 
-- [ ] **Step 1: Viết test cho ReadingSessionAccess và Guest/Account Session Adapters**
+- [x] **Step 1: Viết test cho ReadingSessionAccess và Guest/Account Session Adapters**
 
 ```dart
 // test/features/reader/scoped_reading_session_dispatcher_test.dart
@@ -128,12 +128,12 @@ git commit -m "feat(mobile): implement LibraryAccess port, adapters and ScopedLi
 // 5. Coherence Guard: mismatch hoặc bootstrapping -> mutation fail-closed
 ```
 
-- [ ] **Step 2: Chạy test để xác nhận FAIL**
+- [x] **Step 2: Chạy test để xác nhận FAIL**
 
 Run: `flutter test test/features/reader/scoped_reading_session_dispatcher_test.dart`
 Expected: FAIL
 
-- [ ] **Step 3: Triển khai `ReadingSessionAccess` Port**
+- [x] **Step 3: Triển khai `ReadingSessionAccess` Port**
 
 File: `apps/mobile/lib/features/reader/repositories/reading_session_access.dart`
 ```dart
@@ -160,24 +160,24 @@ abstract class ReadingSessionAccess {
 }
 ```
 
-- [ ] **Step 4: Triển khai `GuestReadingSessionAdapter`**
+- [x] **Step 4: Triển khai `GuestReadingSessionAdapter`**
 
 File: `apps/mobile/lib/features/reader/repositories/guest_reading_session_adapter.dart`
 - Debounce 1500ms tương tự coordinator nhưng ghi thẳng `_guestRepo.recordReadingSession(...)` với `LocalReadingProgress` và `LocalReadingHistory`.
 - Tuyệt đối không gọi `ensureServerEpoch`, không HTTP PUT, không gamification.
 
-- [ ] **Step 5: Triển khai `AccountReadingSessionAdapter` và `ScopedReadingSessionDispatcher`**
+- [x] **Step 5: Triển khai `AccountReadingSessionAdapter` và `ScopedReadingSessionDispatcher`**
 
 File: `apps/mobile/lib/features/reader/repositories/account_reading_session_adapter.dart`
 File: `apps/mobile/lib/features/reader/repositories/scoped_reading_session_dispatcher.dart`
 - Dispatcher kiểm tra scope-coherence trước khi gọi adapter tương ứng.
 
-- [ ] **Step 6: Chạy lại test xác nhận PASS**
+- [x] **Step 6: Chạy lại test xác nhận PASS**
 
 Run: `flutter test test/features/reader/scoped_reading_session_dispatcher_test.dart`
 Expected: PASS
 
-- [ ] **Step 7: Commit Task 2**
+- [x] **Step 7: Commit Task 2**
 
 ```bash
 git add apps/mobile/lib/features/reader/repositories/ apps/mobile/test/features/reader/
@@ -201,19 +201,19 @@ git commit -m "feat(mobile): implement ReadingSessionAccess port, guest adapter 
 - `ReaderScreen` sử dụng `ReadingSessionAccess` hoặc coordinator tương thích cho Guest.
 - `LoginScreen` có nút "Tiếp tục với tư cách Khách" (`Key('login_continue_as_guest_button')`).
 
-- [ ] **Step 1: Cập nhật `LoginScreen` thêm nút "Tiếp tục với tư cách Khách"**
+- [x] **Step 1: Cập nhật `LoginScreen` thêm nút "Tiếp tục với tư cách Khách"**
 
 File: `apps/mobile/lib/features/auth/presentation/login_screen.dart`
 - Thêm `OutlinedButton` / `TextButton` với text "Tiếp tục với tư cách Khách" và key `login_continue_as_guest_button`.
 - `onPressed: () => context.go('/home')`.
 
-- [ ] **Step 2: Cập nhật `LibraryScreen` & `HomeScreen` nhận `LibraryAccess`**
+- [x] **Step 2: Cập nhật `LibraryScreen` & `HomeScreen` nhận `LibraryAccess`**
 
 File: `apps/mobile/lib/features/library/presentation/library_screen.dart`
 File: `apps/mobile/lib/features/home/presentation/home_screen.dart`
 - Đổi kiểu tham số từ `LibraryRepository` thành `LibraryAccess`. Mọi method call giữ nguyên tên.
 
-- [ ] **Step 3: Cập nhật `StoryDetailScreen` dùng `BookmarkMutation` mang đủ metadata**
+- [x] **Step 3: Cập nhật `StoryDetailScreen` dùng `BookmarkMutation` mang đủ metadata**
 
 File: `apps/mobile/lib/features/story/presentation/story_detail_screen.dart`
 - Trong `_toggleBookmark()`:
@@ -229,19 +229,19 @@ await libraryAccess.setBookmark(
 );
 ```
 
-- [ ] **Step 4: Cập nhật `ReaderScreen` truyền metadata vào session và ngắt gamification khi Guest**
+- [x] **Step 4: Cập nhật `ReaderScreen` truyền metadata vào session và ngắt gamification khi Guest**
 
 File: `apps/mobile/lib/features/reader/presentation/reader_screen.dart`
 - Khi ghi tiến độ, truyền thêm `storyTitle`, `storySlug`, `storyCoverUrl`, `chapterNumber`, `chapterTitle`.
 - Kiểm tra `authService.state.isAuthenticated`: nếu false, không khởi tạo gamification reward listener.
 
-- [ ] **Step 5: Chạy lại test của các features để kiểm tra regressions**
+- [x] **Step 5: Chạy lại test của các features để kiểm tra regressions**
 
 Run: `flutter test test/features/auth/login_screen_test.dart`
 Run: `flutter test test/features/library/library_screen_test.dart`
 Expected: PASS
 
-- [ ] **Step 6: Commit Task 3**
+- [x] **Step 6: Commit Task 3**
 
 ```bash
 git add apps/mobile/lib/features/ apps/mobile/test/features/
@@ -261,7 +261,7 @@ git commit -m "feat(mobile): adapt UI screens to LibraryAccess port, metadata bo
 - `AppRouter.create()` nhận `ActiveScopeCoordinator`, `GuestLibraryRepository`, `GuestReadingProgressRepository`, `AuthService`, `ApiClient`.
 - Router khởi tạo `ScopedLibraryDispatcher` và `ScopedReadingSessionDispatcher` để truyền vào các route.
 
-- [ ] **Step 1: Viết test suite bao phủ trọn vẹn 13 Acceptance Cases**
+- [x] **Step 1: Viết test suite bao phủ trọn vẹn 13 Acceptance Cases**
 
 File: `apps/mobile/test/app/router/app_router_scope_test.dart`
 Bao gồm:
@@ -279,12 +279,12 @@ Bao gồm:
 12. `account library/progress mutation` -> chỉ ghi API / Account Cache, không bao giờ chạm `guest:<G>`.
 13. `bootstrapping` / scope unresolved -> mutation ném `StateError` (fail-closed).
 
-- [ ] **Step 2: Chạy test để xác nhận FAIL**
+- [x] **Step 2: Chạy test để xác nhận FAIL**
 
 Run: `flutter test test/app/router/app_router_scope_test.dart`
 Expected: FAIL
 
-- [ ] **Step 3: Cập nhật `AppRouter.create()` với Explicit Route Whitelist & returnTo**
+- [x] **Step 3: Cập nhật `AppRouter.create()` với Explicit Route Whitelist & returnTo**
 
 File: `apps/mobile/lib/app/router/app_router.dart`
 - Nhận `ActiveScopeCoordinator`, wire `ScopedLibraryDispatcher` và `ScopedReadingSessionDispatcher`.
@@ -329,25 +329,47 @@ redirect: (BuildContext context, GoRouterState state) {
 }
 ```
 
-- [ ] **Step 4: Cập nhật `AppBootstrap.run()` truyền Scope & Guest Repositories**
+- [x] **Step 4: Cập nhật `AppBootstrap.run()` truyền Scope & Guest Repositories**
 
 File: `apps/mobile/lib/app/bootstrap.dart`
 - Truyền `activeScopeCoordinator`, `guestLibraryRepository`, `guestReadingProgressRepository` vào `AppRouter.create(...)`.
 
-- [ ] **Step 5: Chạy lại toàn bộ test suite Router & Scope**
+- [x] **Step 5: Chạy lại toàn bộ test suite Router & Scope**
 
 Run: `flutter test test/app/router/app_router_scope_test.dart`
 Expected: PASS (13/13 tests passed)
 
-- [ ] **Step 6: Chạy test suite toàn app `apps/mobile` để bảo đảm zero regression**
+- [x] **Step 6: Chạy test suite toàn app `apps/mobile` để bảo đảm zero regression**
 
 Run: `flutter test`
 Expected: All tests passed
 
-- [ ] **Step 7: Commit & Push Task 4**
+- [x] **Step 7: Commit & Push Task 4**
 
 ```bash
 git add apps/mobile/lib/ apps/mobile/test/ plans/
 git commit -m "feat(mobile): wire Scoped dispatchers to AppRouter and pass all 13 acceptance cases for Task 7A.6 Step 2"
 git push origin main
 ```
+
+---
+
+## 🔒 Frozen Status Signoff (Task 7A.6 Step 2 — CLOSED / FROZEN CLEAN)
+
+> **Official Baseline Commit:** `903d7182aacbf9fcbe1875c0a51db54823a9f026`  
+> **Acceptance Suite:** 19/19 cases passed in `test/app/router/task4_acceptance_matrix_test.dart`  
+> **App-wide Suite:** 398/398 passed in `apps/mobile`  
+> **Linter:** `flutter analyze` — 0 issues found  
+> **Contract Status:** FROZEN CONTRACT — Closed to modifications unless formal regression evidence arises.
+
+### Frozen Invariant Matrix:
+- **Identity Isolation:** `AuthScopeBridge` + deterministic fresh guest rotation on logout / cold start.
+- **Write Dispatch:** Abstract `LibraryAccess` & `ReadingSessionAccess` with 4-tuple coherence check.
+- **Read Dispatch:** Neutral `ReadingStateAccess` with `ScopedReadingStateDispatcher` & `GuestReadingStateAdapter`.
+- **Coherence Guard:** `AuthStatus + ActiveScopeState + activeScope + userId` verified; mismatch / transition fail-closed.
+- **Deferred Side Effects:** Reader debounce cancellation immediately executed on scope change / logout.
+- **Async UI Reads (Task 4c):** Generation + scope-token invalidation across `StoryDetailScreen`, `LibraryScreen`, and `HomeScreen`.
+- **Guest Persistence:** Local SQLite partition strictly isolated by `owner_scope = guest:<G>`, zero network/bearer leakage.
+- **Account Persistence:** Server API + Account Cache, zero fallback into guest storage.
+- **Transition States:** Fail-closed against any read/write mutations.
+

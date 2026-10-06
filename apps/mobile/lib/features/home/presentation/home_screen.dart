@@ -74,7 +74,12 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  int _loadGeneration = 0;
+
   Future<void> _loadHomeData() async {
+    final generation = ++_loadGeneration;
+    final expectedScope = widget.scopeCoordinator?.activeScope;
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -94,22 +99,29 @@ class _HomeScreenState extends State<HomeScreen> {
           Future.value(null),
       ]);
 
-      if (mounted) {
-        setState(() {
-          _featured = results[0] as FeaturedStoriesResponse;
-          _rankings = results[1] as StoryRankingsResponse;
-          _latestStories = (results[2] as PaginatedStoriesResponse).data;
-          _continueReading = results[3] as ReadingHistoryItem?;
-          _isLoading = false;
-        });
+      if (!mounted ||
+          generation != _loadGeneration ||
+          widget.scopeCoordinator?.activeScope != expectedScope) {
+        return;
       }
+
+      setState(() {
+        _featured = results[0] as FeaturedStoriesResponse;
+        _rankings = results[1] as StoryRankingsResponse;
+        _latestStories = (results[2] as PaginatedStoriesResponse).data;
+        _continueReading = results[3] as ReadingHistoryItem?;
+        _isLoading = false;
+      });
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _errorMessage = e.toString();
-          _isLoading = false;
-        });
+      if (!mounted ||
+          generation != _loadGeneration ||
+          widget.scopeCoordinator?.activeScope != expectedScope) {
+        return;
       }
+      setState(() {
+        _errorMessage = e.toString();
+        _isLoading = false;
+      });
     }
   }
 

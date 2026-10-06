@@ -65,6 +65,7 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
 
   bool _isAscending = true; // Sắp xếp cũ nhất -> mới nhất (chương 1 -> ...)
   bool _isSummaryExpanded = false;
+  int _loadGeneration = 0;
 
   LibraryAccess? get _effectiveLibraryAccess =>
       widget.libraryAccess ??
@@ -97,6 +98,9 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
   }
 
   Future<void> _loadStoryAndProgress() async {
+    final generation = ++_loadGeneration;
+    final expectedScope = widget.scopeCoordinator?.activeScope;
+
     setState(() {
       _isLoading = true;
       _errorMessage = null;
@@ -105,6 +109,13 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
     try {
       // Pha 1: Phân giải slug lấy story.id
       final story = await widget.storyRepository.getStoryBySlug(widget.slug);
+
+      // Invalidation Guard: Bỏ qua kết quả cũ nếu scope đã đổi hoặc request mới đã chạy
+      if (!mounted ||
+          generation != _loadGeneration ||
+          widget.scopeCoordinator?.activeScope != expectedScope) {
+        return;
+      }
 
       // Pha 2: Chạy song song 1 lần duy nhất (Gate 8: Khử duplicate getProgress)
       final libraryAccess = _effectiveLibraryAccess;
@@ -117,6 +128,12 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
           Future.value(const BookmarkStatusResponse(isBookmarked: false)),
         readingStateAccess.getStoryReadingState(story.id),
       ]);
+
+      if (!mounted ||
+          generation != _loadGeneration ||
+          widget.scopeCoordinator?.activeScope != expectedScope) {
+        return;
+      }
 
       final bookmarkRes = results[0] as BookmarkStatusResponse;
       final readingState = results[1] as StoryReadingState;
@@ -132,24 +149,31 @@ class _StoryDetailScreenState extends State<StoryDetailScreen> {
         }
       }
 
-      if (mounted) {
-        setState(() {
-          _story = story;
-          _resumePointer = readingState.resume;
-          _readChapterIds = readingState.readChapterIds;
-          _readyJobsByChapterId = readyJobs;
-          _isBookmarked = bookmarkRes.isBookmarked;
-          _followersCount = story.followersCount;
-          _isLoading = false;
-        });
+      if (!mounted ||
+          generation != _loadGeneration ||
+          widget.scopeCoordinator?.activeScope != expectedScope) {
+        return;
       }
+
+      setState(() {
+        _story = story;
+        _resumePointer = readingState.resume;
+        _readChapterIds = readingState.readChapterIds;
+        _readyJobsByChapterId = readyJobs;
+        _isBookmarked = bookmarkRes.isBookmarked;
+        _followersCount = story.followersCount;
+        _isLoading = false;
+      });
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _errorMessage = e.toString();
-          _isLoading = false;
-        });
+      if (!mounted ||
+          generation != _loadGeneration ||
+          widget.scopeCoordinator?.activeScope != expectedScope) {
+        return;
       }
+      setState(() {
+        _errorMessage = e.toString();
+        _isLoading = false;
+      });
     }
   }
 

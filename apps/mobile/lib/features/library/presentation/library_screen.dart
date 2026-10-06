@@ -95,64 +95,102 @@ class _LibraryScreenState extends State<LibraryScreen>
     super.dispose();
   }
 
+  int _revalidateGeneration = 0;
+
   Future<void> _revalidateAll() async {
+    final generation = ++_revalidateGeneration;
+    final expectedScope = widget.scopeCoordinator?.activeScope;
+
     await Future.wait([
-      _fetchBookmarks(),
-      _fetchHistory(),
-      _fetchContinueReading(),
+      _fetchBookmarks(generation: generation, expectedScope: expectedScope),
+      _fetchHistory(generation: generation, expectedScope: expectedScope),
+      _fetchContinueReading(generation: generation, expectedScope: expectedScope),
     ]);
   }
 
-  Future<void> _fetchContinueReading() async {
+  Future<void> _fetchContinueReading({
+    int? generation,
+    String? expectedScope,
+  }) async {
+    final gen = generation ?? ++_revalidateGeneration;
+    final scope = expectedScope ?? widget.scopeCoordinator?.activeScope;
+
     final item = await _access.getContinueReading();
-    if (mounted) {
-      setState(() {
-        _continueReading = item;
-      });
+    if (!mounted ||
+        gen != _revalidateGeneration ||
+        widget.scopeCoordinator?.activeScope != scope) {
+      return;
     }
+    setState(() {
+      _continueReading = item;
+    });
   }
 
-  Future<void> _fetchBookmarks() async {
+  Future<void> _fetchBookmarks({
+    int? generation,
+    String? expectedScope,
+  }) async {
+    final gen = generation ?? ++_revalidateGeneration;
+    final scope = expectedScope ?? widget.scopeCoordinator?.activeScope;
+
     try {
       final res = await _access.fetchBookmarks(
         page: 1,
         limit: 20,
         status: _selectedFilter.apiValue,
       );
-      if (mounted) {
-        setState(() {
-          _bookmarks = res.data;
-          _isLoadingBookmarks = false;
-          _bookmarksError = null;
-        });
+      if (!mounted ||
+          gen != _revalidateGeneration ||
+          widget.scopeCoordinator?.activeScope != scope) {
+        return;
       }
+      setState(() {
+        _bookmarks = res.data;
+        _isLoadingBookmarks = false;
+        _bookmarksError = null;
+      });
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoadingBookmarks = false;
-          _bookmarksError = _bookmarks.isEmpty ? e.toString() : null;
-        });
+      if (!mounted ||
+          gen != _revalidateGeneration ||
+          widget.scopeCoordinator?.activeScope != scope) {
+        return;
       }
+      setState(() {
+        _isLoadingBookmarks = false;
+        _bookmarksError = _bookmarks.isEmpty ? e.toString() : null;
+      });
     }
   }
 
-  Future<void> _fetchHistory() async {
+  Future<void> _fetchHistory({
+    int? generation,
+    String? expectedScope,
+  }) async {
+    final gen = generation ?? ++_revalidateGeneration;
+    final scope = expectedScope ?? widget.scopeCoordinator?.activeScope;
+
     try {
       final res = await _access.fetchHistory(page: 1, limit: 20);
-      if (mounted) {
-        setState(() {
-          _history = res.data;
-          _isLoadingHistory = false;
-          _historyError = null;
-        });
+      if (!mounted ||
+          gen != _revalidateGeneration ||
+          widget.scopeCoordinator?.activeScope != scope) {
+        return;
       }
+      setState(() {
+        _history = res.data;
+        _isLoadingHistory = false;
+        _historyError = null;
+      });
     } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isLoadingHistory = false;
-          _historyError = _history.isEmpty ? e.toString() : null;
-        });
+      if (!mounted ||
+          gen != _revalidateGeneration ||
+          widget.scopeCoordinator?.activeScope != scope) {
+        return;
       }
+      setState(() {
+        _isLoadingHistory = false;
+        _historyError = _history.isEmpty ? e.toString() : null;
+      });
     }
   }
 
@@ -162,7 +200,9 @@ class _LibraryScreenState extends State<LibraryScreen>
       _bookmarks = _access.getCachedBookmarks(status: filter.apiValue);
       _isLoadingBookmarks = true;
     });
-    _fetchBookmarks();
+    final generation = ++_revalidateGeneration;
+    final expectedScope = widget.scopeCoordinator?.activeScope;
+    _fetchBookmarks(generation: generation, expectedScope: expectedScope);
   }
 
   Future<void> _confirmDeleteStoryHistory(ReadingHistoryItem item) async {

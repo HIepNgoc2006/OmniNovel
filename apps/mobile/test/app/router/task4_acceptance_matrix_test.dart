@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
@@ -252,6 +253,15 @@ void main() {
       when(() => mockLibraryRepo.getCachedBookmarks(status: any(named: 'status'))).thenReturn([]);
       when(() => mockLibraryRepo.getCachedHistory()).thenReturn([]);
       when(() => mockLibraryRepo.getCachedContinueReading()).thenReturn(null);
+      when(() => mockLibraryRepo.getContinueReading()).thenAnswer((_) async => null);
+      when(() => mockLibraryRepo.fetchHistory(
+            page: any(named: 'page'),
+            limit: any(named: 'limit'),
+            updateCache: any(named: 'updateCache'),
+          )).thenAnswer((_) async => const PaginatedReadingHistoryResponse(
+            data: [],
+            pagination: PaginationMeta(page: 1, limit: 20, totalItems: 0, totalPages: 1),
+          ));
       when(() => mockLibraryRepo.getBookmarkStatus(any())).thenAnswer(
         (_) async => const BookmarkStatusResponse(isBookmarked: false),
       );
@@ -987,6 +997,132 @@ void main() {
 
       // Zero guest reading progress interactions
       verifyZeroInteractions(mockGuestReadingProgressRepo);
+    });
+
+    // =========================================================================
+    // Case 18: StoryDetail stale G1 async result dropped across scope rotation
+    // =========================================================================
+    testWidgets('Case 18: StoryDetail stale G1 async result dropped when scope rotates to G2 before completion',
+        (tester) async {
+      authService.updateState(AuthState.unauthenticated());
+      coordinator.updateScope('guest:G1');
+
+      final g1ProgressCompleter = Completer<LocalReadingProgress?>();
+      final g1ChaptersCompleter = Completer<List<String>>();
+
+      when(() => mockGuestReadingProgressRepo.getProgress('story-deep-1')).thenAnswer(
+        (_) async {
+          if (coordinator.activeScope == 'guest:G1') {
+            return await g1ProgressCompleter.future;
+          }
+          return null;
+        },
+      );
+      when(() => mockGuestReadingProgressRepo.getReadChapterIds('story-deep-1')).thenAnswer(
+        (_) async {
+          if (coordinator.activeScope == 'guest:G1') {
+            return await g1ChaptersCompleter.future;
+          }
+          return [];
+        },
+      );
+
+      final router = buildRouter();
+      await pumpRouterApp(tester, router);
+
+      // 1. G1 mở trang chi tiết truyện -> load A bắt đầu và bị hoãn do Completer
+      router.go('/story/deep-link-story');
+      await tester.pump();
+
+      // 2. Scope rotate sang guest:G2 trước khi load A hoàn thành
+      coordinator.updateScope('guest:G2');
+      // pump để trigger _onScopeChanged và để load B (G2) hoàn tất tức thì
+      await tester.pump();
+      await tester.pump();
+
+      // UI hiển thị trạng thái G2 (không có nút đọc tiếp G1, có nút đọc từ đầu)
+      expect(find.byKey(const Key('resume_reading_button')), findsNothing);
+      expect(find.byKey(const Key('read_from_start_button')), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle), findsNothing);
+
+      // 3. Bây giờ load A của G1 mới hoàn thành muộn
+      g1ProgressCompleter.complete(LocalReadingProgress(
+        ownerScope: 'guest:G1',
+        storyId: 'story-deep-1',
+        chapterId: 'chap-test-1',
+        pageIndex: 5,
+        progressPercentage: 50.0,
+        scrollPosition: 150.0,
+        updatedAt: DateTime.now(),
+        deviceTimestamp: DateTime.now(),
+      ));
+      g1ChaptersCompleter.complete(['chap-test-1']);
+      await tester.pumpAndSettle();
+
+      // Invariant: Kết quả muộn của G1 bị huỷ bỏ bởi generation/scope guard, UI kiên định giữ state của G2
+      expect(find.byKey(const Key('resume_reading_button')), findsNothing);
+      expect(find.byKey(const Key('read_from_start_button')), findsOneWidget);
+      expect(find.byIcon(Icons.check_circle), findsNothing);
+    });
+
+    // =========================================================================
+    // Case 19: Library stale account fetch result dropped after logout
+    // =========================================================================
+    testWidgets('Case 19: Library stale account fetch result dropped after logout so account data never leaks into fresh G2',
+        (tester) async {
+      authService.updateState(const AuthState(
+        status: AuthStatus.authenticated,
+        user: User(id: 'usr-acc-1', email: 'acc@test.com', username: 'accUser', role: 'READER'),
+      ));
+      coordinator.updateScope('account:usr-acc-1');
+
+      final accBookmarksCompleter = Completer<PaginatedBookmarksResponse>();
+
+      when(() => mockLibraryRepo.fetchBookmarks(
+            page: any(named: 'page'),
+            limit: any(named: 'limit'),
+            status: any(named: 'status'),
+          )).thenAnswer((_) => accBookmarksCompleter.future);
+
+      when(() => mockGuestLibraryRepo.getBookmarks()).thenAnswer((_) async => []);
+
+      final router = buildRouter();
+      await pumpRouterApp(tester, router);
+
+      // 1. Account mở /library -> fetch bookmarks A bắt đầu và bị hoãn do Completer
+      router.go('/library');
+      await tester.pump();
+
+      // 2. User logout -> rotate sang fresh guest:G2
+      authService.updateState(AuthState.unauthenticated());
+      coordinator.updateScope('guest:G2');
+      // pump để LibraryScreen phản ứng scope change và kích hoạt revalidate G2
+      await tester.pump();
+      await tester.pump();
+
+      // 3. Bây giờ fetch A của account mới hoàn thành muộn với dữ liệu của account cũ
+      accBookmarksCompleter.complete(PaginatedBookmarksResponse(
+        data: [
+          BookmarkedStoryItem(
+            story: const LibraryStorySummary(
+              id: 'story-secret-1',
+              title: 'Truyện Riêng Tư Của Account',
+              slug: 'truyen-rieng-tu-account',
+              mediaFormat: 'COMIC',
+              status: 'ONGOING',
+              totalChapters: 10,
+            ),
+            bookmarkedAt: DateTime.now(),
+            unreadChapterCount: 0,
+          ),
+        ],
+        pagination: const PaginationMeta(page: 1, limit: 20, totalItems: 1, totalPages: 1),
+      ));
+      await tester.pumpAndSettle();
+
+      // Invariant: Kết quả account muộn bị loại bỏ hoàn toàn, không leak vào UI của G2
+      expect(find.text('Truyện Riêng Tư Của Account'), findsNothing);
+      expect(find.text('Chưa có truyện nào trong danh sách theo dõi'), findsOneWidget);
     });
   });
 }

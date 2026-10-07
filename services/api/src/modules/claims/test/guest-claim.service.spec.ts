@@ -124,8 +124,21 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
 
     it('should throw BadRequestException if referenced story does not exist', async () => {
       queryRunnerMock.query.mockImplementation(async (sql: string) => {
-        if (sql.includes('SELECT id FROM stories')) {
+        if (sql.includes('FROM stories')) {
           return []; // Story not found
+        }
+        return [];
+      });
+
+      await expect(service.prepareClaim(userId, validDto)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should throw BadRequestException if referenced story is PRIVATE', async () => {
+      queryRunnerMock.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('FROM stories')) {
+          return [{ id: storyId1, visibility: 'PRIVATE', status: 'ONGOING' }];
         }
         return [];
       });
@@ -137,11 +150,11 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
 
     it('should throw BadRequestException if chapter does not belong to story', async () => {
       queryRunnerMock.query.mockImplementation(async (sql: string) => {
-        if (sql.includes('SELECT id FROM stories')) {
-          return [{ id: storyId1 }];
+        if (sql.includes('FROM stories')) {
+          return [{ id: storyId1, visibility: 'PUBLIC', status: 'ONGOING' }];
         }
-        if (sql.includes('SELECT id, story_id FROM chapters')) {
-          return [{ id: chapterId1, story_id: storyId2 }]; // Mismatched storyId
+        if (sql.includes('FROM chapters')) {
+          return [{ id: chapterId1, story_id: storyId2, has_published_version: true }]; // Mismatched storyId
         }
         return [];
       });
@@ -151,13 +164,65 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
       );
     });
 
+    it('should throw BadRequestException if chapter is not published', async () => {
+      queryRunnerMock.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('FROM stories')) {
+          return [{ id: storyId1, visibility: 'PUBLIC', status: 'ONGOING' }];
+        }
+        if (sql.includes('FROM chapters')) {
+          return [{ id: chapterId1, story_id: storyId1, has_published_version: false }]; // Not published
+        }
+        return [];
+      });
+
+      await expect(service.prepareClaim(userId, validDto)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('should throw BadRequestException if chapterVersionId is unpublished', async () => {
+      const dtoWithVersion: PrepareGuestClaimDto = {
+        ...validDto,
+        progress: [
+          {
+            ...validDto.progress[0],
+            chapterVersionId: 'version-unpublished',
+          },
+        ],
+      };
+
+      queryRunnerMock.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('FROM stories')) {
+          return [{ id: storyId1, visibility: 'PUBLIC', status: 'ONGOING' }];
+        }
+        if (sql.includes('FROM chapters')) {
+          return [{ id: chapterId1, story_id: storyId1, has_published_version: true }];
+        }
+        if (sql.includes('FROM chapter_versions')) {
+          return [
+            {
+              id: 'version-unpublished',
+              chapter_id: chapterId1,
+              story_id: storyId1,
+              is_published: false, // Unpublished version!
+            },
+          ];
+        }
+        return [];
+      });
+
+      await expect(service.prepareClaim(userId, dtoWithVersion)).rejects.toThrow(
+        BadRequestException,
+      );
+    });
+
     it('should compute diff, identify tombstones and detect PAGED progress conflict correctly', async () => {
       queryRunnerMock.query.mockImplementation(async (sql: string) => {
-        if (sql.includes('SELECT id FROM stories')) {
-          return [{ id: storyId1 }];
+        if (sql.includes('FROM stories')) {
+          return [{ id: storyId1, visibility: 'PUBLIC', status: 'ONGOING' }];
         }
-        if (sql.includes('SELECT id, story_id FROM chapters')) {
-          return [{ id: chapterId1, story_id: storyId1 }];
+        if (sql.includes('FROM chapters')) {
+          return [{ id: chapterId1, story_id: storyId1, has_published_version: true }];
         }
         if (sql.includes('SELECT story_id FROM bookmarks')) {
           return [{ story_id: storyId1 }]; // Already bookmarked on cloud
@@ -200,11 +265,11 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
 
     it('should ignore guest history and progress when story has tombstone (Anti-Resurrection)', async () => {
       queryRunnerMock.query.mockImplementation(async (sql: string) => {
-        if (sql.includes('SELECT id FROM stories')) {
-          return [{ id: storyId1 }];
+        if (sql.includes('FROM stories')) {
+          return [{ id: storyId1, visibility: 'PUBLIC', status: 'ONGOING' }];
         }
-        if (sql.includes('SELECT id, story_id FROM chapters')) {
-          return [{ id: chapterId1, story_id: storyId1 }];
+        if (sql.includes('FROM chapters')) {
+          return [{ id: chapterId1, story_id: storyId1, has_published_version: true }];
         }
         if (sql.includes('SELECT story_id FROM bookmarks')) {
           return [];
@@ -438,6 +503,55 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
       expect(res.summary.historyMerged).toBe(1);
       expect(res.summary.progressUpdated).toBe(1);
       expect(res.summary.conflictsResolved).toBe(1);
+      expect(queryRunnerMock.commitTransaction).toHaveBeenCalled();
+    });
+
+    it('should succeed when claim row is returned as raw PostgreSQL row with snake_case columns (P0-1 remediation)', async () => {
+      const storedPayload: PrepareGuestClaimDto = {
+        guestProfileId: '77777777-7777-4777-8777-777777777777',
+        bookmarks: [{ storyId: storyId1 }],
+        history: [],
+        progress: [],
+      };
+
+      const emptyFingerprint = (service as any).computeCloudFingerprint({
+        bookmarks: [],
+        tombstones: [],
+        readStates: [],
+        progress: [],
+      });
+
+      queryRunnerMock.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT * FROM guest_claims WHERE claim_id')) {
+          // Raw PostgreSQL row returns snake_case columns (claim.userId is undefined)!
+          return [
+            {
+              claim_id: claimId,
+              user_id: userId,
+              status: GuestClaimStatusEnum.PREPARED,
+              state_fingerprint: emptyFingerprint,
+              preview_data: {
+                payload: storedPayload,
+                conflicts: [],
+              },
+              expires_at: new Date(Date.now() + 100000),
+              created_at: new Date(),
+            },
+          ];
+        }
+        if (sql.includes('INSERT INTO bookmarks')) {
+          return [[], 1];
+        }
+        return [];
+      });
+
+      const res = await service.commitClaim(userId, claimId, {
+        expectedStateFingerprint: emptyFingerprint,
+      });
+
+      expect(res.status).toBe('COMMITTED');
+      expect(res.claimId).toBe(claimId);
+      expect(res.summary.bookmarksImported).toBe(1);
       expect(queryRunnerMock.commitTransaction).toHaveBeenCalled();
     });
   });

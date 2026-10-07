@@ -183,7 +183,7 @@ export class GuestClaimService {
     await runner.connect();
 
     try {
-      // 2. Validate Foreign Keys
+      // 2. Validate Foreign Keys & Invariants (Stories, Chapters, ChapterVersions, Publication States)
       const allStoryIds = Array.from(
         new Set([
           ...dto.bookmarks.map((b) => b.storyId),
@@ -199,31 +199,73 @@ export class GuestClaimService {
         ]),
       );
 
+      // 2.1 Stories existence & publication/visibility state
       if (allStoryIds.length > 0) {
-        const storiesExist: { id: string }[] = await runner.query(
-          `SELECT id FROM stories WHERE id = ANY($1)`,
-          [allStoryIds],
-        );
-        const existingStorySet = new Set(storiesExist.map((s) => s.id));
+        const storiesExist: { id: string; visibility: string; status: string }[] =
+          await runner.query(
+            `SELECT id, visibility, status FROM stories WHERE id = ANY($1)`,
+            [allStoryIds],
+          );
+        const storyMap = new Map(storiesExist.map((s) => [s.id, s]));
+
         for (const sId of allStoryIds) {
-          if (!existingStorySet.has(sId)) {
+          const story = storyMap.get(sId);
+          if (!story) {
             throw new BadRequestException(
               `Referenced storyId ${sId} does not exist`,
+            );
+          }
+          if (story.visibility === 'PRIVATE') {
+            throw new BadRequestException(
+              `Referenced story ${sId} is private and cannot be claimed`,
+            );
+          }
+          if (story.status === 'CANCELLED') {
+            throw new BadRequestException(
+              `Referenced story ${sId} is cancelled and cannot be claimed`,
             );
           }
         }
       }
 
+      // 2.2 Chapters existence, story ownership & publication status
       if (allChapterIds.length > 0) {
-        const chaptersExist: { id: string; story_id: string }[] = await runner.query(
-          `SELECT id, story_id FROM chapters WHERE id = ANY($1)`,
+        const chaptersExist: {
+          id: string;
+          story_id: string;
+          has_published_version: boolean;
+        }[] = await runner.query(
+          `SELECT c.id, se.story_id,
+                  (
+                    EXISTS (
+                      SELECT 1 FROM chapter_versions cv
+                      WHERE cv.chapter_id = c.id AND cv.is_published = TRUE
+                    )
+                  ) AS has_published_version
+           FROM chapters c
+           JOIN story_editions se ON se.id = c.story_edition_id
+           WHERE c.id = ANY($1)`,
           [allChapterIds],
         );
-        const chapterMap = new Map(chaptersExist.map((c) => [c.id, c.story_id]));
+        const chapterMap = new Map(chaptersExist.map((c) => [c.id, c]));
+
+        for (const cId of allChapterIds) {
+          const chapter = chapterMap.get(cId);
+          if (!chapter) {
+            throw new BadRequestException(
+              `Referenced chapterId ${cId} does not exist`,
+            );
+          }
+          if (!chapter.has_published_version) {
+            throw new BadRequestException(
+              `Referenced chapter ${cId} is not published and cannot be claimed`,
+            );
+          }
+        }
 
         for (const h of dto.history) {
-          const expectedStoryId = chapterMap.get(h.chapterId);
-          if (!expectedStoryId || expectedStoryId !== h.storyId) {
+          const chapter = chapterMap.get(h.chapterId);
+          if (!chapter || chapter.story_id !== h.storyId) {
             throw new BadRequestException(
               `Chapter ${h.chapterId} does not belong to story ${h.storyId}`,
             );
@@ -231,10 +273,59 @@ export class GuestClaimService {
         }
 
         for (const p of dto.progress) {
-          const expectedStoryId = chapterMap.get(p.chapterId);
-          if (!expectedStoryId || expectedStoryId !== p.storyId) {
+          const chapter = chapterMap.get(p.chapterId);
+          if (!chapter || chapter.story_id !== p.storyId) {
             throw new BadRequestException(
               `Chapter ${p.chapterId} does not belong to story ${p.storyId}`,
+            );
+          }
+        }
+      }
+
+      // 2.3 Chapter Versions preflight (if specified in progress)
+      const progressWithVersions = dto.progress.filter((p) => Boolean(p.chapterVersionId));
+      if (progressWithVersions.length > 0) {
+        const allVersionIds = Array.from(
+          new Set(progressWithVersions.map((p) => p.chapterVersionId!)),
+        );
+
+        const versionsExist: {
+          id: string;
+          chapter_id: string;
+          story_id: string;
+          is_published: boolean;
+        }[] = await runner.query(
+          `SELECT cv.id, cv.chapter_id, se.story_id, cv.is_published
+           FROM chapter_versions cv
+           JOIN chapters c ON c.id = cv.chapter_id
+           JOIN story_editions se ON se.id = c.story_edition_id
+           WHERE cv.id = ANY($1)`,
+          [allVersionIds],
+        );
+        const versionMap = new Map(versionsExist.map((v) => [v.id, v]));
+
+        for (const p of progressWithVersions) {
+          const vId = p.chapterVersionId!;
+          const version = versionMap.get(vId);
+
+          if (!version) {
+            throw new BadRequestException(
+              `Referenced chapterVersionId ${vId} does not exist`,
+            );
+          }
+          if (version.chapter_id !== p.chapterId) {
+            throw new BadRequestException(
+              `ChapterVersion ${vId} does not belong to chapter ${p.chapterId}`,
+            );
+          }
+          if (version.story_id !== p.storyId) {
+            throw new BadRequestException(
+              `ChapterVersion ${vId} does not belong to story ${p.storyId}`,
+            );
+          }
+          if (!version.is_published) {
+            throw new BadRequestException(
+              `ChapterVersion ${vId} is not published and cannot be claimed`,
             );
           }
         }
@@ -464,32 +555,55 @@ export class GuestClaimService {
     await runner.startTransaction();
 
     try {
-      // 2. Lock & Check Claim Record
-      const claimRows: GuestClaim[] = await runner.query(
-        `SELECT * FROM guest_claims WHERE claim_id = $1 FOR UPDATE`,
-        [claimId],
-      );
+      // 2. Lock & Check Claim Record (EntityManager with pessimistic_write lock + raw SQL fallback)
+      let claim: GuestClaim | null = null;
+      if (runner.manager && typeof runner.manager.findOne === 'function') {
+        claim = await runner.manager.findOne(GuestClaim, {
+          where: { claimId },
+          lock: { mode: 'pessimistic_write' },
+        });
+      }
+      if (!claim) {
+        const claimRows: GuestClaim[] = await runner.query(
+          `SELECT * FROM guest_claims WHERE claim_id = $1 FOR UPDATE`,
+          [claimId],
+        );
+        if (claimRows && claimRows.length > 0) {
+          claim = claimRows[0];
+        }
+      }
 
-      if (!claimRows || claimRows.length === 0) {
+      if (!claim) {
         throw new NotFoundException(`Claim ${claimId} not found`);
       }
 
-      const claim = claimRows[0];
+      // Safe accessors supporting both hydrated TypeORM Entity and raw PostgreSQL snake_case row
+      const claimUserId = claim.userId ?? (claim as any).user_id;
+      const claimIdVal = claim.claimId ?? (claim as any).claim_id;
+      const claimStatus = claim.status;
+      const claimStateFingerprint =
+        claim.stateFingerprint ?? (claim as any).state_fingerprint;
+      const claimPreviewData =
+        claim.previewData ?? (claim as any).preview_data;
+      const claimResultSummary =
+        claim.resultSummary ?? (claim as any).result_summary;
+      const claimExpiresAt = claim.expiresAt ?? (claim as any).expires_at;
+      const claimCommittedAt = claim.committedAt ?? (claim as any).committed_at;
 
-      if (claim.userId !== userId) {
+      if (claimUserId !== userId) {
         throw new ForbiddenException('You do not own this claim');
       }
 
       // Idempotency First: Nếu đã COMMITTED, trả kết quả đã lưu vĩnh viễn (200 OK)
-      if (claim.status === GuestClaimStatusEnum.COMMITTED) {
+      if (claimStatus === GuestClaimStatusEnum.COMMITTED) {
         await runner.rollbackTransaction();
         return {
-          claimId: claim.claimId,
+          claimId: claimIdVal,
           status: 'COMMITTED',
-          committedAt: claim.committedAt
-            ? new Date(claim.committedAt).toISOString()
+          committedAt: claimCommittedAt
+            ? new Date(claimCommittedAt).toISOString()
             : new Date().toISOString(),
-          summary: claim.resultSummary || {
+          summary: claimResultSummary || {
             bookmarksImported: 0,
             historyMerged: 0,
             progressUpdated: 0,
@@ -498,14 +612,14 @@ export class GuestClaimService {
         };
       }
 
-      if (claim.status === GuestClaimStatusEnum.ABORTED) {
+      if (claimStatus === GuestClaimStatusEnum.ABORTED) {
         throw new BadRequestException('Claim was aborted');
       }
 
       const now = new Date();
       if (
-        claim.status === GuestClaimStatusEnum.PREPARED &&
-        now > new Date(claim.expiresAt)
+        claimStatus === GuestClaimStatusEnum.PREPARED &&
+        now > new Date(claimExpiresAt)
       ) {
         await runner.query(
           `UPDATE guest_claims SET status = 'EXPIRED', updated_at = NOW() WHERE claim_id = $1`,
@@ -535,7 +649,7 @@ export class GuestClaimService {
       );
 
       const storedPayload: PrepareGuestClaimDto =
-        claim.previewData?.payload || claim.previewData;
+        claimPreviewData?.payload || claimPreviewData;
 
       const storyIds = Array.from(
         new Set([
@@ -584,8 +698,8 @@ export class GuestClaimService {
       });
 
       if (
-        currentFingerprint !== claim.stateFingerprint ||
-        dto.expectedStateFingerprint !== claim.stateFingerprint
+        currentFingerprint !== claimStateFingerprint ||
+        dto.expectedStateFingerprint !== claimStateFingerprint
       ) {
         throw new ConflictException(
           'CLAIM_STALE_REPREPARE: Cloud state changed since claim preparation',
@@ -635,7 +749,7 @@ export class GuestClaimService {
 
       // 4.3 Reading Progress Merge (1-based pageIndex >= 1)
       const conflictList: ReadingProgressConflictDetail[] =
-        claim.previewData?.conflicts || [];
+        claimPreviewData?.conflicts || [];
       const conflictStoryIds = new Set(conflictList.map((c) => c.storyId));
 
       for (const p of storedPayload.progress || []) {
@@ -749,24 +863,37 @@ export class GuestClaimService {
       throw new NotFoundException(`Claim ${claimId} not found`);
     }
 
-    if (claim.userId !== userId) {
+    const claimUserId = claim.userId ?? (claim as any).user_id;
+    const claimIdVal = claim.claimId ?? (claim as any).claim_id;
+    const claimStatus = claim.status;
+    const claimStateFingerprint =
+      claim.stateFingerprint ?? (claim as any).state_fingerprint;
+    const claimPreviewData =
+      claim.previewData ?? (claim as any).preview_data;
+    const claimResultSummary =
+      claim.resultSummary ?? (claim as any).result_summary;
+    const claimCreatedAt = claim.createdAt ?? (claim as any).created_at;
+    const claimExpiresAt = claim.expiresAt ?? (claim as any).expires_at;
+    const claimCommittedAt = claim.committedAt ?? (claim as any).committed_at;
+
+    if (claimUserId !== userId) {
       throw new ForbiddenException('You do not own this claim');
     }
 
-    const preview = { ...claim.previewData };
+    const preview = { ...claimPreviewData };
     if (preview.payload) {
       delete preview.payload;
     }
 
     return {
-      claimId: claim.claimId,
-      status: claim.status,
-      stateFingerprint: claim.stateFingerprint,
-      createdAt: claim.createdAt.toISOString(),
-      expiresAt: claim.expiresAt.toISOString(),
-      committedAt: claim.committedAt ? claim.committedAt.toISOString() : null,
+      claimId: claimIdVal,
+      status: claimStatus,
+      stateFingerprint: claimStateFingerprint,
+      createdAt: new Date(claimCreatedAt).toISOString(),
+      expiresAt: new Date(claimExpiresAt).toISOString(),
+      committedAt: claimCommittedAt ? new Date(claimCommittedAt).toISOString() : null,
       previewData: preview,
-      resultSummary: claim.resultSummary,
+      resultSummary: claimResultSummary,
     };
   }
 }

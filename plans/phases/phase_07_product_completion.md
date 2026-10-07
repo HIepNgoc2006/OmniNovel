@@ -85,9 +85,9 @@ graph TD
   - [ ] `POST /api/v1/auth/change-password` (Giữ nguyên `req.user.sessionId`, thu hồi toàn bộ các phiên khác).
   - [ ] `GET /api/v1/account/sessions` & `DELETE /api/v1/account/sessions/:id` (Quản lý session metadata ổn định `auth_session` qua `familyId`: IP, User-Agent, lastActiveAt, isCurrentSession = `familyId === req.user.sessionId`).
   - [ ] Quy Chuẩn Hai Pha Xóa Tài Khoản & Khôi Phục (Two-Phase Deletion):
-    * Day 0 Soft Delete (`DELETE /api/v1/account`): `is_deleted = true, scheduled_purge_at = NOW() + 30d`, thu hồi sessions, **BẢO TỒN NGUYÊN VẸN** toàn bộ attributions `stories`, `chapter_versions`, `story_members`, `guest_claims.user_id`.
+    * Day 0 Soft Delete (`DELETE /api/v1/account`): `is_deleted = true, scheduled_purge_at = NOW() + 30d`, thu hồi sessions, **BẢO TỒN NGUYÊN VẸN** toàn bộ attributions `stories`, `chapter_versions`, `story_members`, `guest_claims.user_id`, `reward_transactions.user_id`.
     * Khôi Phục (`POST /api/v1/auth/reactivate-account`): Endpoint chuyên biệt (trong grace period xác thực mật khẩu khôi phục 100%; quá hạn chưa purge trả 410 ACCOUNT_PURGED; đã hard-delete trả generic 401 anti-enumeration).
-    * Day 30 Final Purge: Background worker dùng Node.js crypto SHA-256 hash ẩn danh hóa `guest_claims` (không phụ thuộc `pgcrypto`), sau đó `DELETE FROM users WHERE id = :userId` (hard-delete), tận dụng FK ground-truth `ON DELETE SET NULL` gỡ attribution tác giả công khai và `ON DELETE CASCADE` xóa sạch 100% dữ liệu riêng tư & reading-state metadata / tombstones.
+    * Day 30 Final Purge: Background worker dùng Node.js crypto SHA-256 hash ẩn danh hóa các sổ cái bền vững (`guest_claims`, `reward_transactions`, không phụ thuộc `pgcrypto`), sau đó `DELETE FROM users WHERE id = :userId` (hard-delete), tận dụng FK ground-truth `ON DELETE SET NULL` gỡ attribution tác giả/báo cáo công khai và `ON DELETE CASCADE` xóa sạch 100% dữ liệu riêng tư & reading-state metadata / tombstones (loại bỏ bảng ảo `reading_history`).
   - [ ] `GET /api/v1/account/export-data` (Xuất toàn bộ dữ liệu cá nhân dạng JSON).
 - [ ] **7B.3. Client Explicit Claim Dialog, Marker Quarantine & Transactional Rebind**
   - [ ] Client giữ nguyên trạng thái `TRANSITIONING` trong suốt quá trình claim pending, chặn mọi mutation ghi đè lên account.

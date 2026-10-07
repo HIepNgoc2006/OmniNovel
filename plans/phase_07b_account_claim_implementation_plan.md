@@ -1,6 +1,6 @@
 # 📋 Implementation Plan: Phase 7B — Account Claim & Lifecycle Protocol
 
-> **Trạng thái:** `[ ] ĐANG CHỜ REVIEW & PHÊ DUYỆT (NO-GO TO CODE UNTIL FROZEN)`  
+> **Trạng thái:** `[/] ĐANG TRIỂN KHAI THEO KẾ HOẠCH ĐÃ ĐÓNG BĂNG (FROZEN)`  
 > **Căn cứ kỹ thuật:**
 > - [plans/product/identity_and_ownership_model.md](product/identity_and_ownership_model.md) (SSoT số 1 đã amend)
 > - [plans/product/guest_to_account_claim_protocol.md](product/guest_to_account_claim_protocol.md) (SSoT số 2 đã amend)
@@ -572,8 +572,8 @@ Sau khi kế hoạch này được **REVIEW & FREEZE** bởi người dùng, quy
 |---|---|---|
 | **Step 0** | **Review, Chỉnh sửa & Đóng băng Kế hoạch (Freeze Plan Signoff)** | `[x] Đã hoàn thành (User Signoff 7e817ad)` |
 | **Step 1** | **Tạo Shared Contracts (`packages/shared`) & Dart Mirror Models** (DTOs, Types, Enums, 1-based pageIndex, canonical readingMode) | `[x] Đã hoàn thành (Commit 89e29c5, CI Run #417 Green)` |
-| **Step 2** | **Task 7B.1 Backend API Engine & PostgreSQL Ledger** (Entity, Migration, Service, Controller, Ensure Epoch Row, Bookmarks Table, Mode-Aware Conflict)<br>• **Task 7B.1a Mini-Remediation:** Khắc phục P0-1 (raw-row/entity mapping in `commitClaim`), P0-2 (`chapterVersionId` + publication-state preflight), và thêm PostgreSQL Integration Spec (`guest-claim.integration-spec.ts`) | `[/] Đang xác minh Hosted CI (P0-1 & P0-2 Remediation Complete, 21/21 Unit Tests Green)` |
-| **Step 3** | **Task 7B.2 Backend Account Lifecycle APIs** (Register Auto-Login, sid in Access Token, Forgot Hash/Anti-Enum, Change Pwd Revoke Others, Stable Sessions, Reactivate Endpoint, Two-Phase Purge với Node SHA-256) | `[ ] Chờ Task 7B.1 Closed/Frozen` |
+| **Step 2** | **Task 7B.1 Backend API Engine & PostgreSQL Ledger** (Entity, Migration, Service, Controller, Ensure Epoch Row, Bookmarks Table, Mode-Aware Conflict)<br>• **Task 7B.1a Mini-Remediation:** Khắc phục P0-1 (raw-row/entity mapping in `commitClaim`), P0-2 (`chapterVersionId` + publication-state preflight), và thêm PostgreSQL Integration Spec (`guest-claim.integration-spec.ts`) | `[x] Đã hoàn thành / FROZEN (Run #420 Green 7/7, Commit c70f927)` |
+| **Step 3** | **Task 7B.2 Backend Account Lifecycle APIs** (Register Auto-Login, sid in Access Token, Forgot Hash/Anti-Enum, Change Pwd Revoke Others, Stable Sessions, Reactivate Endpoint, Two-Phase Purge với Node SHA-256) | `[/] Đang triển khai` |
 | **Step 4** | **Task 7B.3 Web Client Integration** (Transitioning Scope Flow, Dialog, Marker Quarantine, Hook, IndexedDB Rebind) | `[ ] Chờ Step 3` |
 | **Step 5** | **Task 7B.3 Mobile Client Integration** (Transitioning Scope Flow, Dialog, SQLite Transactional Merge, Marker Quarantine, Crash Recovery) | `[ ] Chờ Step 3` |
 | **Step 6** | **Task 7B.4 Test Automation & Crash Matrix Verification** (E2E tests, Unit tests, user_progression assertion, 7A regression gate) | `[ ] Chờ Step 4,5` |

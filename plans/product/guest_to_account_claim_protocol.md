@@ -9,6 +9,7 @@
 
 1. **Giao thức một lần (One-Time Handover):**
    - Chuyển giao dữ liệu từ Guest sang Account diễn ra khi người dùng định danh chính mình (Đăng ký mới hoặc Đăng nhập tài khoản cũ).
+   - **Register Auto-Login Semantics (Khóa từ Phase 7B):** Endpoint `POST /api/v1/auth/register` được chuẩn hóa tự động đăng nhập sau khi tạo user thành công (cấp phát `familyId`, trả `accessToken` kèm claim `sid`, và gán `refreshToken` cookie tương tự `POST /login`). Nhờ đó, client ngay lập tức sở hữu phiên hợp lệ trong trạng thái `TRANSITIONING` để kích hoạt giao thức Guest Claim mà không bắt người dùng phải đăng nhập lại lần thứ hai.
    - Đây không phải là luồng đồng bộ định kỳ hay liên tục. Luồng đồng bộ liên tục đa thiết bị sẽ do **Phase 7C: Unified Sync Protocol** đảm nhiệm sau khi tài khoản đã được xác thực.
 2. **Quyền quyết định thuộc về Người dùng (Explicit User Choice — Không Auto-Commit Ngầm):**
    - Sau khi đăng nhập/đăng ký thành công, client chuyển sang trạng thái `TRANSITIONING`. Client có thể tự động kiểm tra và chuẩn bị dữ liệu (`prepare`), nhưng **tuyệt đối không được tự ý commit ngầm**.
@@ -179,7 +180,9 @@ CREATE INDEX idx_guest_claims_expires_at ON guest_claims(expires_at) WHERE statu
 ```
 
 > [!NOTE]
-> Cột `user_id` là nullable với `ON DELETE SET NULL`. Khi người dùng thực hiện xóa tài khoản, hệ thống cập nhật `anonymized_subject_hash = encode(sha256(user_id::text::bytea), 'hex')` và đặt `user_id = NULL`. Bản ghi sổ cái được bảo toàn cho mục đích kiểm toán toàn vẹn hệ thống và chống gian lận kinh tế mà không lưu trữ PII của người dùng đã xóa.
+> Cột `user_id` là nullable với `ON DELETE SET NULL`.
+> - **Tại Day 0 (Soft Delete):** `user_id` VẪN ĐƯỢC GIỮ NGUYÊN trong `guest_claims` để bảo đảm tính toàn vẹn nếu người dùng khôi phục tài khoản trong vòng 30 ngày qua `POST /api/v1/auth/reactivate-account`.
+> - **Tại Day 30 (Final Purge):** Khi hết hạn 30 ngày grace period mà người dùng không khôi phục, scheduled worker tính `anonymized_subject_hash = crypto.createHash('sha256').update(userId).digest('hex')` ở tầng Node.js (không phụ thuộc extension `pgcrypto`), cập nhật vào `guest_claims` và đặt `user_id = NULL`. Bản ghi sổ cái được bảo toàn vĩnh viễn cho mục đích kiểm toán toàn vẹn hệ thống và chống gian lận kinh tế mà không lưu trữ bất kỳ PII nào.
 
 ### Thứ Tự Thực Thi & Quy Tắc Chuyển Trạng Thái Ledger:
 Tại endpoint `POST /api/v1/account/guest-claims/:claimId/commit`, thứ tự kiểm tra bắt buộc phải tuân thủ nghiêm ngặt:

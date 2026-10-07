@@ -79,12 +79,15 @@ graph TD
   - [ ] `GET /api/v1/account/guest-claims/:claimId/status`:
     - Phục vụ crash recovery cho client sau commit timeout / app crash.
 - [ ] **7B.2. Backend Account Lifecycle APIs (`services/api`)**
-  - [ ] Access Token session claim: Đưa `sid = familyId` vào access token, `JwtStrategy` expose `req.user.sessionId`.
+  - [ ] Register Auto-Login & Access Token session claim: `POST /api/v1/auth/register` tự động cấp session và tokens tương tự login; đưa `sid = familyId` vào access token, `JwtStrategy` expose `req.user.sessionId`.
   - [ ] `POST /api/v1/auth/forgot-password` (Anti-enumeration response chuẩn hóa, mã hóa hash token SHA-256 trên Redis).
   - [ ] `POST /api/v1/auth/reset-password` (Kiểm tra hash token, băm mật khẩu mới, thu hồi toàn bộ sessions).
   - [ ] `POST /api/v1/auth/change-password` (Giữ nguyên `req.user.sessionId`, thu hồi toàn bộ các phiên khác).
   - [ ] `GET /api/v1/account/sessions` & `DELETE /api/v1/account/sessions/:id` (Quản lý session metadata ổn định `auth_session` qua `familyId`: IP, User-Agent, lastActiveAt, isCurrentSession = `familyId === req.user.sessionId`).
-  - [ ] `DELETE /api/v1/account` (Khóa chính sách duy nhất: Soft Delete + 30-Day Grace Period với migration `scheduled_purge_at`, ẩn danh hóa `chapter_versions`, `stories`, và `guest_claims`).
+  - [ ] Quy Chuẩn Hai Pha Xóa Tài Khoản & Khôi Phục (Two-Phase Deletion):
+    * Day 0 Soft Delete (`DELETE /api/v1/account`): `is_deleted = true, scheduled_purge_at = NOW() + 30d`, thu hồi sessions, **BẢO TỒN NGUYÊN VẸN** toàn bộ attributions `stories`, `chapter_versions`, `story_members`, `guest_claims.user_id`.
+    * Khôi Phục (`POST /api/v1/auth/reactivate-account`): Endpoint chuyên biệt, xác thực mật khẩu, kiểm tra grace period, phục hồi tài khoản và attributions 100%.
+    * Day 30 Final Purge: Background worker dùng Node.js crypto SHA-256 hash ẩn danh hóa `guest_claims` (không phụ thuộc `pgcrypto`), gỡ attribution tác giả và xóa sạch dữ liệu riêng tư.
   - [ ] `GET /api/v1/account/export-data` (Xuất toàn bộ dữ liệu cá nhân dạng JSON).
 - [ ] **7B.3. Client Explicit Claim Dialog, Marker Quarantine & Transactional Rebind**
   - [ ] Client giữ nguyên trạng thái `TRANSITIONING` trong suốt quá trình claim pending, chặn mọi mutation ghi đè lên account.

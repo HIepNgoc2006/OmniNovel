@@ -19,5 +19,8 @@
   ],
   "engines": {
     "node": ">=20.9.0"
+  },
+  "overrides": {
+    "proxy-addr": "2.0.8"
   }
 }

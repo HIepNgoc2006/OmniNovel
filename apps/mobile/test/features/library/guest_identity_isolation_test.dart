@@ -20,11 +20,15 @@ import 'package:omninovel_mobile/features/library/repositories/library_access.da
 import 'package:omninovel_mobile/features/library/repositories/library_repository.dart';
 import 'package:omninovel_mobile/features/library/repositories/scoped_library_dispatcher.dart';
 import 'package:omninovel_mobile/features/reader/models/reading_progress_models.dart';
+import 'package:omninovel_mobile/features/reader/models/story_reading_state.dart';
 import 'package:omninovel_mobile/features/reader/repositories/account_reading_session_adapter.dart';
+import 'package:omninovel_mobile/features/reader/repositories/account_reading_state_adapter.dart';
 import 'package:omninovel_mobile/features/reader/repositories/guest_reading_progress_repository.dart';
 import 'package:omninovel_mobile/features/reader/repositories/guest_reading_session_adapter.dart';
+import 'package:omninovel_mobile/features/reader/repositories/guest_reading_state_adapter.dart';
 import 'package:omninovel_mobile/features/reader/repositories/reading_progress_repository.dart';
 import 'package:omninovel_mobile/features/reader/repositories/scoped_reading_session_dispatcher.dart';
+import 'package:omninovel_mobile/features/reader/repositories/scoped_reading_state_dispatcher.dart';
 import 'package:path/path.dart' as p;
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -353,6 +357,12 @@ void main() {
                 chapterId: null,
                 writeEpoch: 0,
               ));
+      when(() => mockAccountProgressRepo.getLocalCheckpoint('story-preserved-mob'))
+          .thenAnswer((_) async => null);
+      when(() => mockAccountProgressRepo.setServerEpoch('story-preserved-mob', 0))
+          .thenReturn(null);
+      when(() => mockAccountProgressRepo.ensureServerEpoch('story-preserved-mob'))
+          .thenAnswer((_) async => 0);
 
       final authService = FakeAuthService();
       authService.updateState(AuthState.authenticated(
@@ -363,6 +373,12 @@ void main() {
       final bobLibraryDispatcher = ScopedLibraryDispatcher(
         accountAdapter: AccountLibraryAdapter(repository: mockAccountLibRepo),
         guestAdapter: GuestLibraryAdapter(guestRepository: guestLibRepo),
+        authService: authService,
+        coordinator: coordinator,
+      );
+      final bobStateDispatcher = ScopedReadingStateDispatcher(
+        accountAdapter: AccountReadingStateAdapter(repository: mockAccountProgressRepo),
+        guestAdapter: GuestReadingStateAdapter(guestRepository: guestProgressRepo),
         authService: authService,
         coordinator: coordinator,
       );
@@ -382,6 +398,17 @@ void main() {
 
       final bobHistory = await bobLibraryDispatcher.fetchHistory();
       expect(bobHistory.data, isEmpty);
+
+      // Bob kiểm tra tiến độ đọc qua ScopedReadingStateDispatcher -> zero reading progress từ Guest G2, null resume pointer
+      final bobReadingState = await bobStateDispatcher.getStoryReadingState('story-preserved-mob');
+      expect(bobReadingState.resume, isNull);
+      expect(bobReadingState.readChapterIds, isEmpty);
+      verify(() => mockAccountProgressRepo.getProgress('story-preserved-mob')).called(1);
+      verify(() => mockAccountProgressRepo.getLocalCheckpoint('story-preserved-mob')).called(1);
+
+      // Bob khởi tạo reading session qua ScopedReadingSessionDispatcher -> binds to Bob's account-side repository
+      await bobSessionDispatcher.initSession(storyId: 'story-preserved-mob');
+      verify(() => mockAccountProgressRepo.ensureServerEpoch('story-preserved-mob')).called(1);
 
       // Guest repositories lập tức ném InvalidGuestScopeException khi bị gọi trong session của Bob
       expect(

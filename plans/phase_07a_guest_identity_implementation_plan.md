@@ -355,22 +355,24 @@ git push origin main
 
 ## 🏁 Phase 7A Final Verification & Frozen Clean Signoff
 
-- **Canonical Code Baseline:** `80a3bd1789c03264669f984fc1b238350eb93850` (commit `80a3bd1` on `main`)
+- **Canonical Code Baseline (Run #405):** `80a3bd1e2d8eeb445fdc9e371d02f5edbbb71a0d` (commit `80a3bd1` on `main`)
 - **Hosted GitHub Actions CI Status:** **SUCCESS / ALL 7 JOBS GREEN ✅**
-  - **Run #405 / ID:** `37419423501`
+  - **Run #405 / ID:** `37419423501` (Run #406 / ID: `37420311655` at `788927f`)
   - **Mobile Client Test Suite (Phase 5A Foundation):** ✅ PASS (Analyze 0 errors, Foundation tests PASS)
   - **AI Worker Test Suite (Pytest & Real OCR Model):** ✅ PASS
   - **Security Audit & Secret Scanning:** ✅ PASS
   - **NestJS Core API Test Suite (Jest Unit & E2E):** ✅ PASS
-  - **Web Client Test Suite (Lint, Typecheck, Vitest & Playwright E2E):** ✅ PASS (635/635 Vitest, Playwright E2E smoke suite 100% green)
-  - **Docker Images Build & Security Scan:** ✅ PASS (Core API, AI Worker, Nginx, Prometheus, Grafana Trivy scans clean)
-  - **VPS Production Deployment & Topology Verification:** ✅ PASS
+  - **Web Client Test Suite (Lint, Typecheck, Vitest & Playwright E2E):** ✅ PASS (48 test files, 635/635 Vitest, 31/31 Playwright E2E smoke suite 100% green)
+  - **Docker Images Build & Security Scan:** ✅ PASS (Trivy HIGH/CRITICAL gate PASS under governed exception policy across all 5 images: Core API, AI Worker, Nginx, Prometheus, Grafana)
+  - **VPS Production Deployment & Topology Verification:** ✅ PASS (Compose multi-container topology & spec validation; not live deployment as `VPS_SSH_HOST`/`VPS_SSH_KEY` are not configured in CI)
 - **Acceptance Gate Refinements Verified:**
   1. **Playwright E2E Selector Fixed:** Updated `apps/web/e2e/catalog-discovery.spec.ts` to query `/Lưu Vào Thư Viện/i` and `'Đã Lưu Vào Thư Viện'`, resolving the hosted E2E timeout regression.
   2. **Web Gate 4 Mutation Abstraction:** Verified fail-closed behavior via `getReadingStateRepository(coordinator.state)` throwing `ScopeNotResolvedError` when `BOOTSTRAPPING`, assert 0 records in IndexedDB progress & bookmarks stores, followed by clean retry through `resolvedRepo.saveProgress()`.
-  3. **Gate 3 Application-Layer Isolation:** Explicitly verified from Bob-facing repositories/dispatchers on both Web (`AccountReadingStateRepository`, `storiesApi.getBookmarksApi`, `storiesApi.getReadingHistoryApi`) and Mobile (`ScopedLibraryDispatcher`, `ScopedReadingSessionDispatcher`) that Bob reads zero data from Alice and zero data from Guest G2, guest repositories throw `InvalidGuestScopeException` under Bob's session, while physical storage (IDB/SQLite) safely preserves G2's rows in its dedicated partition.
-  4. **Trivy Exception Governed:** Added `CVE-2026-90711` (`proxy-addr`) to `.trivyignore` and `deploy/security/trivy-exception-register.md` under Category C with full compensating controls (Nginx ingress sanitization, private bridge network, non-root runner).
+  3. **Gate 3 Application-Layer Isolation:** Explicitly verified from Bob-facing repositories and dispatchers on both Web (`AccountReadingStateRepository`, `storiesApi.getBookmarksApi`, `storiesApi.getReadingHistoryApi`) and Mobile (`ScopedLibraryDispatcher`, `ScopedReadingStateDispatcher`, `ScopedReadingSessionDispatcher`). Bob reads zero data from Alice and zero data from Guest G2 (null resume pointer, empty read chapters/bookmarks/history), verifying real invocations on `mockAccountProgressRepo.getProgress`, `getLocalCheckpoint`, and session initialization binding `ensureServerEpoch`. Guest repositories throw `InvalidGuestScopeException` under Bob's session, while physical storage (IDB/SQLite) safely preserves G2's rows in its dedicated partition.
+  4. **Dependency Vulnerability Remediation (`proxy-addr` & CVE-2026-90711):** Upgraded `proxy-addr` to `2.0.8` via npm override, resolving `CVE-2026-90711` and removing it from `.trivyignore`. Technical exposure rationale verified: NestJS Core API does not enable `trust proxy`, does not configure vulnerable IPv4-mapped IPv6 subnets, and does not use `req.ip` for security/authorization authority. Remaining distro/ecosystem exceptions remain governed under `deploy/security/trivy-exception-register.md`.
+  5. **Evidence Integrity Reconciliation:** Corrected Canonical Full SHA to `80a3bd1e2d8eeb445fdc9e371d02f5edbbb71a0d`, clarified Trivy exception governance terminology, and documented VPS job topology-only verification scope.
 
-**Verdict:** **Phase 7A CLOSED / FROZEN CLEAN ✅**
+**Verdict:** **Phase 7A Remediation Candidate Ready for Hosted CI Verification 🚀**
+*(Trạng thái FROZEN CLEAN sẽ chính thức đóng dấu tại candidate commit sau khi hosted CI hoàn tất 7/7 jobs xanh).*
 
 

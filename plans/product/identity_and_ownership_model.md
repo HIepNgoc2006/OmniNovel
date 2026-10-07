@@ -139,7 +139,7 @@ stateDiagram-v2
   - `activeScope` chuyển sang `account:<userId>`.
 - **Trường hợp B: Người dùng HỦY Claim (Cancel Claim / Skip):**
   - **TUYỆT ĐỐI KHÔNG MUTATE GUEST DATA.** Không tự ý xóa guest bookmarks/progress/history.
-  - Chuyển `guest:<guestProfileId>` vào danh sách **Quarantine / Retained Storage** để bảo toàn dữ liệu.
+  - Đánh dấu `guest:<guestProfileId>` vào danh sách **Quarantine / Retained Storage** qua marker list `quarantineGuestScope(guestProfileId)` (`omninovel_quarantined_guest_profiles`), **giữ nguyên partition vật lý `guest:<guestProfileId>`, tuyệt đối không đổi tên namespace**.
   - `activeScope` chuyển sang `account:<userId>`.
 
 #### Kịch bản 3: Người dùng đăng xuất (Account → Fresh Guest) — *P0 Invariant: Chống Ô Nhiễm Chéo*
@@ -180,7 +180,8 @@ Mobile và Web (Cache API/IndexedDB) cho phép tải nội dung để đọc khi
 1. **Chương Truyện Miễn Phí (Public Chapters):**
    - Guest tải chương public: file ảnh lưu vào `payloads/` dựa trên mã băm SHA256, manifest ghi nhận `ownerScope: guest:<guestProfileId>`.
    - Khi Guest claim tài khoản thành công:
-     - Hệ thống thực hiện **Metadata Rebind**: cập nhật manifest sang `ownerScope: account:<userId>`.
+     - Hệ thống thực hiện **Transactional Local Merge** (upsert bookmarks, merge read states và progress trong database cục bộ, tránh xung đột Primary Key `[ownerScope, storyId]`) và dọn dẹp an toàn partition khách nguồn.
+     - **Metadata Rebind:** Cập nhật manifest offline chapters sang `ownerScope: account:<userId>`.
      - **Không cần tải lại tệp tin** nếu mã băm SHA256 vẫn khớp với bản ghi trên server.
 2. **Chương Truyện Khóa / Trả Phí / Quyền Đặc Biệt (Protected Content):**
    - Guest không được phép tải.

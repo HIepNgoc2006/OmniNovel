@@ -33,10 +33,11 @@ Tài liệu này theo dõi tiến độ toàn diện của dự án **OmniNovel*
   - `[x]` 7A.5. Mobile Local Library Schema & Repository (SQLite v3 `owner_scope` — LocalLibraryDao & Guest Repositories Completed ✅).
   - `[x]` 7A.6. Mobile Guest Navigation & Reader Integration ("Continue as Guest" — Step 1 & Step 2 FROZEN CLEAN at `903d718` ✅).
   - `[x]` 7A.7. Identity Isolation / Persistence / Crash / Acceptance Verification (Cross-Platform Matrix PASS ✅).
-- **Phase 7B: Account Claim & Lifecycle Protocol** `[ ] Đang Lập Kế Hoạch`
-  - `[ ]` 7B.1. Three-Endpoint Claim Backend API (`POST /prepare`, `POST /commit`, `GET /status`, Durable PostgreSQL Ledger `guest_claims`, TOCTOU Fingerprint, Zero Gamification).
-  - `[ ]` 7B.2. Account Lifecycle APIs (`forgot-password`, `reset-password`, `change-password`, `GET/DELETE sessions`, `DELETE account`, `GET export-data`).
-  - `[ ]` 7B.3. Client Explicit Claim Dialog, Quarantine & Offline Metadata Rebind.
+- **Phase 7B: Account Claim & Lifecycle Protocol** `[ ] Đang Lập Kế Hoạch (Chờ Freeze)`
+  - `[ ]` 7B.1. Three-Endpoint Claim Backend API (`POST /prepare`, `POST /commit`, `GET /status`, Durable PostgreSQL Ledger `guest_claims`, `chapter_read_states`, `reading_progress`, 1-based `pageIndex >= 1`, Idempotency First, Best-effort Redis Lock, Domain Row Locking chống TOCTOU, Mode-Aware Conflict, Tombstone Anti-Resurrection, Zero Gamification).
+  - `[ ]` 7B.2. Account Lifecycle APIs (`forgot-password` non-enumeration + hash token, `reset-password`, `change-password` revoke others, stable session management `auth_session` via `familyId`, single soft-delete 30-day grace period, `GET export-data`).
+  - `[ ]` 7B.3. Client Explicit Claim Dialog, Marker Quarantine (giữ nguyên partition vật lý) & SQLite Transactional Local Merge.
+  - `[ ]` 7B.3.1. Shared Contracts Architecture (Canonical TS contracts cho API/Web, Mirror Dart models cho Mobile).
   - `[ ]` 7B.4. Comprehensive Test Suite & Crash Acceptance Matrix.
 - **Phase 7C: Unified Multi-Device Sync Engine** `[ ] Chưa làm`
   - `[ ]` 7C.1. Core API Sync Hub (`GET /sync/changes?after=rev`, `POST /sync/mutations/batch`).

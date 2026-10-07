@@ -1,7 +1,7 @@
 # 🤝 OmniNovel Architecture: Guest-to-Account Claim Protocol
 
 > **Tài liệu Canonical SSoT số 2** thuộc **Phase 7.0 — Product Architecture & Data Ownership Design Gate** (Amended cho Phase 7B).  
-> Thiết lập giao thức chuyển giao dữ liệu Khách sang Tài khoản (Claim Protocol) 2 bước xác định, đảm bảo tính bền vững (Durable Idempotency in PostgreSQL), chống xung đột dữ liệu (TOCTOU & State Fingerprint Protection), kiểm soát quyền sở hữu nghiêm ngặt, bảo vệ kinh tế ảo và cung cấp cơ chế phục hồi lỗi (Crash Recovery).
+> Thiết lập giao thức chuyển giao dữ liệu Khách sang Tài khoản (Claim Protocol) 2 bước xác định, đảm bảo tính bền vững (Durable Idempotency in PostgreSQL), chống xung đột dữ liệu (TOCTOU & State Fingerprint Protection với Domain Row Locking), kiểm soát quyền sở hữu nghiêm ngặt, bảo vệ kinh tế ảo và cung cấp cơ chế phục hồi lỗi (Crash Recovery).
 
 ---
 
@@ -13,36 +13,46 @@
 2. **Quyền quyết định thuộc về Người dùng (Explicit User Choice — Không Auto-Commit Ngầm):**
    - Sau khi đăng nhập/đăng ký thành công, client có thể tự động kiểm tra và chuẩn bị dữ liệu (`prepare`), nhưng **tuyệt đối không được tự ý commit ngầm**.
    - Người dùng phải được hiển thị hộp thoại xác nhận rõ ràng: **"Gộp dữ liệu vào tài khoản" (Claim)** hoặc **"Bỏ qua" (Skip)**.
-   - Nếu người dùng chọn **Skip**: Dữ liệu khách được chuyển sang trạng thái **Quarantine** (`quarantine:<guestProfileId>`), **tuyệt đối không bị xóa (purge)**.
+   - Nếu người dùng chọn **Skip**: Dữ liệu khách được chuyển sang trạng thái **Quarantine** qua danh sách marker `quarantineGuestScope(guestProfileId)`. **Tuyệt đối không đổi tên partition vật lý** (vẫn giữ nguyên `guest:<guestProfileId>`) và **tuyệt đối không bị xóa (purge)**.
    - Dữ liệu khách nguồn chỉ được phép purge và rebind sau khi máy chủ xác nhận trạng thái bền vững `COMMITTED`.
 3. **Claim Source Identity là `guest:<guestProfileId>`, không phải `installationId`:**
    - `installationId` thuần túy là định danh thiết bị vật lý (`device:<installationId>`). Network DTO không bao giờ sử dụng `installationId` làm claim credential hay claim identity.
    - Nguồn claim duy nhất được định danh bằng `guestProfileId` (UUIDv4) thuộc về phiên khách cụ thể.
 4. **Idempotency Bền Vững Trong PostgreSQL (Durable Ledger In DB):**
-   - Redis chỉ đóng vai trò phân tán khóa (`claim_lock:<claimId>`) và hot cache / rate limiting.
-   - **PostgreSQL là Single Source of Truth duy nhất** cho trạng thái claim thông qua bảng sổ cái `guest_claims`.
-   - Trạng thái `COMMITTED` và kết quả gộp dữ liệu (`result_summary`) bắt buộc phải được ghi nhận trong **cùng một Database Transaction** với toàn bộ thao tác gộp Bookmarks, Reading History và Reading Progress.
+   - **PostgreSQL là Single Source of Truth và Correctness Authority duy nhất** cho trạng thái claim thông qua bảng sổ cái `guest_claims`.
+   - Redis Distributed Lock (`claim_lock:<claimId>`) chỉ đóng vai trò **Best-Effort Concurrency Optimization** nhằm giảm tải tranh chấp ở tầng ứng dụng. Nếu Redis gặp sự cố, timeout hoặc restart, hệ thống **bắt buộc phải fallback mượt mà** tiếp tục xử lý an toàn bằng cơ chế khóa hàng PostgreSQL (`SELECT ... FOR UPDATE`).
+   - Trạng thái `COMMITTED` và kết quả gộp dữ liệu (`result_summary`) bắt buộc phải được ghi nhận trong **cùng một Database Transaction** với toàn bộ thao tác gộp Bookmarks, Read States và Reading Progress.
    - Mọi sự cố sập ứng dụng (App Crash), mất mạng (Client Timeout) hoặc sự cố mất dữ liệu Redis (Redis Loss) sau khi DB transaction đã commit đều có thể được phục hồi an toàn tuyệt đối qua cơ chế tra cứu bền vững.
 5. **Ràng Buộc Nghiêm Ngặt Quyền Sở Hữu Tài Khoản (Account Ownership Binding):**
    - Một Claim Session được prepare bởi `userId` nào thì **chỉ duy nhất `userId` đó** mới có quyền kiểm tra trạng thái (`GET /status`) hoặc thực thi commit (`POST /commit`).
    - Nếu User B cố gắng truy cập hoặc commit claim của User A (kể cả khi biết trước `claimId`), hệ thống lập tức từ chối với mã lỗi `403 Forbidden` (hoặc `404 Not Found`).
-6. **Chống TOCTOU & Stale-Preview Dựa Trên State Fingerprint (Không Bịa Revision Giả Mạo):**
+6. **Chống TOCTOU & Stale-Preview Dựa Trên State Fingerprint & Domain Row Locking:**
    - Không sử dụng `serverSnapshotRevision` khi chưa có hệ thống đánh số revision thật trong repository.
-   - Tại bước `prepare`: Server chụp nhanh trạng thái các entity Cloud liên quan (bookmarks, history, progress, tombstones) và tính toán mã băm SHA-256 (`stateFingerprint`).
-   - Tại bước `commit`: Dưới transaction nguyên tử (`SELECT ... FOR UPDATE`), Server tính lại `currentFingerprint`. Nếu phát hiện dữ liệu Cloud đã bị thay đổi bởi thiết bị khác giữa lúc prepare và commit, Server hủy bỏ transaction và trả về mã lỗi `409 Conflict` kèm mã `CLAIM_STALE_REPREPARE`. Client bắt buộc phải gọi prepare lại để người dùng xem preview mới.
-7. **Bảo Tồn Đầy Đủ Resume Tuple Đã Khóa Ở Phase 7A:**
-   - DTO tiến độ đọc bắt buộc phải giữ đủ bộ 7 trường vị trí: `chapterVersionId`, `readingMode`, `pageIndex`, `scrollPosition`, `progressPercentage`, `anchorBlockId`, `textOffset`. Thiếu `pageIndex` sẽ làm hỏng vị trí khôi phục của Manga / Webtoon theo trang.
-8. **Quy Chuẩn Lịch Sử Đọc (History Deduplication Semantics):**
-   - Khớp 100% với mô hình snapshot của Phase 7A: Khóa dedupe là cặp `(storyId, chapterId)`, không dựa vào "cùng ngày" hay timestamp client để làm authority.
-   - Trường `readAtClient` chỉ mang tính chất thông tin gợi ý / chẩn đoán (diagnostic hint).
-   - Kiểm tra bảng tombstone: Truyện đã bị xóa khỏi lịch sử trên Cloud sẽ bị chặn tái sinh (**Anti-Resurrection**).
+   - Tại bước `prepare`: Server chụp nhanh trạng thái các entity Cloud liên quan (`user_library_bookmarks`, `chapter_read_states`, `reading_progress`, `reading_history_tombstones`) và tính toán mã băm SHA-256 (`stateFingerprint`).
+   - Tại bước `commit`: Để triệt tiêu hoàn toàn race window giữa fingerprint check và merge:
+     1. Khóa hàng `guest_claims` bằng `SELECT ... FOR UPDATE`.
+     2. Khóa transaction advisory lock mức người dùng: `SELECT pg_advisory_xact_lock(hashtext('user_claim:' || :userId))` và khóa `reading_history_epoch_counters FOR UPDATE`.
+     3. Khóa toàn bộ các domain rows hiện có của người dùng liên quan đến các story/chapter trong payload bằng `FOR UPDATE`.
+     4. Tính lại `currentFingerprint` trên dữ liệu đã khóa. Nếu phát hiện thay đổi so với `stateFingerprint` đã cấp tại prepare, Server ROLLBACK và trả về mã lỗi `409 Conflict` kèm mã `CLAIM_STALE_REPREPARE`.
+     5. Nhờ việc giữ các khóa này đến khi transaction commit, không có khoảng hở (zero race gap) nào cho phép thiết bị khác ghi đè dữ liệu mới hơn.
+7. **Bảo Tồn Đầy Đủ Resume Tuple Đã Khóa Ở Phase 7A — 1-based `pageIndex >= 1`:**
+   - DTO tiến độ đọc bắt buộc phải giữ đủ bộ 7 trường vị trí: `chapterVersionId`, `readingMode`, `pageIndex`, `scrollPosition`, `progressPercentage`, `anchorBlockId`, `textOffset`.
+   - **Chuẩn hóa `pageIndex`:** Toàn bộ API Network DTO, Database schema (`reading_progress.page_index`) và Shared Contracts phải tuân thủ chuẩn **1-based (`pageIndex >= 1`, minimum = 1)**.
+   - Chỉ số 0-based của Flutter (`flutterPageIndex`) chỉ được phép tồn tại nội bộ trong UI/runtime của ứng dụng di động và phải được quy đổi (`pageIndex = flutterPageIndex + 1`) trước khi gửi lên mạng hoặc lưu offline database canonical.
+8. **Quy Chuẩn Lịch Sử Đọc & Tiến Độ Đọc Khớp Schema Thực Tế Backend:**
+   - Backend hiện tại **không có bảng `reading_history`**.
+   - Cấu trúc bảng thực tế:
+     * `reading_progress`: PK `(user_id, story_id)` — Điểm dừng đọc hiện tại của người dùng cho từng bộ truyện.
+     * `chapter_read_states`: PK `(user_id, chapter_id)` — Lịch sử và trạng thái đọc chi tiết theo từng chương (`max_progress_percentage`, `completed_at`, `last_read_at`).
+     * `reading_history_tombstones`: PK `(user_id, story_id)` — Dấu vết xóa lịch sử đọc của truyện kèm `epoch`.
+   - **Tombstone Anti-Resurrection Bất Biến:** Nếu một bộ truyện đã có bản ghi tombstone trong `reading_history_tombstones` trên Cloud, **toàn bộ dữ liệu của truyện đó từ Guest (bao gồm Read Chapters trong `chapter_read_states` và Resume Progress trong `reading_progress`) ĐỀU BỊ TỪ CHỐI AUTO-IMPORT** nhằm ngăn chặn hiện tượng zombie resurrection.
 9. **Bảo Mật Kinh Tế Ảo (Gamification Hardening - Zero Side-Effects):**
    - **Tuyệt đối không cấp phát bất kỳ điểm thưởng nào (EXP, OmniCoin, Reading Streak)** thông qua luồng Guest Claim.
    - Mọi thao tác gộp dữ liệu khách chỉ cập nhật thư viện và tiến độ, hoàn toàn cách ly khỏi Gamification Engine.
 10. **Phòng Chống Lạm Dụng Khắt Khe (Anti-Abuse Hardening Tại Prepare):**
     - Kiểm tra định dạng UUIDv4 chặt chẽ cho toàn bộ các trường ID.
     - Giới hạn kích thước payload: Tối đa 500 bookmarks, 1000 history items, 500 progress items, dung lượng body tối đa 2MB.
-    - Kiểm tra miền giá trị số hữu hạn (finite bounds): `progressPercentage` [0..100], `scrollPosition` >= 0, `pageIndex` >= 0 (integer), `textOffset` >= 0 (integer).
+    - Kiểm tra miền giá trị số hữu hạn (finite bounds): `progressPercentage` [0..100], `scrollPosition` >= 0, `pageIndex` >= 1 (integer, 1-based), `textOffset` >= 0 (integer).
     - Tự động khử trùng lặp (dedupe) payload gửi lên.
     - Kiểm tra tính hợp lệ của Foreign Key và quyền truy cập: `storyId` phải tồn tại và công khai, `chapterId` phải thuộc về `storyId`, `chapterVersionId` (nếu có) phải thuộc về `chapterId`, chương không thuộc loại khóa/trả phí mà khách không có quyền.
     - Giới hạn tần suất gọi API (Rate Limit): Tối đa 10 requests prepare / phút / user hoặc IP.
@@ -70,10 +80,10 @@ sequenceDiagram
     alt Không có dữ liệu Guest
         Client->>User: Vào thẳng ứng dụng
     else Có dữ liệu Guest cần chuyển giao
-        Client->>CoreAPI: POST /api/v1/account/guest-claims/prepare (Canonical IDs & Resume Tuple)
+        Client->>CoreAPI: POST /api/v1/account/guest-claims/prepare (Canonical IDs & Resume Tuple, pageIndex >= 1)
         CoreAPI->>CoreAPI: Validate anti-abuse, bounds, dedupe payload
-        CoreAPI->>DB: Query cloud state (bookmarks, history, progress, tombstones)
-        CoreAPI->>CoreAPI: Tính Diff, Conflict & SHA-256 stateFingerprint
+        CoreAPI->>DB: Query cloud state (bookmarks, chapter_read_states, reading_progress, tombstones)
+        CoreAPI->>CoreAPI: Tính Diff, Mode-Aware Conflict & SHA-256 stateFingerprint
         CoreAPI->>DB: INSERT INTO guest_claims (claim_id, user_id, status='PREPARED', fingerprint, preview)
         CoreAPI->>Redis: Cache Claim Session & Rate Limit (TTL: 15 phút)
         CoreAPI-->>Client: 200 OK (claimId, stateFingerprint, summary, conflicts)
@@ -81,29 +91,43 @@ sequenceDiagram
         Client->>User: Hiển thị Dialog: "Phát hiện dữ liệu khách. Bạn có muốn gộp vào tài khoản?"
         alt Người dùng chọn BỎ QUA (Skip)
             User-->>Client: Chọn "Bỏ qua"
-            Client->>Client: Di chuyển guest:<guestProfileId> vào Quarantine Store (KHÔNG PURGE)
+            Client->>Client: Thêm guestProfileId vào quarantined list (Giữ nguyên partition vật lý guest:<guestProfileId>, KHÔNG PURGE)
             Client->>User: Hoàn tất đăng nhập
         else Người dùng chọn GỘP DỮ LIỆU (Claim)
             User-->>Client: Chọn quyết định xử lý xung đột (nếu có) và bấm "Xác nhận gộp"
             Client->>CoreAPI: POST /api/v1/account/guest-claims/:claimId/commit (conflictDecisions)
-            CoreAPI->>Redis: Acquire Distributed Lock (claim_lock:<claimId>)
+            CoreAPI->>Redis: Thử chiếm Distributed Lock (claim_lock:<claimId>, best-effort)
             CoreAPI->>DB: BEGIN TRANSACTION
             CoreAPI->>DB: SELECT * FROM guest_claims WHERE claim_id = :id FOR UPDATE
-            CoreAPI->>CoreAPI: Verify claim.user_id == req.user.id
-            CoreAPI->>CoreAPI: Re-read cloud state & verify stateFingerprint (TOCTOU check)
-            alt Fingerprint lệch (Cloud state thay đổi giữa chừng)
-                CoreAPI->>DB: ROLLBACK
-                CoreAPI-->>Client: 409 Conflict (CLAIM_STALE_REPREPARE)
-                Client->>User: Báo dữ liệu máy chủ đã thay đổi, yêu cầu xem lại preview
-            else Fingerprint hợp lệ
-                CoreAPI->>DB: INSERT/UPDATE Bookmarks, Reading History, Reading Progress
-                CoreAPI->>DB: UPDATE guest_claims SET status='COMMITTED', result_summary=..., committed_at=NOW()
+            CoreAPI->>CoreAPI: 1. Verify ownership (claim.user_id == req.user.id)
+            alt 2. claim.status == 'COMMITTED' (Idempotency First)
                 CoreAPI->>DB: COMMIT TRANSACTION
-                CoreAPI->>Redis: Release Distributed Lock & mark hot key
-                CoreAPI-->>Client: 200 OK (GuestClaimCommitResponse)
-                Client->>Client: Rebind metadata tệp tải offline sang account:<userId>
-                Client->>Client: Dọn dẹp an toàn partition nguồn guest:<guestProfileId>
-                Client-->>User: Thông báo "Gộp dữ liệu thành công"
+                CoreAPI-->>Client: 200 OK (Trả ngay kết quả result_summary đã lưu, bất kể thời gian)
+            else 3. claim.status == 'ABORTED'
+                CoreAPI->>DB: ROLLBACK
+                CoreAPI-->>Client: 400 Bad Request (CLAIM_ABORTED)
+            else 4. claim.status == 'PREPARED' và NOW() > expires_at (Expired Check)
+                CoreAPI->>DB: UPDATE guest_claims SET status='EXPIRED' WHERE claim_id = :id
+                CoreAPI->>DB: COMMIT TRANSACTION
+                CoreAPI-->>Client: 410 Gone (CLAIM_EXPIRED)
+            else 5. Hợp lệ tiến hành Merge
+                CoreAPI->>DB: Khóa user advisory lock & reading_history_epoch_counters FOR UPDATE
+                CoreAPI->>DB: Khóa existing domain rows liên quan FOR UPDATE
+                CoreAPI->>CoreAPI: Re-read cloud state & verify stateFingerprint (TOCTOU check)
+                alt Fingerprint lệch (Cloud state thay đổi giữa chừng)
+                    CoreAPI->>DB: ROLLBACK
+                    CoreAPI-->>Client: 409 Conflict (CLAIM_STALE_REPREPARE)
+                else Fingerprint hợp lệ
+                    CoreAPI->>DB: Upsert user_library_bookmarks (ON CONFLICT DO NOTHING)
+                    CoreAPI->>DB: Upsert chapter_read_states (Anti-resurrection checked)
+                    CoreAPI->>DB: Upsert reading_progress (Anti-resurrection & conflictDecisions applied)
+                    CoreAPI->>DB: UPDATE guest_claims SET status='COMMITTED', result_summary=..., committed_at=NOW()
+                    CoreAPI->>DB: COMMIT TRANSACTION
+                    CoreAPI->>Redis: Release Distributed Lock (nếu có)
+                    CoreAPI-->>Client: 200 OK (GuestClaimCommitResponse)
+                    Client->>Client: Transactional Local Merge & dọn dẹp an toàn partition nguồn
+                    Client-->>User: Thông báo "Gộp dữ liệu thành công"
+                end
             end
         end
     end
@@ -138,54 +162,67 @@ CREATE INDEX idx_guest_claims_user_id_status ON guest_claims(user_id, status);
 CREATE INDEX idx_guest_claims_expires_at ON guest_claims(expires_at) WHERE status = 'PREPARED';
 ```
 
-### Quy Tắc Chuyển Trạng Thái Ledger:
-1. `PREPARED`: Được tạo bởi `POST /prepare`. Có hạn sử dụng 15 phút (`expires_at = NOW() + INTERVAL '15 minutes'`).
-2. `COMMITTED`: Được chuyển sang trạng thái này **chỉ bên trong Database Transaction** gộp dữ liệu của `POST /commit`. Một khi đã `COMMITTED`, mọi yêu cầu commit lặp lại đều trả về ngay kết quả từ `result_summary` (Mã 200 OK, Idempotent).
-3. `ABORTED`: Người dùng chủ động hủy bỏ claim session từ giao diện (nếu gọi endpoint hủy) hoặc bị hủy do phát hiện gian lận.
-4. `EXPIRED`: Quá hạn 15 phút mà không được commit. Cron worker định kỳ hoặc câu lệnh kiểm tra tại chỗ sẽ coi các claim này là hết hiệu lực (Trả 410 Gone nếu cố commit).
+### Thứ Tự Thực Thi & Quy Tắc Chuyển Trạng Thái Ledger:
+Tại endpoint `POST /api/v1/account/guest-claims/:claimId/commit`, thứ tự kiểm tra bắt buộc phải tuân thủ nghiêm ngặt:
+1. `SELECT * FROM guest_claims WHERE claim_id = :id FOR UPDATE`
+2. **Kiểm tra quyền sở hữu:** Nếu `claim.user_id !== req.user.id` ➔ Rollback, trả `403 Forbidden`.
+3. **Kiểm tra `COMMITTED` (Idempotency First):** Nếu `claim.status === 'COMMITTED'` ➔ Trả ngay kết quả `result_summary` với mã `200 OK`. Trạng thái `COMMITTED` có hiệu lực idempotent vĩnh viễn theo chính sách lưu trữ sổ cái (Ledger Retention Policy), **hoàn toàn không phụ thuộc vào TTL 15 phút của prepare**. Client retry sau 15 phút, 1 giờ hay 1 ngày đều nhận lại kết quả thành công.
+4. **Kiểm tra `ABORTED`:** Nếu `claim.status === 'ABORTED'` ➔ Rollback, trả `400 Bad Request` hoặc `409 Conflict`.
+5. **Kiểm tra `EXPIRED`:** Nếu `claim.status === 'PREPARED'` VÀ `NOW() > claim.expires_at` ➔ Cập nhật trạng thái `EXPIRED`, trả `410 Gone (CLAIM_EXPIRED)`.
+6. **Bảo vệ TOCTOU:** Khi session còn hạn và ở trạng thái `PREPARED`, khóa domain rows, tính lại fingerprint và thực hiện merge.
 
 ---
 
 ## 4. Quy Tắc Hợp Nhất Chuyên Biệt Theo Từng Miền (Domain Merge Matrix)
 
-| Miền Dữ Liệu (Domain) | Dữ Liệu Client Gửi Lên | Quy Tắc Hợp Nhất Vào Tài Khoản (Merge Semantics) | Cơ Chế Xử Lý Xung Đột (Conflict Handling) |
-|---|---|---|---|
-| **Bookmarks (Đánh dấu)** | Danh sách `storyId` active | **Additive Only (Cộng dồn):** Thêm các truyện Guest đánh dấu vào tài khoản (`ON CONFLICT DO NOTHING`). | Khách **không được phép xóa** bookmark đã có trên Cloud. Xóa trên Cloud chỉ diễn ra qua Sync có tombstone ở Phase 7C. |
-| **Reading History (Lịch sử)** | Danh sách `(storyId, chapterId, readAtClient)` | **Union & Dedupe:** Khóa dedupe là `(storyId, chapterId)`. Khớp với 7A snapshot model. `readAtClient` chỉ là hint. | Kiểm tra bảng `reading_history_tombstones`. Nếu truyện đã bị user xóa khỏi Cloud trước đó, **từ chối import lại (Anti-Resurrection)**. |
-| **Read Chapters (Chương đã đọc)** | Mảng `readChapterIds` | **Monotonic Union:** Tập hợp hợp nhất `Array.from(new Set([...cloud, ...guest]))`. | Đơn điệu tăng dần, không có xung đột. |
-| **Reading Progress (Tiến độ)** | Đầy đủ 7 trường Resume Tuple: `storyId, chapterId, chapterVersionId, readingMode, pageIndex, scrollPosition, progressPercentage, anchorBlockId, textOffset` | Xem chi tiết mục 5 bên dưới. | Bảo toàn vị trí Cloud làm mặc định, cung cấp Preview Conflict để người dùng lựa chọn quyết định rõ ràng. |
-| **Reader Preferences** | `fontSize`, `theme`, `readingDirection` | Ưu tiên cài đặt đã có của Cloud. Nếu Cloud chưa có, lấy của Guest. | Thiết lập cục bộ theo từng thiết bị (`device:*`) được ưu tiên áp dụng cho trải nghiệm nhìn. |
-| **Recent Searches (Tìm kiếm)** | *Không gửi* | **Strictly Local:** Giữ cục bộ trên thiết bị, không chuyển giao lên Cloud. | Loại trừ khỏi Claim Protocol để giảm thiểu bề mặt tấn công. |
-| **Gamification / Rewards** | *Không gửi* | **Strictly Server-Only:** Bỏ qua hoàn toàn. | Tuyệt đối cấm nhận thưởng từ dữ liệu nặc danh. |
+| Miền Dữ Liệu (Domain) | Dữ Liệu Client Gửi Lên | Bảng CSDL Thực Tế Backend | Quy Tắc Hợp Nhất Vào Tài Khoản (Merge Semantics) | Cơ Chế Xử Lý Xung Đột (Conflict Handling) |
+|---|---|---|---|---|
+| **Bookmarks (Đánh dấu)** | Danh sách `storyId` active | `user_library_bookmarks` (PK: `user_id, story_id`) | **Additive Only (Cộng dồn):** Thêm các truyện Guest đánh dấu vào tài khoản (`ON CONFLICT (user_id, story_id) DO NOTHING`). | Khách **không được phép xóa** bookmark đã có trên Cloud. Xóa trên Cloud chỉ diễn ra qua Sync có tombstone ở Phase 7C. |
+| **Reading History / Read States** | Danh sách `(storyId, chapterId, progressPercentage)` | `chapter_read_states` (PK: `user_id, chapter_id`) | **Union & Dedupe:** Upsert vào `chapter_read_states` với `max_progress_percentage = GREATEST(...)`, `completed_at`, `last_read_at = NOW()`. | **Tombstone Anti-Resurrection:** Nếu `storyId` có trong `reading_history_tombstones`, **từ chối import toàn bộ chapters của truyện đó**. |
+| **Reading Progress (Tiến độ đọc)** | Đầy đủ 7 trường Resume Tuple: `storyId, chapterId, chapterVersionId, readingMode, pageIndex (>= 1), scrollPosition, progressPercentage, anchorBlockId, textOffset` | `reading_progress` (PK: `user_id, story_id`) | Xem chi tiết mục 5 bên dưới (Mode-Aware Resolution). | **Tombstone Anti-Resurrection:** Nếu `storyId` có trong `reading_history_tombstones`, **từ chối import tiến độ đọc của truyện đó**. |
+| **Reader Preferences** | `fontSize`, `theme`, `readingDirection` | Local / User settings | Ưu tiên cài đặt đã có của Cloud. Nếu Cloud chưa có, lấy của Guest. | Thiết lập cục bộ theo từng thiết bị (`device:*`) được ưu tiên áp dụng cho trải nghiệm nhìn. |
+| **Recent Searches (Tìm kiếm)** | *Không gửi* | Local Storage / SQLite | **Strictly Local:** Giữ cục bộ trên thiết bị, không chuyển giao lên Cloud. | Loại trừ khỏi Claim Protocol để giảm thiểu bề mặt tấn công. |
+| **Gamification / Rewards** | *Không gửi* | `user_streaks`, `omni_coins` | **Strictly Server-Only:** Bỏ qua hoàn toàn. | Tuyệt đối cấm nhận thưởng (EXP, Coin, Streak = 0) từ dữ liệu nặc danh. |
 
 ---
 
-## 5. Xử Lý Xung Đột Tiến Độ Đọc (Reading Progress Resolution)
+## 5. Xử Lý Xung Đột Tiến Độ Đọc Theo Chế Độ (Mode-Aware Progress Conflict Resolution)
 
-Tiến độ đọc được giải quyết theo 4 kịch bản xác định:
+Để tránh trường hợp so sánh phần trăm đơn giản gây sai lệch vị trí đọc giữa các định dạng khác nhau, hệ thống áp dụng cơ chế so sánh nhận biết chế độ đọc (**Mode-Aware Comparator**):
 
 ```text
-Tình huống A: Tài khoản mới tạo hoặc chưa từng đọc truyện này trên Cloud
-└─► Toàn bộ tiến độ đọc của Guest (bao gồm đủ 7 trường resume tuple) được lưu thẳng vào Cloud.
+Tình huống A: Tài khoản chưa từng có bản ghi reading_progress cho truyện này (và không có tombstone)
+└─► Toàn bộ tiến độ đọc của Guest (đầy đủ 7 trường resume tuple, pageIndex >= 1) được lưu thẳng vào reading_progress.
 
-Tình huống B: Tài khoản cũ đã đọc cùng truyện, cùng chapter và cùng vị trí tương đương (chênh lệch progressPercentage < 5%)
-└─► Tự động gộp mượt mà (Trivial Merge). Cập nhật vị trí có tiến độ cao hơn hoặc giữ nguyên Cloud.
+Tình huống B: Tài khoản đã có reading_progress cho truyện này, cùng chapterId và cùng readingMode
+┌─► Chế độ PAGED (Manga, PDF, EPUB paged):
+│   ├─ Nếu cloud.pageIndex === guest.pageIndex ➔ Trivial Match (giữ Cloud hoặc lấy tiến độ cao hơn).
+│   └─ Nếu cloud.pageIndex !== guest.pageIndex ➔ CONFLICT!
+├─► Chế độ WEBTOON (Cuộn dọc liên tục):
+│   ├─ Nếu abs(cloud.scrollPosition - guest.scrollPosition) <= 50.0 VÀ abs(cloud.progressPercentage - guest.progressPercentage) <= 5.0%
+│   │   ➔ Trivial Match.
+│   └─ Nếu vượt ngưỡng trên ➔ CONFLICT!
+└─► Chế độ NOVEL (Văn bản có điểm neo):
+    ├─ Nếu cloud.anchorBlockId === guest.anchorBlockId VÀ abs((cloud.textOffset ?? 0) - (guest.textOffset ?? 0)) <= 100
+    │   ➔ Trivial Match.
+    └─ Nếu khác anchorBlockId hoặc lệch offset lớn ➔ CONFLICT!
 
-Tình huống C: Tài khoản cũ đã đọc truyện này nhưng ở vị trí/chương khác nhau
+Tình huống C: Khác chapterId, khác readingMode hoặc phát hiện CONFLICT ở trên
 ┌─► Mặc định Server giữ vị trí của Cloud làm CANONICAL POSITION (Tránh ghi đè ngoài ý muốn).
-├─► Trả về Conflict trong ClaimPreview:
+├─► Trả về Conflict trong ClaimPreview để người dùng xem so sánh:
 │     {
 │       storyId: "uuid",
+│       readingMode: "PAGED",
 │       cloudProgress: {
 │         chapterId: "chap-uuid-cloud",
 │         progressPercentage: 65,
-│         pageIndex: 12,
+│         pageIndex: 12, // 1-based >= 1
 │         updatedAt: "2026-10-06T12:00:00Z"
 │       },
 │       guestProgress: {
 │         chapterId: "chap-uuid-guest",
 │         progressPercentage: 20,
-│         pageIndex: 4
+│         pageIndex: 4 // 1-based >= 1
 │       }
 │     }
 └─► Client hiển thị UI cho người dùng lựa chọn: "Dùng vị trí từ thiết bị này" (USE_GUEST) hoặc "Giữ vị trí tài khoản" (KEEP_CLOUD).
@@ -210,8 +247,8 @@ export interface PrepareGuestClaimDto {
     storyId: string; // UUIDv4
     chapterId: string; // UUIDv4
     chapterVersionId?: string | null; // UUIDv4 hoặc null
-    readingMode?: 'WEBTOON' | 'PAGED' | 'CONTINUOUS' | string;
-    pageIndex?: number | null; // Số nguyên >= 0 (bắt buộc cho Manga/PDF paged mode)
+    readingMode?: 'WEBTOON' | 'PAGED' | 'CONTINUOUS' | 'NOVEL' | string;
+    pageIndex?: number | null; // Số nguyên 1-based >= 1 (bắt buộc cho Manga/PDF paged mode)
     scrollPosition: number; // Số thực hữu hạn >= 0
     progressPercentage: number; // Số thực hữu hạn từ 0.0 đến 100.0
     anchorBlockId?: string | null; // Khóa neo đoạn văn cho Light Novel
@@ -221,6 +258,7 @@ export interface PrepareGuestClaimDto {
   history: Array<{
     storyId: string; // UUIDv4
     chapterId: string; // UUIDv4
+    progressPercentage?: number; // Số thực [0..100]
     readAtClient?: string; // ISO 8601 string - Chỉ là diagnostic hint
   }>;
   preferences?: {
@@ -239,37 +277,38 @@ export interface GuestClaimPreviewResponse {
   summary: {
     bookmarksToAddCount: number;
     bookmarksIgnoredCount: number; // Đã có trên Cloud
-    historyToAddCount: number;
-    historyIgnoredAntiResurrectionCount: number; // Bị chặn do tombstone
+    readStatesToAddCount: number;
+    readStatesIgnoredAntiResurrectionCount: number; // Bị chặn do tombstone
     progressAcceptedCount: number;
     progressConflictsCount: number;
   };
   conflicts: Array<{
     storyId: string;
+    readingMode?: string;
     cloudProgress: {
       chapterId: string;
       chapterTitle?: string;
       progressPercentage: number;
-      pageIndex?: number | null;
+      pageIndex?: number | null; // 1-based >= 1
       updatedAt: string;
     };
     guestProgress: {
       chapterId: string;
       progressPercentage: number;
-      pageIndex?: number | null;
+      pageIndex?: number | null; // 1-based >= 1
     };
   }>;
 }
 ```
 
 - **Mã Lỗi Trả Về:**
-  - `400 Bad Request`: Payload không hợp lệ (sai UUID, vượt giới hạn số lượng, số âm hoặc NaN).
+  - `400 Bad Request`: Payload không hợp lệ (sai UUID, vượt giới hạn số lượng, `pageIndex < 1`, số âm hoặc NaN).
   - `401 Unauthorized`: Thiếu hoặc sai JWT token.
   - `429 Too Many Requests`: Vượt quá giới hạn rate limit (10 requests/phút).
 
 ---
 
-### 6.2. Endpoint 2: Commit Claim
+## 6.2. Endpoint 2: Commit Claim
 - **Endpoint:** `POST /api/v1/account/guest-claims/:claimId/commit`
 - **Headers:** `Authorization: Bearer <accessToken>`
 - **Request Body (`CommitGuestClaimDto`):**
@@ -291,7 +330,7 @@ export interface GuestClaimCommitResponse {
   committedAt: string;
   appliedStats: {
     bookmarksAdded: number;
-    historyMerged: number;
+    readStatesMerged: number;
     progressSaved: number;
   };
 }
@@ -301,11 +340,11 @@ export interface GuestClaimCommitResponse {
   - `403 Forbidden`: `claim.user_id !== req.user.id` (User B cố commit claim của User A).
   - `404 Not Found`: Không tìm thấy `claimId`.
   - `409 Conflict` (`CLAIM_STALE_REPREPARE`): Trạng thái Cloud đã thay đổi kể từ lúc prepare, fingerprint không khớp. Client phải gọi prepare lại.
-  - `410 Gone` (`CLAIM_EXPIRED`): Claim session đã hết hạn 15 phút.
+  - `410 Gone` (`CLAIM_EXPIRED`): Claim session chưa commit nhưng đã hết hạn 15 phút.
 
 ---
 
-### 6.3. Endpoint 3: Check Claim Status (Crash Recovery)
+## 6.3. Endpoint 3: Check Claim Status (Crash Recovery)
 - **Endpoint:** `GET /api/v1/account/guest-claims/:claimId/status`
 - **Headers:** `Authorization: Bearer <accessToken>`
 - **Response Body (`200 OK` - `GuestClaimStatusResponse`):**
@@ -320,15 +359,11 @@ export interface GuestClaimStatusResponse {
   committedAt?: string | null;
   appliedStats?: {
     bookmarksAdded: number;
-    historyMerged: number;
+    readStatesMerged: number;
     progressSaved: number;
   } | null;
 }
 ```
-
-- **Mã Lỗi Trả Về:**
-  - `403 Forbidden`: Truy cập trái phép claim của người dùng khác.
-  - `404 Not Found`: Không tồn tại `claimId`.
 
 ---
 
@@ -336,16 +371,19 @@ export interface GuestClaimStatusResponse {
 
 1. **Khắc Phục Rớt Mạng Sau Khi Server Commit (Network Timeout / Double Submit):**
    - Khi client gửi commit nhưng bị đứt kết nối mạng trước khi nhận được phản hồi: Client gửi lại chính xác `POST /api/v1/account/guest-claims/:claimId/commit` với cùng `expectedStateFingerprint`.
-   - Backend kiểm tra bản ghi trong bảng `guest_claims`: Nếu trạng thái đã là `COMMITTED`, Backend trả về ngay `GuestClaimCommitResponse` đã lưu trong `result_summary` với mã `200 OK`, tuyệt đối không thực hiện merge lần 2.
+   - Backend kiểm tra bản ghi trong bảng `guest_claims`: Nếu trạng thái đã là `COMMITTED`, Backend trả về ngay `GuestClaimCommitResponse` đã lưu trong `result_summary` với mã `200 OK`, tuyệt đối không thực hiện merge lần 2. Hiệu lực idempotent là vĩnh viễn trong thời hạn lưu trữ sổ cái.
 2. **Khắc Phục Ứng Dụng Đột Tử (App Crash Sau Commit):**
    - Khi người dùng mở lại ứng dụng: Client kiểm tra partition khách cục bộ `guest:<guestProfileId>`. Nếu phát hiện có `pendingClaimId` chưa hoàn tất:
      - Client gửi truy vấn `GET /api/v1/account/guest-claims/:pendingClaimId/status`.
-     - Nếu máy chủ trả về `status: 'COMMITTED'`: Client lập tức kích hoạt dọn dẹp partition nguồn và rebind offline metadata sang `account:<userId>`.
+     - Nếu máy chủ trả về `status: 'COMMITTED'`: Client lập tức kích hoạt dọn dẹp partition nguồn qua Transactional Local Merge.
      - Nếu máy chủ trả về `PREPARED`: Client tiếp tục quy trình hiển thị xác nhận cho người dùng.
-     - Nếu máy chủ trả về `EXPIRED` hoặc `404`: Client xóa `pendingClaimId` và đưa dữ liệu vào Quarantine để đảm bảo an toàn.
+     - Nếu máy chủ trả về `EXPIRED` hoặc `404`: Client xóa `pendingClaimId` và đưa `guestProfileId` vào danh sách Quarantine để đảm bảo không mất dữ liệu.
 3. **Mất Dữ Liệu Cache Redis (Redis Loss / Flush / Restart):**
-   - Vì bảng `guest_claims` trong PostgreSQL là Single Source of Truth bền vững, việc Redis bị restart hoặc rớt kết nối hoàn toàn không làm mất trạng thái của các claim session.
-   - Commit và Status endpoint đều đọc dữ liệu trực tiếp từ PostgreSQL ledger.
+   - Bảng `guest_claims` trong PostgreSQL là Single Source of Truth bền vững.
+   - Redis Lock chỉ là tầng tối ưu phụ trợ. Nếu Redis restart hoặc mất kết nối, hệ thống vẫn hoàn tất commit an toàn 100% nhờ khóa hàng PostgreSQL `FOR UPDATE`.
+4. **Phục Hồi Dữ Liệu Cục Bộ Phía Client (Client Local Merge Contract):**
+   - **Không rename partition vật lý:** Khi người dùng chọn Skip, client chỉ thêm `guestProfileId` vào danh sách `omninovel_quarantined_guest_profiles`. Partition vật lý vẫn là `guest:<guestProfileId>`.
+   - **Transactional Rebind trên Mobile SQLite:** Không chạy câu lệnh `UPDATE ... SET owner_scope = 'account:<userId>'` (tránh xung đột Primary Key). Thay vào đó, thực hiện Transactional Merge: `INSERT OR IGNORE` cho bookmarks, merge read states và progress, sau đó mới xóa dữ liệu thuộc partition nguồn khách.
 
 ---
 
@@ -354,12 +392,13 @@ export interface GuestClaimStatusResponse {
 | Kịch Bản Kiểm Thử | Điều Kiện Đầu Vào | Hành Vi Hệ Thống Kỳ Vọng | Tiêu Chuẩn Xác Minh (Verification) |
 |---|---|---|---|
 | **1. Duplicate Commit** | Client gửi lại `POST /commit` sau khi đã commit thành công | Trả về `200 OK` kèm `appliedStats` gốc, không merge lại | Không tăng số bản ghi DB, idempotent 100% |
-| **2. Concurrent Commit Race** | 2 request commit cùng lúc cho 1 `claimId` | Redis Distributed Lock + DB row-lock (`FOR UPDATE`) chặn request 2, request 2 nhận kết quả committed | Không có dead-lock, không bị duplicate insert |
-| **3. Client Timeout Recovery** | Server commit thành công nhưng client bị ngắt mạng | Client gọi `GET /status` nhận `COMMITTED`, dọn dẹp local | Dữ liệu cloud đầy đủ, local partition được purge an toàn |
-| **4. Redis Loss / Restart** | Redis flush toàn bộ keys giữa prepare và commit | Hệ thống fallback về đọc PostgreSQL `guest_claims`, commit vẫn thành công | Không làm gián đoạn luồng nghiệp vụ của người dùng |
+| **2. Concurrent Commit Race** | 2 request commit cùng lúc cho 1 `claimId` | Redis Lock + DB row-lock (`FOR UPDATE`) xử lý tuần tự, request 2 nhận kết quả committed | Không có dead-lock, không bị duplicate insert |
+| **3. Client Timeout Recovery** | Server commit thành công nhưng client bị ngắt mạng | Client gọi `GET /status` nhận `COMMITTED`, dọn dẹp local | Dữ liệu cloud đầy đủ, local partition được dọn an toàn |
+| **4. Redis Loss / Restart** | Redis flush toàn bộ keys hoặc rớt kết nối giữa prepare và commit | Hệ thống fallback về đọc PostgreSQL `guest_claims`, commit vẫn thành công | Không làm gián đoạn luồng nghiệp vụ của người dùng |
 | **5. Stale Cloud State (TOCTOU)** | User bookmark/xóa truyện trên Web trong khi App đang chờ commit | `currentFingerprint !== stateFingerprint` ➔ Rollback DB, trả `409 CLAIM_STALE_REPREPARE` | Ngăn chặn ô nhiễm trạng thái và dữ liệu ma |
 | **6. Cross-Account Claim Replay** | User B dùng JWT của mình gọi commit `claimId` của User A | Core API so khớp `claim.user_id !== req.user.id` ➔ Trả `403 Forbidden` | Không bao giờ gộp nhầm dữ liệu sang tài khoản khác |
-| **7. Expired Claim Session** | Client gửi commit sau khi quá hạn 15 phút | Server kiểm tra `NOW() > expires_at` ➔ Trả `410 Gone / CLAIM_EXPIRED` | Không cho phép commit dữ liệu đã quá cũ |
-| **8. Switch Account Giữa Chừng** | User A đang mở dialog claim, bấm logout rồi đăng nhập User B | ActiveScopeCoordinator chuyển trạng thái, hủy `pendingClaimId` cũ, không cho phép commit chéo | Dữ liệu của User A không bao giờ rơi vào User B |
-| **9. Zero Gamification Check** | Guest import 500 chapters trong lịch sử đọc | Kiểm tra bảng `user_rewards`, `omni_coins`, `user_streaks`: **0 bản ghi được thêm/tăng** | Khóa chặt kinh tế ảo chống cheat |
-| **10. Phase 7A Regression Gate** | Chạy toàn bộ test suites của Phase 7A | Toàn bộ 48 test files Web, unit test Dart Mobile, and API guards pass 100% | Đảm bảo tính liên tục và không thoái lui mã nguồn |
+| **7. Expired Claim Session** | Client gửi commit sau khi quá hạn 15 phút (trạng thái đang `PREPARED`) | Server kiểm tra `NOW() > expires_at` ➔ Cập nhật `EXPIRED`, trả `410 Gone / CLAIM_EXPIRED` | Không cho phép commit dữ liệu đã quá cũ |
+| **8. Committed Replay Sau 15 Phút** | Client retry commit của một claim đã `COMMITTED` trước đó sau 20 phút | Server kiểm tra `status === 'COMMITTED'` TRƯỚC HẠN TTL ➔ Trả ngay `200 OK` | Đảm bảo tính Idempotent vĩnh viễn của commit thành công |
+| **9. Tombstone Resurrection Prevention** | Guest gửi lịch sử và tiến độ của một truyện đã có tombstone trên Cloud | Server loại bỏ toàn bộ dữ liệu của truyện đó (`chapter_read_states`, `reading_progress`) | 0 bản ghi của truyện tombstone được chèn vào Cloud |
+| **10. Zero Gamification Check** | Guest import 500 chapters trong lịch sử đọc | Kiểm tra bảng `user_rewards`, `omni_coins`, `user_streaks`: **0 bản ghi được thêm/tăng** | Khóa chặt kinh tế ảo chống cheat |
+| **11. Phase 7A Regression Gate** | Chạy toàn bộ test suites của Phase 7A | Toàn bộ 48 test files Web, unit test Dart Mobile, and API guards pass 100% | Đảm bảo tính liên tục và không thoái lui mã nguồn |

@@ -84,19 +84,24 @@ Phase 7B chịu trách nhiệm triển khai giao thức chuyển giao dữ liệ
         - Cập nhật bảng `users`: `is_active = false, is_deleted = true, deleted_at = NOW(), scheduled_purge_at = NOW() + INTERVAL '30 days'` (migration thêm `scheduled_purge_at TIMESTAMPTZ NULL`).
         - Thu hồi TOÀN BỘ sessions/tokens trên Redis (`revokeAllUserSessions(userId)`).
         - **BẢO TỒN NGUYÊN VẸN ATTRIBUTIONS & TIẾN ĐỘ (Zero Irreversible Mutations tại Day 0):** `chapter_versions.created_by` GIỮ NGUYÊN, `stories.created_by` GIỮ NGUYÊN, `story_members` GIỮ NGUYÊN, `guest_claims.user_id` GIỮ NGUYÊN, bookmarks/progress/history GIỮ NGUYÊN.
-      * **Khôi Phục Tài Khoản Trong 30 Ngày (`POST /api/v1/auth/reactivate-account`):**
+      * **Khôi Phục Tài Khoản Trong Grace Period (`POST /api/v1/auth/reactivate-account`):**
         - Endpoint chuyên biệt: nhận `{ identifier: string, password: string }`.
-        - Tra cứu tài khoản `is_deleted = true`, xác thực mật khẩu. Nếu sai trả `401 Unauthorized` (chống account enumeration, login thông thường vẫn trả 401).
-        - Kiểm tra `NOW() < scheduled_purge_at`. Nếu quá hạn trả `410 Gone / ACCOUNT_PURGED`.
-        - Khôi phục flags: `is_active = true, is_deleted = false, deleted_at = NULL, scheduled_purge_at = NULL`.
-        - Cấp session và token mới, trả `AuthResponse`. Toàn bộ dữ liệu, vai trò và bản dịch được khôi phục 100% không bị tổn thất.
+        - **Nếu user row không tồn tại (đã purge vĩnh viễn hoặc sai identifier):** Xử lý đồng nhất theo chính sách anti-enumeration ➔ trả generic `401 Unauthorized` (không hứa hẹn `410` sau khi user row đã bị xóa hoàn toàn).
+        - **Nếu user row còn tồn tại nhưng `is_deleted = true` VÀ `NOW() >= scheduled_purge_at` (hết grace period nhưng purge worker chưa kịp chạy):** Account không còn được phép khôi phục ➔ trả ngay `410 Gone / ACCOUNT_PURGED` (hoặc `ACCOUNT_PURGE_DUE`).
+        - **Nếu user row tồn tại, `is_deleted = true` VÀ `NOW() < scheduled_purge_at` (còn trong grace period):**
+          + Xác thực mật khẩu cũ bằng Argon2/Bcrypt. Nếu sai ➔ trả generic `401 Unauthorized`.
+          + Nếu mật khẩu hợp lệ: Khôi phục cờ `is_active = true, is_deleted = false, deleted_at = NULL, scheduled_purge_at = NULL`. Cấp session và token mới, trả `AuthResponse`. Toàn bộ dữ liệu, vai trò và bản dịch được khôi phục 100% không tổn thất.
       * **Pha 2 — Day 30 Final Purge (Scheduled Background Job):**
+        - Khóa dứt khoát: **Day-30 = hard-delete `users` row sau khi anonymize durable audit ledger** (không dùng "hoặc").
         - Khi `is_deleted = true AND NOW() >= scheduled_purge_at`:
-        - Ứng dụng Node.js tính mã băm bằng module `crypto`: `const anonymizedHash = crypto.createHash('sha256').update(userId).digest('hex')` (không phụ thuộc extension DB `pgcrypto`).
-        - Anonymize sổ cái: `UPDATE guest_claims SET anonymized_subject_hash = :anonymizedHash, user_id = NULL WHERE user_id = :userId;`
-        - Anonymize truyện và bản dịch công khai: `UPDATE chapter_versions SET created_by = NULL WHERE created_by = :userId;`, `UPDATE stories SET created_by = NULL WHERE created_by = :userId;`, `DELETE FROM story_members WHERE user_id = :userId;`
-        - Hard delete dữ liệu đọc cá nhân: `DELETE FROM bookmarks`, `reading_progress`, `chapter_read_states`, `user_progression`.
-        - Anonymize hoặc purge bản ghi trong `users`.
+          1. **Node.js Crypto Hash:** Tính `const anonymizedHash = crypto.createHash('sha256').update(userId).digest('hex')` (không phụ thuộc extension DB `pgcrypto`).
+          2. **Anonymize Sổ Cái Bền Vững (`guest_claims`):**
+             `UPDATE guest_claims SET anonymized_subject_hash = :anonymizedHash, user_id = NULL WHERE user_id = :userId;`
+          3. **Pre-Cascade Special Cleanup:** Xử lý bất kỳ dữ liệu có ràng buộc đặc thù cần xử lý trước FK cascade (ví dụ các bảng có ràng buộc `ON DELETE RESTRICT` như `reward_transactions` hoặc dữ liệu kiểm toán riêng nếu có).
+          4. **Hard-Delete User Row:** `DELETE FROM users WHERE id = :userId;` (xóa dứt điểm bản ghi, loại bỏ triệt để rủi ro credential rỗng).
+          5. **Ground-Truth Foreign Keys Thực Thi Tự Động:**
+             - `ON DELETE SET NULL` đối với public attribution: `stories.created_by`, `chapter_versions.created_by`, `translation_projects.created_by`, `translation_jobs.created_by`.
+             - `ON DELETE CASCADE` đối với toàn bộ private / user-owned state: `bookmarks`, `reading_progress`, `chapter_read_states`, `reading_history_tombstones`, `reading_history_epoch_counters`, `reading_history`, `user_progression`, `story_members`, `upload_sessions`, `daily_checkins`, `user_claimed_level_rewards`. Toàn bộ reading-state metadata được dọn sạch 100%.
 13. **Chuẩn Hóa Kiến Trúc Shared Contracts Cho Flutter & Canonical ReadingMode:**
     - `packages/shared` là **canonical TypeScript network contracts** cho API và Web.
     - Canonical `readingMode` chỉ nhận đúng 3 giá trị: `'WEBTOON' | 'PAGED' | 'NOVEL'`. Mobile chuẩn hóa `MANGA_PAGED` $\rightarrow$ `PAGED` trước khi gửi lên API.
@@ -327,50 +332,62 @@ graph TD
     * `story_members` GIỮ NGUYÊN.
     * `guest_claims.user_id` GIỮ NGUYÊN.
     * `bookmarks`, `reading_progress`, `chapter_read_states`, `user_progression` GIỮ NGUYÊN trong 30 ngày.
-- **Khôi Phục Tài Khoản Trong 30 Ngày (`POST /api/v1/auth/reactivate-account`):**
+- **Khôi Phục Tài Khoản Trong Grace Period (`POST /api/v1/auth/reactivate-account`):**
   - Body: `{ identifier: string, password: string }`.
   - Rate limit: 5 requests / 15 phút / IP.
-  - Tra cứu user theo `(email = :identifier OR username = :identifier) AND is_deleted = true`.
-  - Xác thực mật khẩu cũ bằng Argon2/Bcrypt. Nếu sai ➔ `401 Unauthorized` (chống lộ trạng thái tài khoản, login bình thường cũng trả 401).
-  - Kiểm tra thời hạn: Nếu `NOW() >= scheduled_purge_at` ➔ `410 Gone / ACCOUNT_PURGED`.
-  - Khôi phục flags: `is_active = true, is_deleted = false, deleted_at = NULL, scheduled_purge_at = NULL`.
-  - Cấp phát phiên mới: sinh `familyId`, tạo Access Token (có `sid`) + Refresh Token cookie, lưu `auth_session` trên Redis.
-  - Trả về `AuthResponse`. Toàn bộ dữ liệu, vai trò và bản dịch được khôi phục 100% không bị tổn thất.
+  - Tra cứu user theo `(email = :identifier OR username = :identifier)`.
+  - **Phân nhánh xử lý nghiêm ngặt (Strict Contract Branches):**
+    1. **User row không tồn tại (đã purge vĩnh viễn hoặc identifier không đúng):**
+       - Xử lý đồng nhất theo chính sách chống Account Enumeration ➔ trả generic `401 Unauthorized`.
+       - Không hứa hẹn trả `410` sau khi user row và credentials đã bị hard-delete khỏi CSDL.
+    2. **User row tồn tại nhưng đã quá hạn (`is_deleted = true AND NOW() >= scheduled_purge_at`):**
+       - Trường hợp deadline 30 ngày đã trôi qua nhưng background purge worker chưa kịp quét: Tài khoản không còn được phép khôi phục ➔ trả ngay `410 Gone / ACCOUNT_PURGED` (hoặc `ACCOUNT_PURGE_DUE`).
+    3. **User row tồn tại trong grace period (`is_deleted = true AND NOW() < scheduled_purge_at`):**
+       - Xác thực mật khẩu cũ bằng Argon2/Bcrypt. Nếu sai ➔ trả `401 Unauthorized`.
+       - Nếu mật khẩu hợp lệ: Khôi phục cờ `is_active = true, is_deleted = false, deleted_at = NULL, scheduled_purge_at = NULL`.
+       - Cấp phát phiên mới: sinh `familyId`, tạo Access Token (có `sid`) + Refresh Token cookie, lưu `auth_session` trên Redis.
+       - Trả về `AuthResponse`. Toàn bộ dữ liệu, vai trò và bản dịch được khôi phục 100% không bị tổn thất.
 - **Pha 2 — Day 30 Final Purge (Scheduled Background Job / Cron Worker):**
-  - Chạy định kỳ tìm các tài khoản `is_deleted = true AND NOW() >= scheduled_purge_at`.
-  - Ứng dụng Node.js tính hash bằng module `crypto`:
-    ```typescript
-    const anonymizedHash = crypto.createHash('sha256').update(userId).digest('hex');
-    ```
-  - Anonymize sổ cái `guest_claims` (không dùng extension DB `pgcrypto`):
-    ```sql
-    UPDATE guest_claims
-    SET anonymized_subject_hash = :anonymizedHash,
-        user_id = NULL
-    WHERE user_id = :userId;
-    ```
-  - Anonymize truyện và bản dịch công khai:
-    ```sql
-    UPDATE chapter_versions SET created_by = NULL WHERE created_by = :userId;
-    UPDATE stories SET created_by = NULL WHERE created_by = :userId;
-    DELETE FROM story_members WHERE user_id = :userId;
-    ```
-  - Hard-delete toàn bộ dữ liệu đọc riêng tư:
-    ```sql
-    DELETE FROM bookmarks WHERE user_id = :userId;
-    DELETE FROM reading_progress WHERE user_id = :userId;
-    DELETE FROM chapter_read_states WHERE user_id = :userId;
-    DELETE FROM user_progression WHERE user_id = :userId;
-    ```
-  - Anonymize hoặc purge bản ghi trong `users`:
-    ```sql
-    UPDATE users
-    SET email = NULL,
-        username = 'deleted_user_' || substr(:anonymizedHash, 1, 12),
-        avatar_url = NULL,
-        password_hash = ''
-    WHERE id = :userId;
-    ```
+  - Chạy định kỳ quét các tài khoản `is_deleted = true AND NOW() >= scheduled_purge_at`.
+  - Khóa hợp đồng duy nhất: **Day-30 = hard-delete `users` row sau khi anonymize durable audit ledger** (loại bỏ hoàn toàn lựa chọn mở "anonymize hoặc purge").
+  - Thứ tự 5 bước thực thi nguyên tử:
+    1. **Node.js SHA-256 Hash:**
+       ```typescript
+       const anonymizedHash = crypto.createHash('sha256').update(userId).digest('hex');
+       ```
+    2. **Anonymize Sổ Cái Bền Vững (`guest_claims`):**
+       ```sql
+       UPDATE guest_claims
+       SET anonymized_subject_hash = :anonymizedHash,
+           user_id = NULL
+       WHERE user_id = :userId;
+       ```
+       (Bảo toàn vĩnh viễn tính toàn vẹn của sổ cái cho mục đích kiểm toán và chống gian lận kinh tế mà không lưu trữ PII).
+    3. **Pre-Cascade Special Cleanup:**
+       - Purge hoặc chuyển đổi dữ liệu đặc thù cần thực thi trước FK cascade (ví dụ các bảng có ràng buộc `ON DELETE RESTRICT` như `reward_transactions` hoặc dữ liệu kiểm toán riêng).
+    4. **Hard-Delete Bản Ghi `users`:**
+       ```sql
+       DELETE FROM users WHERE id = :userId;
+       ```
+       (Dòng user bị xóa hoàn toàn khỏi DB; loại bỏ triệt để rủi ro tồn tại pseudo-user với `password_hash = ''` làm gãy verify credential).
+    5. **Tận Dụng Cơ Chế Ground-Truth Foreign Keys (FK Execution):**
+       - **`ON DELETE SET NULL`** bảo toàn tác phẩm/bản dịch công khai nhưng gỡ bỏ danh tính tác giả:
+         * `stories.created_by` ➔ `NULL`
+         * `chapter_versions.created_by` ➔ `NULL`
+         * `translation_projects.created_by` ➔ `NULL`
+         * `translation_jobs.created_by` ➔ `NULL`
+       - **`ON DELETE CASCADE`** tự động xóa sạch dữ liệu cá nhân & reading-state metadata:
+         * `bookmarks`
+         * `reading_progress`
+         * `chapter_read_states`
+         * `reading_history_tombstones`
+         * `reading_history_epoch_counters`
+         * `reading_history`
+         * `user_progression`
+         * `story_members`
+         * `upload_sessions`
+         * `daily_checkins`
+         * `user_claimed_level_rewards`
 - **Endpoints:**
   - `POST /api/v1/auth/reactivate-account`: Khôi phục tài khoản trong grace period.
   - `DELETE /api/v1/account`: Kích hoạt Day 0 Soft Delete.
@@ -504,8 +521,8 @@ graph TD
       - Reset password: hash token SHA-256 check.
       - Change password: verify giữ nguyên `req.user.sessionId`, thu hồi các session khác.
       - Day 0 Soft Delete: verify `is_deleted = true`, nhưng `stories.created_by`, `chapter_versions.created_by`, `story_members` và `guest_claims.user_id` VẪN NGUYÊN VẸN.
-      - Reactivate Account: gọi `POST /auth/reactivate-account` khôi phục thành công toàn bộ attributions.
-      - Day 30 Purge: verify background purge dùng Node.js SHA-256 anonymize ledger và xóa private data.
+      - Reactivate Account: verify 3 nhánh phân xử (trong grace period verify mật khẩu thành công khôi phục 100%, quá hạn chưa purge trả 410 ACCOUNT_PURGED, sau khi hard-delete trả generic 401 anti-enumeration).
+      - Day 30 Purge: verify background purge dùng Node.js SHA-256 anonymize ledger `guest_claims`, hard-delete `users` row, và kích hoạt FK SET NULL / CASCADE dọn sạch 100% private reading-state, tombstones và epoch counters.
 
 #### 4.2. Bộ Kiểm Thử Web Client (`apps/web`)
 - **Tệp:** `apps/web/src/lib/claim/guest-claim-coordinator.spec.ts`
@@ -551,6 +568,6 @@ Sau khi kế hoạch này được **REVIEW & FREEZE** bởi người dùng, quy
 
 - [x] Đã cập nhật SSoT 1 (`identity_and_ownership_model.md`): marker quarantine, transactional rebind, không đổi tên namespace.
 - [x] Đã cập nhật SSoT 2 (`guest_to_account_claim_protocol.md`): bảng `bookmarks`, `chapter_read_states`, `reading_progress`, `reading_history_tombstones`, nullable `user_id` với `anonymized_subject_hash` (Node SHA-256 hash), ensure row counter trước khi khóa `FOR UPDATE`, 1-based `pageIndex >= 1`, canonical `readingMode`, `history[]` là nguồn read-state duy nhất, scope giữ `TRANSITIONING`, snapshot `user_progression`, register auto-login semantics.
-- [x] Đã cập nhật kế hoạch thực thi `phase_07b_account_claim_implementation_plan.md` với đầy đủ 13 P0 Invariants, Register Auto-Login, Stable Session Identity (`sid` in Access Token & `req.user.sessionId`), mật khẩu hash & anti-enumeration, Quy chuẩn Hai Pha Xóa Tài Khoản (Day 0 Soft Delete bảo tồn attributions ↔ `POST /auth/reactivate-account` ↔ Day 30 Final Purge với Node crypto hash), SQLite transactional merge, và Dart mirror contract wording.
+- [x] Đã cập nhật kế hoạch thực thi `phase_07b_account_claim_implementation_plan.md` với đầy đủ 13 P0 Invariants, Register Auto-Login, Stable Session Identity (`sid` in Access Token & `req.user.sessionId`), mật khẩu hash & anti-enumeration, Quy chuẩn Hai Pha Xóa Tài Khoản (Day 0 Soft Delete bảo tồn attributions ↔ `POST /auth/reactivate-account` 3 nhánh chặt chẽ ↔ Day 30 Final Purge hard-delete `users` row + FK SET NULL / CASCADE + Node crypto hash ledger), SQLite transactional merge, và Dart mirror contract wording.
 - [ ] Người dùng xem xét, thảo luận và ký duyệt đóng băng kế hoạch (Freeze Signoff).
 - [ ] Bắt đầu viết mã nguồn cho Step 1 & Step 2.

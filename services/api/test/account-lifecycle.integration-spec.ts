@@ -73,7 +73,12 @@ describe('Account Lifecycle & Security Management (PostgreSQL/Redis Integration 
     refreshToken = res.body.refreshToken;
 
     // Verify cookie set
-    const cookies = res.headers['set-cookie'] || [];
+    const cookieHeader = res.headers['set-cookie'];
+    const cookies: string[] = Array.isArray(cookieHeader)
+      ? cookieHeader
+      : typeof cookieHeader === 'string'
+        ? [cookieHeader]
+        : [];
     const hasRefreshCookie = cookies.some((c: string) => c.includes('refreshToken='));
     expect(hasRefreshCookie).toBe(true);
 

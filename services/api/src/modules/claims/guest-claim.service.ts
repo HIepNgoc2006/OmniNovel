@@ -721,10 +721,15 @@ export class GuestClaimService {
         const insertRes = await runner.query(
           `INSERT INTO bookmarks (user_id, story_id, created_at)
            VALUES ($1, $2, NOW())
-           ON CONFLICT (user_id, story_id) DO NOTHING`,
+           ON CONFLICT (user_id, story_id) DO NOTHING
+           RETURNING user_id`,
           [userId, b.storyId],
         );
-        if (insertRes && insertRes[1] > 0) {
+        if (
+          insertRes &&
+          ((Array.isArray(insertRes) && insertRes.length > 0 && insertRes[0]?.user_id) ||
+            insertRes[1] > 0)
+        ) {
           summary.bookmarksImported++;
         }
       }
@@ -735,14 +740,16 @@ export class GuestClaimService {
           continue;
         }
 
+        const completedAt = Number(h.progressPercentage) >= 100 ? new Date() : null;
+
         await runner.query(
           `INSERT INTO chapter_read_states (user_id, chapter_id, max_progress_percentage, completed_at, last_read_at)
-           VALUES ($1, $2, $3, CASE WHEN $3 >= 100 THEN NOW() ELSE NULL END, NOW())
+           VALUES ($1, $2, $3, $4, NOW())
            ON CONFLICT (user_id, chapter_id) DO UPDATE SET
              max_progress_percentage = GREATEST(chapter_read_states.max_progress_percentage, EXCLUDED.max_progress_percentage),
              completed_at = COALESCE(chapter_read_states.completed_at, EXCLUDED.completed_at),
              last_read_at = NOW()`,
-          [userId, h.chapterId, h.progressPercentage],
+          [userId, h.chapterId, h.progressPercentage, completedAt],
         );
         summary.historyMerged++;
       }

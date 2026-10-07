@@ -91,7 +91,14 @@ describe('Studio Contract Stabilization E2E (#160, #164)', () => {
       RETURNING id;
     `);
     const ownerId = userRes[0].id;
-    ownerToken = jwtService.sign({ sub: ownerId, role: GlobalRole.TRANSLATOR });
+    const { RedisService } = await import('../src/redis/redis.service');
+    const redisService = app.get(RedisService);
+    const ownerSid = uuidv4();
+    await redisService.set(
+      `auth_session:${ownerId}:${ownerSid}`,
+      JSON.stringify({ sessionId: ownerSid, createdAt: new Date().toISOString(), lastActiveAt: new Date().toISOString() }),
+    );
+    ownerToken = jwtService.sign({ sub: ownerId, role: GlobalRole.TRANSLATOR, sid: ownerSid });
 
     // Setup COMIC Story
     const cStoryRes = await dataSource.query(`

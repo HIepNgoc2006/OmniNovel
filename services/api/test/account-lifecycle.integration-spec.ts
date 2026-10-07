@@ -193,6 +193,23 @@ describe('Account Lifecycle & Security Management (PostgreSQL/Redis Integration 
     expect(Array.isArray(res.body.translations.memberships)).toBe(true);
   });
 
+  it('3e. Fail Closed: JWT without sid claim must immediately fail with 401 Unauthorized', async () => {
+    const { JwtService } = await import('@nestjs/jwt');
+    const jwtService = app.get(JwtService);
+    const tokenWithoutSid = jwtService.sign({
+      sub: userId,
+      username: testUsername,
+      role: 'READER',
+    });
+
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${tokenWithoutSid}`)
+      .expect(401);
+
+    expect(res.body.message).toContain('định danh phiên');
+  });
+
   it('4. POST /api/v1/auth/forgot-password should enforce Anti-Enumeration', async () => {
     // Registered user
     const res1 = await request(app.getHttpServer())

@@ -11,7 +11,7 @@ export interface JwtPayload {
   sub: string;
   username: string;
   role: string;
-  sid?: string;
+  sid: string;
   jti?: string;
 }
 
@@ -42,12 +42,15 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
       throw new UnauthorizedException('Phiên đăng nhập không hợp lệ hoặc tài khoản đã bị khóa.');
     }
 
+    // Fail-Closed: Bắt buộc phải có sid định danh phiên
+    if (!payload.sid) {
+      throw new UnauthorizedException('Phiên làm việc không hợp lệ hoặc thiếu định danh phiên.');
+    }
+
     // Xác thực tính hợp lệ tức thời của phiên qua sid trên Redis
-    if (payload.sid) {
-      const sessionActive = await this.redisService.get(`auth_session:${user.id}:${payload.sid}`);
-      if (!sessionActive) {
-        throw new UnauthorizedException('Phiên làm việc đã bị thu hồi hoặc đã hết hạn.');
-      }
+    const sessionActive = await this.redisService.get(`auth_session:${user.id}:${payload.sid}`);
+    if (!sessionActive) {
+      throw new UnauthorizedException('Phiên làm việc đã bị thu hồi hoặc đã hết hạn.');
     }
 
     return {

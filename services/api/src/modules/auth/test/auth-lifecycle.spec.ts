@@ -435,5 +435,17 @@ describe('AuthService - Account Lifecycle & Security Management (Task 7B.2 & 7B.
         }),
       ).rejects.toThrow(UnauthorizedException);
     });
+
+    it('should throw UnauthorizedException when sid is missing from payload (Fail-Closed Invariant)', async () => {
+      userRepo.findOne.mockResolvedValue({ ...mockUser });
+
+      await expect(
+        jwtStrategy.validate({
+          sub: 'user-uuid-1',
+          username: 'testreader',
+          role: 'READER',
+        } as any),
+      ).rejects.toThrow(UnauthorizedException);
+    });
   });
 });

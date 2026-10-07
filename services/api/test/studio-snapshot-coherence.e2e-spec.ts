@@ -70,10 +70,18 @@ describe('Studio Snapshot Coherence & Workspace Revision Invariants (#182 RED 0 
       [`coherence_ed_${ts}`, `coherence_${ts}@example.com`, GlobalRole.TRANSLATOR],
     );
     const user = userRes[0];
+    const { RedisService } = await import('../src/redis/redis.service');
+    const redisService = app.get(RedisService);
+    const edSid = uuidv4();
+    await redisService.set(
+      `auth_session:${user.id}:${edSid}`,
+      JSON.stringify({ sessionId: edSid, createdAt: new Date().toISOString(), lastActiveAt: new Date().toISOString() }),
+    );
     editorToken = jwtService.sign({
       sub: user.id,
       username: user.username,
       role: user.role,
+      sid: edSid,
     });
 
     // 2. Seed Story Hierarchy

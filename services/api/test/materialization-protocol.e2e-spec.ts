@@ -126,7 +126,14 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       RETURNING id;
     `);
     ownerId = userRes[0].id;
-    ownerToken = jwtService.sign({ sub: ownerId, role: GlobalRole.READER });
+    const { RedisService } = await import('../src/redis/redis.service');
+    const redisService = app.get(RedisService);
+    const ownerSid = uuidv4();
+    await redisService.set(
+      `auth_session:${ownerId}:${ownerSid}`,
+      JSON.stringify({ sessionId: ownerSid, createdAt: new Date().toISOString(), lastActiveAt: new Date().toISOString() }),
+    );
+    ownerToken = jwtService.sign({ sub: ownerId, role: GlobalRole.READER, sid: ownerSid });
 
     const uploaderRes = await dataSource.query(`
       INSERT INTO users (email, password_hash, username, role)
@@ -134,7 +141,12 @@ describe('Materialization Protocol & Fenced Completion E2E (#161, #156)', () => 
       RETURNING id;
     `);
     uploaderId = uploaderRes[0].id;
-    uploaderToken = jwtService.sign({ sub: uploaderId, role: GlobalRole.READER });
+    const uploaderSid = uuidv4();
+    await redisService.set(
+      `auth_session:${uploaderId}:${uploaderSid}`,
+      JSON.stringify({ sessionId: uploaderSid, createdAt: new Date().toISOString(), lastActiveAt: new Date().toISOString() }),
+    );
+    uploaderToken = jwtService.sign({ sub: uploaderId, role: GlobalRole.READER, sid: uploaderSid });
 
     // Setup COMIC Story
     const cStoryRes = await dataSource.query(`

@@ -77,10 +77,18 @@ describe('Studio Foundation E2E (#144, #148, #155)', () => {
         [`${usernamePrefix}_${ts}`, `${usernamePrefix}_${ts}@example.com`, role],
       );
       const user = res[0];
+      const { RedisService } = await import('../src/redis/redis.service');
+      const redisService = app.get(RedisService);
+      const sid = uuidv4();
+      await redisService.set(
+        `auth_session:${user.id}:${sid}`,
+        JSON.stringify({ sessionId: sid, createdAt: new Date().toISOString(), lastActiveAt: new Date().toISOString() }),
+      );
       const token = jwtService.sign({
         sub: user.id,
         username: user.username,
         role: user.role,
+        sid,
       });
       return { user, token };
     };

@@ -59,7 +59,46 @@ export class ActiveScopeCoordinator {
    * If status is 'authenticated' but userId is missing or empty, scope remains null
    * and state stays BOOTSTRAPPING. NEVER create spoofed account:unknown.
    */
-  async onAuthStatusChanged(status: AuthStatus, userId?: string): Promise<void> {
+  /**
+   * P0 Invariant: Explicitly sets coordinator into TRANSITIONING state.
+   * While TRANSITIONING, canMutateUserState is false, blocking user-state mutations.
+   */
+  setTransitioning(): void {
+    this._state = 'TRANSITIONING';
+    this._activeScope = null;
+    this._notifyListeners();
+  }
+
+  /**
+   * Deterministically resolves identity to an authenticated account scope.
+   */
+  resolveToAccount(userId: string): void {
+    const trimmed = userId?.trim();
+    if (!trimmed) {
+      this._state = 'BOOTSTRAPPING';
+      this._activeScope = null;
+      this._notifyListeners();
+      return;
+    }
+    this._activeScope = `account:${trimmed}`;
+    this._state = 'ACCOUNT';
+    this._flushWaiters(this._activeScope);
+    this._notifyListeners();
+  }
+
+  /**
+   * Consumes canonical AuthStatus from memoryAuthStore / AuthContext.
+   * Enforces zero-race transition from BOOTSTRAPPING to GUEST or ACCOUNT.
+   * 
+   * P0 Invariant: Fail-closed on authenticated without valid userId.
+   * If status is 'authenticated' but userId is missing or empty, scope remains null
+   * and state stays BOOTSTRAPPING. NEVER create spoofed account:unknown.
+   */
+  async onAuthStatusChanged(
+    status: AuthStatus,
+    userId?: string,
+    options?: { deferScopeResolution?: boolean },
+  ): Promise<void> {
     if (status === 'initializing') {
       this._state = 'BOOTSTRAPPING';
       this._activeScope = null;
@@ -86,10 +125,12 @@ export class ActiveScopeCoordinator {
         return;
       }
 
-      this._activeScope = `account:${trimmedUserId}`;
-      this._state = 'ACCOUNT';
-      this._flushWaiters(this._activeScope);
-      this._notifyListeners();
+      if (options?.deferScopeResolution) {
+        this.setTransitioning();
+        return;
+      }
+
+      this.resolveToAccount(trimmedUserId);
     }
   }
 

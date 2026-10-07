@@ -4,6 +4,8 @@ import React, { useState } from 'react';
 import { Modal } from '../ui/modal';
 import { Button } from '../ui/button';
 import { useAuth } from '../../lib/auth/auth-context';
+import { memoryAuthStore } from '../../lib/auth/auth-store';
+import { guestClaimCoordinator } from '../../lib/claim/guest-claim-coordinator';
 import { registerApi } from '../../lib/api/auth';
 import { CheckCircle2, AlertCircle, Lock, Mail, User } from 'lucide-react';
 
@@ -67,6 +69,14 @@ export function AuthModal({ isOpen, onClose, defaultTab = 'login' }: AuthModalPr
         username: registerUsername.trim(),
         password: registerPassword,
       });
+
+      if (res.accessToken && res.user?.id) {
+        memoryAuthStore.setAccessToken(res.accessToken);
+        onClose();
+        await guestClaimCoordinator.checkAndPrepareClaim(res.user.id);
+        return;
+      }
+
       setSuccessMessage(res.message || 'Đăng ký tài khoản thành công! Vui lòng đăng nhập.');
       setIdentifier(registerUsername.trim());
       setLoginPassword('');

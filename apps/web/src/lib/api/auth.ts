@@ -27,15 +27,9 @@ export interface RegisterRequest {
 }
 
 export interface RegisterResponse {
-  message: string;
-  user: {
-    id: string;
-    email: string;
-    username: string;
-    role?: string;
-    avatarUrl?: string | null;
-    createdAt?: string;
-  };
+  message?: string;
+  accessToken?: string;
+  user: UserProfile;
 }
 
 export interface UserPermissions {

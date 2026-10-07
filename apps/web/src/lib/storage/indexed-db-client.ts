@@ -465,6 +465,164 @@ export class IndexedDbClient {
     });
   }
 
+  async getAllProgress(ownerScope: string): Promise<LocalReadingProgress[]> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_PROGRESS, 'readonly');
+      const store = tx.objectStore(STORE_PROGRESS);
+      const range = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+      const req = store.openCursor(range);
+      const results: LocalReadingProgress[] = [];
+
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (cursor) {
+          const item = cursor.value as LocalReadingProgress;
+          if (item.ownerScope === ownerScope) {
+            results.push(item);
+          }
+          cursor.continue();
+        } else {
+          resolve(results);
+        }
+      };
+
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async hasGuestData(guestScope: string): Promise<boolean> {
+    assertValidScope(guestScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction([STORE_BOOKMARKS, STORE_PROGRESS, STORE_HISTORY], 'readonly');
+        let found = false;
+        let pending = 3;
+
+        const checkDone = () => {
+          pending -= 1;
+          if (pending === 0) {
+            resolve(found);
+          }
+        };
+
+        for (const storeName of [STORE_BOOKMARKS, STORE_PROGRESS, STORE_HISTORY]) {
+          const store = tx.objectStore(storeName);
+          const range = IDBKeyRange.bound([guestScope, ''], [guestScope, '\uffff']);
+          const req = store.openCursor(range);
+          req.onsuccess = () => {
+            if (req.result && req.result.value?.ownerScope === guestScope) {
+              found = true;
+            }
+            checkDone();
+          };
+          req.onerror = () => {
+            checkDone();
+          };
+        }
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async rebindScope(fromScope: string, toScope: string): Promise<void> {
+    assertValidScope(fromScope);
+    assertValidScope(toScope);
+    const db = await this.getDatabase();
+
+    return new Promise<void>((resolve, reject) => {
+      try {
+        const tx = db.transaction([STORE_BOOKMARKS, STORE_PROGRESS, STORE_HISTORY], 'readwrite');
+        const bStore = tx.objectStore(STORE_BOOKMARKS);
+        const pStore = tx.objectStore(STORE_PROGRESS);
+        const hStore = tx.objectStore(STORE_HISTORY);
+
+        // 1. Rebind Bookmarks: Read all from fromScope, put into toScope if not existing
+        const bRange = IDBKeyRange.bound([fromScope, ''], [fromScope, '\uffff']);
+        const bReq = bStore.openCursor(bRange);
+        bReq.onsuccess = () => {
+          const cursor = bReq.result;
+          if (cursor) {
+            const item = cursor.value as LocalBookmark;
+            if (item.ownerScope === fromScope) {
+              const targetKey = [toScope, item.storyId];
+              const checkReq = bStore.get(targetKey);
+              checkReq.onsuccess = () => {
+                if (!checkReq.result) {
+                  bStore.put({ ...item, ownerScope: toScope });
+                }
+              };
+            }
+            cursor.continue();
+          }
+        };
+
+        // 2. Rebind Progress
+        const pRange = IDBKeyRange.bound([fromScope, ''], [fromScope, '\uffff']);
+        const pReq = pStore.openCursor(pRange);
+        pReq.onsuccess = () => {
+          const cursor = pReq.result;
+          if (cursor) {
+            const item = cursor.value as LocalReadingProgress;
+            if (item.ownerScope === fromScope) {
+              pStore.put({ ...item, ownerScope: toScope });
+            }
+            cursor.continue();
+          }
+        };
+
+        // 3. Rebind History with Monotonic Merge
+        const hRange = IDBKeyRange.bound([fromScope, ''], [fromScope, '\uffff']);
+        const hReq = hStore.openCursor(hRange);
+        hReq.onsuccess = () => {
+          const cursor = hReq.result;
+          if (cursor) {
+            const item = cursor.value as LocalReadingHistory;
+            if (item.ownerScope === fromScope) {
+              const targetKey = [toScope, item.storyId, item.chapterId];
+              const checkReq = hStore.get(targetKey);
+              checkReq.onsuccess = () => {
+                const existing = checkReq.result as LocalReadingHistory | undefined;
+                if (!existing) {
+                  hStore.put({ ...item, ownerScope: toScope });
+                } else {
+                  const mergedPercentage = Math.max(existing.progressPercentage || 0, item.progressPercentage || 0);
+                  const lastReadAt = (existing.lastReadAt && item.lastReadAt)
+                    ? (new Date(existing.lastReadAt) > new Date(item.lastReadAt) ? existing.lastReadAt : item.lastReadAt)
+                    : (existing.lastReadAt || item.lastReadAt);
+                  hStore.put({
+                    ...existing,
+                    progressPercentage: mergedPercentage,
+                    lastReadAt,
+                  });
+                }
+              };
+            }
+            cursor.continue();
+          }
+        };
+
+        tx.oncomplete = async () => {
+          // 4. Purge source fromScope cleanly
+          try {
+            await this.purgeScope(fromScope);
+            resolve();
+          } catch (err) {
+            reject(err);
+          }
+        };
+
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Rebind transaction aborted'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
   async purgeScope(ownerScope: string): Promise<void> {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();

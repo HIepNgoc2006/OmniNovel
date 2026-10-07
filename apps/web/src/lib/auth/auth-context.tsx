@@ -6,6 +6,7 @@ import { loginApi, logoutApi, getMeApi, UserProfile, LoginRequest } from '../api
 import { refreshAccessToken } from '../api/client';
 import { activeScopeCoordinator, ActiveScopeState } from '../identity/active-scope-coordinator';
 import { purgeOfflineCache } from '../reader/offline-cache';
+import { guestClaimCoordinator } from '../claim/guest-claim-coordinator';
 
 interface AuthContextType {
   status: AuthStatus;
@@ -51,8 +52,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         // 2. Hydrate thông tin user profile
         const profile = await getMeApi();
         if (profile && profile.id) {
-          // Bắt buộc resolve identity ở coordinator TRƯỚC KHI publish session authenticated
-          await activeScopeCoordinator.onAuthStatusChanged('authenticated', profile.id);
+          const recovered = await guestClaimCoordinator.checkCrashRecovery(profile.id);
+          if (!recovered) {
+            await activeScopeCoordinator.onAuthStatusChanged('authenticated', profile.id);
+          }
           memoryAuthStore.setAccessToken(token);
           setUser(profile);
           setStatus('authenticated');
@@ -96,6 +99,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     memoryAuthStore.setAccessToken(res.accessToken);
     setUser(res.user);
     setStatus('authenticated');
+
+    // Trigger Guest Claim flow: locks in TRANSITIONING if guest data exists, else resolves to ACCOUNT
+    await guestClaimCoordinator.checkAndPrepareClaim(res.user.id);
   };
 
   const logout = async () => {

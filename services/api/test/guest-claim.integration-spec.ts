@@ -8,6 +8,7 @@ import {
   PrepareGuestClaimDto,
 } from '../src/modules/claims/dto/prepare-guest-claim.dto';
 import * as request from 'supertest';
+import * as cookieParser from 'cookie-parser';
 import { JwtService } from '@nestjs/jwt';
 
 describe('Guest Claim Engine & Durable Ledger (PostgreSQL Integration - Task 7B.1)', () => {
@@ -32,6 +33,7 @@ describe('Guest Claim Engine & Durable Ledger (PostgreSQL Integration - Task 7B.
     }).compile();
 
     app = moduleFixture.createNestApplication();
+    app.use(cookieParser());
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -47,18 +49,26 @@ describe('Guest Claim Engine & Durable Ledger (PostgreSQL Integration - Task 7B.
     dataSource = app.get(DataSource);
     guestClaimService = app.get(GuestClaimService);
     jwtService = app.get(JwtService);
+    const { RedisService } = await import('../src/redis/redis.service');
+    const redisService = app.get(RedisService);
 
     // 1. Tạo test users
     const uRes1 = await dataSource.query(
-      `INSERT INTO users (username, email, password_hash, role, is_active)
-       VALUES ('user_claim_int_${Date.now()}', 'user_claim_${Date.now()}@example.com', 'hash', 'READER', true)
-       RETURNING id, email, role`,
+      `INSERT INTO users (username, email, password_hash, role, is_active, is_deleted)
+       VALUES ('user_claim_int_${Date.now()}', 'user_claim_${Date.now()}@example.com', 'hash', 'READER', true, false)
+       RETURNING id, username, email, role`,
     );
     testUser = uRes1[0];
+    const sid = 'claim-int-session-id';
+    await redisService.set(
+      `auth_session:${testUser.id}:${sid}`,
+      JSON.stringify({ sessionId: sid, createdAt: new Date().toISOString(), lastActiveAt: new Date().toISOString() }),
+    );
     testUserToken = jwtService.sign({
       sub: testUser.id,
+      username: testUser.username,
       role: testUser.role,
-      sid: 'claim-int-session-id',
+      sid: sid,
     });
 
     const uRes2 = await dataSource.query(

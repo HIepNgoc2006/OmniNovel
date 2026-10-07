@@ -59,36 +59,36 @@ graph TD
 
 ---
 
-### Phase 7B — Account Claim & Lifecycle Protocol `[ ] Đang Lập Kế Hoạch (Chờ Freeze)`
+### Phase 7B — Account Claim & Lifecycle Protocol `[ ] Đang Triển Khai (7B.1 & 7B.2 FROZEN CLEAN)`
 **Mục tiêu:** Triển khai quy trình chuyển giao dữ liệu Khách sang Tài khoản 2 bước xác định và hoàn thiện toàn bộ vòng đời tài khoản người dùng theo 13 bất biến P0.
-- [ ] **7B.1. Backend Two-Step Claim APIs & Durable Ledger (`services/api`)**
-  - [ ] `POST /api/v1/account/guest-claims/prepare`:
+- [x] **7B.1. Backend Two-Step Claim APIs & Durable Ledger (`services/api`)**
+  - [x] `POST /api/v1/account/guest-claims/prepare`:
     - Nhận danh sách canonical IDs (`storyId`, `chapterId`, `chapterVersionId`, đầy đủ resume tuple với 1-based `pageIndex >= 1`, canonical `readingMode`).
     - `history[]` (có `progressPercentage` bắt buộc) là nguồn duy nhất cho read-states; loại bỏ `readChapterIds` khỏi progress.
     - Tính toán chênh lệch (Diff) với CSDL PostgreSQL (`bookmarks`, `chapter_read_states`, `reading_progress`, `reading_history_tombstones`).
     - Tombstone Anti-Resurrection: Truyện có tombstone bị chặn import cả read states lẫn progress.
     - So sánh xung đột tiến độ đọc theo chế độ (Mode-Aware: PAGED `pageIndex`, WEBTOON `scrollPosition` + `progressPercentage`, NOVEL `anchorBlockId` + `textOffset`).
     - Tính `stateFingerprint`, lưu durable ledger `guest_claims` vào PostgreSQL (schema `user_id NULL REFERENCES users(id) ON DELETE SET NULL`, `anonymized_subject_hash CHAR(64) NULL`) và cache Redis (TTL 15 phút).
-  - [ ] `POST /api/v1/account/guest-claims/:claimId/commit`:
+  - [x] `POST /api/v1/account/guest-claims/:claimId/commit`:
     - Thử chiếm Redis lock (Best-effort concurrency optimization, fallback về PostgreSQL row lock nếu Redis lỗi).
     - Mở PostgreSQL transaction: `SELECT ... FOR UPDATE` ledger `guest_claims`.
     - Thứ tự chuẩn: verify ownership ➔ nếu `COMMITTED` trả ngay kết quả 200 OK (Idempotent vĩnh viễn theo retention policy) ➔ nếu `ABORTED` reject ➔ nếu `PREPARED` quá hạn trả 410 EXPIRED.
     - Ensure counter row (`INSERT INTO reading_history_epoch_counters ... ON CONFLICT DO NOTHING`) rồi mới khóa `FOR UPDATE` + user advisory lock + khóa các domain rows (`bookmarks`, `chapter_read_states`, `reading_progress`, `reading_history_tombstones`) để triệt tiêu 100% TOCTOU race window.
     - Re-check `stateFingerprint` trên dữ liệu đã khóa (trả `409 CLAIM_STALE_REPREPARE` nếu đổi).
     - Merge vào `bookmarks`, `chapter_read_states`, `reading_progress`. Ghi `COMMITTED` trong cùng transaction. Zero Gamification side-effects (kiểm chứng `user_progression`).
-  - [ ] `GET /api/v1/account/guest-claims/:claimId/status`:
+  - [x] `GET /api/v1/account/guest-claims/:claimId/status`:
     - Phục vụ crash recovery cho client sau commit timeout / app crash.
-- [ ] **7B.2. Backend Account Lifecycle APIs (`services/api`)**
-  - [ ] Register Auto-Login & Access Token session claim: `POST /api/v1/auth/register` tự động cấp session và tokens tương tự login; đưa `sid = familyId` vào access token, `JwtStrategy` expose `req.user.sessionId`.
-  - [ ] `POST /api/v1/auth/forgot-password` (Anti-enumeration response chuẩn hóa, mã hóa hash token SHA-256 trên Redis).
-  - [ ] `POST /api/v1/auth/reset-password` (Kiểm tra hash token, băm mật khẩu mới, thu hồi toàn bộ sessions).
-  - [ ] `POST /api/v1/auth/change-password` (Giữ nguyên `req.user.sessionId`, thu hồi toàn bộ các phiên khác).
-  - [ ] `GET /api/v1/account/sessions` & `DELETE /api/v1/account/sessions/:id` (Quản lý session metadata ổn định `auth_session` qua `familyId`: IP, User-Agent, lastActiveAt, isCurrentSession = `familyId === req.user.sessionId`).
-  - [ ] Quy Chuẩn Hai Pha Xóa Tài Khoản & Khôi Phục (Two-Phase Deletion):
+- [x] **7B.2. Backend Account Lifecycle APIs (`services/api`)**
+  - [x] Register Auto-Login & Access Token session claim: `POST /api/v1/auth/register` tự động cấp session và tokens tương tự login; đưa `sid = familyId` vào access token, `JwtStrategy` expose `req.user.sessionId` (Fail-Closed nếu thiếu `sid`).
+  - [x] `POST /api/v1/auth/forgot-password` (Anti-enumeration response chuẩn hóa, mã hóa hash token SHA-256 trên Redis, gửi mail thật qua Nodemailer provider không log raw token/URL, swallow transport error).
+  - [x] `POST /api/v1/auth/reset-password` (Kiểm tra hash token, băm mật khẩu mới bằng Argon2id, thu hồi toàn bộ sessions).
+  - [x] `POST /api/v1/auth/change-password` (Giữ nguyên `req.user.sessionId`, thu hồi toàn bộ các phiên khác).
+  - [x] `GET /api/v1/account/sessions` & `DELETE /api/v1/account/sessions/:id` (Quản lý session metadata ổn định `auth_session` qua `familyId`: IP, User-Agent, lastActiveAt, isCurrentSession = `familyId === req.user.sessionId`, immediate session revocation trên Redis).
+  - [x] Quy Chuẩn Hai Pha Xóa Tài Khoản & Khôi Phục (Two-Phase Deletion):
     * Day 0 Soft Delete (`DELETE /api/v1/account`): `is_deleted = true, scheduled_purge_at = NOW() + 30d`, thu hồi sessions, **BẢO TỒN NGUYÊN VẸN** toàn bộ attributions `stories`, `chapter_versions`, `story_members`, `guest_claims.user_id`, `reward_transactions.user_id`.
-    * Khôi Phục (`POST /api/v1/auth/reactivate-account`): Endpoint chuyên biệt (trong grace period xác thực mật khẩu khôi phục 100%; quá hạn chưa purge trả 410 ACCOUNT_PURGED; đã hard-delete trả generic 401 anti-enumeration).
-    * Day 30 Final Purge: Background worker dùng Node.js crypto SHA-256 hash ẩn danh hóa các sổ cái bền vững (`guest_claims`, `reward_transactions`, không phụ thuộc `pgcrypto`), sau đó `DELETE FROM users WHERE id = :userId` (hard-delete), tận dụng FK ground-truth `ON DELETE SET NULL` gỡ attribution tác giả/báo cáo công khai và `ON DELETE CASCADE` xóa sạch 100% dữ liệu riêng tư & reading-state metadata / tombstones (loại bỏ bảng ảo `reading_history`).
-  - [ ] `GET /api/v1/account/export-data` (Xuất toàn bộ dữ liệu cá nhân dạng JSON).
+    * Khôi Phục (`POST /api/v1/auth/reactivate-account`): Endpoint chuyên biệt (reject account đang active bằng 400 ACCOUNT_ALREADY_ACTIVE; trong grace period khôi phục tài khoản; quá hạn chưa purge trả 410 ACCOUNT_PURGED; đã hard-delete trả generic 401).
+    * Day 30 Final Purge: Background worker dùng Node.js crypto SHA-256 hash ẩn danh hóa các sổ cái bền vững (`guest_claims`, `reward_transactions`, không phụ thuộc `pgcrypto`), sau đó `DELETE FROM users WHERE id = :userId` (hard-delete), tận dụng FK ground-truth `ON DELETE SET NULL` gỡ attribution tác giả/báo cáo công khai và `ON DELETE CASCADE` xóa sạch 100% dữ liệu riêng tư & reading-state metadata / tombstones.
+  - [x] `GET /api/v1/account/export-data` (Xuất toàn bộ dữ liệu cá nhân dạng JSON đầy đủ dataset gồm `translation_projects`, `translation_jobs`, `chapter_versions`, `story_members`).
 - [ ] **7B.3. Client Explicit Claim Dialog, Marker Quarantine & Transactional Rebind**
   - [ ] Client giữ nguyên trạng thái `TRANSITIONING` trong suốt quá trình claim pending, chặn mọi mutation ghi đè lên account.
   - [ ] Nếu người dùng Skip: Thêm vào danh sách marker `quarantineGuestScope(guestProfileId)`, **giữ nguyên partition vật lý `guest:<guestProfileId>`, không đổi tên namespace**, chuyển sang `ACCOUNT`.

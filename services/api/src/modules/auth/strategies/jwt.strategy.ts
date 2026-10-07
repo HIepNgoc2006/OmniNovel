@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
+import { RedisService } from '../../../redis/redis.service';
 
 export interface JwtPayload {
   sub: string;
@@ -20,6 +21,7 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     private configService: ConfigService,
     @InjectRepository(User)
     private userRepository: Repository<User>,
+    private redisService: RedisService,
   ) {
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
@@ -38,6 +40,14 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
 
     if (!user) {
       throw new UnauthorizedException('Phiên đăng nhập không hợp lệ hoặc tài khoản đã bị khóa.');
+    }
+
+    // Xác thực tính hợp lệ tức thời của phiên qua sid trên Redis
+    if (payload.sid) {
+      const sessionActive = await this.redisService.get(`auth_session:${user.id}:${payload.sid}`);
+      if (!sessionActive) {
+        throw new UnauthorizedException('Phiên làm việc đã bị thu hồi hoặc đã hết hạn.');
+      }
     }
 
     return {

@@ -118,6 +118,77 @@ describe('Account Lifecycle & Security Management (PostgreSQL/Redis Integration 
     expect(current.isCurrentSession).toBe(true);
   });
 
+  it('3b. Immediate Access Token Revocation: revoking session B should immediately reject token B with 401', async () => {
+    // Login second device (Session B)
+    const loginRes = await request(app.getHttpServer())
+      .post('/api/v1/auth/login')
+      .send({
+        identifier: testUsername,
+        password: initialPassword,
+      })
+      .expect(200);
+
+    const tokenB = loginRes.body.accessToken;
+    const sessionBId = loginRes.body.familyId;
+    expect(tokenB).toBeDefined();
+    expect(sessionBId).toBeDefined();
+
+    // Verify token B works before revocation
+    await request(app.getHttpServer())
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .expect(200);
+
+    // Revoke Session B from Session A
+    await request(app.getHttpServer())
+      .delete(`/api/v1/account/sessions/${sessionBId}`)
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+
+    // Token B must immediately fail with 401 Unauthorized even though 15m TTL is not expired
+    const rejectedRes = await request(app.getHttpServer())
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${tokenB}`)
+      .expect(401);
+
+    expect(rejectedRes.body.message).toContain('thu hồi');
+
+    // Token A must still work
+    await request(app.getHttpServer())
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+  });
+
+  it('3c. Reject reactivate-account on already active account (Branch 4 strict contract)', async () => {
+    const res = await request(app.getHttpServer())
+      .post('/api/v1/auth/reactivate-account')
+      .send({
+        identifier: testUsername,
+        password: initialPassword,
+      })
+      .expect(400);
+
+    expect(res.body.error).toBe('ACCOUNT_ALREADY_ACTIVE');
+    expect(res.body.accessToken).toBeUndefined();
+  });
+
+  it('3d. GET /api/v1/account/export-data should return complete GDPR dataset including translations', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/api/v1/account/export-data')
+      .set('Authorization', `Bearer ${accessToken}`)
+      .expect(200);
+
+    expect(res.body.exportDate).toBeDefined();
+    expect(res.body.user).toBeDefined();
+    expect(res.body.user.id).toBe(userId);
+    expect(res.body.translations).toBeDefined();
+    expect(Array.isArray(res.body.translations.projects)).toBe(true);
+    expect(Array.isArray(res.body.translations.jobs)).toBe(true);
+    expect(Array.isArray(res.body.translations.versions)).toBe(true);
+    expect(Array.isArray(res.body.translations.memberships)).toBe(true);
+  });
+
   it('4. POST /api/v1/auth/forgot-password should enforce Anti-Enumeration', async () => {
     // Registered user
     const res1 = await request(app.getHttpServer())

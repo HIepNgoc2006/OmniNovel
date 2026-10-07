@@ -54,6 +54,7 @@ export class AddUserPurgeAndNormalizeRewardTransactions1700000000019 implements 
     await queryRunner.query(`
       ALTER TABLE reward_transactions DROP CONSTRAINT IF EXISTS fk_reward_transactions_user_id;
       ALTER TABLE reward_transactions DROP COLUMN IF EXISTS anonymized_subject_hash;
+      DELETE FROM reward_transactions WHERE user_id IS NULL;
       ALTER TABLE reward_transactions ALTER COLUMN user_id SET NOT NULL;
       ALTER TABLE reward_transactions 
       ADD CONSTRAINT reward_transactions_user_id_fkey 

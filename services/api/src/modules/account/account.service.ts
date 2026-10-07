@@ -91,6 +91,10 @@ export class AccountService {
       claims,
       rewardTransactions,
       stories,
+      translationProjects,
+      translationJobs,
+      chapterVersions,
+      storyMemberships,
     ] = await Promise.all([
       this.dataSource.query(
         'SELECT story_id, created_at FROM bookmarks WHERE user_id = $1 ORDER BY created_at DESC',
@@ -116,6 +120,22 @@ export class AccountService {
         'SELECT id, title, slug, status, created_at FROM stories WHERE created_by = $1',
         [userId],
       ),
+      this.dataSource.query(
+        'SELECT id, story_id, target_language, status, created_at FROM translation_projects WHERE created_by = $1',
+        [userId],
+      ),
+      this.dataSource.query(
+        'SELECT id, chapter_id, version_id, status, created_at FROM translation_jobs WHERE created_by = $1',
+        [userId],
+      ),
+      this.dataSource.query(
+        'SELECT id, chapter_id, version_number, version_type, is_published, created_at FROM chapter_versions WHERE created_by = $1',
+        [userId],
+      ),
+      this.dataSource.query(
+        'SELECT id, story_id, role, created_at FROM story_members WHERE user_id = $1',
+        [userId],
+      ),
     ]);
 
     return {
@@ -134,6 +154,12 @@ export class AccountService {
       claims,
       rewardTransactions,
       stories,
+      translations: {
+        projects: translationProjects,
+        jobs: translationJobs,
+        versions: chapterVersions,
+        memberships: storyMemberships,
+      },
     };
   }
 }

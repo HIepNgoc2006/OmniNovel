@@ -120,6 +120,10 @@ describe('AccountService & AccountPurgeService - Two-Phase Deletion & Lifecycle 
         if (sql.includes('guest_claims')) return [{ claim_id: 'claim-1', status: 'COMMITTED' }];
         if (sql.includes('reward_transactions')) return [{ id: 'tx-1', amount: 50 }];
         if (sql.includes('stories')) return [{ id: 'story-1', title: 'My Story' }];
+        if (sql.includes('translation_projects')) return [{ id: 'proj-1', target_language: 'vi' }];
+        if (sql.includes('translation_jobs')) return [{ id: 'job-1', status: 'READY_FOR_REVIEW' }];
+        if (sql.includes('chapter_versions')) return [{ id: 'ver-1', version_number: 1 }];
+        if (sql.includes('story_members')) return [{ id: 'mem-1', role: 'TRANSLATOR' }];
         return [];
       });
 
@@ -130,6 +134,10 @@ describe('AccountService & AccountPurgeService - Two-Phase Deletion & Lifecycle 
       expect(exportData.readingProgress.length).toBe(1);
       expect(exportData.claims.length).toBe(1);
       expect(exportData.rewardTransactions.length).toBe(1);
+      expect(exportData.translations.projects.length).toBe(1);
+      expect(exportData.translations.jobs.length).toBe(1);
+      expect(exportData.translations.versions.length).toBe(1);
+      expect(exportData.translations.memberships.length).toBe(1);
     });
   });
 

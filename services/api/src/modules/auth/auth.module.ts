@@ -7,6 +7,8 @@ import { AuthController } from './auth.controller';
 import { JwtStrategy } from './strategies/jwt.strategy';
 import { User } from '../users/entities/user.entity';
 import { UserProgression } from '../users/entities/user-progression.entity';
+import { PASSWORD_RESET_DELIVERY } from './interfaces/password-reset-delivery.interface';
+import { PasswordResetDeliveryProvider } from './providers/password-reset-delivery.provider';
 
 @Module({
   imports: [
@@ -15,7 +17,14 @@ import { UserProgression } from '../users/entities/user-progression.entity';
     TypeOrmModule.forFeature([User, UserProgression]),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtStrategy],
-  exports: [AuthService, JwtStrategy, PassportModule],
+  providers: [
+    AuthService,
+    JwtStrategy,
+    {
+      provide: PASSWORD_RESET_DELIVERY,
+      useClass: PasswordResetDeliveryProvider,
+    },
+  ],
+  exports: [AuthService, JwtStrategy, PassportModule, PASSWORD_RESET_DELIVERY],
 })
 export class AuthModule {}

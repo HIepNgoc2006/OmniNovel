@@ -6,6 +6,7 @@ import {
   HttpException,
   HttpStatus,
   Logger,
+  Inject,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -24,6 +25,10 @@ import { ChangePasswordDto } from './dto/change-password.dto';
 import { ReactivateAccountDto } from './dto/reactivate-account.dto';
 import { RedisService } from '../../redis/redis.service';
 import { GlobalRole } from '@omninovel/shared';
+import {
+  PASSWORD_RESET_DELIVERY,
+  IPasswordResetDelivery,
+} from './interfaces/password-reset-delivery.interface';
 
 export interface DeviceSessionMetadata {
   sessionId: string;
@@ -48,6 +53,8 @@ export class AuthService {
     private configService: ConfigService,
     private redisService: RedisService,
     private dataSource: DataSource,
+    @Inject(PASSWORD_RESET_DELIVERY)
+    private resetDelivery: IPasswordResetDelivery,
   ) {}
 
   /**
@@ -268,15 +275,26 @@ export class AuthService {
       where: { email: dto.email, isActive: true, isDeleted: false },
     });
 
-    if (user) {
+    if (user && user.email) {
       const rawToken = crypto.randomBytes(32).toString('hex'); // 64 ký tự hex
       const tokenHash = crypto.createHash('sha256').update(rawToken).digest('hex');
 
       // Lưu HASH token vào Redis kèm userId, TTL 15 phút (900 giây)
       await this.redisService.set(`pwd_reset:${tokenHash}`, user.id, 15 * 60);
 
-      this.logger.log(`Password reset requested for user ${user.id}. Token generated.`);
-      // Trong môi trường production: Gửi rawToken qua email dịch vụ
+      const webBaseUrl = this.configService.get<string>('WEB_BASE_URL', 'http://localhost:3000');
+      const resetUrl = `${webBaseUrl}/reset-password?token=${rawToken}`;
+
+      // Chuyển giao token và resetUrl cho delivery provider (P0 Requirement)
+      await this.resetDelivery.sendResetToken({
+        userId: user.id,
+        email: user.email,
+        token: rawToken,
+        resetUrl,
+        expiresInSeconds: 15 * 60,
+      });
+
+      this.logger.log(`Password reset requested for user ${user.id}. Token generated and dispatched.`);
     }
 
     return {
@@ -439,27 +457,13 @@ export class AuthService {
       };
     }
 
-    // Nhánh 4: Tài khoản đang hoạt động bình thường
+    // Nhánh 4: Tài khoản đang hoạt động bình thường -> Từ chối, yêu cầu đăng nhập trực tiếp (Strict 3-branch contract)
     if (!user.isDeleted && user.isActive) {
-      const isPasswordValid = await argon2.verify(user.passwordHash, dto.password);
-      if (!isPasswordValid) {
-        throw new UnauthorizedException('Tên đăng nhập hoặc mật khẩu không chính xác.');
-      }
-
-      const familyId = uuidv4();
-      const tokens = await this.generateTokens(user, familyId, ip, userAgent);
-
-      return {
-        message: 'Tài khoản đang hoạt động bình thường.',
-        user: {
-          id: user.id,
-          username: user.username,
-          email: user.email,
-          role: user.role,
-          avatarUrl: user.avatarUrl,
-        },
-        ...tokens,
-      };
+      throw new BadRequestException({
+        statusCode: HttpStatus.BAD_REQUEST,
+        message: 'Tài khoản đang hoạt động bình thường, vui lòng sử dụng tính năng đăng nhập.',
+        error: 'ACCOUNT_ALREADY_ACTIVE',
+      });
     }
 
     throw new UnauthorizedException('Tài khoản không hợp lệ hoặc đã bị vô hiệu hóa.');

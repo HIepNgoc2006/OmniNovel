@@ -9,9 +9,19 @@ import { AuthService } from '../auth.service';
 import { User } from '../../users/entities/user.entity';
 import { UserProgression } from '../../users/entities/user-progression.entity';
 import { RedisService } from '../../../redis/redis.service';
-import { ConflictException, UnauthorizedException, BadRequestException, HttpException } from '@nestjs/common';
+import { JwtStrategy } from '../strategies/jwt.strategy';
+import {
+  PASSWORD_RESET_DELIVERY,
+  IPasswordResetDelivery,
+} from '../interfaces/password-reset-delivery.interface';
+import {
+  ConflictException,
+  UnauthorizedException,
+  BadRequestException,
+  HttpException,
+} from '@nestjs/common';
 
-describe('AuthService - Account Lifecycle & Security Management (Task 7B.2)', () => {
+describe('AuthService - Account Lifecycle & Security Management (Task 7B.2 & 7B.2a)', () => {
   let service: AuthService;
   let userRepo: any;
   let progressionRepo: any;
@@ -19,6 +29,7 @@ describe('AuthService - Account Lifecycle & Security Management (Task 7B.2)', ()
   let redisService: any;
   let mockRedisClient: any;
   let dataSource: any;
+  let mockResetDelivery: IPasswordResetDelivery;
 
   const mockUser: Partial<User> = {
     id: 'user-uuid-1',
@@ -82,6 +93,10 @@ describe('AuthService - Account Lifecycle & Security Management (Task 7B.2)', ()
       }),
     };
 
+    mockResetDelivery = {
+      sendResetToken: jest.fn().mockResolvedValue(undefined),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AuthService,
@@ -96,6 +111,7 @@ describe('AuthService - Account Lifecycle & Security Management (Task 7B.2)', ()
         },
         { provide: RedisService, useValue: redisService },
         { provide: DataSource, useValue: dataSource },
+        { provide: PASSWORD_RESET_DELIVERY, useValue: mockResetDelivery },
       ],
     }).compile();
 
@@ -149,7 +165,7 @@ describe('AuthService - Account Lifecycle & Security Management (Task 7B.2)', ()
     });
   });
 
-  describe('2. Forgot & Reset Password Flow (Anti-Enumeration & SHA-256 Hash)', () => {
+  describe('2. Forgot & Reset Password Flow (Anti-Enumeration, Delivery & SHA-256 Hash)', () => {
     it('should return 200 OK with identical message when email does NOT exist (Anti-Enumeration)', async () => {
       userRepo.findOne.mockResolvedValue(null);
 
@@ -157,9 +173,10 @@ describe('AuthService - Account Lifecycle & Security Management (Task 7B.2)', ()
       expect(res.success).toBe(true);
       expect(res.message).toBe('Nếu email tồn tại trong hệ thống, hướng dẫn đặt lại mật khẩu đã được gửi.');
       expect(redisService.set).not.toHaveBeenCalled();
+      expect(mockResetDelivery.sendResetToken).not.toHaveBeenCalled();
     });
 
-    it('should store SHA-256 hash of token in Redis when email exists', async () => {
+    it('should store SHA-256 hash in Redis and call PasswordResetDeliveryProvider with raw token (P0 Invariant)', async () => {
       userRepo.findOne.mockResolvedValue(mockUser);
 
       const res = await service.forgotPassword({ email: 'reader@example.com' });
@@ -171,6 +188,17 @@ describe('AuthService - Account Lifecycle & Security Management (Task 7B.2)', ()
         expect.stringMatching(/^pwd_reset:[a-f0-9]{64}$/),
         mockUser.id,
         900,
+      );
+
+      // Verify delivery provider received the raw token and valid reset URL
+      expect(mockResetDelivery.sendResetToken).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: mockUser.id,
+          email: mockUser.email,
+          token: expect.stringMatching(/^[a-f0-9]{64}$/),
+          resetUrl: expect.stringContaining('/reset-password?token='),
+          expiresInSeconds: 900,
+        }),
       );
     });
 
@@ -242,7 +270,7 @@ describe('AuthService - Account Lifecycle & Security Management (Task 7B.2)', ()
     });
   });
 
-  describe('4. Account Reactivation Invariants (3 Branches)', () => {
+  describe('4. Account Reactivation Invariants (Strict 3 Branches)', () => {
     it('Branch 1: should return generic 401 Unauthorized if user does not exist (Anti-Enumeration)', async () => {
       userRepo.findOne.mockResolvedValue(null);
 
@@ -307,6 +335,18 @@ describe('AuthService - Account Lifecycle & Security Management (Task 7B.2)', ()
       expect(userRepo.save).toHaveBeenCalledWith(deletedUserInGrace);
       expect(res.accessToken).toBe('mock-signed-jwt-token');
     });
+
+    it('Branch 4: should reject already-active account with 400 Bad Request (ACCOUNT_ALREADY_ACTIVE)', async () => {
+      userRepo.findOne.mockResolvedValue({
+        ...mockUser,
+        isDeleted: false,
+        isActive: true,
+      });
+
+      await expect(
+        service.reactivateAccount({ identifier: 'reader@example.com', password: 'Password123!' }),
+      ).rejects.toThrow(BadRequestException);
+    });
   });
 
   describe('5. Device Sessions Management', () => {
@@ -353,6 +393,47 @@ describe('AuthService - Account Lifecycle & Security Management (Task 7B.2)', ()
       expect(redisService.del).toHaveBeenCalledWith('session:user-uuid-1:jti-active');
       expect(redisService.del).toHaveBeenCalledWith('auth_session:user-uuid-1:target-fam');
       expect(mockRedisClient.srem).toHaveBeenCalledWith('user_sessions:user-uuid-1', 'target-fam');
+    });
+  });
+
+  describe('6. JwtStrategy Immediate Session Revocation Check (P1 Invariant)', () => {
+    let jwtStrategy: JwtStrategy;
+
+    beforeEach(() => {
+      jwtStrategy = new JwtStrategy(
+        { get: jest.fn().mockReturnValue('super_secret_jwt_key_omninovel_2026') } as any,
+        userRepo,
+        redisService,
+      );
+    });
+
+    it('should validate successfully when session is active in Redis', async () => {
+      userRepo.findOne.mockResolvedValue({ ...mockUser });
+      redisService.get.mockResolvedValue(JSON.stringify({ sessionId: 'active-sid' }));
+
+      const validated = await jwtStrategy.validate({
+        sub: 'user-uuid-1',
+        username: 'testreader',
+        role: 'READER',
+        sid: 'active-sid',
+      });
+
+      expect(validated.id).toBe('user-uuid-1');
+      expect(validated.sessionId).toBe('active-sid');
+    });
+
+    it('should throw UnauthorizedException immediately when sid session is missing from Redis', async () => {
+      userRepo.findOne.mockResolvedValue({ ...mockUser });
+      redisService.get.mockResolvedValue(null); // Session was revoked or expired
+
+      await expect(
+        jwtStrategy.validate({
+          sub: 'user-uuid-1',
+          username: 'testreader',
+          role: 'READER',
+          sid: 'revoked-sid',
+        }),
+      ).rejects.toThrow(UnauthorizedException);
     });
   });
 });

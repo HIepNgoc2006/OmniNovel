@@ -33,10 +33,11 @@ Tài liệu này theo dõi tiến độ toàn diện của dự án **OmniNovel*
   - `[x]` 7A.5. Mobile Local Library Schema & Repository (SQLite v3 `owner_scope` — LocalLibraryDao & Guest Repositories Completed ✅).
   - `[x]` 7A.6. Mobile Guest Navigation & Reader Integration ("Continue as Guest" — Step 1 & Step 2 FROZEN CLEAN at `903d718` ✅).
   - `[x]` 7A.7. Identity Isolation / Persistence / Crash / Acceptance Verification (Cross-Platform Matrix PASS ✅).
-- **Phase 7B: Account Claim & Lifecycle Protocol** `[ ] Chưa làm`
-  - `[ ]` 7B.1. Two-Step Claim Backend API (`POST /account/guest-claims/prepare` & `POST /account/guest-claims/:claimId/commit`).
+- **Phase 7B: Account Claim & Lifecycle Protocol** `[ ] Đang Lập Kế Hoạch`
+  - `[ ]` 7B.1. Three-Endpoint Claim Backend API (`POST /prepare`, `POST /commit`, `GET /status`, Durable PostgreSQL Ledger `guest_claims`, TOCTOU Fingerprint, Zero Gamification).
   - `[ ]` 7B.2. Account Lifecycle APIs (`forgot-password`, `reset-password`, `change-password`, `GET/DELETE sessions`, `DELETE account`, `GET export-data`).
-  - `[ ]` 7B.3. Client Auto-Claim Hook & Offline Metadata Rebind.
+  - `[ ]` 7B.3. Client Explicit Claim Dialog, Quarantine & Offline Metadata Rebind.
+  - `[ ]` 7B.4. Comprehensive Test Suite & Crash Acceptance Matrix.
 - **Phase 7C: Unified Multi-Device Sync Engine** `[ ] Chưa làm`
   - `[ ]` 7C.1. Core API Sync Hub (`GET /sync/changes?after=rev`, `POST /sync/mutations/batch`).
   - `[ ]` 7C.2. Table `sync_change_log` & Tombstone Anti-Resurrection Logic.

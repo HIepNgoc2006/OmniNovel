@@ -12,7 +12,8 @@ OmniNovel phân tách rành mạch 3 loại thực thể định danh trong hệ
 ```mermaid
 graph TD
     subgraph Client-Only Boundary
-        G[Guest Identity: installationId UUIDv4] -->|Lưu cục bộ| LDB[(IndexedDB / SQLite)]
+        D[Device Identity: installationId UUIDv4] -->|Cấu hình thiết bị| LDB_DEV[(localStorage / SecureStorage)]
+        G[Guest Identity: guestProfileId UUIDv4] -->|Thư viện & tiến độ khách| LDB[(IndexedDB / SQLite)]
     end
 
     subgraph Server-Authoritative Boundary
@@ -171,13 +172,13 @@ Mobile và Web (Cache API/IndexedDB) cho phép tải nội dung để đọc khi
   │     └── sha256_8f43a12b...
   │
   └── manifests/                 <-- Metadata phân định quyền sở hữu
-        ├── guest_inst123_chapter_99.json  (ownerScope: "guest:inst123")
+        ├── guest_gp123_chapter_99.json    (ownerScope: "guest:gp123")
         └── user_456_chapter_99.json       (ownerScope: "account:user_456")
 ```
 
 ### 4.1. Quy Tắc Sở Hữu & Tái Liên Kết (Rebinding Invariants)
 1. **Chương Truyện Miễn Phí (Public Chapters):**
-   - Guest tải chương public: file ảnh lưu vào `payloads/` dựa trên mã băm SHA256, manifest ghi nhận `ownerScope: guest:<installationId>`.
+   - Guest tải chương public: file ảnh lưu vào `payloads/` dựa trên mã băm SHA256, manifest ghi nhận `ownerScope: guest:<guestProfileId>`.
    - Khi Guest claim tài khoản thành công:
      - Hệ thống thực hiện **Metadata Rebind**: cập nhật manifest sang `ownerScope: account:<userId>`.
      - **Không cần tải lại tệp tin** nếu mã băm SHA256 vẫn khớp với bản ghi trên server.

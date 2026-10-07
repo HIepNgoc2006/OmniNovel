@@ -42,44 +42,49 @@ graph TD
 
 ---
 
-### Phase 7A — Guest Local Runtime (Local-First Engine) `[/] Đang Khởi Động`
+### Phase 7A — Guest Local Runtime (Local-First Engine) `[x] Đã Hoàn Thành`
 **Mục tiêu:** Cho phép người dùng mở Web hoặc cài App và đọc truyện, đánh dấu trang, lưu lịch sử và tiến độ hoàn toàn cục bộ mà không phụ thuộc vào Backend JWT hay tạo tài khoản.
-- [ ] **7A.1. Web Client IndexedDB Primary Store (`apps/web`)**
-  - [ ] Khởi tạo IndexedDB database `omninovel_local_v2` (sử dụng Dexie.js / IDB wrapper).
-  - [ ] Phân vùng lưu trữ `guest:<installationId>`.
-  - [ ] Đọc/ghi Bookmarks, Reading Progress, Reading History vào IndexedDB độc lập với Auth state.
-  - [ ] `localStorage` chỉ lưu các cấu hình phần cứng nhỏ (`theme_mode`, `ui_density`).
-- [ ] **7A.2. Mobile Client SQLite `owner_scope` Adapter (`apps/mobile`)**
-  - [ ] Tích hợp cột `owner_scope` vào hạ tầng SQLite hiện hữu (không tạo silo DB mới).
-  - [ ] Tự sinh và quản lý `installationId` (UUIDv4) trong SecureStorage.
-  - [ ] Triển khai `GuestLibraryRepository` trên SQLite.
-- [ ] **7A.3. Tách Biệt Reader Khỏi JWT Guard**
-  - [ ] Đảm bảo Web Reader và Mobile Reader đọc chương công khai mà không gửi Bearer token rác.
-  - [ ] Lưu tiến độ đọc cục bộ có hỗ trợ `anchorBlockId` (Novel) và `scrollPosition` (Manga/Webtoon).
+- [x] **7A.1. Web Client IndexedDB Primary Store (`apps/web`)**
+  - [x] Khởi tạo IndexedDB database `omninovel_local_v2` (sử dụng Dexie.js / IDB wrapper).
+  - [x] Phân vùng lưu trữ `guest:<guestProfileId>`.
+  - [x] Đọc/ghi Bookmarks, Reading Progress, Reading History vào IndexedDB độc lập với Auth state.
+  - [x] `localStorage` chỉ lưu các cấu hình phần cứng nhỏ (`theme_mode`, `ui_density`) gắn với `device:<installationId>`.
+- [x] **7A.2. Mobile Client SQLite `owner_scope` Adapter (`apps/mobile`)**
+  - [x] Tích hợp cột `owner_scope` vào hạ tầng SQLite hiện hữu (không tạo silo DB mới).
+  - [x] Tự sinh và quản lý `installationId` (UUIDv4) trong SecureStorage và `guestProfileId` trong SharedPreferences.
+  - [x] Triển khai `GuestLibraryRepository` trên SQLite.
+- [x] **7A.3. Tách Biệt Reader Khỏi JWT Guard**
+  - [x] Đảm bảo Web Reader và Mobile Reader đọc chương công khai mà không gửi Bearer token rác.
+  - [x] Lưu tiến độ đọc cục bộ có hỗ trợ `anchorBlockId` (Novel) và `scrollPosition`, `pageIndex` (Manga/Webtoon).
 
 ---
 
-### Phase 7B — Account Claim & Lifecycle Protocol `[ ] Chưa làm`
+### Phase 7B — Account Claim & Lifecycle Protocol `[ ] Đang Lập Kế Hoạch`
 **Mục tiêu:** Triển khai quy trình chuyển giao dữ liệu Khách sang Tài khoản 2 bước xác định và hoàn thiện toàn bộ vòng đời tài khoản người dùng.
 - [ ] **7B.1. Backend Two-Step Claim APIs (`services/api`)**
   - [ ] `POST /api/v1/account/guest-claims/prepare`:
-    - Nhận danh sách canonical IDs (`storyId`, `chapterId`, `chapterVersionId`).
-    - Tính toán chênh lệch (Diff) với CSDL PostgreSQL, kiểm tra tombstone chống tái sinh.
-    - Lưu Claim Session vào Redis (TTL 15 phút), trả về `claimId` và ma trận xung đột (nếu có).
+    - Nhận danh sách canonical IDs (`storyId`, `chapterId`, `chapterVersionId`, đầy đủ resume tuple).
+    - Tính toán chênh lệch (Diff) với CSDL PostgreSQL, kiểm tra tombstone chống tái sinh, tính `stateFingerprint`.
+    - Lưu durable ledger `guest_claims` vào PostgreSQL và hot cache/lock vào Redis (TTL 15 phút), trả về `claimId` và ma trận xung đột (nếu có).
   - [ ] `POST /api/v1/account/guest-claims/:claimId/commit`:
-    - Áp dụng các quyết định xung đột của người dùng trong một PostgreSQL Transaction nguyên tử.
-    - Khóa idempotency `(userId, claimId)` chống lặp do mạng lag.
-    - Tuyệt đối không cấp phát điểm thưởng EXP/OmniCoin qua luồng Claim.
+    - Re-check `stateFingerprint` dưới cùng PostgreSQL Transaction (chống TOCTOU, trả `409 CLAIM_STALE_REPREPARE` nếu đổi).
+    - Áp dụng các quyết định xung đột của người dùng và ghi `COMMITTED` trong cùng PostgreSQL Transaction nguyên tử.
+    - Ràng buộc nghiêm ngặt quyền sở hữu: chỉ user đã prepare mới được commit.
+    - Khóa idempotency durable trong PostgreSQL + distributed lock Redis chống lặp do mạng lag.
+    - Tuyệt đối không cấp phát điểm thưởng EXP/OmniCoin/Streak qua luồng Claim.
+  - [ ] `GET /api/v1/account/guest-claims/:claimId/status`:
+    - Phục vụ crash recovery cho client sau commit timeout / app crash.
 - [ ] **7B.2. Backend Account Lifecycle APIs (`services/api`)**
   - [ ] `POST /api/v1/auth/forgot-password` & `POST /api/v1/auth/reset-password` (kèm mã xác thực OTP/Token).
   - [ ] `POST /api/v1/auth/change-password` (bảo vệ bởi `JwtAuthGuard`).
   - [ ] `GET /api/v1/account/sessions` & `DELETE /api/v1/account/sessions/:id` (Quản lý thiết bị đăng nhập).
   - [ ] `DELETE /api/v1/account` (Quyền xóa tài khoản theo chuẩn GDPR/CCPA, cascade xóa tokens/sessions).
   - [ ] `GET /api/v1/account/export-data` (Xuất toàn bộ dữ liệu cá nhân dạng JSON).
-- [ ] **7B.3. Client Auto-Claim Hook & Offline Rebind**
-  - [ ] Web & Mobile kích hoạt luồng `prepare` -> `commit` tự động ngay sau khi đăng nhập / đăng ký thành công.
-  - [ ] Rebind metadata các chương tải ngoại tuyến hợp lệ từ `guest:<id>` sang `account:<userId>`.
-  - [ ] Khi Đăng Xuất (Logout): Lập tức detach cache của tài khoản, chuyển về Guest scope sạch, **không bao giờ biến dữ liệu tài khoản thành dữ liệu khách**.
+- [ ] **7B.3. Client Explicit Claim Dialog, Quarantine & Offline Rebind**
+  - [ ] Web & Mobile kích hoạt luồng `prepare` tự động sau login/register nhưng **yêu cầu quyết định rõ ràng từ người dùng (Claim vs Skip)**.
+  - [ ] Nếu người dùng Skip: Chuyển dữ liệu sang `quarantine:<guestProfileId>`, tuyệt đối không tự ý xóa.
+  - [ ] Nếu Claim Commit thành công (xác nhận `COMMITTED` từ server): Rebind metadata các chương tải ngoại tuyến hợp lệ từ `guest:<guestProfileId>` sang `account:<userId>`, dọn dẹp partition nguồn.
+  - [ ] Khi Đăng Xuất (Logout): Lập tức detach cache của tài khoản, xoay sang fresh `guest:<newGuestProfileId>`, **không bao giờ biến dữ liệu tài khoản thành dữ liệu khách**.
 
 ---
 

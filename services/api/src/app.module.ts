@@ -17,6 +17,7 @@ import { CorrelationIdMiddleware } from './common/middleware/correlation-id.midd
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { MetricsMiddleware } from './modules/metrics/metrics.middleware';
 import { GuestClaimModule } from './modules/claims/guest-claim.module';
+import { AccountModule } from './modules/account/account.module';
 
 @Module({
   imports: [
@@ -41,6 +42,7 @@ import { GuestClaimModule } from './modules/claims/guest-claim.module';
     HealthModule,
     UsersModule,
     AuthModule,
+    AccountModule,
     StoriesModule,
     ChaptersModule,
     StorageModule,

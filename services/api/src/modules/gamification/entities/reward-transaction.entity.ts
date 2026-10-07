@@ -28,8 +28,11 @@ export class RewardTransaction {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @Column('uuid', { name: 'user_id' })
-  userId: string;
+  @Column('uuid', { name: 'user_id', nullable: true })
+  userId: string | null;
+
+  @Column({ name: 'anonymized_subject_hash', type: 'char', length: 64, nullable: true })
+  anonymizedSubjectHash: string | null;
 
   @Column({ name: 'reward_type', length: 20 })
   rewardType: RewardType;
@@ -52,7 +55,7 @@ export class RewardTransaction {
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt: Date;
 
-  @ManyToOne(() => User, { onDelete: 'RESTRICT' })
+  @ManyToOne(() => User, { onDelete: 'SET NULL', nullable: true })
   @JoinColumn({ name: 'user_id' })
-  user: User;
+  user: User | null;
 }

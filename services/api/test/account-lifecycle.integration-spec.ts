@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import * as request from 'supertest';
 import * as crypto from 'crypto';
+import * as cookieParser from 'cookie-parser';
 import { AppModule } from '../src/app.module';
 import { DataSource } from 'typeorm';
 import { AccountPurgeService } from '../src/modules/account/account-purge.service';
@@ -29,6 +30,7 @@ describe('Account Lifecycle & Security Management (PostgreSQL/Redis Integration 
     }).compile();
 
     app = moduleFixture.createNestApplication();
+    app.use(cookieParser());
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
@@ -36,6 +38,9 @@ describe('Account Lifecycle & Security Management (PostgreSQL/Redis Integration 
         transform: true,
       }),
     );
+    app.setGlobalPrefix('api/v1', {
+      exclude: ['health/live', 'health/ready', 'internal/v1/(.*)'],
+    });
     await app.init();
 
     dataSource = app.get(DataSource);

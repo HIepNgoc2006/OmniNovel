@@ -20,7 +20,6 @@ import 'package:omninovel_mobile/features/library/repositories/library_access.da
 import 'package:omninovel_mobile/features/library/repositories/library_repository.dart';
 import 'package:omninovel_mobile/features/library/repositories/scoped_library_dispatcher.dart';
 import 'package:omninovel_mobile/features/reader/models/reading_progress_models.dart';
-import 'package:omninovel_mobile/features/reader/models/story_reading_state.dart';
 import 'package:omninovel_mobile/features/reader/repositories/account_reading_session_adapter.dart';
 import 'package:omninovel_mobile/features/reader/repositories/account_reading_state_adapter.dart';
 import 'package:omninovel_mobile/features/reader/repositories/guest_reading_progress_repository.dart';

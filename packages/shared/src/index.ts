@@ -696,4 +696,6 @@ export interface OfflineBundleManifest {
   novelMetadata?: OfflineNovelMetadata | null;
 }
 
-export * from './local-library';
+export * from './local-library.js';
+export * from './types/claim.types.js';
+export * from './dto/guest-claim.dto.js';

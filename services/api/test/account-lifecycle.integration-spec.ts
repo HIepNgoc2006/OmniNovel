@@ -129,8 +129,12 @@ describe('Account Lifecycle & Security Management (PostgreSQL/Redis Integration 
       .expect(200);
 
     const tokenB = loginRes.body.accessToken;
-    const sessionBId = loginRes.body.familyId;
     expect(tokenB).toBeDefined();
+
+    // Extract sessionBId from JWT sid claim
+    const partsB = tokenB.split('.');
+    const payloadB = JSON.parse(Buffer.from(partsB[1], 'base64').toString('utf8'));
+    const sessionBId = payloadB.sid;
     expect(sessionBId).toBeDefined();
 
     // Verify token B works before revocation

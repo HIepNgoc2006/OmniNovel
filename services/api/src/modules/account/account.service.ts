@@ -121,11 +121,11 @@ export class AccountService {
         [userId],
       ),
       this.dataSource.query(
-        'SELECT id, story_id, target_language, status, created_at FROM translation_projects WHERE created_by = $1',
+        'SELECT id, story_edition_id, source_language, target_language, created_at FROM translation_projects WHERE created_by = $1',
         [userId],
       ),
       this.dataSource.query(
-        'SELECT id, chapter_id, version_id, status, created_at FROM translation_jobs WHERE created_by = $1',
+        'SELECT id, project_id, source_version_id, target_version_id, status, progress_percentage, created_at FROM translation_jobs WHERE created_by = $1',
         [userId],
       ),
       this.dataSource.query(

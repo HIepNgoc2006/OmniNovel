@@ -16,6 +16,7 @@ import { TranslationModule } from './modules/translation/translation.module';
 import { CorrelationIdMiddleware } from './common/middleware/correlation-id.middleware';
 import { MetricsModule } from './modules/metrics/metrics.module';
 import { MetricsMiddleware } from './modules/metrics/metrics.middleware';
+import { GuestClaimModule } from './modules/claims/guest-claim.module';
 
 @Module({
   imports: [
@@ -46,6 +47,7 @@ import { MetricsMiddleware } from './modules/metrics/metrics.middleware';
     GamificationModule,
     TranslationModule,
     MetricsModule,
+    GuestClaimModule,
   ],
 })
 export class AppModule implements NestModule {

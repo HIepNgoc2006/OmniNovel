@@ -28,6 +28,7 @@ import { TranslationProject } from '../modules/translation/entities/translation-
 import { TranslationGlossary } from '../modules/translation/entities/translation-glossary.entity';
 import { TranslationJob } from '../modules/translation/entities/translation-job.entity';
 import { TranslationSegment } from '../modules/translation/entities/translation-segment.entity';
+import { GuestClaim } from '../modules/claims/entities/guest-claim.entity';
 
 @Module({
   imports: [
@@ -76,6 +77,7 @@ import { TranslationSegment } from '../modules/translation/entities/translation-
           TranslationGlossary,
           TranslationJob,
           TranslationSegment,
+          GuestClaim,
         ],
         logging: config.get<string>('NODE_ENV') === 'development' ? ['error', 'warn'] : false,
         };

@@ -570,12 +570,12 @@ Sau khi kế hoạch này được **REVIEW & FREEZE** bởi người dùng, quy
 
 | Bước | Nội Dung Thực Hiện | Trạng Thái |
 |---|---|---|
-| **Step 0** | **Review, Chỉnh sửa & Đóng băng Kế hoạch (Freeze Plan Signoff)** | `[/] Đang làm` |
-| **Step 1** | **Tạo Shared Contracts (`packages/shared`) & Dart Mirror Models** (DTOs, Types, Enums, 1-based pageIndex, canonical readingMode) | `[ ] Chờ Step 0` |
-| **Step 2** | **Task 7B.1 Backend API Engine & PostgreSQL Ledger** (Entity, Migration, Service, Controller, Ensure Epoch Row, Bookmarks Table, Mode-Aware Conflict) | `[ ] Chờ Step 1` |
-| **Step 3** | **Task 7B.2 Backend Account Lifecycle APIs** (Register Auto-Login, sid in Access Token, Forgot Hash/Anti-Enum, Change Pwd Revoke Others, Stable Sessions, Reactivate Endpoint, Two-Phase Purge với Node SHA-256) | `[ ] Chờ Step 2` |
-| **Step 4** | **Task 7B.3 Web Client Integration** (Transitioning Scope Flow, Dialog, Marker Quarantine, Hook, IndexedDB Rebind) | `[ ] Chờ Step 2` |
-| **Step 5** | **Task 7B.3 Mobile Client Integration** (Transitioning Scope Flow, Dialog, SQLite Transactional Merge, Marker Quarantine, Crash Recovery) | `[ ] Chờ Step 2` |
+| **Step 0** | **Review, Chỉnh sửa & Đóng băng Kế hoạch (Freeze Plan Signoff)** | `[x] Đã hoàn thành (User Signoff 7e817ad)` |
+| **Step 1** | **Tạo Shared Contracts (`packages/shared`) & Dart Mirror Models** (DTOs, Types, Enums, 1-based pageIndex, canonical readingMode) | `[x] Đã hoàn thành (Commit 89e29c5, CI Run #417 Green)` |
+| **Step 2** | **Task 7B.1 Backend API Engine & PostgreSQL Ledger** (Entity, Migration, Service, Controller, Ensure Epoch Row, Bookmarks Table, Mode-Aware Conflict) | `[x] Đã hoàn thành (17/17 Unit Tests Green)` |
+| **Step 3** | **Task 7B.2 Backend Account Lifecycle APIs** (Register Auto-Login, sid in Access Token, Forgot Hash/Anti-Enum, Change Pwd Revoke Others, Stable Sessions, Reactivate Endpoint, Two-Phase Purge với Node SHA-256) | `[/] Đang làm` |
+| **Step 4** | **Task 7B.3 Web Client Integration** (Transitioning Scope Flow, Dialog, Marker Quarantine, Hook, IndexedDB Rebind) | `[ ] Chờ Step 3` |
+| **Step 5** | **Task 7B.3 Mobile Client Integration** (Transitioning Scope Flow, Dialog, SQLite Transactional Merge, Marker Quarantine, Crash Recovery) | `[ ] Chờ Step 3` |
 | **Step 6** | **Task 7B.4 Test Automation & Crash Matrix Verification** (E2E tests, Unit tests, user_progression assertion, 7A regression gate) | `[ ] Chờ Step 4,5` |
 | **Step 7** | **Hosted CI Verification & Phase 7B Freeze Signoff** (Đẩy git commit, kiểm tra GitHub Actions Run xanh 7/7 jobs) | `[ ] Chờ Step 6` |
 

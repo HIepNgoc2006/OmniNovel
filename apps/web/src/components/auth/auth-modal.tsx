@@ -4,9 +4,6 @@ import React, { useState } from 'react';
 import { Modal } from '../ui/modal';
 import { Button } from '../ui/button';
 import { useAuth } from '../../lib/auth/auth-context';
-import { memoryAuthStore } from '../../lib/auth/auth-store';
-import { guestClaimCoordinator } from '../../lib/claim/guest-claim-coordinator';
-import { registerApi } from '../../lib/api/auth';
 import { CheckCircle2, AlertCircle, Lock, Mail, User } from 'lucide-react';
 
 interface AuthModalProps {
@@ -16,7 +13,7 @@ interface AuthModalProps {
 }
 
 export function AuthModal({ isOpen, onClose, defaultTab = 'login' }: AuthModalProps) {
-  const { login } = useAuth();
+  const { login, register } = useAuth();
   const [tab, setTab] = useState<'login' | 'register'>(defaultTab);
 
   // Form states
@@ -64,16 +61,17 @@ export function AuthModal({ isOpen, onClose, defaultTab = 'login' }: AuthModalPr
     setIsLoading(true);
 
     try {
-      const res = await registerApi({
+      if (!register) {
+        throw new Error('Chức năng đăng ký chưa sẵn sàng.');
+      }
+      const res = await register({
         email: registerEmail.trim(),
         username: registerUsername.trim(),
         password: registerPassword,
       });
 
       if (res.accessToken && res.user?.id) {
-        memoryAuthStore.setAccessToken(res.accessToken);
         onClose();
-        await guestClaimCoordinator.checkAndPrepareClaim(res.user.id);
         return;
       }
 

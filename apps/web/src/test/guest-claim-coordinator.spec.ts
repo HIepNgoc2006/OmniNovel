@@ -237,13 +237,16 @@ describe('Task 7B.3: GuestClaimCoordinator (Web Client Integration)', () => {
 
       const result = await coordinator.confirmClaim(sampleUserId, decisions);
 
-      expect(result).toEqual(mockCommitResult);
-      expect(commitSpy).toHaveBeenCalledWith(sampleClaimId, { conflictDecisions: decisions });
+      expect(commitSpy).toHaveBeenCalledWith(sampleClaimId, {
+        expectedStateFingerprint: mockPreviewResult.stateFingerprint,
+        conflictDecisions: decisions,
+      });
 
-      // Local rebind executed
+      // Local rebind executed with conflict decisions
       expect(mockDbClient.rebindScope).toHaveBeenCalledWith(
         `guest:${sampleGuestProfileId}`,
         `account:${sampleUserId}`,
+        decisions,
       );
 
       // Pending token cleared
@@ -293,12 +296,13 @@ describe('Task 7B.3: GuestClaimCoordinator (Web Client Integration)', () => {
 
       vi.spyOn(claimsApi, 'getGuestClaimStatusApi').mockResolvedValue(statusRes);
 
-      const recovered = await coordinator.checkCrashRecovery(sampleUserId);
+      const recoveryStatus = await coordinator.checkCrashRecovery(sampleUserId);
 
-      expect(recovered).toBe(true);
+      expect(recoveryStatus).toBe('RESOLVED');
       expect(mockDbClient.rebindScope).toHaveBeenCalledWith(
         `guest:${sampleGuestProfileId}`,
         `account:${sampleUserId}`,
+        undefined,
       );
       expect(localStorage.getItem(PENDING_CLAIM_ID_KEY)).toBeNull();
       expect(mockActiveScopeCoordinator.resolveToAccount).toHaveBeenCalledWith(sampleUserId);
@@ -316,9 +320,9 @@ describe('Task 7B.3: GuestClaimCoordinator (Web Client Integration)', () => {
 
       vi.spyOn(claimsApi, 'getGuestClaimStatusApi').mockResolvedValue(statusRes);
 
-      const recovered = await coordinator.checkCrashRecovery(sampleUserId);
+      const recoveryStatus = await coordinator.checkCrashRecovery(sampleUserId);
 
-      expect(recovered).toBe(true);
+      expect(recoveryStatus).toBe('RESOLVED');
       expect(mockActiveScopeCoordinator.setTransitioning).toHaveBeenCalled();
       expect(coordinator.state.isOpen).toBe(true);
       expect(coordinator.state.previewData).toEqual(mockPreviewResult);
@@ -336,10 +340,25 @@ describe('Task 7B.3: GuestClaimCoordinator (Web Client Integration)', () => {
 
       vi.spyOn(claimsApi, 'getGuestClaimStatusApi').mockResolvedValue(statusRes);
 
-      const recovered = await coordinator.checkCrashRecovery(sampleUserId);
+      const recoveryStatus = await coordinator.checkCrashRecovery(sampleUserId);
 
-      expect(recovered).toBe(false);
+      expect(recoveryStatus).toBe('NONE');
       expect(localStorage.getItem(PENDING_CLAIM_ID_KEY)).toBeNull();
+    });
+
+    it('fails closed and keeps TRANSITIONING if status check throws network error', async () => {
+      localStorage.setItem(PENDING_CLAIM_ID_KEY, sampleClaimId);
+
+      vi.spyOn(claimsApi, 'getGuestClaimStatusApi').mockRejectedValue(new Error('Network timeout'));
+
+      const recoveryStatus = await coordinator.checkCrashRecovery(sampleUserId);
+
+      expect(recoveryStatus).toBe('PENDING_UNAVAILABLE');
+      expect(mockActiveScopeCoordinator.setTransitioning).toHaveBeenCalled();
+      // Tokens preserved for future recovery attempt
+      expect(localStorage.getItem(PENDING_CLAIM_ID_KEY)).toBe(sampleClaimId);
+      // Coordinator does NOT resolve to account
+      expect(mockActiveScopeCoordinator.resolveToAccount).not.toHaveBeenCalled();
     });
   });
 });

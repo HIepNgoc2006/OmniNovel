@@ -26,6 +26,9 @@ import {
 
 export const PENDING_CLAIM_ID_KEY = 'omninovel_pending_claim_id';
 export const PENDING_CLAIM_USER_ID_KEY = 'omninovel_pending_claim_user_id';
+export const PENDING_CLAIM_DECISIONS_KEY = 'omninovel_pending_claim_decisions';
+
+export type CrashRecoveryStatus = 'NONE' | 'RESOLVED' | 'PENDING_UNAVAILABLE';
 
 export interface GuestClaimCoordinatorState {
   isOpen: boolean;
@@ -180,6 +183,7 @@ export class GuestClaimCoordinator {
     if (typeof window !== 'undefined' && window.localStorage) {
       window.localStorage.removeItem(PENDING_CLAIM_ID_KEY);
       window.localStorage.removeItem(PENDING_CLAIM_USER_ID_KEY);
+      window.localStorage.removeItem(PENDING_CLAIM_DECISIONS_KEY);
     }
 
     // 3. Close modal & transition to account
@@ -217,23 +221,46 @@ export class GuestClaimCoordinator {
       throw new Error('Không tìm thấy phiên claim hợp lệ.');
     }
 
-    this._updateState({ isCommitting: true, error: null });
+    let fingerprint = this._state.previewData?.stateFingerprint;
+    if (!fingerprint) {
+      try {
+        const statusRes = await getGuestClaimStatusApi(claimId);
+        fingerprint = statusRes.previewData?.stateFingerprint;
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!fingerprint) {
+      throw new Error('Thiếu stateFingerprint hợp lệ để xác nhận gộp dữ liệu.');
+    }
+
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(
+        PENDING_CLAIM_DECISIONS_KEY,
+        JSON.stringify(conflictDecisions || {}),
+      );
+    }
 
     try {
-      const commitRes = await commitGuestClaimApi(claimId, { conflictDecisions });
+      const commitRes = await commitGuestClaimApi(claimId, {
+        expectedStateFingerprint: fingerprint,
+        conflictDecisions,
+      });
 
       if (commitRes.status === GuestClaimStatus.COMMITTED) {
         const guestProfileId = await this.guestProfileProvider.getOrCreateGuestProfileId();
         const guestScope = `guest:${guestProfileId}`;
         const accountScope = `account:${targetUserId}`;
 
-        // Local Transactional Merge & Purge source guest partition
-        await this.dbClient.rebindScope(guestScope, accountScope);
+        // Local Transactional Merge & Purge source guest partition with conflict-aware semantics
+        await this.dbClient.rebindScope(guestScope, accountScope, conflictDecisions);
 
         // Clear crash recovery token
         if (typeof window !== 'undefined' && window.localStorage) {
           window.localStorage.removeItem(PENDING_CLAIM_ID_KEY);
           window.localStorage.removeItem(PENDING_CLAIM_USER_ID_KEY);
+          window.localStorage.removeItem(PENDING_CLAIM_DECISIONS_KEY);
         }
 
         this._updateState({
@@ -271,16 +298,18 @@ export class GuestClaimCoordinator {
   /**
    * P0 Invariant: Crash Recovery.
    * Inspects pendingClaimId in localStorage upon app boot or session rehydration.
+   * Fail-closed: If pendingClaimId exists but status check fails (e.g. network error),
+   * locks coordinator into TRANSITIONING and returns 'PENDING_UNAVAILABLE'.
    */
-  async checkCrashRecovery(userId: string): Promise<boolean> {
+  async checkCrashRecovery(userId: string): Promise<CrashRecoveryStatus> {
     const trimmedUserId = userId?.trim();
     if (!trimmedUserId || typeof window === 'undefined' || !window.localStorage) {
-      return false;
+      return 'NONE';
     }
 
     const pendingClaimId = window.localStorage.getItem(PENDING_CLAIM_ID_KEY);
     if (!pendingClaimId) {
-      return false;
+      return 'NONE';
     }
 
     try {
@@ -289,12 +318,24 @@ export class GuestClaimCoordinator {
       if (statusRes.status === GuestClaimStatus.COMMITTED) {
         // Commit already succeeded on server before crash: finalize local rebind
         const guestProfileId = await this.guestProfileProvider.getOrCreateGuestProfileId();
-        await this.dbClient.rebindScope(`guest:${guestProfileId}`, `account:${trimmedUserId}`);
+        let savedDecisions: Record<string, ConflictResolution> | undefined;
+        try {
+          const raw = window.localStorage.getItem(PENDING_CLAIM_DECISIONS_KEY);
+          if (raw) savedDecisions = JSON.parse(raw);
+        } catch {
+          // ignore
+        }
+        await this.dbClient.rebindScope(
+          `guest:${guestProfileId}`,
+          `account:${trimmedUserId}`,
+          savedDecisions,
+        );
 
         window.localStorage.removeItem(PENDING_CLAIM_ID_KEY);
         window.localStorage.removeItem(PENDING_CLAIM_USER_ID_KEY);
+        window.localStorage.removeItem(PENDING_CLAIM_DECISIONS_KEY);
         this.coordinator.resolveToAccount(trimmedUserId);
-        return true;
+        return 'RESOLVED';
       }
 
       if (
@@ -304,24 +345,27 @@ export class GuestClaimCoordinator {
         // Obsolete claim -> clear token
         window.localStorage.removeItem(PENDING_CLAIM_ID_KEY);
         window.localStorage.removeItem(PENDING_CLAIM_USER_ID_KEY);
-        return false;
+        window.localStorage.removeItem(PENDING_CLAIM_DECISIONS_KEY);
+        return 'NONE';
       }
 
       if (statusRes.status === GuestClaimStatus.PREPARED) {
-        // Pending decision -> Re-open dialog
+        // Pending decision -> Re-open dialog in TRANSITIONING state
         this.coordinator.setTransitioning();
         this._updateState({
           isOpen: true,
           previewData: statusRes.previewData,
           currentUserId: trimmedUserId,
         });
-        return true;
+        return 'RESOLVED';
       }
 
-      return false;
+      return 'PENDING_UNAVAILABLE';
     } catch {
-      // In case of network error during crash recovery check, keep pendingClaimId for next attempt
-      return false;
+      // P0 Invariant: Fail-closed on network error during crash recovery check.
+      // Lock coordinator into TRANSITIONING so user-state mutations remain blocked.
+      this.coordinator.setTransitioning();
+      return 'PENDING_UNAVAILABLE';
     }
   }
 }

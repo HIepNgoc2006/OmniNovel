@@ -2,6 +2,7 @@ import {
   LocalBookmark,
   LocalReadingProgress,
   LocalReadingHistory,
+  ConflictResolution,
 } from '@omninovel/shared';
 
 export const DB_NAME = 'omninovel_local_v2';
@@ -528,7 +529,11 @@ export class IndexedDbClient {
     });
   }
 
-  async rebindScope(fromScope: string, toScope: string): Promise<void> {
+  async rebindScope(
+    fromScope: string,
+    toScope: string,
+    conflictDecisions?: Record<string, ConflictResolution>,
+  ): Promise<void> {
     assertValidScope(fromScope);
     assertValidScope(toScope);
     const db = await this.getDatabase();
@@ -560,7 +565,7 @@ export class IndexedDbClient {
           }
         };
 
-        // 2. Rebind Progress
+        // 2. Rebind Progress with Conflict-Aware Semantics
         const pRange = IDBKeyRange.bound([fromScope, ''], [fromScope, '\uffff']);
         const pReq = pStore.openCursor(pRange);
         pReq.onsuccess = () => {
@@ -568,7 +573,30 @@ export class IndexedDbClient {
           if (cursor) {
             const item = cursor.value as LocalReadingProgress;
             if (item.ownerScope === fromScope) {
-              pStore.put({ ...item, ownerScope: toScope });
+              const decision = conflictDecisions?.[item.storyId];
+              if (decision === ConflictResolution.KEEP_CLOUD) {
+                // Invariant P0: User chose KEEP_CLOUD. Cloud/Account progress authoritative.
+                // Do NOT overwrite existing account progress nor copy guest progress over cloud.
+                cursor.continue();
+                return;
+              }
+
+              if (decision === ConflictResolution.USE_GUEST) {
+                // Invariant P0: User chose USE_GUEST. Overwrite target account progress.
+                pStore.put({ ...item, ownerScope: toScope });
+                cursor.continue();
+                return;
+              }
+
+              // Default / No conflict decision specified:
+              // Only put into toScope if account does not already have an existing progress entry.
+              const targetKey = [toScope, item.storyId];
+              const checkReq = pStore.get(targetKey);
+              checkReq.onsuccess = () => {
+                if (!checkReq.result) {
+                  pStore.put({ ...item, ownerScope: toScope });
+                }
+              };
             }
             cursor.continue();
           }

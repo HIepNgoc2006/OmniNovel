@@ -182,7 +182,8 @@ void main() {
     });
 
     test('CommitGuestClaimPayload maps conflict decisions accurately', () {
-      const payload = CommitGuestClaimPayload(
+      final payload = CommitGuestClaimPayload(
+        expectedStateFingerprint: 'a'.padLeft(64, '0'),
         conflictDecisions: {
           'story-a': ConflictResolution.useGuest,
           'story-b': ConflictResolution.keepCloud,
@@ -190,12 +191,14 @@ void main() {
       );
 
       final json = payload.toJson();
+      expect(json['expectedStateFingerprint'], 'a'.padLeft(64, '0'));
       expect(json['conflictDecisions'], {
         'story-a': 'USE_GUEST',
         'story-b': 'KEEP_CLOUD',
       });
 
       final deserialized = CommitGuestClaimPayload.fromJson(json);
+      expect(deserialized.expectedStateFingerprint, 'a'.padLeft(64, '0'));
       expect(deserialized.conflictDecisions['story-a'], ConflictResolution.useGuest);
       expect(deserialized.conflictDecisions['story-b'], ConflictResolution.keepCloud);
     });

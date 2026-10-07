@@ -115,6 +115,7 @@ export interface GuestClaimPreviewResult {
  * Request payload for POST /api/v1/account/guest-claims/:claimId/commit
  */
 export interface CommitGuestClaimPayload {
+  expectedStateFingerprint: string;
   conflictDecisions?: Record<string, ConflictResolution>;
 }
 

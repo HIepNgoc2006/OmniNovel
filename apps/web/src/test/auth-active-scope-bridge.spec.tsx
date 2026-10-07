@@ -167,9 +167,58 @@ describe('7A.4a: Auth ↔ ActiveScope Runtime Bridge', () => {
     });
 
     expect(result.current.status).toBe('authenticated');
-    expect(onAuthStatusSpy).toHaveBeenCalledWith('authenticated', 'usr-new-login');
+    expect(onAuthStatusSpy).toHaveBeenCalledWith('authenticated', 'usr-new-login', {
+      deferScopeResolution: true,
+    });
     expect(activeScopeCoordinator.state).toBe('ACCOUNT');
     expect(activeScopeCoordinator.activeScope).toBe('account:usr-new-login');
+  });
+
+  it('resolves account scope and syncs user upon successful register() (Task 7B.3a Canonical Register)', async () => {
+    vi.spyOn(authApi, 'registerApi').mockResolvedValue({
+      message: 'Đăng ký thành công',
+      accessToken: 'jwt-register-token',
+      user: {
+        id: 'usr-new-reg',
+        username: 'new_registered',
+        email: 'reg@omninovel.com',
+        role: 'READER',
+      },
+    });
+
+    const onAuthStatusSpy = vi.spyOn(activeScopeCoordinator, 'onAuthStatusChanged');
+
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <AuthProvider>{children}</AuthProvider>
+    );
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Trigger register
+    await act(async () => {
+      await result.current.register!({
+        email: 'reg@omninovel.com',
+        username: 'new_registered',
+        password: 'Password123!',
+      });
+    });
+
+    expect(result.current.status).toBe('authenticated');
+    expect(result.current.user).toEqual({
+      id: 'usr-new-reg',
+      username: 'new_registered',
+      email: 'reg@omninovel.com',
+      role: 'READER',
+    });
+    expect(onAuthStatusSpy).toHaveBeenCalledWith('authenticated', 'usr-new-reg', {
+      deferScopeResolution: true,
+    });
+    expect(activeScopeCoordinator.state).toBe('ACCOUNT');
+    expect(activeScopeCoordinator.activeScope).toBe('account:usr-new-reg');
   });
 
   it('fails-closed to anonymous/GUEST if hydrateSession returns profile with missing id', async () => {

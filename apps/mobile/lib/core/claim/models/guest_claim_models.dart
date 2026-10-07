@@ -303,9 +303,11 @@ class GuestClaimPreviewResult {
 
 /// Payload sent to POST /api/v1/account/guest-claims/:claimId/commit.
 class CommitGuestClaimPayload {
+  final String expectedStateFingerprint;
   final Map<String, ConflictResolution> conflictDecisions;
 
   const CommitGuestClaimPayload({
+    this.expectedStateFingerprint = '',
     this.conflictDecisions = const {},
   });
 
@@ -316,11 +318,17 @@ class CommitGuestClaimPayload {
         decisions[key] = ConflictResolution.fromString(value?.toString());
       });
     }
-    return CommitGuestClaimPayload(conflictDecisions: decisions);
+    return CommitGuestClaimPayload(
+      expectedStateFingerprint:
+          json['expectedStateFingerprint']?.toString() ?? '',
+      conflictDecisions: decisions,
+    );
   }
 
   Map<String, dynamic> toJson() => {
-        'conflictDecisions': conflictDecisions.map((k, v) => MapEntry(k, v.value)),
+        'expectedStateFingerprint': expectedStateFingerprint,
+        'conflictDecisions':
+            conflictDecisions.map((k, v) => MapEntry(k, v.value)),
       };
 }
 

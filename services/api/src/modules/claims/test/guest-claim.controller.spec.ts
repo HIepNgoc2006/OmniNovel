@@ -9,6 +9,8 @@ import {
   CommitGuestClaimDto,
   ConflictResolution,
 } from '../dto/commit-guest-claim.dto';
+import { validate } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
 
 describe('GuestClaimController (Task 7B.1 Routing & Guards)', () => {
   let controller: GuestClaimController;
@@ -125,5 +127,36 @@ describe('GuestClaimController (Task 7B.1 Routing & Guards)', () => {
     const result = await controller.getClaimStatus(userId, claimId);
     expect(serviceMock.getClaimStatus).toHaveBeenCalledWith(userId, claimId);
     expect(result).toEqual(expectedRes);
+  });
+
+  describe('CommitGuestClaimDto ValidationPipe Contract (P0-1 Contract Guard)', () => {
+    it('should reject payload missing expectedStateFingerprint', async () => {
+      const dto = plainToInstance(CommitGuestClaimDto, {
+        conflictDecisions: {},
+      });
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors.some((e) => e.property === 'expectedStateFingerprint')).toBe(true);
+    });
+
+    it('should reject payload with invalid fingerprint length', async () => {
+      const dto = plainToInstance(CommitGuestClaimDto, {
+        expectedStateFingerprint: 'too_short',
+      });
+      const errors = await validate(dto);
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors.some((e) => e.property === 'expectedStateFingerprint')).toBe(true);
+    });
+
+    it('should accept payload with canonical 64-char fingerprint and conflictDecisions', async () => {
+      const dto = plainToInstance(CommitGuestClaimDto, {
+        expectedStateFingerprint: 'a'.repeat(64),
+        conflictDecisions: {
+          'story-1': ConflictResolution.USE_GUEST,
+        },
+      });
+      const errors = await validate(dto);
+      expect(errors).toHaveLength(0);
+    });
   });
 });

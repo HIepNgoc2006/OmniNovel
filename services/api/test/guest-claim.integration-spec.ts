@@ -7,6 +7,8 @@ import {
   CanonicalReadingMode,
   PrepareGuestClaimDto,
 } from '../src/modules/claims/dto/prepare-guest-claim.dto';
+import * as request from 'supertest';
+import { JwtService } from '@nestjs/jwt';
 
 describe('Guest Claim Engine & Durable Ledger (PostgreSQL Integration - Task 7B.1)', () => {
   jest.setTimeout(60000);
@@ -14,8 +16,10 @@ describe('Guest Claim Engine & Durable Ledger (PostgreSQL Integration - Task 7B.
   let app: INestApplication;
   let dataSource: DataSource;
   let guestClaimService: GuestClaimService;
+  let jwtService: JwtService;
 
   let testUser: any;
+  let testUserToken: string;
   let otherUser: any;
   let testStoryId: string;
   let testEditionId: string;
@@ -35,10 +39,14 @@ describe('Guest Claim Engine & Durable Ledger (PostgreSQL Integration - Task 7B.
         transform: true,
       }),
     );
+    app.setGlobalPrefix('api/v1', {
+      exclude: ['health/live', 'health/ready', 'internal/v1/(.*)'],
+    });
     await app.init();
 
     dataSource = app.get(DataSource);
     guestClaimService = app.get(GuestClaimService);
+    jwtService = app.get(JwtService);
 
     // 1. Tạo test users
     const uRes1 = await dataSource.query(
@@ -47,6 +55,11 @@ describe('Guest Claim Engine & Durable Ledger (PostgreSQL Integration - Task 7B.
        RETURNING id, email, role`,
     );
     testUser = uRes1[0];
+    testUserToken = jwtService.sign({
+      sub: testUser.id,
+      role: testUser.role,
+      sid: 'claim-int-session-id',
+    });
 
     const uRes2 = await dataSource.query(
       `INSERT INTO users (username, email, password_hash, role, is_active)
@@ -229,5 +242,52 @@ describe('Guest Claim Engine & Durable Ledger (PostgreSQL Integration - Task 7B.
     expect(statusRes.claimId).toBe(claimId);
     expect(statusRes.committedAt).toBeDefined();
     expect(statusRes.resultSummary).toEqual(commitRes.summary);
+  });
+
+  it('ValidationPipe HTTP Contract: should reject commit when expectedStateFingerprint is missing (400 Bad Request)', async () => {
+    // 1. Prepare a claim
+    const prepareDto: PrepareGuestClaimDto = {
+      guestProfileId: 'b1111111-b222-c333-d444-e55555555555',
+      bookmarks: [{ storyId: testStoryId }],
+      history: [],
+      progress: [],
+    };
+    const preview = await guestClaimService.prepareClaim(testUser.id, prepareDto);
+
+    // 2. Commit without expectedStateFingerprint (the previous contract mismatch bug)
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/account/guest-claims/${preview.claimId}/commit`)
+      .set('Authorization', `Bearer ${testUserToken}`)
+      .send({
+        conflictDecisions: {},
+      });
+
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(res.body)).toContain('expectedStateFingerprint');
+  });
+
+  it('ValidationPipe HTTP Contract: should accept commit matching canonical CommitGuestClaimPayload (200 OK COMMITTED)', async () => {
+    // 1. Prepare a claim
+    const prepareDto: PrepareGuestClaimDto = {
+      guestProfileId: 'c1111111-b222-c333-d444-e55555555555',
+      bookmarks: [{ storyId: testStoryId }],
+      history: [],
+      progress: [],
+    };
+    const preview = await guestClaimService.prepareClaim(testUser.id, prepareDto);
+
+    // 2. Commit with canonical payload containing expectedStateFingerprint
+    const res = await request(app.getHttpServer())
+      .post(`/api/v1/account/guest-claims/${preview.claimId}/commit`)
+      .set('Authorization', `Bearer ${testUserToken}`)
+      .send({
+        expectedStateFingerprint: preview.stateFingerprint,
+        conflictDecisions: {},
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('COMMITTED');
+    expect(res.body.claimId).toBe(preview.claimId);
+    expect(res.body.committedAt).toBeDefined();
   });
 });

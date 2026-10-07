@@ -17,7 +17,7 @@ import { GuestLibraryRepository } from '../lib/storage/guest-library-repository'
 import { ActiveScopeCoordinator } from '../lib/identity/active-scope-coordinator';
 import { InstallationIdentityProvider } from '../lib/identity/installation-identity-provider';
 import { GuestProfileIdentityProvider } from '../lib/identity/guest-profile-identity-provider';
-import { LocalReadingProgress, LocalReadingHistory } from '@omninovel/shared';
+import { LocalReadingProgress, LocalReadingHistory, ConflictResolution } from '@omninovel/shared';
 
 describe('Task 7A.3: Web IndexedDB Client & Guest Repositories Invariants', () => {
   let dbClient: IndexedDbClient;
@@ -701,6 +701,134 @@ describe('Task 7A.3: Web IndexedDB Client & Guest Repositories Invariants', () =
 
       // 4. Invariant: bookmark remains intact
       expect(await libraryRepo.getBookmark('story-clear-1')).not.toBeNull();
+    });
+  });
+
+  describe('rebindScope Conflict-Aware Invariants (Task 7B.3a)', () => {
+    it('preserves account progress and does NOT overwrite with guest progress when decision is KEEP_CLOUD', async () => {
+      const guestScope = 'guest:test-guest-keep';
+      const accountScope = 'account:test-account-keep';
+
+      // Seed account progress in IndexedDB (Chapter 20, 80%)
+      await dbClient.putProgress({
+        ownerScope: accountScope,
+        storyId: 'story-keep-1',
+        chapterId: 'chap-20',
+        readingMode: 'PAGED',
+        progressPercentage: 80,
+        pageIndex: 20,
+        scrollPosition: 0,
+        updatedAt: '2026-10-07T10:00:00.000Z',
+        deviceTimestamp: Date.now(),
+      });
+
+      // Seed guest progress in IndexedDB (Chapter 5, 25%)
+      await dbClient.putProgress({
+        ownerScope: guestScope,
+        storyId: 'story-keep-1',
+        chapterId: 'chap-5',
+        readingMode: 'PAGED',
+        progressPercentage: 25,
+        pageIndex: 5,
+        scrollPosition: 0,
+        updatedAt: '2026-10-07T12:00:00.000Z',
+        deviceTimestamp: Date.now(),
+      });
+
+      // Rebind with KEEP_CLOUD decision
+      await dbClient.rebindScope(guestScope, accountScope, {
+        'story-keep-1': ConflictResolution.KEEP_CLOUD,
+      });
+
+      // Target progress in account scope MUST remain intact (Chapter 20, 80%)
+      const accountProgress = await dbClient.getProgress(accountScope, 'story-keep-1');
+      expect(accountProgress).not.toBeNull();
+      expect(accountProgress?.chapterId).toBe('chap-20');
+      expect(accountProgress?.progressPercentage).toBe(80);
+      expect(accountProgress?.pageIndex).toBe(20);
+
+      // Guest partition MUST be purged
+      const guestProgress = await dbClient.getProgress(guestScope, 'story-keep-1');
+      expect(guestProgress).toBeNull();
+    });
+
+    it('overwrites account progress with guest progress when decision is USE_GUEST', async () => {
+      const guestScope = 'guest:test-guest-use';
+      const accountScope = 'account:test-account-use';
+
+      // Seed account progress
+      await dbClient.putProgress({
+        ownerScope: accountScope,
+        storyId: 'story-use-1',
+        chapterId: 'chap-20',
+        readingMode: 'PAGED',
+        progressPercentage: 80,
+        pageIndex: 20,
+        scrollPosition: 0,
+        updatedAt: '2026-10-07T10:00:00.000Z',
+        deviceTimestamp: Date.now(),
+      });
+
+      // Seed guest progress
+      await dbClient.putProgress({
+        ownerScope: guestScope,
+        storyId: 'story-use-1',
+        chapterId: 'chap-5',
+        readingMode: 'PAGED',
+        progressPercentage: 25,
+        pageIndex: 5,
+        scrollPosition: 0,
+        updatedAt: '2026-10-07T12:00:00.000Z',
+        deviceTimestamp: Date.now(),
+      });
+
+      // Rebind with USE_GUEST decision
+      await dbClient.rebindScope(guestScope, accountScope, {
+        'story-use-1': ConflictResolution.USE_GUEST,
+      });
+
+      // Target progress in account scope MUST be updated to guest progress
+      const accountProgress = await dbClient.getProgress(accountScope, 'story-use-1');
+      expect(accountProgress).not.toBeNull();
+      expect(accountProgress?.chapterId).toBe('chap-5');
+      expect(accountProgress?.progressPercentage).toBe(25);
+      expect(accountProgress?.pageIndex).toBe(5);
+
+      // Guest partition purged
+      const guestProgress = await dbClient.getProgress(guestScope, 'story-use-1');
+      expect(guestProgress).toBeNull();
+    });
+
+    it('safely copies guest progress into account scope when no account progress exists', async () => {
+      const guestScope = 'guest:test-guest-no-conflict';
+      const accountScope = 'account:test-account-no-conflict';
+
+      // Seed guest progress only
+      await dbClient.putProgress({
+        ownerScope: guestScope,
+        storyId: 'story-new-1',
+        chapterId: 'chap-3',
+        readingMode: 'PAGED',
+        progressPercentage: 50,
+        pageIndex: 12,
+        scrollPosition: 0,
+        updatedAt: '2026-10-07T12:00:00.000Z',
+        deviceTimestamp: Date.now(),
+      });
+
+      // Rebind without conflicts
+      await dbClient.rebindScope(guestScope, accountScope, {});
+
+      // Target progress in account scope is copied
+      const accountProgress = await dbClient.getProgress(accountScope, 'story-new-1');
+      expect(accountProgress).not.toBeNull();
+      expect(accountProgress?.chapterId).toBe('chap-3');
+      expect(accountProgress?.progressPercentage).toBe(50);
+      expect(accountProgress?.ownerScope).toBe(accountScope);
+
+      // Guest partition purged
+      const guestProgress = await dbClient.getProgress(guestScope, 'story-new-1');
+      expect(guestProgress).toBeNull();
     });
   });
 });

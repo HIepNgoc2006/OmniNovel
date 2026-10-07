@@ -63,34 +63,36 @@ graph TD
 **Mục tiêu:** Triển khai quy trình chuyển giao dữ liệu Khách sang Tài khoản 2 bước xác định và hoàn thiện toàn bộ vòng đời tài khoản người dùng theo 13 bất biến P0.
 - [ ] **7B.1. Backend Two-Step Claim APIs & Durable Ledger (`services/api`)**
   - [ ] `POST /api/v1/account/guest-claims/prepare`:
-    - Nhận danh sách canonical IDs (`storyId`, `chapterId`, `chapterVersionId`, đầy đủ resume tuple với 1-based `pageIndex >= 1`).
-    - Tính toán chênh lệch (Diff) với CSDL PostgreSQL (`user_library_bookmarks`, `chapter_read_states`, `reading_progress`, `reading_history_tombstones`).
-    - Tombstone Anti-Resurrection: Truyện có tombstone bị chặn import cả read chapters lẫn progress.
+    - Nhận danh sách canonical IDs (`storyId`, `chapterId`, `chapterVersionId`, đầy đủ resume tuple với 1-based `pageIndex >= 1`, canonical `readingMode`).
+    - `history[]` (có `progressPercentage` bắt buộc) là nguồn duy nhất cho read-states; loại bỏ `readChapterIds` khỏi progress.
+    - Tính toán chênh lệch (Diff) với CSDL PostgreSQL (`bookmarks`, `chapter_read_states`, `reading_progress`, `reading_history_tombstones`).
+    - Tombstone Anti-Resurrection: Truyện có tombstone bị chặn import cả read states lẫn progress.
     - So sánh xung đột tiến độ đọc theo chế độ (Mode-Aware: PAGED `pageIndex`, WEBTOON `scrollPosition` + `progressPercentage`, NOVEL `anchorBlockId` + `textOffset`).
-    - Tính `stateFingerprint`, lưu durable ledger `guest_claims` vào PostgreSQL và cache Redis (TTL 15 phút).
+    - Tính `stateFingerprint`, lưu durable ledger `guest_claims` vào PostgreSQL (schema `user_id NULL REFERENCES users(id) ON DELETE SET NULL`, `anonymized_subject_hash CHAR(64) NULL`) và cache Redis (TTL 15 phút).
   - [ ] `POST /api/v1/account/guest-claims/:claimId/commit`:
     - Thử chiếm Redis lock (Best-effort concurrency optimization, fallback về PostgreSQL row lock nếu Redis lỗi).
     - Mở PostgreSQL transaction: `SELECT ... FOR UPDATE` ledger `guest_claims`.
     - Thứ tự chuẩn: verify ownership ➔ nếu `COMMITTED` trả ngay kết quả 200 OK (Idempotent vĩnh viễn theo retention policy) ➔ nếu `ABORTED` reject ➔ nếu `PREPARED` quá hạn trả 410 EXPIRED.
-    - Khóa các domain rows liên quan bằng `FOR UPDATE` + user advisory lock để triệt tiêu 100% TOCTOU race window.
+    - Ensure counter row (`INSERT INTO reading_history_epoch_counters ... ON CONFLICT DO NOTHING`) rồi mới khóa `FOR UPDATE` + user advisory lock + khóa các domain rows (`bookmarks`, `chapter_read_states`, `reading_progress`, `reading_history_tombstones`) để triệt tiêu 100% TOCTOU race window.
     - Re-check `stateFingerprint` trên dữ liệu đã khóa (trả `409 CLAIM_STALE_REPREPARE` nếu đổi).
-    - Merge vào `user_library_bookmarks`, `chapter_read_states`, `reading_progress`. Ghi `COMMITTED` trong cùng transaction. Zero Gamification side-effects.
+    - Merge vào `bookmarks`, `chapter_read_states`, `reading_progress`. Ghi `COMMITTED` trong cùng transaction. Zero Gamification side-effects (kiểm chứng `user_progression`).
   - [ ] `GET /api/v1/account/guest-claims/:claimId/status`:
     - Phục vụ crash recovery cho client sau commit timeout / app crash.
 - [ ] **7B.2. Backend Account Lifecycle APIs (`services/api`)**
+  - [ ] Access Token session claim: Đưa `sid = familyId` vào access token, `JwtStrategy` expose `req.user.sessionId`.
   - [ ] `POST /api/v1/auth/forgot-password` (Anti-enumeration response chuẩn hóa, mã hóa hash token SHA-256 trên Redis).
   - [ ] `POST /api/v1/auth/reset-password` (Kiểm tra hash token, băm mật khẩu mới, thu hồi toàn bộ sessions).
-  - [ ] `POST /api/v1/auth/change-password` (Giữ nguyên phiên hiện tại, thu hồi toàn bộ các phiên khác).
-  - [ ] `GET /api/v1/account/sessions` & `DELETE /api/v1/account/sessions/:id` (Quản lý session metadata ổn định `auth_session` qua `familyId`: IP, User-Agent, lastActiveAt, isCurrentSession).
-  - [ ] `DELETE /api/v1/account` (Khóa chính sách duy nhất: Soft Delete + 30-Day Grace Period, ẩn danh hóa đóng góp dịch truyện, ẩn danh hóa ledger).
+  - [ ] `POST /api/v1/auth/change-password` (Giữ nguyên `req.user.sessionId`, thu hồi toàn bộ các phiên khác).
+  - [ ] `GET /api/v1/account/sessions` & `DELETE /api/v1/account/sessions/:id` (Quản lý session metadata ổn định `auth_session` qua `familyId`: IP, User-Agent, lastActiveAt, isCurrentSession = `familyId === req.user.sessionId`).
+  - [ ] `DELETE /api/v1/account` (Khóa chính sách duy nhất: Soft Delete + 30-Day Grace Period với migration `scheduled_purge_at`, ẩn danh hóa `chapter_versions`, `stories`, và `guest_claims`).
   - [ ] `GET /api/v1/account/export-data` (Xuất toàn bộ dữ liệu cá nhân dạng JSON).
 - [ ] **7B.3. Client Explicit Claim Dialog, Marker Quarantine & Transactional Rebind**
-  - [ ] Web & Mobile kích hoạt luồng `prepare` tự động sau login/register nhưng **yêu cầu quyết định rõ ràng từ người dùng (Claim vs Skip)**.
-  - [ ] Nếu người dùng Skip: Thêm vào danh sách marker `quarantineGuestScope(guestProfileId)`, **giữ nguyên partition vật lý `guest:<guestProfileId>`, không đổi tên namespace**, tuyệt đối không tự ý xóa.
-  - [ ] Nếu Claim Commit thành công: Mobile thực hiện **Transactional Local Merge** trong SQLite (tránh xung đột Primary Key `[ownerScope, storyId]`), rebind offline manifest, dọn dẹp partition nguồn.
+  - [ ] Client giữ nguyên trạng thái `TRANSITIONING` trong suốt quá trình claim pending, chặn mọi mutation ghi đè lên account.
+  - [ ] Nếu người dùng Skip: Thêm vào danh sách marker `quarantineGuestScope(guestProfileId)`, **giữ nguyên partition vật lý `guest:<guestProfileId>`, không đổi tên namespace**, chuyển sang `ACCOUNT`.
+  - [ ] Nếu Claim Commit thành công: Mobile thực hiện **Transactional Local Merge** trong SQLite (tránh xung đột Primary Key `[ownerScope, storyId]`), rebind offline manifest, dọn dẹp partition nguồn, chuyển sang `ACCOUNT`.
   - [ ] Khi Đăng Xuất (Logout): Lập tức detach cache của tài khoản, xoay sang fresh `guest:<newGuestProfileId>`, **không bao giờ biến dữ liệu tài khoản thành dữ liệu khách**.
 - [ ] **7B.3.1. Shared Contracts Architecture (`packages/shared` & Mobile Dart Mirror)**
-  - [ ] Canonical TypeScript network contracts cho API và Web.
+  - [ ] Canonical TypeScript network contracts cho API và Web với canonical `readingMode: 'WEBTOON' | 'PAGED' | 'NOVEL'`.
   - [ ] Mirror models bằng Dart kèm JSON conformance tests cho Mobile Flutter để chống drift schema.
 
 ---

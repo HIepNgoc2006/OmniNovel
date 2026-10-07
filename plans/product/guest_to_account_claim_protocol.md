@@ -11,10 +11,11 @@
    - Chuyển giao dữ liệu từ Guest sang Account diễn ra khi người dùng định danh chính mình (Đăng ký mới hoặc Đăng nhập tài khoản cũ).
    - Đây không phải là luồng đồng bộ định kỳ hay liên tục. Luồng đồng bộ liên tục đa thiết bị sẽ do **Phase 7C: Unified Sync Protocol** đảm nhiệm sau khi tài khoản đã được xác thực.
 2. **Quyền quyết định thuộc về Người dùng (Explicit User Choice — Không Auto-Commit Ngầm):**
-   - Sau khi đăng nhập/đăng ký thành công, client có thể tự động kiểm tra và chuẩn bị dữ liệu (`prepare`), nhưng **tuyệt đối không được tự ý commit ngầm**.
+   - Sau khi đăng nhập/đăng ký thành công, client chuyển sang trạng thái `TRANSITIONING`. Client có thể tự động kiểm tra và chuẩn bị dữ liệu (`prepare`), nhưng **tuyệt đối không được tự ý commit ngầm**.
+   - Trong suốt quá trình claim đang chờ xử lý (claim pending), client **bắt buộc phải giữ nguyên trạng thái `TRANSITIONING`**, tuyệt đối không cho phép các mutation của account hoạt động trước khi kết thúc claim/skip.
    - Người dùng phải được hiển thị hộp thoại xác nhận rõ ràng: **"Gộp dữ liệu vào tài khoản" (Claim)** hoặc **"Bỏ qua" (Skip)**.
-   - Nếu người dùng chọn **Skip**: Dữ liệu khách được chuyển sang trạng thái **Quarantine** qua danh sách marker `quarantineGuestScope(guestProfileId)`. **Tuyệt đối không đổi tên partition vật lý** (vẫn giữ nguyên `guest:<guestProfileId>`) và **tuyệt đối không bị xóa (purge)**.
-   - Dữ liệu khách nguồn chỉ được phép purge và rebind sau khi máy chủ xác nhận trạng thái bền vững `COMMITTED`.
+   - Nếu người dùng chọn **Skip**: Dữ liệu khách được chuyển sang trạng thái **Quarantine** qua danh sách marker `quarantineGuestScope(guestProfileId)`. **Tuyệt đối không đổi tên partition vật lý** (vẫn giữ nguyên `guest:<guestProfileId>`) và **tuyệt đối không bị xóa (purge)**. Sau đó scope mới chuyển sang `ACCOUNT`.
+   - Dữ liệu khách nguồn chỉ được phép purge và rebind sau khi máy chủ xác nhận trạng thái bền vững `COMMITTED`, sau đó scope mới chuyển sang `ACCOUNT`.
 3. **Claim Source Identity là `guest:<guestProfileId>`, không phải `installationId`:**
    - `installationId` thuần túy là định danh thiết bị vật lý (`device:<installationId>`). Network DTO không bao giờ sử dụng `installationId` làm claim credential hay claim identity.
    - Nguồn claim duy nhất được định danh bằng `guestProfileId` (UUIDv4) thuộc về phiên khách cụ thể.
@@ -28,13 +29,18 @@
    - Nếu User B cố gắng truy cập hoặc commit claim của User A (kể cả khi biết trước `claimId`), hệ thống lập tức từ chối với mã lỗi `403 Forbidden` (hoặc `404 Not Found`).
 6. **Chống TOCTOU & Stale-Preview Dựa Trên State Fingerprint & Domain Row Locking:**
    - Không sử dụng `serverSnapshotRevision` khi chưa có hệ thống đánh số revision thật trong repository.
-   - Tại bước `prepare`: Server chụp nhanh trạng thái các entity Cloud liên quan (`user_library_bookmarks`, `chapter_read_states`, `reading_progress`, `reading_history_tombstones`) và tính toán mã băm SHA-256 (`stateFingerprint`).
+   - Tại bước `prepare`: Server chụp nhanh trạng thái các entity Cloud liên quan (`bookmarks`, `chapter_read_states`, `reading_progress`, `reading_history_tombstones`) và tính toán mã băm SHA-256 (`stateFingerprint`).
    - Tại bước `commit`: Để triệt tiêu hoàn toàn race window giữa fingerprint check và merge:
      1. Khóa hàng `guest_claims` bằng `SELECT ... FOR UPDATE`.
-     2. Khóa transaction advisory lock mức người dùng: `SELECT pg_advisory_xact_lock(hashtext('user_claim:' || :userId))` và khóa `reading_history_epoch_counters FOR UPDATE`.
-     3. Khóa toàn bộ các domain rows hiện có của người dùng liên quan đến các story/chapter trong payload bằng `FOR UPDATE`.
-     4. Tính lại `currentFingerprint` trên dữ liệu đã khóa. Nếu phát hiện thay đổi so với `stateFingerprint` đã cấp tại prepare, Server ROLLBACK và trả về mã lỗi `409 Conflict` kèm mã `CLAIM_STALE_REPREPARE`.
-     5. Nhờ việc giữ các khóa này đến khi transaction commit, không có khoảng hở (zero race gap) nào cho phép thiết bị khác ghi đè dữ liệu mới hơn.
+     2. Khóa transaction advisory lock mức người dùng: `SELECT pg_advisory_xact_lock(hashtext('user_claim:' || :userId))`.
+     3. **Ensure row counter tồn tại trước khi khóa:** Thực thi `INSERT INTO reading_history_epoch_counters (user_id, epoch, updated_at) VALUES (:userId, 0, NOW()) ON CONFLICT (user_id) DO NOTHING;` rồi mới `SELECT epoch FROM reading_history_epoch_counters WHERE user_id = :userId FOR UPDATE;`.
+     4. Khóa toàn bộ các domain rows hiện có của người dùng liên quan đến các story/chapter trong payload bằng `FOR UPDATE`:
+        - `SELECT * FROM reading_progress WHERE user_id = :userId AND story_id = ANY(:storyIds) FOR UPDATE;`
+        - `SELECT * FROM reading_history_tombstones WHERE user_id = :userId AND story_id = ANY(:storyIds) FOR UPDATE;`
+        - `SELECT * FROM chapter_read_states WHERE user_id = :userId AND chapter_id = ANY(:chapterIds) FOR UPDATE;`
+        - `SELECT * FROM bookmarks WHERE user_id = :userId AND story_id = ANY(:storyIds) FOR UPDATE;`
+     5. Tính lại `currentFingerprint` trên dữ liệu đã khóa. Nếu phát hiện thay đổi so với `stateFingerprint` đã cấp tại prepare, Server ROLLBACK và trả về mã lỗi `409 Conflict` kèm mã `CLAIM_STALE_REPREPARE`.
+     6. Nhờ việc giữ các khóa này đến khi transaction commit, không có khoảng hở (zero race gap) nào cho phép thiết bị khác ghi đè dữ liệu mới hơn.
 7. **Bảo Tồn Đầy Đủ Resume Tuple Đã Khóa Ở Phase 7A — 1-based `pageIndex >= 1`:**
    - DTO tiến độ đọc bắt buộc phải giữ đủ bộ 7 trường vị trí: `chapterVersionId`, `readingMode`, `pageIndex`, `scrollPosition`, `progressPercentage`, `anchorBlockId`, `textOffset`.
    - **Chuẩn hóa `pageIndex`:** Toàn bộ API Network DTO, Database schema (`reading_progress.page_index`) và Shared Contracts phải tuân thủ chuẩn **1-based (`pageIndex >= 1`, minimum = 1)**.
@@ -45,13 +51,17 @@
      * `reading_progress`: PK `(user_id, story_id)` — Điểm dừng đọc hiện tại của người dùng cho từng bộ truyện.
      * `chapter_read_states`: PK `(user_id, chapter_id)` — Lịch sử và trạng thái đọc chi tiết theo từng chương (`max_progress_percentage`, `completed_at`, `last_read_at`).
      * `reading_history_tombstones`: PK `(user_id, story_id)` — Dấu vết xóa lịch sử đọc của truyện kèm `epoch`.
-   - **Tombstone Anti-Resurrection Bất Biến:** Nếu một bộ truyện đã có bản ghi tombstone trong `reading_history_tombstones` trên Cloud, **toàn bộ dữ liệu của truyện đó từ Guest (bao gồm Read Chapters trong `chapter_read_states` và Resume Progress trong `reading_progress`) ĐỀU BỊ TỪ CHỐI AUTO-IMPORT** nhằm ngăn chặn hiện tượng zombie resurrection.
+     * `bookmarks`: PK `(user_id, story_id)` — Danh sách truyện đánh dấu theo dõi.
+   - **Nguồn Dữ Liệu Read-State Duy Nhất:** `history[]` (với `progressPercentage` bắt buộc) là nguồn duy nhất để upsert vào `chapter_read_states`. Loại bỏ hoàn toàn mảng `readChapterIds` dư thừa khỏi `progress[]`.
+   - **Tombstone Anti-Resurrection Bất Biến:** Nếu một bộ truyện đã có bản ghi tombstone trong `reading_history_tombstones` trên Cloud, **toàn bộ dữ liệu của truyện đó từ Guest (bao gồm Read States trong `chapter_read_states` và Resume Progress trong `reading_progress`) ĐỀU BỊ TỪ CHỐI AUTO-IMPORT** nhằm ngăn chặn hiện tượng zombie resurrection.
 9. **Bảo Mật Kinh Tế Ảo (Gamification Hardening - Zero Side-Effects):**
    - **Tuyệt đối không cấp phát bất kỳ điểm thưởng nào (EXP, OmniCoin, Reading Streak)** thông qua luồng Guest Claim.
    - Mọi thao tác gộp dữ liệu khách chỉ cập nhật thư viện và tiến độ, hoàn toàn cách ly khỏi Gamification Engine.
+   - Ma trận nghiệm thu phải kiểm chứng trực tiếp bảng thực tế `user_progression` (các trường `total_exp`, `omnicoin_balance`, `current_streak`), assert delta = 0.
 10. **Phòng Chống Lạm Dụng Khắt Khe (Anti-Abuse Hardening Tại Prepare):**
     - Kiểm tra định dạng UUIDv4 chặt chẽ cho toàn bộ các trường ID.
-    - Giới hạn kích thước payload: Tối đa 500 bookmarks, 1000 history items, 500 progress items, dung lượng body tối đa 2MB.
+    - Giới hạn kích thước payload: Tối đa 500 bookmarks, 1000 history items, 500 progress items, dung lượng body tối đa 2MB (cấu hình explicit `json({ limit: '2mb' })` trong NestJS server).
+    - Canonical `readingMode`: Chỉ chấp nhận đúng 3 giá trị chuẩn `'WEBTOON' | 'PAGED' | 'NOVEL'`. Client chuẩn hóa `MANGA_PAGED` $\rightarrow$ `PAGED` trước khi gửi lên API.
     - Kiểm tra miền giá trị số hữu hạn (finite bounds): `progressPercentage` [0..100], `scrollPosition` >= 0, `pageIndex` >= 1 (integer, 1-based), `textOffset` >= 0 (integer).
     - Tự động khử trùng lặp (dedupe) payload gửi lên.
     - Kiểm tra tính hợp lệ của Foreign Key và quyền truy cập: `storyId` phải tồn tại và công khai, `chapterId` phải thuộc về `storyId`, `chapterVersionId` (nếu có) phải thuộc về `chapterId`, chương không thuộc loại khóa/trả phí mà khách không có quyền.
@@ -75,12 +85,13 @@ sequenceDiagram
     participant Redis as Redis (Distributed Lock & TTL Cache)
     participant DB as PostgreSQL (guest_claims Ledger & Domain Tables)
 
-    User->>Client: Đăng ký / Đăng nhập thành công
-    Client->>Client: Quét local store (guest:<guestProfileId>)
+    User->>Client: Đăng ký / Đăng nhập thành công (Auth Status: TRANSITIONING)
+    Client->>Client: Quét local store (guest:<guestProfileId>) trong trạng thái TRANSITIONING
     alt Không có dữ liệu Guest
-        Client->>User: Vào thẳng ứng dụng
+        Client->>Client: Chuyển activeScope = account:<userId>
+        Client->>User: Vào thẳng ứng dụng (ACCOUNT state)
     else Có dữ liệu Guest cần chuyển giao
-        Client->>CoreAPI: POST /api/v1/account/guest-claims/prepare (Canonical IDs & Resume Tuple, pageIndex >= 1)
+        Client->>CoreAPI: POST /api/v1/account/guest-claims/prepare (Canonical IDs & Resume Tuple, pageIndex >= 1, canonical readingMode)
         CoreAPI->>CoreAPI: Validate anti-abuse, bounds, dedupe payload
         CoreAPI->>DB: Query cloud state (bookmarks, chapter_read_states, reading_progress, tombstones)
         CoreAPI->>CoreAPI: Tính Diff, Mode-Aware Conflict & SHA-256 stateFingerprint
@@ -88,10 +99,11 @@ sequenceDiagram
         CoreAPI->>Redis: Cache Claim Session & Rate Limit (TTL: 15 phút)
         CoreAPI-->>Client: 200 OK (claimId, stateFingerprint, summary, conflicts)
         
-        Client->>User: Hiển thị Dialog: "Phát hiện dữ liệu khách. Bạn có muốn gộp vào tài khoản?"
+        Client->>User: Hiển thị Dialog: "Phát hiện dữ liệu khách. Bạn có muốn gộp vào tài khoản?" (Vẫn giữ TRANSITIONING)
         alt Người dùng chọn BỎ QUA (Skip)
             User-->>Client: Chọn "Bỏ qua"
             Client->>Client: Thêm guestProfileId vào quarantined list (Giữ nguyên partition vật lý guest:<guestProfileId>, KHÔNG PURGE)
+            Client->>Client: Chuyển activeScope = account:<userId> (ACCOUNT state)
             Client->>User: Hoàn tất đăng nhập
         else Người dùng chọn GỘP DỮ LIỆU (Claim)
             User-->>Client: Chọn quyết định xử lý xung đột (nếu có) và bấm "Xác nhận gộp"
@@ -111,21 +123,24 @@ sequenceDiagram
                 CoreAPI->>DB: COMMIT TRANSACTION
                 CoreAPI-->>Client: 410 Gone (CLAIM_EXPIRED)
             else 5. Hợp lệ tiến hành Merge
-                CoreAPI->>DB: Khóa user advisory lock & reading_history_epoch_counters FOR UPDATE
-                CoreAPI->>DB: Khóa existing domain rows liên quan FOR UPDATE
+                CoreAPI->>DB: Khóa user advisory lock: pg_advisory_xact_lock(user_claim:userId)
+                CoreAPI->>DB: Ensure counter row: INSERT INTO reading_history_epoch_counters ... ON CONFLICT DO NOTHING
+                CoreAPI->>DB: Khóa epoch counter: SELECT epoch FROM reading_history_epoch_counters FOR UPDATE
+                CoreAPI->>DB: Khóa existing domain rows FOR UPDATE (reading_progress, chapter_read_states, bookmarks, tombstones)
                 CoreAPI->>CoreAPI: Re-read cloud state & verify stateFingerprint (TOCTOU check)
                 alt Fingerprint lệch (Cloud state thay đổi giữa chừng)
                     CoreAPI->>DB: ROLLBACK
                     CoreAPI-->>Client: 409 Conflict (CLAIM_STALE_REPREPARE)
                 else Fingerprint hợp lệ
-                    CoreAPI->>DB: Upsert user_library_bookmarks (ON CONFLICT DO NOTHING)
-                    CoreAPI->>DB: Upsert chapter_read_states (Anti-resurrection checked)
-                    CoreAPI->>DB: Upsert reading_progress (Anti-resurrection & conflictDecisions applied)
+                    CoreAPI->>DB: Upsert bookmarks (ON CONFLICT (user_id, story_id) DO NOTHING)
+                    CoreAPI->>DB: Upsert chapter_read_states từ history[] (Anti-resurrection checked)
+                    CoreAPI->>DB: Upsert reading_progress từ progress[] (Anti-resurrection & conflictDecisions applied)
                     CoreAPI->>DB: UPDATE guest_claims SET status='COMMITTED', result_summary=..., committed_at=NOW()
                     CoreAPI->>DB: COMMIT TRANSACTION
                     CoreAPI->>Redis: Release Distributed Lock (nếu có)
                     CoreAPI-->>Client: 200 OK (GuestClaimCommitResponse)
                     Client->>Client: Transactional Local Merge & dọn dẹp an toàn partition nguồn
+                    Client->>Client: Chuyển activeScope = account:<userId> (ACCOUNT state)
                     Client-->>User: Thông báo "Gộp dữ liệu thành công"
                 end
             end
@@ -137,14 +152,15 @@ sequenceDiagram
 
 ## 3. Kiến Trúc CSDL Sổ Cái: Bảng `guest_claims` (PostgreSQL Durable Ledger)
 
-Để đảm bảo Idempotency bền vững vượt qua cả các sự cố sập máy chủ, mất kết nối mạng và mất cache Redis, hệ thống thiết lập bảng sổ cái `guest_claims` trong PostgreSQL:
+Để đảm bảo Idempotency bền vững vượt qua cả các sự cố sập máy chủ, mất kết nối mạng và mất cache Redis, đồng thời tương thích hoàn hảo với chính sách ẩn danh hóa khi xóa tài khoản:
 
 ```sql
 CREATE TYPE guest_claim_status AS ENUM ('PREPARED', 'COMMITTED', 'ABORTED', 'EXPIRED');
 
 CREATE TABLE guest_claims (
     claim_id UUID PRIMARY KEY,
-    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    user_id UUID NULL REFERENCES users(id) ON DELETE SET NULL,
+    anonymized_subject_hash CHAR(64) NULL,
     guest_profile_id UUID NOT NULL,
     payload_hash VARCHAR(64) NOT NULL,
     state_fingerprint VARCHAR(64) NOT NULL,
@@ -162,6 +178,9 @@ CREATE INDEX idx_guest_claims_user_id_status ON guest_claims(user_id, status);
 CREATE INDEX idx_guest_claims_expires_at ON guest_claims(expires_at) WHERE status = 'PREPARED';
 ```
 
+> [!NOTE]
+> Cột `user_id` là nullable với `ON DELETE SET NULL`. Khi người dùng thực hiện xóa tài khoản, hệ thống cập nhật `anonymized_subject_hash = encode(sha256(user_id::text::bytea), 'hex')` và đặt `user_id = NULL`. Bản ghi sổ cái được bảo toàn cho mục đích kiểm toán toàn vẹn hệ thống và chống gian lận kinh tế mà không lưu trữ PII của người dùng đã xóa.
+
 ### Thứ Tự Thực Thi & Quy Tắc Chuyển Trạng Thái Ledger:
 Tại endpoint `POST /api/v1/account/guest-claims/:claimId/commit`, thứ tự kiểm tra bắt buộc phải tuân thủ nghiêm ngặt:
 1. `SELECT * FROM guest_claims WHERE claim_id = :id FOR UPDATE`
@@ -177,12 +196,12 @@ Tại endpoint `POST /api/v1/account/guest-claims/:claimId/commit`, thứ tự k
 
 | Miền Dữ Liệu (Domain) | Dữ Liệu Client Gửi Lên | Bảng CSDL Thực Tế Backend | Quy Tắc Hợp Nhất Vào Tài Khoản (Merge Semantics) | Cơ Chế Xử Lý Xung Đột (Conflict Handling) |
 |---|---|---|---|---|
-| **Bookmarks (Đánh dấu)** | Danh sách `storyId` active | `user_library_bookmarks` (PK: `user_id, story_id`) | **Additive Only (Cộng dồn):** Thêm các truyện Guest đánh dấu vào tài khoản (`ON CONFLICT (user_id, story_id) DO NOTHING`). | Khách **không được phép xóa** bookmark đã có trên Cloud. Xóa trên Cloud chỉ diễn ra qua Sync có tombstone ở Phase 7C. |
-| **Reading History / Read States** | Danh sách `(storyId, chapterId, progressPercentage)` | `chapter_read_states` (PK: `user_id, chapter_id`) | **Union & Dedupe:** Upsert vào `chapter_read_states` với `max_progress_percentage = GREATEST(...)`, `completed_at`, `last_read_at = NOW()`. | **Tombstone Anti-Resurrection:** Nếu `storyId` có trong `reading_history_tombstones`, **từ chối import toàn bộ chapters của truyện đó**. |
+| **Bookmarks (Đánh dấu)** | Danh sách `storyId` active | `bookmarks` (PK: `user_id, story_id`) | **Additive Only (Cộng dồn):** Thêm các truyện Guest đánh dấu vào tài khoản (`ON CONFLICT (user_id, story_id) DO NOTHING`). | Khách **không được phép xóa** bookmark đã có trên Cloud. Xóa trên Cloud chỉ diễn ra qua Sync có tombstone ở Phase 7C. |
+| **Reading History / Read States** | Danh sách `(storyId, chapterId, progressPercentage)` (từ `history[]`) | `chapter_read_states` (PK: `user_id, chapter_id`) | **Union & Dedupe:** Upsert vào `chapter_read_states` với `max_progress_percentage = GREATEST(...)`, `completed_at`, `last_read_at = NOW()`. | **Tombstone Anti-Resurrection:** Nếu `storyId` có trong `reading_history_tombstones`, **từ chối import toàn bộ chapters của truyện đó**. |
 | **Reading Progress (Tiến độ đọc)** | Đầy đủ 7 trường Resume Tuple: `storyId, chapterId, chapterVersionId, readingMode, pageIndex (>= 1), scrollPosition, progressPercentage, anchorBlockId, textOffset` | `reading_progress` (PK: `user_id, story_id`) | Xem chi tiết mục 5 bên dưới (Mode-Aware Resolution). | **Tombstone Anti-Resurrection:** Nếu `storyId` có trong `reading_history_tombstones`, **từ chối import tiến độ đọc của truyện đó**. |
 | **Reader Preferences** | `fontSize`, `theme`, `readingDirection` | Local / User settings | Ưu tiên cài đặt đã có của Cloud. Nếu Cloud chưa có, lấy của Guest. | Thiết lập cục bộ theo từng thiết bị (`device:*`) được ưu tiên áp dụng cho trải nghiệm nhìn. |
 | **Recent Searches (Tìm kiếm)** | *Không gửi* | Local Storage / SQLite | **Strictly Local:** Giữ cục bộ trên thiết bị, không chuyển giao lên Cloud. | Loại trừ khỏi Claim Protocol để giảm thiểu bề mặt tấn công. |
-| **Gamification / Rewards** | *Không gửi* | `user_streaks`, `omni_coins` | **Strictly Server-Only:** Bỏ qua hoàn toàn. | Tuyệt đối cấm nhận thưởng (EXP, Coin, Streak = 0) từ dữ liệu nặc danh. |
+| **Gamification / Rewards** | *Không gửi* | `user_progression` (`total_exp`, `omnicoin_balance`, `current_streak`) | **Strictly Server-Only:** Bỏ qua hoàn toàn. | Tuyệt đối cấm nhận thưởng (EXP, Coin, Streak = 0) từ dữ liệu nặc danh. |
 
 ---
 
@@ -247,18 +266,17 @@ export interface PrepareGuestClaimDto {
     storyId: string; // UUIDv4
     chapterId: string; // UUIDv4
     chapterVersionId?: string | null; // UUIDv4 hoặc null
-    readingMode?: 'WEBTOON' | 'PAGED' | 'CONTINUOUS' | 'NOVEL' | string;
+    readingMode?: 'WEBTOON' | 'PAGED' | 'NOVEL'; // Canonical Enum duy nhất, không dùng string tùy ý
     pageIndex?: number | null; // Số nguyên 1-based >= 1 (bắt buộc cho Manga/PDF paged mode)
     scrollPosition: number; // Số thực hữu hạn >= 0
     progressPercentage: number; // Số thực hữu hạn từ 0.0 đến 100.0
     anchorBlockId?: string | null; // Khóa neo đoạn văn cho Light Novel
     textOffset?: number | null; // Số nguyên >= 0
-    readChapterIds?: string[]; // Mảng UUIDv4 các chương đã đọc
   }>;
   history: Array<{
     storyId: string; // UUIDv4
     chapterId: string; // UUIDv4
-    progressPercentage?: number; // Số thực [0..100]
+    progressPercentage: number; // Số thực [0..100], REQUIRED - Nguồn duy nhất cho chapter_read_states
     readAtClient?: string; // ISO 8601 string - Chỉ là diagnostic hint
   }>;
   preferences?: {
@@ -284,7 +302,7 @@ export interface GuestClaimPreviewResponse {
   };
   conflicts: Array<{
     storyId: string;
-    readingMode?: string;
+    readingMode?: 'WEBTOON' | 'PAGED' | 'NOVEL';
     cloudProgress: {
       chapterId: string;
       chapterTitle?: string;
@@ -302,7 +320,7 @@ export interface GuestClaimPreviewResponse {
 ```
 
 - **Mã Lỗi Trả Về:**
-  - `400 Bad Request`: Payload không hợp lệ (sai UUID, vượt giới hạn số lượng, `pageIndex < 1`, số âm hoặc NaN).
+  - `400 Bad Request`: Payload không hợp lệ (sai UUID, vượt giới hạn số lượng, `pageIndex < 1`, sai `readingMode` enum, số âm hoặc NaN).
   - `401 Unauthorized`: Thiếu hoặc sai JWT token.
   - `429 Too Many Requests`: Vượt quá giới hạn rate limit (10 requests/phút).
 
@@ -375,9 +393,9 @@ export interface GuestClaimStatusResponse {
 2. **Khắc Phục Ứng Dụng Đột Tử (App Crash Sau Commit):**
    - Khi người dùng mở lại ứng dụng: Client kiểm tra partition khách cục bộ `guest:<guestProfileId>`. Nếu phát hiện có `pendingClaimId` chưa hoàn tất:
      - Client gửi truy vấn `GET /api/v1/account/guest-claims/:pendingClaimId/status`.
-     - Nếu máy chủ trả về `status: 'COMMITTED'`: Client lập tức kích hoạt dọn dẹp partition nguồn qua Transactional Local Merge.
-     - Nếu máy chủ trả về `PREPARED`: Client tiếp tục quy trình hiển thị xác nhận cho người dùng.
-     - Nếu máy chủ trả về `EXPIRED` hoặc `404`: Client xóa `pendingClaimId` và đưa `guestProfileId` vào danh sách Quarantine để đảm bảo không mất dữ liệu.
+     - Nếu máy chủ trả về `status: 'COMMITTED'`: Client lập tức kích hoạt dọn dẹp partition nguồn qua Transactional Local Merge và chuyển `activeScope = account:<userId>`.
+     - Nếu máy chủ trả về `PREPARED`: Client tiếp tục quy trình hiển thị xác nhận cho người dùng (giữ `TRANSITIONING`).
+     - Nếu máy chủ trả về `EXPIRED` hoặc `404`: Client xóa `pendingClaimId` và đưa `guestProfileId` vào danh sách Quarantine để đảm bảo không mất dữ liệu, rồi chuyển sang `ACCOUNT`.
 3. **Mất Dữ Liệu Cache Redis (Redis Loss / Flush / Restart):**
    - Bảng `guest_claims` trong PostgreSQL là Single Source of Truth bền vững.
    - Redis Lock chỉ là tầng tối ưu phụ trợ. Nếu Redis restart hoặc mất kết nối, hệ thống vẫn hoàn tất commit an toàn 100% nhờ khóa hàng PostgreSQL `FOR UPDATE`.
@@ -400,5 +418,5 @@ export interface GuestClaimStatusResponse {
 | **7. Expired Claim Session** | Client gửi commit sau khi quá hạn 15 phút (trạng thái đang `PREPARED`) | Server kiểm tra `NOW() > expires_at` ➔ Cập nhật `EXPIRED`, trả `410 Gone / CLAIM_EXPIRED` | Không cho phép commit dữ liệu đã quá cũ |
 | **8. Committed Replay Sau 15 Phút** | Client retry commit của một claim đã `COMMITTED` trước đó sau 20 phút | Server kiểm tra `status === 'COMMITTED'` TRƯỚC HẠN TTL ➔ Trả ngay `200 OK` | Đảm bảo tính Idempotent vĩnh viễn của commit thành công |
 | **9. Tombstone Resurrection Prevention** | Guest gửi lịch sử và tiến độ của một truyện đã có tombstone trên Cloud | Server loại bỏ toàn bộ dữ liệu của truyện đó (`chapter_read_states`, `reading_progress`) | 0 bản ghi của truyện tombstone được chèn vào Cloud |
-| **10. Zero Gamification Check** | Guest import 500 chapters trong lịch sử đọc | Kiểm tra bảng `user_rewards`, `omni_coins`, `user_streaks`: **0 bản ghi được thêm/tăng** | Khóa chặt kinh tế ảo chống cheat |
+| **10. Zero Gamification Check** | Guest import 500 chapters trong lịch sử đọc | Snapshot bảng thực tế `user_progression` trước và sau commit (`total_exp`, `omnicoin_balance`, `current_streak`) | **Delta = 0 trên toàn bộ các trường** |
 | **11. Phase 7A Regression Gate** | Chạy toàn bộ test suites của Phase 7A | Toàn bộ 48 test files Web, unit test Dart Mobile, and API guards pass 100% | Đảm bảo tính liên tục và không thoái lui mã nguồn |

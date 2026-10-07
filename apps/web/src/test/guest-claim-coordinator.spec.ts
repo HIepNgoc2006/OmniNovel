@@ -360,5 +360,37 @@ describe('Task 7B.3: GuestClaimCoordinator (Web Client Integration)', () => {
       // Coordinator does NOT resolve to account
       expect(mockActiveScopeCoordinator.resolveToAccount).not.toHaveBeenCalled();
     });
+
+    it('P0 Fail-Closed: keeps TRANSITIONING and does NOT resolve to account when prepareGuestClaimApi fails', async () => {
+      mockDbClient.hasGuestData.mockResolvedValue(true);
+      vi.spyOn(claimsApi, 'prepareGuestClaimApi').mockRejectedValue(
+        new Error('500 Internal Server Error / Network Disconnect'),
+      );
+
+      const prepared = await coordinator.checkAndPrepareClaim(sampleUserId);
+
+      expect(prepared).toBe(false);
+      // Invariant: Must remain in TRANSITIONING state, mutations disabled!
+      expect(mockActiveScopeCoordinator.setTransitioning).toHaveBeenCalled();
+      expect(mockActiveScopeCoordinator.resolveToAccount).not.toHaveBeenCalled();
+      expect(mockActiveScopeCoordinator.canMutateUserState).toBe(false);
+      expect(coordinator.state.error).toContain('500 Internal Server Error');
+      expect(coordinator.state.isOpen).toBe(false);
+    });
+
+    it('P0 Fail-Closed: keeps TRANSITIONING and does NOT resolve to account when hasGuestData rejects on storage error', async () => {
+      mockDbClient.hasGuestData.mockRejectedValue(
+        new Error('IndexedDB Transaction Failed / Corrupted'),
+      );
+
+      const prepared = await coordinator.checkAndPrepareClaim(sampleUserId);
+
+      expect(prepared).toBe(false);
+      // Invariant: Must remain in TRANSITIONING state, mutations disabled!
+      expect(mockActiveScopeCoordinator.setTransitioning).toHaveBeenCalled();
+      expect(mockActiveScopeCoordinator.resolveToAccount).not.toHaveBeenCalled();
+      expect(mockActiveScopeCoordinator.canMutateUserState).toBe(false);
+      expect(coordinator.state.error).toContain('IndexedDB Transaction Failed');
+    });
   });
 });

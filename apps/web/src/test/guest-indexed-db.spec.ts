@@ -830,5 +830,37 @@ describe('Task 7A.3: Web IndexedDB Client & Guest Repositories Invariants', () =
       const guestProgress = await dbClient.getProgress(guestScope, 'story-new-1');
       expect(guestProgress).toBeNull();
     });
+
+    it('P0 Fail-Closed: hasGuestData rejects when openCursor encounters an error instead of returning false', async () => {
+      const guestScope = 'guest:test-guest-err-check';
+      const db = await dbClient.getDatabase();
+      const origTransaction = db.transaction.bind(db);
+
+      // Simulate a cursor error inside one of the object stores
+      vi.spyOn(db, 'transaction').mockImplementation((storeNames, mode) => {
+        const tx = origTransaction(storeNames, mode);
+        const origObjectStore = tx.objectStore.bind(tx);
+        vi.spyOn(tx, 'objectStore').mockImplementation((name) => {
+          const store = origObjectStore(name);
+          if (name === 'bookmarks') {
+            vi.spyOn(store, 'openCursor').mockImplementation(() => {
+              const req: any = {};
+              setTimeout(() => {
+                req.error = new Error('IndexedDB Disk Read I/O Failure');
+                if (req.onerror) req.onerror(new Event('error'));
+              }, 0);
+              return req;
+            });
+          }
+          return store;
+        });
+        return tx;
+      });
+
+      // Must reject, NEVER return false!
+      await expect(dbClient.hasGuestData(guestScope)).rejects.toThrow(
+        'IndexedDB Disk Read I/O Failure',
+      );
+    });
   });
 });

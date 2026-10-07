@@ -158,7 +158,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       try {
         const profile = await getMeApi();
         if (profile && profile.id) {
-          await activeScopeCoordinator.onAuthStatusChanged('authenticated', profile.id);
+          const isTransitioning = activeScopeCoordinator.state === 'TRANSITIONING';
+          await activeScopeCoordinator.onAuthStatusChanged(
+            'authenticated',
+            profile.id,
+            isTransitioning ? { deferScopeResolution: true } : undefined,
+          );
           setUser(profile);
         } else {
           memoryAuthStore.clear();

@@ -156,12 +156,15 @@ export class GuestClaimCoordinator {
 
       return true;
     } catch (err: any) {
-      // In case of preparation error, allow user to fall back into account scope safely
-      this.coordinator.resolveToAccount(trimmedUserId);
+      // P0 FAIL-CLOSED: On preparation or storage verification error,
+      // stay locked in TRANSITIONING state. NEVER resolveToAccount!
+      // This enforces zero user-state mutations while guest claim is unresolved.
+      this.coordinator.setTransitioning();
       this._updateState({
         isPreparing: false,
         isOpen: false,
         error: err?.message || 'Không thể chuẩn bị dữ liệu gộp từ khách.',
+        currentUserId: trimmedUserId,
       });
       return false;
     }

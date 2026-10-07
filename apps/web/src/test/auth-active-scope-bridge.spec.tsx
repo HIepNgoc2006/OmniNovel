@@ -1,15 +1,18 @@
 import React from 'react';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import 'fake-indexeddb/auto';
 import { renderHook, act } from '@testing-library/react';
 import { AuthProvider, useAuth } from '../lib/auth/auth-context';
 import { activeScopeCoordinator } from '../lib/identity/active-scope-coordinator';
 import * as authApi from '../lib/api/auth';
 import * as clientApi from '../lib/api/client';
+import { memoryAuthStore } from '../lib/auth/auth-store';
 
 describe('7A.4a: Auth ↔ ActiveScope Runtime Bridge', () => {
   beforeEach(() => {
     localStorage.clear();
     vi.clearAllMocks();
+    vi.spyOn(clientApi, 'refreshAccessToken').mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -290,5 +293,46 @@ describe('7A.4a: Auth ↔ ActiveScope Runtime Bridge', () => {
     expect(() => getReadingStateRepository('TRANSITIONING')).toThrow(ScopeNotResolvedError);
     expect(() => getReadingStateRepository('GUEST')).not.toThrow();
     expect(() => getReadingStateRepository('ACCOUNT')).not.toThrow();
+  });
+
+  it('P0 Fail-Closed: refetchUser preserves TRANSITIONING state and keeps user-state mutations blocked', async () => {
+    vi.spyOn(clientApi, 'refreshAccessToken').mockResolvedValue(null);
+    memoryAuthStore.setAccessToken('valid-jwt-token');
+
+    vi.spyOn(authApi, 'getMeApi').mockResolvedValue({
+      id: 'usr-refetch-1',
+      username: 'refetched_user',
+      email: 'refetch@omninovel.com',
+      role: 'READER',
+    });
+
+    const wrapper = ({ children }: { children: React.ReactNode }) => (
+      <AuthProvider>{children}</AuthProvider>
+    );
+
+    const { result } = renderHook(() => useAuth(), { wrapper });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    // Provide token and set TRANSITIONING state after initial hydration
+    memoryAuthStore.setAccessToken('valid-jwt-token');
+    await act(async () => {
+      activeScopeCoordinator.setTransitioning();
+    });
+    expect(activeScopeCoordinator.state).toBe('TRANSITIONING');
+    expect(activeScopeCoordinator.canMutateUserState).toBe(false);
+
+    // Invoke refetchUser while in TRANSITIONING
+    await act(async () => {
+      await result.current.refetchUser();
+    });
+
+    // Invariant: Must remain in TRANSITIONING, never unlocked to ACCOUNT!
+    expect(activeScopeCoordinator.state).toBe('TRANSITIONING');
+    expect(activeScopeCoordinator.activeScope).toBeNull();
+    expect(activeScopeCoordinator.canMutateUserState).toBe(false);
+    expect(result.current.user?.id).toBe('usr-refetch-1');
   });
 });

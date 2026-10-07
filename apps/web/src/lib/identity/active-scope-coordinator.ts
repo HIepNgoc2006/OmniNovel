@@ -125,7 +125,7 @@ export class ActiveScopeCoordinator {
         return;
       }
 
-      if (options?.deferScopeResolution) {
+      if (options?.deferScopeResolution || this._state === 'TRANSITIONING') {
         this.setTransitioning();
         return;
       }

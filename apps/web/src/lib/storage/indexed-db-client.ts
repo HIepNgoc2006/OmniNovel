@@ -497,19 +497,43 @@ export class IndexedDbClient {
     assertValidScope(guestScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
+      let isSettled = false;
+
+      let tx: IDBTransaction;
       try {
-        const tx = db.transaction([STORE_BOOKMARKS, STORE_PROGRESS, STORE_HISTORY], 'readonly');
-        let found = false;
-        let pending = 3;
+        tx = db.transaction([STORE_BOOKMARKS, STORE_PROGRESS, STORE_HISTORY], 'readonly');
+      } catch (err) {
+        reject(err);
+        return;
+      }
 
-        const checkDone = () => {
-          pending -= 1;
-          if (pending === 0) {
-            resolve(found);
-          }
-        };
+      const fail = (err: any) => {
+        if (!isSettled) {
+          isSettled = true;
+          try {
+            tx.abort();
+          } catch (_) {}
+          reject(err || new Error('Failed to verify guest data presence in IndexedDB.'));
+        }
+      };
 
-        for (const storeName of [STORE_BOOKMARKS, STORE_PROGRESS, STORE_HISTORY]) {
+      tx.onerror = () => fail(tx.error);
+      tx.onabort = () => fail(tx.error || new Error('Guest data check transaction aborted.'));
+
+      let found = false;
+      let pending = 3;
+
+      const checkDone = () => {
+        if (isSettled) return;
+        pending -= 1;
+        if (pending === 0) {
+          isSettled = true;
+          resolve(found);
+        }
+      };
+
+      for (const storeName of [STORE_BOOKMARKS, STORE_PROGRESS, STORE_HISTORY]) {
+        try {
           const store = tx.objectStore(storeName);
           const range = IDBKeyRange.bound([guestScope, ''], [guestScope, '\uffff']);
           const req = store.openCursor(range);
@@ -520,11 +544,11 @@ export class IndexedDbClient {
             checkDone();
           };
           req.onerror = () => {
-            checkDone();
+            fail(req.error || new Error(`Failed to read ${storeName} for guest scope.`));
           };
+        } catch (err) {
+          fail(err);
         }
-      } catch (err) {
-        reject(err);
       }
     });
   }

@@ -59,7 +59,7 @@ graph TD
 
 ---
 
-### Phase 7B — Account Claim & Lifecycle Protocol `[ ] Đang Triển Khai (7B.1 & 7B.2 FROZEN CLEAN)`
+### Phase 7B — Account Claim & Lifecycle Protocol `[/] Đang Triển Khai (7B.1, 7B.2 & 7B.3 Web FROZEN CLEAN ✅ — Run #435 Green 7/7)`
 **Mục tiêu:** Triển khai quy trình chuyển giao dữ liệu Khách sang Tài khoản 2 bước xác định và hoàn thiện toàn bộ vòng đời tài khoản người dùng theo 13 bất biến P0.
 - [x] **7B.1. Backend Two-Step Claim APIs & Durable Ledger (`services/api`)**
   - [x] `POST /api/v1/account/guest-claims/prepare`:
@@ -89,14 +89,21 @@ graph TD
     * Khôi Phục (`POST /api/v1/auth/reactivate-account`): Endpoint chuyên biệt (reject account đang active bằng 400 ACCOUNT_ALREADY_ACTIVE; trong grace period khôi phục tài khoản; quá hạn chưa purge trả 410 ACCOUNT_PURGED; đã hard-delete trả generic 401).
     * Day 30 Final Purge: Background worker dùng Node.js crypto SHA-256 hash ẩn danh hóa các sổ cái bền vững (`guest_claims`, `reward_transactions`, không phụ thuộc `pgcrypto`), sau đó `DELETE FROM users WHERE id = :userId` (hard-delete), tận dụng FK ground-truth `ON DELETE SET NULL` gỡ attribution tác giả/báo cáo công khai và `ON DELETE CASCADE` xóa sạch 100% dữ liệu riêng tư & reading-state metadata / tombstones.
   - [x] `GET /api/v1/account/export-data` (Xuất toàn bộ dữ liệu cá nhân dạng JSON đầy đủ dataset gồm `translation_projects`, `translation_jobs`, `chapter_versions`, `story_members`).
-- [ ] **7B.3. Client Explicit Claim Dialog, Marker Quarantine & Transactional Rebind**
-  - [ ] Client giữ nguyên trạng thái `TRANSITIONING` trong suốt quá trình claim pending, chặn mọi mutation ghi đè lên account.
+- [x] **7B.3.1. Shared Contracts Architecture (`packages/shared` & Mobile Dart Mirror)**
+  - [x] Canonical TypeScript network contracts cho API và Web với canonical `readingMode: 'WEBTOON' | 'PAGED' | 'NOVEL'`.
+  - [x] Mirror models bằng Dart kèm JSON conformance tests cho Mobile Flutter để chống drift schema.
+- [x] **7B.3. Web Client Integration (`apps/web`) — FROZEN CLEAN (Run #435 Green 7/7, Commit `9f74ea1`)**
+  - [x] Web Client Coordinator giữ nguyên trạng thái `TRANSITIONING` trong suốt quá trình claim pending, chặn mọi mutation ghi đè lên account.
+  - [x] Nếu người dùng Skip: Thêm vào danh sách marker `quarantineGuestScope(guestProfileId)`, **giữ nguyên partition vật lý `guest:<guestProfileId>`, không đổi tên namespace**, chuyển sang `ACCOUNT`.
+  - [x] Nếu Claim Commit thành công: Conflict-aware rebind IndexedDB merge & purge partition nguồn, chuyển sang `ACCOUNT`.
+  - [x] Crash Recovery fail-closed via `pendingClaimId` tri-state (`NONE`, `RESOLVED`, `PENDING_UNAVAILABLE`).
+  - [x] Fail-Closed Hardening: `checkAndPrepareClaim()` giữ `TRANSITIONING` khi prepare/storage verification lỗi; `hasGuestData()` reject khi IndexedDB/cursor/transaction lỗi; `refetchUser()` và `ActiveScopeCoordinator` bảo toàn `TRANSITIONING`.
+- [ ] **7B.3. Mobile Client Integration (`apps/mobile`) — UNLOCKED 🚀**
+  - [ ] Mobile Client giữ nguyên trạng thái `TRANSITIONING` trong suốt quá trình claim pending, chặn mọi mutation ghi đè lên account.
   - [ ] Nếu người dùng Skip: Thêm vào danh sách marker `quarantineGuestScope(guestProfileId)`, **giữ nguyên partition vật lý `guest:<guestProfileId>`, không đổi tên namespace**, chuyển sang `ACCOUNT`.
-  - [ ] Nếu Claim Commit thành công: Mobile thực hiện **Transactional Local Merge** trong SQLite (tránh xung đột Primary Key `[ownerScope, storyId]`), rebind offline manifest, dọn dẹp partition nguồn, chuyển sang `ACCOUNT`.
+  - [ ] Nếu Claim Commit thành công: Thực hiện **Transactional Local Merge** trong SQLite (tránh xung đột Primary Key `[ownerScope, storyId]`), rebind offline manifest, dọn dẹp partition nguồn, chuyển sang `ACCOUNT`.
+  - [ ] Crash Recovery fail-closed via `pending_claim_id`.
   - [ ] Khi Đăng Xuất (Logout): Lập tức detach cache của tài khoản, xoay sang fresh `guest:<newGuestProfileId>`, **không bao giờ biến dữ liệu tài khoản thành dữ liệu khách**.
-- [ ] **7B.3.1. Shared Contracts Architecture (`packages/shared` & Mobile Dart Mirror)**
-  - [ ] Canonical TypeScript network contracts cho API và Web với canonical `readingMode: 'WEBTOON' | 'PAGED' | 'NOVEL'`.
-  - [ ] Mirror models bằng Dart kèm JSON conformance tests cho Mobile Flutter để chống drift schema.
 
 ---
 

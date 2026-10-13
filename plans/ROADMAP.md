@@ -33,14 +33,14 @@ Tài liệu này theo dõi tiến độ toàn diện của dự án **OmniNovel*
   - `[x]` 7A.5. Mobile Local Library Schema & Repository (SQLite v3 `owner_scope` — LocalLibraryDao & Guest Repositories Completed ✅).
   - `[x]` 7A.6. Mobile Guest Navigation & Reader Integration ("Continue as Guest" — Step 1 & Step 2 FROZEN CLEAN at `903d718` ✅).
   - `[x]` 7A.7. Identity Isolation / Persistence / Crash / Acceptance Verification (Cross-Platform Matrix PASS ✅).
-- **Phase 7B: Account Claim & Lifecycle Protocol** `[/] Đang Triển Khai (Step 1, 2, 3 HOÀN THÀNH & FROZEN CLEAN ✅)`
+- **Phase 7B: Account Claim & Lifecycle Protocol** `[/] Đang Triển Khai (Step 1, 2, 3, 4 HOÀN THÀNH & FROZEN CLEAN ✅)`
   - `[x]` 7B.1. Three-Endpoint Claim Backend API (`POST /prepare`, `POST /commit`, `GET /status`, Durable PostgreSQL Ledger `guest_claims`, `bookmarks`, `chapter_read_states`, `reading_progress`, 1-based `pageIndex >= 1`, canonical `readingMode`, Idempotency First, Best-effort Redis Lock, Ensure Epoch Row + Domain Row Locking chống TOCTOU, Mode-Aware Conflict, Tombstone Anti-Resurrection, Zero Gamification `user_progression`) — *FROZEN CLEAN (Run #420 Green 7/7)* ✅.
   - `[x]` 7B.2. Account Lifecycle APIs (Register auto-login, Access Token `sid` claim & `req.user.sessionId`, `forgot-password` non-enumeration + real email delivery provider, `reset-password`, `change-password` revoke others, immediate session/token revocation via Redis, stable session management `auth_session` via `familyId`, Two-Phase deletion: Day 0 soft-delete bảo tồn attributions ↔ `POST /auth/reactivate-account` 3 nhánh chặt chẽ (reject active account 400) ↔ Day 30 final purge hard-delete `users` row + Anonymize Ledgers `guest_claims`/`reward_transactions` + FK SET NULL / CASCADE + Node crypto hash ledger, `GET export-data` đầy đủ dataset gồm translations) — *Task 7B.2 & 7B.2a Remediation FROZEN CLEAN* ✅.
   - `[x]` 7B.3.1. Shared Contracts Architecture (Canonical TS contracts cho API/Web, Mirror Dart models cho Mobile, Conformance tests PASS, bao gồm `expectedStateFingerprint` trong `CommitGuestClaimPayload`) — *FROZEN CLEAN* ✅.
   - `[x]` 7B.3a. Web Client Remediation (P0-1 Contract `expectedStateFingerprint` payload & DTO guard, P0-2 Zero-Mutation Window `deferScopeResolution` on Login/Register, P0-3 Conflict-Aware `rebindScope` honoring `KEEP_CLOUD`/`USE_GUEST`, P0/P1 Fail-Closed Tri-State Crash Recovery `PENDING_UNAVAILABLE`, P1 Canonical `register()` AuthProvider Bridge — Run #432 Green 7/7) — *REMEDIATED* 🛡️.
-  - `[x]` 7B.3b. Fail-Closed Scope Resolution Hardening (P0 Prepare failure keeps TRANSITIONING lock, P0 hasGuestData rejects on storage/cursor error, P0 refetchUser preserves TRANSITIONING state and blocks mutations — 50/50 Vitest pass, 657/657 tests pass, Next.js build pass) — *IMPLEMENTED, AWAITING CI VERIFICATION* 🛡️.
-  - `[x]` 7B.3. Web Client Integration (Guest Claim Coordinator, Transitioning Scope Lock, GuestClaimDialog, Marker Quarantine giữ nguyên physical partition, Rebind IndexedDB merge & purge source, Crash Recovery via pendingClaimId, Auto re-prepare on 409 conflict — 50/50 vitest PASS, Next.js build PASS) — *CHỜ NGHIỆM THU 7B.3b* ⚠️.
-  - `[/]` 7B.3. Mobile Client Integration (Transitioning Scope Flow, Dialog, SQLite Transactional Merge, Marker Quarantine, Crash Recovery) — *Chờ ký duyệt Task 7B.3 Web Frozen Clean trước khi mở khóa*.
+  - `[x]` 7B.3b. Fail-Closed Scope Resolution Hardening (P0 Prepare failure keeps TRANSITIONING lock, P0 hasGuestData rejects on storage/cursor error, P0 refetchUser preserves TRANSITIONING state and blocks mutations — 50/50 Vitest pass, 657/657 tests pass, Next.js build pass — Hosted CI Run #435 ID 37662890229 Green 7/7) — *FROZEN CLEAN (Commit `9f74ea1`)* ✅.
+  - `[x]` 7B.3. Web Client Integration (Guest Claim Coordinator, Transitioning Scope Lock, GuestClaimDialog, Marker Quarantine giữ nguyên physical partition, Rebind IndexedDB merge & purge source, Crash Recovery via pendingClaimId, Auto re-prepare on 409 conflict — 50/50 vitest PASS, Next.js build PASS, Playwright 31/31 PASS) — *FROZEN CLEAN (Run #435 Green 7/7, Commit `9f74ea1`)* ✅.
+  - `[/]` 7B.3. Mobile Client Integration (Transitioning Scope Flow, Dialog, SQLite Transactional Merge, Marker Quarantine, Crash Recovery) — *UNLOCKED 🚀 (Đang triển khai theo Web 7B.3 Behavioral Reference & Fail-Closed Invariants)*.
   - `[ ]` 7B.4. Comprehensive Test Suite & Crash Acceptance Matrix.
 - **Phase 7C: Unified Multi-Device Sync Engine** `[ ] Chưa làm`
   - `[ ]` 7C.1. Core API Sync Hub (`GET /sync/changes?after=rev`, `POST /sync/mutations/batch`).
@@ -63,3 +63,10 @@ Tài liệu này theo dõi tiến độ toàn diện của dự án **OmniNovel*
   - `[ ]` 7H.1. Mobile Production Release (Signing, AAB, ProGuard).
   - `[ ]` 7H.2. Web Production Readiness (SEO, OpenGraph, PWA Manifest).
   - `[ ]` 7H.3. Disaster Recovery & Automated Backup/Restore Drills.
+
+---
+
+## 📌 Non-Blocking Technical Debt & P2 Backlog
+- [ ] **React Test `act(...)` Warning:** Ghi nhận cảnh báo `act(...)` không đồng bộ trong một số React hook tests trên Web Vitest (không ảnh hưởng tính đúng đắn logic hay kết quả assertion).
+- [ ] **GitHub Actions Node.js 20 Deprecation:** Chuẩn bị nâng cấp actions runner lên Node.js 22 runtime theo lộ trình của GitHub Actions.
+

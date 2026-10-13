@@ -68,8 +68,14 @@ Task 7B.3 Mobile Client Integration hoàn thiện luồng chuyển giao dữ li�
     ```
 
 #### `AuthScopeBridge` ([apps/mobile/lib/core/identity/auth_scope_bridge.dart](file:///e:/Workspace%202/Doctruyen_project/apps/mobile/lib/core/identity/auth_scope_bridge.dart))
-- Khi `nextStatus == AuthStatus.authenticated`:
-  * Luôn truyền `deferScopeResolution: true` vào `_coordinator.onAuthStatusChanged(...)` nếu caller chưa hoàn tất claim check, hoặc ủy quyền cho `GuestClaimCoordinator` làm authority mở account.
+- **P0-1 & P0-3 Single Authority & Async Transition Ordering:**
+  * `AuthScopeBridge` tuyệt đối **KHÔNG BAO GIỜ** được tự ý gọi `resolveToAccount(userId)`.
+  * Khi `nextStatus == AuthStatus.authenticated`, `AuthScopeBridge` chuyển coordinator sang `setTransitioning()` thông qua `onAuthStatusChanged(AuthStatus.authenticated, userId: nextUserId, deferScopeResolution: true)`.
+  * Quyền mở `account:<userId>` duy nhất thuộc về `GuestClaimCoordinator`.
+  * **Cơ chế chống Race Condition / Stale Callback:**
+    - Sử dụng `transitionGeneration` counter: mỗi lần transition bắt đầu (hoặc logout), `transitionGeneration` tăng lên 1.
+    - Bất kỳ tác vụ async I/O nào (quét SQLite, gọi prepare, commit, wait network) khi hoàn tất đều phải đối soát `capturedGeneration == currentGeneration`. Nếu phát hiện state đã đổi (ví dụ: người dùng logout hoặc phiên hết hạn giữa chừng), tác vụ async lập tức hủy bỏ (abort) và **không được phép** thay đổi coordinator hay mở account!
+    - Khi `onLogout()` xảy ra: coordinator lập tức set `TRANSITIONING` -> xoay sang fresh `guestProfileId` -> chuyển sang `GUEST`. Mọi in-flight claim callback cũ của account bị vô hiệu hóa hoàn toàn.
 
 ---
 
@@ -78,10 +84,10 @@ Task 7B.3 Mobile Client Integration hoàn thiện luồng chuyển giao dữ li�
 #### Model `PendingGuestClaim` ([apps/mobile/lib/core/claim/models/pending_guest_claim.dart](file:///e:/Workspace%202/Doctruyen_project/apps/mobile/lib/core/claim/models/pending_guest_claim.dart))
 ```dart
 enum ClaimRecoveryPhase {
-  prepared,           // Đã prepare thành công, đang chờ user tương tác BottomSheet
-  committing,         // Đã lưu conflict decisions, đang gửi HTTP /commit
-  committedServer,    // Server đã trả 200 COMMITTED, đang thực hiện SQLite Local Merge
-  rebindCompleted,    // SQLite Local Merge hoàn tất, đang dọn partition nguồn
+  prepared,           // Phase 1: /prepare 200 OK -> ĐÃ LƯU BỀN VỮNG TRƯỚC KHI HIỂN THỊ BOTTOMSHEET
+  committing,         // Phase 2: User chọn Claim -> ĐÃ LƯU DECISIONS TRƯỚC KHI GỬI /commit
+  committedServer,    // Phase 3: Server trả 200 COMMITTED -> Chuẩn bị thực hiện SQLite Rebind
+  rebindCompleted,    // Phase 4: SQLite Transaction & Cloud Reconciliation hoàn tất thành công
 }
 
 class PendingGuestClaim {
@@ -105,20 +111,40 @@ class PendingGuestClaim {
 
   Map<String, dynamic> toJson();
   factory PendingGuestClaim.fromJson(Map<String, dynamic> json);
-  PendingGuestClaim copyWith({ClaimRecoveryPhase? phase, Map<String, ConflictResolution>? conflictDecisions});
+  PendingGuestClaim copyWith({
+    ClaimRecoveryPhase? phase,
+    Map<String, ConflictResolution>? conflictDecisions,
+  });
 }
 ```
+
+#### Quy Trình Ghi Bền Vững Từng Pha (Strict Durability Timeline)
+1. **Sau khi `POST /prepare` thành công:**
+   - Server trả về `GuestClaimPreviewResult`.
+   - **BƯỚC BẮT BUỘC:** Lập tức serialize `PendingGuestClaim` (phase: `prepared`, decisions: `{}`) và ghi vào `SharedPreferences` (`await prefs.setString(...)`).
+   - **CHỈ SAU KHI** ghi SharedPreferences thành công, coordinator mới cập nhật `isOpen = true` để hiển thị `GuestClaimBottomSheet`. Đảm bảo nếu app bị crash/tắt ngay lúc này, recovery context đã an toàn trên đĩa.
+2. **Khi người dùng bấm "Gộp vào tài khoản" (Confirm):**
+   - Thu thập các lựa chọn xung đột `conflictDecisions`.
+   - **BƯỚC BẮT BUỘC:** Ghi cập nhật `PendingGuestClaim` (phase: `committing`, decisions: `conflictDecisions`) vào `SharedPreferences`.
+   - **CHỈ SAU KHI** lưu disk thành công, mới bắt đầu gửi HTTP request `POST /api/v1/account/guest-claims/:claimId/commit`.
+3. **Khi Server trả về `200 OK (COMMITTED)`:**
+   - Cập nhật phase: `committedServer` vào SharedPreferences.
+4. **Sau khi SQLite Rebind & Cloud Reconciliation hoàn tất:**
+   - Cập nhật phase: `rebindCompleted` vào SharedPreferences.
+5. **Sau khi dọn dẹp phân vùng nguồn và hoàn tất:**
+   - Xóa bỏ `PendingGuestClaim` khỏi SharedPreferences và gọi `resolveToAccount(userId)`.
 
 #### Ma Trận Xử Lý Crash Recovery ([core/claim/guest_claim_coordinator.dart](file:///e:/Workspace%202/Doctruyen_project/apps/mobile/lib/core/claim/guest_claim_coordinator.dart))
 | Tình huống kiểm tra | Trạng thái máy chủ | Hành vi Mobile thực thi |
 |---|---|---|
 | `pending.userId != currentUserId` | Bất kỳ | Không can thiệp, bỏ qua claim của user khác, bảo vệ isolation |
 | Normal Crash Recovery | `COMMITTED` | Thực thi SQLite Transactional Rebind (idempotent), dọn dẹp partition nguồn, xóa recovery context, gọi `resolveToAccount` |
-| Normal Crash Recovery | `PREPARED` | Giữ scope `TRANSITIONING`, mở lại `GuestClaimBottomSheet` kèm preview data |
+| Normal Crash Recovery | `PREPARED` | Giữ scope `TRANSITIONING`, mở lại `GuestClaimBottomSheet` kèm preview data và recovery decisions |
 | Normal Crash Recovery | `EXPIRED` hoặc `ABORTED` | Nếu SQLite khách vẫn còn dữ liệu: tạo phiên prepare mới; không tự ý bỏ qua |
 | Kiểm tra status mất mạng / offline | Lỗi mạng | Giữ nguyên scope `TRANSITIONING` (`PENDING_UNAVAILABLE`), cung cấp nút Thử lại |
 | Lỗi mạng khi đang gửi `/commit` | Timeout / 5xx | Gọi `GET /status` kiểm tra xem commit đã vào DB server chưa trước khi quyết định retry hay rebind |
 | Lỗi SQLite Rebind nội bộ | Exception | Giữ recovery context, cho phép thử lại rebind mà không mất dữ liệu |
+| **Xóa Recovery Context** | Chỉ khi hoàn tất 100% | Chỉ xóa context sau khi SQLite rebind, Cloud reconciliation và partition purge xong |
 
 ---
 
@@ -207,6 +233,29 @@ class PendingGuestClaim {
      });
    }
    ```
+
+#### 2.3.1. Quy Trình Authoritative Cloud Reconciliation & Tombstone Pruning (P0-4)
+Sau khi `POST /commit` thành công (200 OK), PostgreSQL server đã là Single Source of Truth duy nhất (đã lọc sạch tombstones, áp dụng monotonic MAX và giải quyết xung đột). Để bảo đảm SQLite local cache của `account:<userId>` đồng nhất 100% với Cloud mà không bị lỗi tái sinh (resurrection) cục bộ:
+
+1. **Phương thức Reconcile Chính Thức (`reconcileAccountLibraryState`):**
+   - Mobile gọi các API endpoints chính thức qua `LibraryRepository` và `ReadingProgressRepository`:
+     * `GET /library/bookmarks?page=1&limit=100`
+     * `GET /library/history?page=1&limit=100`
+     * `GET /library/reading-progress/:storyId` cho các truyện xung đột / đọc gần nhất.
+2. **Cơ Chế Pruning Triệt Tiêu Tombstone Anti-Resurrection:**
+   - Khi `previewData.readStatesIgnoredAntiResurrectionCount > 0`:
+     Backend đã từ chối một số truyện của khách do Cloud đã tồn tại Tombstone xóa lịch sử.
+     Mobile đối soát danh sách `storyId` nguồn của khách với dữ liệu Cloud trả về từ `GET /library/history`.
+     Bất kỳ truyện nào có trong partition khách nhưng **hoàn toàn vắng bóng trên Cloud** sẽ bị xóa sạch khỏi `local_reading_history` và `local_reading_progress` của `account:<userId>`, bảo đảm 0% nguy cơ resurrect dữ liệu rác cũ.
+3. **Xử Lý Phân Trang (Pagination Strategy):**
+   - Đợt reconcile sau claim kéo `limit = 100` bản ghi mới nhất (bao phủ toàn bộ lịch sử đọc gần đây của người dùng).
+   - Dữ liệu lịch sử cũ hơn (nếu có hàng trăm chương) sẽ được nạp theo luồng phân trang tiêu chuẩn khi người dùng cuộn xem thư viện (Cursor/Page lazy fetch), không gây nghẽn băng thông mạng tại thời điểm đăng nhập.
+4. **Xử Lý Mất Mạng Khi Đang Reconcile (Network Failure Hardening):**
+   - Nếu commit server thành công nhưng mạng bị ngắt trước hoặc trong khi reconcile:
+     * `PendingGuestClaim` vẫn giữ nguyên ở phase `committedServer`.
+     * Điều phối viên **KHÔNG** xóa recovery context và **KHÔNG** mở account.
+     * Người dùng thấy thông báo mạng kèm nút **"Thử lại đồng bộ (Retry)"**.
+     * Khi khôi phục mạng hoặc khởi động lại ứng dụng: Crash recovery phát hiện phase `committedServer`, tự động chạy lại `reconcileAccountLibraryState` hoàn tất, sau đó mới xóa context và mở `ACCOUNT`.
 
 ---
 

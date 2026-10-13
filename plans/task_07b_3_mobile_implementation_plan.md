@@ -1,10 +1,10 @@
 # 🚀 Task 7B.3 Mobile Client Integration Implementation Plan
 
 > **Mã công việc:** Task 7B.3 (Mobile Client Integration)  
-> **Trạng thái:** `READY FOR FROZEN SIGNOFF (4 P0 Blockers Resolved)`  
+> **Trạng thái:** `FINAL AMENDMENT REVIEW — READY FOR FROZEN SIGNOFF`  
 > **Chiến lược thực thi:** Subagent-Driven Execution (TDD: RED → GREEN → Review diff → Regression → Commit → Gate signoff cho từng Task độc lập).  
 > **Căn cứ kỹ thuật:**
-> - [plans/phase_07b_mobile_claim_design_spec.md](phase_07b_mobile_claim_design_spec.md) (Design Spec đã fix 4 P0 blockers)
+> - [plans/phase_07b_mobile_claim_design_spec.md](phase_07b_mobile_claim_design_spec.md) (Design Spec đã cập nhật đầy đủ 4 P0 blockers và review gate feedback)
 > - [plans/ROADMAP.md](ROADMAP.md) (Task 7B.3 Web = FROZEN CLEAN at `9f74ea1`, Hosted CI Run #435 Green 7/7)
 > - Baseline Mobile hiện tại: `410/410 tests PASS (100%)`.
 
@@ -12,12 +12,12 @@
 
 ## 1. Mục Tiêu & Ranh Giới Kỹ Thuật (Architecture & Boundaries)
 
-Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài khoản (Guest-to-Account Claim) trên ứng dụng Flutter di động với 5 nguyên tắc bất biến đã được chuẩn hóa:
-1. **Zero-Bypass Authority:** `ActiveScopeCoordinator.onAuthStatusChanged(AuthStatus.authenticated)` luôn chuyển `transitioning`. Chỉ `GuestClaimCoordinator` (thẩm quyền duy nhất) mới được phép gọi `resolveToAccount(userId)`.
-2. **SQLite ACID Durability:** Thay thế hoàn toàn `SharedPreferences` bằng bảng SQLite `guest_claim_recovery_journal`.
-3. **Scoped Authoritative Reconciliation:** Giới hạn đối soát Cloud đúng tập `claimedStoryIds`, xác minh snapshot trước, apply + purge guest trong cùng 1 SQLite transaction.
-4. **SQLite Schema 12 Cột:** Ánh xạ đủ 12 cột cho `local_reading_progress`, bao gồm `device_timestamp` và `updated_at` dạng integer milliseconds (`INTEGER NOT NULL`).
-5. **Offline Filesystem Quarantine:** SQLite transaction chỉ áp dụng cho 3 bảng thư viện + recovery journal; không di chuyển/xóa tệp ngoại tuyến.
+Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài khoản (Guest-to-Account Claim) trên ứng dụng Flutter di động với 5 nguyên tắc bất biến đã được khóa:
+1. **Zero-Bypass Single Authority & Concurrency Guard:** `ActiveScopeCoordinator.onAuthStatusChanged(AuthStatus.authenticated)` luôn chuyển sang `transitioning`. Chỉ `GuestClaimCoordinator` (thẩm quyền duy nhất) mới được phép gọi `resolveToAccount(userId, {required int expectedGeneration})`. Triple-check concurrency (user id, generation, claim id) bảo vệ tuyệt đối trước stale callbacks.
+2. **SQLite ACID Durability (9 Cột, 3 Observable Phases):** Thay thế hoàn toàn `SharedPreferences` bằng bảng SQLite `guest_claim_recovery_journal` gồm 9 cột: `claim_id`, `user_id`, `guest_profile_id`, `expected_state_fingerprint`, `conflict_decisions`, `phase`, `preview_data`, `created_at`, `updated_at`. Migration test v3 → v4 trên database có sẵn dữ liệu đảm bảo 100% an toàn. 3 phase bền vững: `prepared`, `committing`, `committedServer`.
+3. **Authoritative Cloud Reconciliation (Phương Án A — Backend Finalization Contract):** Server trả về snapshot chính thức `finalization` (`tombstonedStoryIds`, `appliedReadingProgress`, `appliedChapterReadStates`) trực tiếp trong response `POST /commit` và `GET /status`. Mobile áp dụng trực tiếp trong CÙNG MỘT transaction với merge và purge. Fallback Phương án B vô hiệu hóa cache cục bộ nếu thiếu metadata.
+4. **SQLite Schema 12 Cột & Integer Milliseconds:** Ánh xạ đủ 12 cột cho `local_reading_progress`, bao gồm `device_timestamp` và `updated_at` dạng integer milliseconds (`INTEGER NOT NULL`). Kiểm thử round-trip model → SQLite → model.
+5. **Thứ Tự Triển Khai Không Có Deadlock (Dependency-Safe Bottom-Up Slice):** Hạ tầng Storage & DAO (Task 1 & 2) → Claim Engine (Task 3) → Identity Scope & Bootstrap readiness (Task 4) → UI Presentation (Task 5) → Acceptance & Regression (Task 6). Không bao giờ có commit trung gian khiến ứng dụng bị treo tại `waitForResolvedScope()`.
 
 ---
 
@@ -25,48 +25,56 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 
 ---
 
-### Task 1: SQLite Durable Recovery Journal & Enhanced Contracts Hardening
+### Task 1: SQLite Storage Schema v4 & Recovery Models
 
-**Mục tiêu:** Xây dựng bảng SQLite `guest_claim_recovery_journal`, model `PendingGuestClaim` (hỗ trợ `toMap`/`fromMap` SQLite, integer milliseconds timestamp), và hardening các contracts DTO (fail-closed status, validate fingerprint 64 hex, 1-based `pageIndex`).
+**Mục tiêu:** Nâng cấp SQLite schema từ v3 lên v4 với bảng `guest_claim_recovery_journal` 9 cột, kiểm thử migration v3 → v4 trên database pre-populated giữ nguyên 100% dữ liệu cũ (bookmarks, history, progress, downloads), triển khai model `PendingGuestClaim` (3 observable phases: `prepared`, `committing`, `committedServer`), và hardening các DTO contracts (64-char hex SHA-256 fingerprint, fail-closed `GuestClaimStatus`, 1-based `pageIndex`).
 
 **Files:**
 - Create: `apps/mobile/lib/core/claim/models/pending_guest_claim.dart`
 - Modify: `apps/mobile/lib/core/storage/offline_database.dart`
 - Modify: `apps/mobile/lib/core/claim/models/guest_claim_models.dart`
 - Create: `apps/mobile/test/core/claim/models/pending_guest_claim_test.dart`
-- Modify: `apps/mobile/test/core/storage/offline_database_test.dart` (hoặc test tương ứng)
+- Create: `apps/mobile/test/core/storage/offline_database_migration_v4_test.dart`
 
 **Interfaces:**
-- Produces: `PendingGuestClaim`, `ClaimRecoveryPhase`
+- Produces: `PendingGuestClaim`, `ClaimRecoveryPhase` (3 phases: `prepared`, `committing`, `committedServer`), schema v4 `guest_claim_recovery_journal`
 - Consumes: `ConflictResolution`, `GuestClaimStatus` từ `guest_claim_models.dart`, `OfflineDatabase`
 
 - [ ] **Step 1: Viết test cho `PendingGuestClaim` và contract hardening (RED)**
   Tạo `apps/mobile/test/core/claim/models/pending_guest_claim_test.dart`:
-  - Test SQLite mapping: `toMap()` và `fromMap()` cho `PendingGuestClaim`, kiểm tra serialization `conflictDecisions` (JSON string Map), `created_at` và `updated_at` dưới dạng `int millisecondsSinceEpoch`.
+  - Test SQLite mapping: `toMap()` và `fromMap()` cho `PendingGuestClaim`, kiểm tra serialization `conflictDecisions` (JSON string Map), `previewDataJson`, `created_at` và `updated_at` dưới dạng `int millisecondsSinceEpoch`.
+  - Test `ClaimRecoveryPhase`: Chỉ chứa đúng 3 giá trị (`prepared`, `committing`, `committedServer`), không có `rebindCompleted`.
   - Test `copyWith` cập nhật `phase`, `conflictDecisions`, `previewDataJson`, `updatedAt`.
   - Test validation fingerprint: Payload commit từ chối fingerprint rỗng, thiếu, hoặc không đúng 64 ký tự hex SHA-256 (`^[a-fA-F0-9]{64}$`).
   - Test fail-closed validation cho `GuestClaimStatus.fromString`: ném `ArgumentError` khi gặp status lạ, không bao giờ fallback âm thầm.
   - Test 1-based `pageIndex`: Chặn `pageIndex < 1`, tự chuẩn hóa `>= 1`.
 
-- [ ] **Step 2: Viết test kiểm tra migration/bảng `guest_claim_recovery_journal` trong `OfflineDatabase` (RED)**
-  - Mở database kiểm tra bảng `guest_claim_recovery_journal` tồn tại với đủ 8 cột: `claim_id`, `user_id`, `guest_profile_id`, `expected_state_fingerprint`, `conflict_decisions`, `phase`, `created_at`, `updated_at`.
+- [ ] **Step 2: Viết test kiểm tra migration v3 → v4 trong `OfflineDatabase` (RED)**
+  Tạo `apps/mobile/test/core/storage/offline_database_migration_v4_test.dart`:
+  - Tạo SQLite database v3 với các bảng hiện hữu (`local_library_bookmarks`, `local_reading_progress`, `local_reading_history`, `download_tasks`, `offline_chapters`).
+  - Chèn dữ liệu mẫu vào cả 5 bảng v3.
+  - Chạy `initialize()` nâng cấp lên v4:
+    * Kiểm tra bảng `guest_claim_recovery_journal` tồn tại với đủ **9 cột**: `claim_id`, `user_id`, `guest_profile_id`, `expected_state_fingerprint`, `conflict_decisions`, `phase`, `preview_data`, `created_at`, `updated_at`.
+    * Kiểm tra toàn bộ dữ liệu mẫu trong 5 bảng v3 cũ vẫn nguyên vẹn 100%, không bị mất hay lỗi dữ liệu.
 
 - [ ] **Step 3: Chạy test và xác nhận thất bại (Red)**
-  Lệnh: `flutter test test/core/claim/models/pending_guest_claim_test.dart`
-  Kỳ vọng: Lỗi biên dịch vì chưa có file `pending_guest_claim.dart` và chưa tạo bảng SQLite journal.
+  Lệnh: `flutter test test/core/claim/models/pending_guest_claim_test.dart test/core/storage/offline_database_migration_v4_test.dart`
+  Kỳ vọng: FAIL vì chưa có file `pending_guest_claim.dart` và chưa có migration schema v4.
 
 - [ ] **Step 4: Triển khai mã nguồn Task 1 (GREEN)**
   - Tạo `apps/mobile/lib/core/claim/models/pending_guest_claim.dart`:
-    * Enum `ClaimRecoveryPhase { prepared, committing, committedServer, rebindCompleted }`.
+    * Enum `ClaimRecoveryPhase { prepared, committing, committedServer }`.
     * Class `PendingGuestClaim` với `toMap()`, `fromMap()`, `copyWith()`.
   - Cập nhật `apps/mobile/lib/core/storage/offline_database.dart`:
-    * Thêm `CREATE TABLE IF NOT EXISTS guest_claim_recovery_journal` vào `_onCreate` và `_onUpgrade`.
+    * Tăng `databaseVersion = 4`.
+    * Bổ sung DDL bảng `guest_claim_recovery_journal` (9 cột) vào `_onCreate` và `_onUpgrade` cho migration từ version < 4.
   - Cập nhật `apps/mobile/lib/core/claim/models/guest_claim_models.dart`:
-    * Thêm validation 64-char hex SHA-256 cho `CommitGuestClaimPayload`.
+    * Thêm validation regex 64-char hex SHA-256 cho `CommitGuestClaimPayload`.
     * Thêm fail-closed parser cho `GuestClaimStatus.fromString`.
+    * Chuẩn hóa `pageIndex >= 1`.
 
 - [ ] **Step 5: Chạy test và xác nhận vượt qua (Green)**
-  Lệnh: `flutter test test/core/claim/models/pending_guest_claim_test.dart`
+  Lệnh: `flutter test test/core/claim/models/pending_guest_claim_test.dart test/core/storage/offline_database_migration_v4_test.dart`
   Kỳ vọng: Toàn bộ tests PASS 100%.
 
 - [ ] **Step 6: Chạy kiểm thử hồi quy cục bộ (Regression Check)**
@@ -74,71 +82,13 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
   Kỳ vọng: 410+ tests PASS, không có lỗi hồi quy.
 
 - [ ] **Step 7: Commit mã nguồn Task 1**
-  Lệnh: `git add apps/mobile/lib/core/claim/ apps/mobile/lib/core/storage/offline_database.dart apps/mobile/test/core/claim/ && git commit -m "feat(mobile): implement SQLite durable recovery journal and contract hardening"`
+  Lệnh: `git add apps/mobile/lib/core/claim/ apps/mobile/lib/core/storage/offline_database.dart apps/mobile/test/core/claim/ apps/mobile/test/core/storage/ && git commit -m "feat(mobile): implement SQLite recovery journal v4 schema and contract hardening"`
 
 ---
 
-### Task 2: Identity Scope & Bridge Single Authority (Zero-Bypass Architecture)
+### Task 2: SQLite DAO Rebind (12 Cột) & Finalization Engine
 
-**Mục tiêu:** Đóng hoàn toàn bypass trong `ActiveScopeCoordinator.onAuthStatusChanged`, đảm bảo `authenticated` LUÔN chuyển sang `ActiveScopeState.transitioning` (`setTransitioning()`). Khóa quyền mở `account:<userId>` duy nhất cho `GuestClaimCoordinator.resolveToAccount(userId)`. Bổ sung `transitionGeneration` counter trong `AuthScopeBridge` chống async race condition. Thêm `AuthService.register()` đồng bộ auto-login.
-
-**Files:**
-- Modify: `apps/mobile/lib/core/identity/active_scope_coordinator.dart`
-- Modify: `apps/mobile/lib/core/identity/auth_scope_bridge.dart`
-- Modify: `apps/mobile/lib/core/auth/auth_service.dart`
-- Create: `apps/mobile/test/core/identity/active_scope_coordinator_claim_test.dart`
-- Create: `apps/mobile/test/core/identity/auth_scope_bridge_claim_test.dart`
-
-**Interfaces:**
-- Produces: `ActiveScopeCoordinator.setTransitioning()`, `ActiveScopeCoordinator.resolveToAccount(String userId)`, `AuthService.register(...)`
-- Consumes: `AuthStatus`, `AuthState`
-
-- [ ] **Step 1: Viết test cho Zero-Bypass Authority và Generation Counter (RED)**
-  Tạo `apps/mobile/test/core/identity/active_scope_coordinator_claim_test.dart` & `auth_scope_bridge_claim_test.dart`:
-  - Test zero-bypass: Gọi `onAuthStatusChanged(AuthStatus.authenticated, userId: 'u1')` -> State BẮT BUỘC là `ActiveScopeState.transitioning`, `activeScope == null`, `canMutateUserState == false`. Cấm tuyệt đối tự động mở `account:u1`.
-  - Test strict `resolveToAccount(userId)`:
-    * Khi state đang `transitioning` và `userId` hợp lệ -> State chuyển `ActiveScopeState.account`, `activeScope == 'account:u1'`, `canMutateUserState == true`.
-    * Khi state KHÔNG PHẢI `transitioning` (ví dụ `bootstrapping` hoặc `guest`) -> Fail-closed (ném `StateError` hoặc không đổi state).
-    * Khi `userId` rỗng -> Fail-closed về `bootstrapping`.
-  - Test generation counter: Bắt đầu async transition -> gọi `onLogout()` giữa chừng -> generation counter tăng -> callback cũ bị hủy bỏ hoàn toàn, không thể mở `account`.
-  - Test `AuthService.register()`: Gửi `POST /auth/register`, lưu tokens, phát trạng thái `authenticated`.
-
-- [ ] **Step 2: Chạy test và xác nhận thất bại (Red)**
-  Lệnh: `flutter test test/core/identity/active_scope_coordinator_claim_test.dart test/core/identity/auth_scope_bridge_claim_test.dart`
-  Kỳ vọng: FAIL vì `onAuthStatusChanged` hiện tại vẫn tự resolve account và chưa có `setTransitioning` / `resolveToAccount`.
-
-- [ ] **Step 3: Triển khai mã nguồn Task 2 (GREEN)**
-  - Trong `active_scope_coordinator.dart`:
-    * Thêm `void setTransitioning()`: `_state = ActiveScopeState.transitioning; _activeScope = null; notifyListeners();`.
-    * Thêm `void resolveToAccount(String userId)`:
-      - Kiểm tra `_state == ActiveScopeState.transitioning` (ném `StateError` nếu sai).
-      - Trim `userId`. Nếu rỗng -> `_state = ActiveScopeState.bootstrapping; _activeScope = null; notifyListeners(); return;`.
-      - `_activeScope = 'account:$trimmed'; _state = ActiveScopeState.account; _flushWaiters(_activeScope!); notifyListeners();`.
-    * Cập nhật `onAuthStatusChanged(AuthStatus status, {String? userId})`:
-      - Nhánh `authenticated`: kiểm tra `userId` hợp lệ -> gọi `setTransitioning()`. KHÔNG có nhánh tự động resolve account!
-  - Trong `auth_scope_bridge.dart`:
-    * Bổ sung `int _transitionGeneration = 0`.
-    * Khi `AuthStatus.authenticated`: gọi `_coordinator.onAuthStatusChanged(AuthStatus.authenticated, userId: nextUserId)`.
-    * Khi `onLogout()`: `_transitionGeneration++`, gọi `_coordinator.onLogout()`.
-  - Trong `auth_service.dart`:
-    * Bổ sung phương thức `Future<void> register({required String username, required String email, required String password})`.
-
-- [ ] **Step 4: Chạy test và xác nhận vượt qua (Green)**
-  Lệnh: `flutter test test/core/identity/active_scope_coordinator_claim_test.dart test/core/identity/auth_scope_bridge_claim_test.dart`
-  Kỳ vọng: Toàn bộ tests PASS 100%.
-
-- [ ] **Step 5: Chạy regression tests toàn bộ Identity**
-  Lệnh: `flutter test test/core/identity/`
-  Kỳ vọng: Toàn bộ tests PASS 100%.
-
-- [ ] **Step 6: Commit mã nguồn Task 2**
-  Lệnh: `git add apps/mobile/lib/core/identity/ apps/mobile/lib/core/auth/ apps/mobile/test/core/identity/ && git commit -m "feat(mobile): enforce zero-bypass single authority and generation counter in ActiveScopeCoordinator"`
-
----
-
-### Task 3: SQLite DAO Rebind (12 Cột) & Scoped Authoritative Reconcile
-
-**Mục tiêu:** Cập nhật `LocalLibraryDao`: Thêm `hasGuestData(ownerScope)` (fail-closed), `getClaimedStoryIds(ownerScope)`, và `rebindScope(...)` đảm bảo schema mapping 12 cột cho `local_reading_progress` (đầy đủ `device_timestamp` và `updated_at` dạng integer milliseconds `INTEGER NOT NULL`), áp dụng Cloud Precedence, và thực hiện merge + purge guest partition + delete recovery journal checkpoint trong CÙNG MỘT SQLite transaction nguyên tử. Viết kiểm thử round-trip model → SQLite → model.
+**Mục tiêu:** Cập nhật `LocalLibraryDao`: Thêm `hasGuestData(ownerScope)` (fail-closed), `getClaimedStoryIds(ownerScope)`, và `rebindScope(...)` đảm bảo schema mapping 12 cột cho `local_reading_progress` (đầy đủ `device_timestamp` và `updated_at` dạng integer milliseconds `INTEGER NOT NULL`), áp dụng Cloud Precedence và Authoritative Finalization Snapshot (Phương án A), thực hiện merge bookmarks (`INSERT OR IGNORE`), monotonic history merge, purge guest partition và xóa recovery journal checkpoint trong CÙNG MỘT SQLite transaction nguyên tử. Viết kiểm thử round-trip model → SQLite → model.
 
 **Files:**
 - Modify: `apps/mobile/lib/core/storage/local_library_dao.dart`
@@ -146,38 +96,39 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 
 **Interfaces:**
 - Produces: `LocalLibraryDao.hasGuestData`, `LocalLibraryDao.getClaimedStoryIds`, `LocalLibraryDao.rebindScope`
-- Consumes: `LocalReadingProgress`, `LocalBookmark`, `LocalReadingHistory`, `ConflictResolution`, `ReadingProgressConflict`
+- Consumes: `LocalReadingProgress`, `LocalBookmark`, `LocalReadingHistory`, `ConflictResolution`, `ReadingProgressConflict`, `ClaimFinalizedProgressItem`, `ClaimFinalizedReadStateItem`
 
-- [ ] **Step 1: Viết test cho SQLite Rebind 12 Cột & Round-Trip (RED)**
+- [ ] **Step 1: Viết test cho SQLite Rebind 12 Cột, Authoritative Finalization & Round-Trip (RED)**
   Tạo `apps/mobile/test/core/storage/local_library_dao_rebind_test.dart`:
   - Test `hasGuestData(guestScope)`: trả `true` khi có dữ liệu; trả `false` khi trống; rethrow exception fail-closed khi DB lỗi.
-  - Test `getClaimedStoryIds(guestScope)`: trích xuất đúng tập hợp `story_id` phân biệt từ 3 bảng.
+  - Test `getClaimedStoryIds(guestScope)`: trích xuất đúng tập hợp `story_id` phân biệt từ 3 bảng của khách.
   - Test `rebindScope` 12 cột:
     * `local_reading_progress` mapping đầy đủ 12 cột, không bị lỗi `NOT NULL constraint failed` trên `device_timestamp` và `updated_at`.
     * Test round-trip: Model `LocalReadingProgress` → Insert qua `rebindScope` → Query lại bằng `getProgress()` → `LocalReadingProgress.fromMap()` giải mã thành công không lỗi type cast hay rỗng trường.
     * Monotonic MAX cho `local_reading_history`.
     * Primary Key collision an toàn cho `local_library_bookmarks` (`INSERT OR IGNORE`).
     * Conflict `KEEP_CLOUD` khi local target chưa cache: Lấy `conflict.cloudProgress` (chuyển đổi ISO string sang integer milliseconds) ghi đủ 12 cột vào targetScope.
+    * Áp dụng authoritative finalization snapshot: Áp dụng `appliedReadingProgress` và `appliedChapterReadStates`, loại trừ các truyện trong `tombstonedStoryIds`.
     * Atomic Transaction & Purge: Partition khách bị xóa sạch và bản ghi recovery journal bị xóa TRONG CÙNG TRANSACTION; nếu có exception giữa chừng, toàn bộ transaction rollback, partition khách và journal được bảo toàn 100%.
 
 - [ ] **Step 2: Chạy test và xác nhận thất bại (Red)**
   Lệnh: `flutter test test/core/storage/local_library_dao_rebind_test.dart`
   Kỳ vọng: FAIL vì chưa có `hasGuestData`, `getClaimedStoryIds`, `rebindScope`.
 
-- [ ] **Step 3: Triển khai mã nguồn Task 3 (GREEN)**
+- [ ] **Step 3: Triển khai mã nguồn Task 2 (GREEN)**
   - Trong `local_library_dao.dart`:
     * Thêm `Future<bool> hasGuestData(String ownerScope)`.
     * Thêm `Future<Set<String>> getClaimedStoryIds(String ownerScope)`.
     * Thêm `Future<void> rebindScope({...})`:
       - Chạy trong `_db.transaction((txn) async { ... })`.
-      - 1. Bookmarks: `INSERT OR IGNORE`.
-      - 2. History: `INSERT INTO ... ON CONFLICT DO UPDATE SET progress_percentage = MAX(...)`.
+      - 1. Bookmarks: `INSERT OR IGNORE` (loại trừ `tombstonedStoryIds`).
+      - 2. History: `INSERT INTO ... ON CONFLICT DO UPDATE SET progress_percentage = MAX(...)` (loại trừ `tombstonedStoryIds`).
       - 3. Reading progress conflicts: `INSERT OR REPLACE` với đầy đủ 12 cột:
         `owner_scope, story_id, chapter_id, chapter_version_id, reading_mode, progress_percentage, scroll_position, page_index, anchor_block_id, text_offset, updated_at, device_timestamp`.
         Chuyển đổi `updatedAt` từ ISO string sang integer milliseconds: `DateTime.tryParse(p.updatedAt ?? '')?.toUtc().millisecondsSinceEpoch ?? DateTime.now().toUtc().millisecondsSinceEpoch`.
         Gán `device_timestamp = updatedAtMs`.
-      - 4. Reading progress non-conflicts: `INSERT OR IGNORE` với đầy đủ 12 cột lấy từ `sourceScope` bao gồm `device_timestamp`.
-      - 5. Apply `authoritativeCloudProgress` (nếu có) đầy đủ 12 cột.
+      - 4. Reading progress non-conflicts: `INSERT OR IGNORE` với đầy đủ 12 cột lấy từ `sourceScope` bao gồm `device_timestamp` (loại trừ `tombstonedStoryIds`).
+      - 5. Apply authoritative `finalization` snapshot nếu có (tombstones, canonical progress, chapter states).
       - 6. Purge sạch 3 bảng của `sourceScope`.
       - 7. Xóa checkpoint tương ứng trong `guest_claim_recovery_journal`.
 
@@ -189,14 +140,14 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
   Lệnh: `flutter test test/core/storage/`
   Kỳ vọng: Toàn bộ tests PASS 100%.
 
-- [ ] **Step 6: Commit mã nguồn Task 3**
-  Lệnh: `git add apps/mobile/lib/core/storage/local_library_dao.dart apps/mobile/test/core/storage/ && git commit -m "feat(mobile): implement 12-column SQLite rebindScope with cloud precedence and atomic purge"`
+- [ ] **Step 6: Commit mã nguồn Task 2**
+  Lệnh: `git add apps/mobile/lib/core/storage/local_library_dao.dart apps/mobile/test/core/storage/ && git commit -m "feat(mobile): implement 12-column SQLite rebindScope with authoritative finalization and atomic purge"`
 
 ---
 
-### Task 4: GuestClaimCoordinator Engine & Durable Crash Recovery
+### Task 3: GuestClaimCoordinator Engine & Durable Crash Recovery
 
-**Mục tiêu:** Xây dựng `GuestClaimCoordinator` kế thừa `ChangeNotifier`. Quản lý state machine claim, lưu trữ durable recovery context vào SQLite table `guest_claim_recovery_journal` trước khi mở UI và trước khi commit. Thực thi Scoped Authoritative Cloud Reconciliation cho đúng `claimedStoryIds`. Chỉ mở `ACCOUNT` sau khi SQLite transaction commit thành công. Xử lý ma trận crash recovery toàn diện.
+**Mục tiêu:** Xây dựng `GuestClaimCoordinator` kế thừa `ChangeNotifier`. Quản lý state machine claim với SQLite journal 3-phase (`prepared`, `committing`, `committedServer`). Bảo vệ concurrency bằng **Triple-Check Concurrency Guard** (user id, generation, claim id) chống stale callback từ tài khoản trước hoặc async request muộn. Khóa cứng `skipClaim(userId)` khi claim đã bước vào `committing` hoặc `committedServer`. Điều phối authoritative finalization snapshot (Phương án A) và fallback (Phương án B). Xử lý ma trận crash recovery toàn diện.
 
 **Files:**
 - Create: `apps/mobile/lib/core/claim/guest_claim_coordinator.dart`
@@ -204,38 +155,42 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 
 **Interfaces:**
 - Produces: `GuestClaimCoordinator` (ChangeNotifier): `checkAndPrepareClaim`, `confirmClaim`, `skipClaim`, `checkCrashRecovery`
-- Consumes: `LocalLibraryDao`, `ActiveScopeCoordinator`, `GuestProfileIdentityProvider`, `ApiClient`, `LibraryRepository`, `ReadingProgressRepository`, `OfflineDatabase`
+- Consumes: `LocalLibraryDao`, `ActiveScopeCoordinator`, `GuestProfileIdentityProvider`, `ApiClient`, `OfflineDatabase`
 
-- [ ] **Step 1: Viết test cho Coordinator State Machine và Durable Recovery (RED)**
+- [ ] **Step 1: Viết test cho Coordinator State Machine, Concurrency Guard và Durable Recovery (RED)**
   Tạo `apps/mobile/test/core/claim/guest_claim_coordinator_test.dart`:
   - Test `checkAndPrepareClaim`:
-    * Không có dữ liệu khách -> Gọi ngay `resolveToAccount(userId)`, không mở modal.
+    * Không có dữ liệu khách -> Gọi ngay `resolveToAccount(userId, expectedGeneration: gen)`, không mở modal.
     * Có dữ liệu khách -> Gọi API `/prepare`, **lập tức ghi `PendingGuestClaim(phase: prepared)` vào SQLite journal trước khi set `isOpen = true`**.
     * Lỗi API prepare hoặc SQLite query -> Giữ nguyên `TRANSITIONING`, không mở account (fail-closed).
+  - Test Concurrency Guard (Stale Callback Prevention):
+    * Prepare cho User A bắt đầu -> User logout (generation tăng) -> User B login -> Callback prepare cũ của A trả về: Bị hủy bỏ hoàn toàn, không thay đổi state của B, không gọi `resolveToAccount`.
   - Test `confirmClaim`:
     * Ghi `PendingGuestClaim(phase: committing, decisions)` vào SQLite journal TRƯỚC KHI gửi HTTP request `/commit`.
-    * Server trả 200 COMMITTED -> Ghi phase `committedServer` vào journal -> Lấy authoritative cloud snapshot cho `claimedStoryIds` -> Gọi `dao.rebindScope(...)` (thực hiện rebind + purge + delete journal trong cùng transaction) -> Gọi `resolveToAccount(userId)`.
+    * Server trả 200 COMMITTED -> Ghi phase `committedServer` vào journal -> Nhận authoritative `finalization` snapshot -> Gọi `dao.rebindScope(...)` (thực hiện rebind + purge + delete journal trong cùng transaction) -> Gọi `resolveToAccount(userId, expectedGeneration: gen)`.
     * Xử lý 409 Conflict: Tự động re-prepare và làm mới preview, giữ `TRANSITIONING`.
-  - Test `skipClaim`: Lưu marker quarantine vào SharedPreferences, xóa journal (nếu có), bảo toàn 100% partition SQLite của guest, gọi `resolveToAccount(userId)`.
+  - Test `skipClaim`:
+    * Khi ở phase `prepared`: Lưu marker quarantine vào SharedPreferences, xóa journal, bảo toàn 100% partition SQLite của guest, gọi `resolveToAccount(userId, expectedGeneration: gen)`.
+    * Khi ở phase `committing` hoặc `committedServer`: Ném `StateError('Cannot skip claim once commit has started')`.
   - Test Crash Recovery Ma trận:
     * `pending.userId != currentUserId`: Không can thiệp, bỏ qua claim của user khác.
-    * Server `COMMITTED`: Tự động kéo authoritative snapshot, rebind, xóa journal, mở account.
+    * Server `COMMITTED`: Tự động áp dụng authoritative finalization, rebind, xóa journal, mở account.
     * Server `PREPARED`: Đọc preview data từ SQLite journal, mở lại dialog kèm decisions đã chọn.
-    * Server lỗi mạng: Giữ nguyên `TRANSITIONING` (`PENDING_UNAVAILABLE`), nút Thử lại.
+    * Server lỗi mạng: Giữ nguyên `TRANSITIONING` (`PENDING_UNAVAILABLE`), cung cấp nút Thử lại.
 
 - [ ] **Step 2: Chạy test và xác nhận thất bại (Red)**
   Lệnh: `flutter test test/core/claim/guest_claim_coordinator_test.dart`
   Kỳ vọng: FAIL vì chưa có file `guest_claim_coordinator.dart`.
 
-- [ ] **Step 3: Triển khai mã nguồn Task 4 (GREEN)**
+- [ ] **Step 3: Triển khai mã nguồn Task 3 (GREEN)**
   - Viết `apps/mobile/lib/core/claim/guest_claim_coordinator.dart`:
     * Quản lý trạng thái: `isOpen`, `isPreparing`, `isCommitting`, `previewData`, `error`, `currentUserId`.
+    * Triển khai Triple-Check guard: bắt giữ `capturedGeneration = _scopeCoordinator.transitionGeneration`, `capturedUserId = userId`.
     * Triển khai `checkAndPrepareClaim(userId)`.
     * Triển khai `confirmClaim(userId, conflictDecisions)`.
-    * Triển khai `skipClaim(userId)`.
+    * Triển khai `skipClaim(userId)` có guard chặn khi `isCommitting`.
     * Triển khai `checkCrashRecovery(userId)`.
-    * Đảm bảo tính bền vững ACID: Mọi checkpoint phase đều ghi qua SQLite journal `OfflineDatabase.database`.
-    * Đảm bảo scoped reconciliation: Giới hạn đối soát theo `dao.getClaimedStoryIds(guestScope)`.
+    * Ghi journal bền vững qua `OfflineDatabase.database` ở từng checkpoint.
 
 - [ ] **Step 4: Chạy test và xác nhận vượt qua (Green)**
   Lệnh: `flutter test test/core/claim/guest_claim_coordinator_test.dart`
@@ -245,19 +200,82 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
   Lệnh: `flutter test test/core/claim/`
   Kỳ vọng: Toàn bộ tests PASS 100%.
 
+- [ ] **Step 6: Commit mã nguồn Task 3**
+  Lệnh: `git add apps/mobile/lib/core/claim/ apps/mobile/test/core/claim/ && git commit -m "feat(mobile): implement GuestClaimCoordinator with triple-check concurrency guard and 3-phase journal"`
+
+---
+
+### Task 4: Identity Scope & Bootstrap Synchronization Gate (Vertical Slice Integration)
+
+**Mục tiêu:** Hoàn thiện `ActiveScopeCoordinator` với `transitionGeneration` counter, `setTransitioning()`, và `resolveToAccount(userId, {required int expectedGeneration})`. Đóng hoàn toàn bypass trong `onAuthStatusChanged(AuthStatus.authenticated)` (luôn set transitioning). Cập nhật `AuthScopeBridge` với cơ chế báo lỗi có thể quan sát (`lastError`), bàn giao quyền mở account cho `GuestClaimCoordinator`. Tách biệt `bootstrapReady` khỏi `scopeResolved` trong `app/bootstrap.dart` để cold start không bao giờ bị deadlock tại `waitForResolvedScope()`. Cập nhật toàn bộ existing identity tests (`active_scope_coordinator_test.dart`, `auth_scope_bridge_test.dart`) sang mô hình Zero-Bypass mới. Thêm `AuthService.register()`.
+
+**Files:**
+- Modify: `apps/mobile/lib/core/identity/active_scope_coordinator.dart`
+- Modify: `apps/mobile/lib/core/identity/auth_scope_bridge.dart`
+- Modify: `apps/mobile/lib/core/auth/auth_service.dart`
+- Modify: `apps/mobile/lib/app/bootstrap.dart`
+- Modify: `apps/mobile/test/core/identity/active_scope_coordinator_test.dart`
+- Modify: `apps/mobile/test/core/identity/auth_scope_bridge_test.dart`
+- Create: `apps/mobile/test/core/identity/active_scope_coordinator_claim_test.dart`
+
+**Interfaces:**
+- Produces: `ActiveScopeCoordinator.transitionGeneration`, `ActiveScopeCoordinator.setTransitioning()`, `ActiveScopeCoordinator.resolveToAccount(String userId, {required int expectedGeneration})`, `AuthScopeBridge.lastError`, `AuthService.register(...)`
+- Consumes: `AuthStatus`, `AuthState`, `GuestClaimCoordinator`
+
+- [ ] **Step 1: Viết test cho Zero-Bypass, Generation Guard, Bridge Error Observability và Bootstrap (RED)**
+  Tạo `active_scope_coordinator_claim_test.dart` và cập nhật các test trong `active_scope_coordinator_test.dart`:
+  - Test zero-bypass: `onAuthStatusChanged(AuthStatus.authenticated, userId: 'u1')` -> State BẮT BUỘC là `ActiveScopeState.transitioning`, `activeScope == null`, `canMutateUserState == false`. Cấm tự động mở `account:u1`.
+  - Test strict `resolveToAccount(userId, expectedGeneration: gen)`:
+    * Khi state đang `transitioning` và `expectedGeneration == coordinator.transitionGeneration`: State chuyển `account`, `activeScope == 'account:u1'`, `canMutateUserState == true`.
+    * Khi `expectedGeneration` không khớp (stale callback): Không thay đổi state, giữ nguyên `transitioning`.
+    * Khi state không phải `transitioning`: Ném `StateError`.
+    * Khi `userId` rỗng: Fallback về `bootstrapping`.
+  - Test `AuthScopeBridge`: Báo lỗi chuyển trạng thái qua `lastError`, giữ fail-closed thay vì nuốt lỗi âm thầm.
+  - Test Bootstrap Readiness: `bootstrap.dart` hoàn thành khởi tạo router và trả kết quả `bootstrapReady` ngay cả khi scope đang ở `transitioning`.
+
+- [ ] **Step 2: Chạy test và xác nhận thất bại (Red)**
+  Lệnh: `flutter test test/core/identity/active_scope_coordinator_claim_test.dart`
+  Kỳ vọng: FAIL vì chưa có `expectedGeneration` và `onAuthStatusChanged` cũ chưa chuyển hoàn toàn sang `setTransitioning()`.
+
+- [ ] **Step 3: Triển khai mã nguồn Task 4 (GREEN)**
+  - Trong `active_scope_coordinator.dart`:
+    * Thêm `int _transitionGeneration = 0`.
+    * Thêm `void setTransitioning()`: `_transitionGeneration++; _state = ActiveScopeState.transitioning; _activeScope = null; notifyListeners();`.
+    * Thêm `void resolveToAccount(String userId, {required int expectedGeneration})`:
+      - Kiểm tra `_state == ActiveScopeState.transitioning` (ném `StateError` nếu sai).
+      - Kiểm tra `expectedGeneration == _transitionGeneration` (drop nếu không khớp).
+      - Trim `userId`. Nếu rỗng -> `_state = ActiveScopeState.bootstrapping; _activeScope = null; notifyListeners(); return;`.
+      - `_activeScope = 'account:$trimmed'; _state = ActiveScopeState.account; _flushWaiters(_activeScope!); notifyListeners();`.
+    * Cập nhật `onAuthStatusChanged`: Nhánh `authenticated` luôn gọi `setTransitioning()`.
+  - Trong `auth_scope_bridge.dart`:
+    * Bổ sung `Object? _lastTransitionError` và `Object? get lastError => _lastTransitionError`.
+    * Không nuốt lỗi trong `_enqueueTransition`, log error và giữ fail-closed.
+  - Trong `auth_service.dart`:
+    * Bổ sung `Future<void> register({required String username, required String email, required String password})`.
+  - Trong `app/bootstrap.dart`:
+    * Tách biệt `bootstrapReady` khỏi `scopeResolved`. Không chờ `waitForResolvedScope()` chặn tạo Router.
+  - Cập nhật các assertions cũ trong `active_scope_coordinator_test.dart` và `auth_scope_bridge_test.dart`.
+
+- [ ] **Step 4: Chạy test và xác nhận vượt qua (Green)**
+  Lệnh: `flutter test test/core/identity/`
+  Kỳ vọng: Toàn bộ tests Identity PASS 100%.
+
+- [ ] **Step 5: Chạy regression tests toàn bộ Identity và Bootstrap**
+  Lệnh: `flutter test test/app/ test/core/identity/`
+  Kỳ vọng: Toàn bộ tests PASS 100%. Toàn bộ vertical slice Auth → Claim Coordinator → Bootstrap hoạt động trơn tru.
+
 - [ ] **Step 6: Commit mã nguồn Task 4**
-  Lệnh: `git add apps/mobile/lib/core/claim/ apps/mobile/test/core/claim/ && git commit -m "feat(mobile): implement GuestClaimCoordinator with SQLite recovery journal and scoped reconciliation"`
+  Lệnh: `git add apps/mobile/lib/core/identity/ apps/mobile/lib/core/auth/ apps/mobile/lib/app/bootstrap.dart apps/mobile/test/core/identity/ apps/mobile/test/app/ && git commit -m "feat(mobile): integrate zero-bypass ActiveScopeCoordinator, generation guard, and bootstrap readiness"`
 
 ---
 
 ### Task 5: Presentation & Root Shell Orchestration (`GuestClaimBottomSheet`)
 
-**Mục tiêu:** Xây dựng giao diện `GuestClaimBottomSheet` với `PopScope(canPop: false)`, Radio chọn giải pháp conflict trực quan, thông báo lỗi mạng kèm nút Retry. Tách biệt `bootstrapReady` vs `scopeResolved` trong `app/bootstrap.dart`. Gắn `GuestClaimListener` tại Root Widget tree (`app.dart`).
+**Mục tiêu:** Xây dựng giao diện `GuestClaimBottomSheet` với `PopScope(canPop: false)`, Radio chọn giải pháp conflict trực quan, disable nút "Bỏ qua" khi `isCommitting == true`, thông báo lỗi mạng kèm nút Retry. Gắn `GuestClaimListener` tại Root Widget tree (`app.dart`).
 
 **Files:**
 - Create: `apps/mobile/lib/features/claim/presentation/guest_claim_bottom_sheet.dart`
 - Create: `apps/mobile/lib/features/claim/presentation/guest_claim_listener.dart`
-- Modify: `apps/mobile/lib/app/bootstrap.dart`
 - Modify: `apps/mobile/lib/app/app.dart`
 - Create: `apps/mobile/test/features/claim/guest_claim_bottom_sheet_test.dart`
 
@@ -271,7 +289,8 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
   - Test hiển thị bảng so sánh conflict và Radio chọn `KEEP_CLOUD` vs `USE_GUEST`.
   - Test `PopScope(canPop: false)`: chặn Back button khi claim đang pending.
   - Test primary CTA "Gộp vào tài khoản" kích hoạt `confirmClaim` kèm loading state.
-  - Test secondary CTA "Bỏ qua" kích hoạt `skipClaim`.
+  - Test secondary CTA "Bỏ qua" kích hoạt `skipClaim` khi ở phase `prepared`.
+  - Test nút "Bỏ qua" bị disable khi `isCommitting == true`.
   - Test error banner và nút Retry khi có lỗi mạng.
   - Test `GuestClaimListener`: tự động hiển thị modal khi `coordinator.isOpen == true`.
 
@@ -284,10 +303,9 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
     * Material 3 BottomSheet, responsive layout.
     * Bọc trong `PopScope(canPop: false)`.
     * Conflict selector component.
+    * Nút "Bỏ qua" bị disable khi `coordinator.isCommitting == true`.
   - Viết `apps/mobile/lib/features/claim/presentation/guest_claim_listener.dart`:
     * Lắng nghe `GuestClaimCoordinator` và gọi `showModalBottomSheet(isDismissible: false, enableDrag: false)`.
-  - Cập nhật `apps/mobile/lib/app/bootstrap.dart`:
-    * Tách biệt `bootstrapReady` khỏi `scopeResolved`. Không chờ `waitForResolvedScope()` khi đang có claim.
   - Cập nhật `apps/mobile/lib/app/app.dart`:
     * Bọc `GuestClaimListener` tại Root Shell.
 
@@ -306,7 +324,7 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 
 ### Task 6: Cross-Layer Acceptance Suite (12 Scenarios) & Full Regression
 
-**Mục tiêu:** Xây dựng bộ test tích hợp chéo tầng xác thực đầy đủ 12 kịch bản chấp nhận (AC-01 đến AC-12), bao gồm cả 4 blocker P0. Chạy full regression test suite cho toàn bộ ứng dụng Mobile bảo đảm 410+ tests PASS 100%.
+**Mục tiêu:** Xây dựng bộ test tích hợp chéo tầng xác thực đầy đủ 12 kịch bản chấp nhận (AC-01 đến AC-12), bao gồm cả 4 blocker P0 và các invariant crash recovery chuẩn xác (AC-06: crash sau SQLite commit trước `resolveToAccount`). Chạy full regression test suite cho toàn bộ ứng dụng Mobile bảo đảm 410+ tests PASS 100%.
 
 **Files:**
 - Create: `apps/mobile/test/features/claim/guest_claim_acceptance_test.dart`
@@ -317,16 +335,16 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 - [ ] **Step 1: Viết 12 kịch bản chấp nhận trong `guest_claim_acceptance_test.dart` (RED)**
   - AC-01: Login/Register thành công -> Scope giữ nguyên `TRANSITIONING`, `canMutateUserState == false`, không tự mở account.
   - AC-02: GoRouter chuyển hướng khỏi `/login` -> `GuestClaimBottomSheet` vẫn hiển thị ở Root Shell.
-  - AC-03: Cold start có pending claim -> Bootstrap không bị deadlock chờ scope.
-  - AC-04: Crash sau 200 COMMITTED -> Recovery đọc SQLite journal, rebind idempotent và dọn partition khách an toàn.
+  - AC-03: Cold start có pending claim -> Bootstrap không bị deadlock chờ scope (`bootstrapReady`).
+  - AC-04: Crash sau 200 COMMITTED -> Recovery đọc SQLite journal, nhận authoritative finalization, rebind idempotent và dọn partition khách an toàn.
   - AC-05: Crash giữa SQLite transaction -> Rollback toàn bộ, SQLite journal giữ nguyên để thử lại.
-  - AC-06: Crash sau SQLite commit nhưng trước khi xóa journal -> Rebind lại idempotent an toàn, xóa journal, mở ACCOUNT.
+  - AC-06: Crash sau SQLite commit nhưng trước `resolveToAccount()` -> Khởi động lại: SQLite đã có dữ liệu account, journal trống, guest partition đã xóa -> an toàn gọi `resolveToAccount(userId, generation)`.
   - AC-07: `KEEP_CLOUD` khi local chưa cache -> Ghi đúng `conflict.cloudProgress` (12 cột, integer milliseconds) vào account.
-  - AC-08: Server từ chối vì Tombstone -> Scoped reconciliation không tái sinh reading history/progress vào account cache.
+  - AC-08: Server từ chối vì Tombstone -> Scoped reconciliation loại trừ `tombstonedStoryIds`, không tái sinh reading history/progress vào account cache.
   - AC-09: `/auth/me` lỗi mạng khi đang có recovery context -> Không xem là logout, không rotate guest profile.
-  - AC-10: Account A có pending claim, sau đó login Account B -> Không merge chéo giữa hai tài khoản.
+  - AC-10: Account A có pending claim, sau đó login Account B -> Generation guard hủy stale callback cũ, không merge chéo giữa hai tài khoản.
   - AC-11: Thao tác claim không làm rách nát hay xóa tệp ngoại tuyến của khách.
-  - AC-12: User chọn Bỏ qua (Skip) -> Lưu marker quarantine vào SharedPreferences, giữ nguyên 100% partition SQLite của guest, mở ACCOUNT.
+  - AC-12: User chọn Bỏ qua (Skip) -> Chỉ cho phép khi ở phase `prepared`, lưu marker quarantine vào SharedPreferences, giữ nguyên 100% partition SQLite của guest, mở ACCOUNT.
 
 - [ ] **Step 2: Chạy test chấp nhận và xác nhận toàn bộ PASS (GREEN)**
   Lệnh: `flutter test test/features/claim/guest_claim_acceptance_test.dart`

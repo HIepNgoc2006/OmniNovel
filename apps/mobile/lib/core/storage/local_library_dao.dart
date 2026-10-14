@@ -406,18 +406,10 @@ class LocalLibraryDao {
 
       if (finalization == null) {
         // Invariant 2: Non-destructive Legacy Fallback
-        // Chỉ xóa bookmarks của sourceScope. Nếu có reading state, bảo toàn 100% partition và journal.
-        await txn.delete(
-          'local_library_bookmarks',
-          where: 'owner_scope = ?',
-          whereArgs: [sourceScope],
-        );
-
-        if (!hasSourceReadingState) {
-          // Không có reading state -> an toàn xóa journal record
-          await _deleteJournalRecord(txn, claimId, targetScope);
-        }
-
+        // Khi không có authoritative finalization, chỉ thực hiện additive merge bookmarks
+        // vào targetScope. TUYỆT ĐỐI KHÔNG XÓA bất kỳ bản ghi guest source nào (bookmarks,
+        // reading progress, reading history) và KHÔNG xóa recovery journal.
+        // Toàn bộ partition guest và recovery journal được bảo toàn 100%.
         if (onBeforeCommitHook != null) {
           await onBeforeCommitHook();
         }
@@ -426,6 +418,54 @@ class LocalLibraryDao {
 
       // 3. Authoritative Reconciliation (Phương án A)
       final tombstonedSet = finalization.tombstonedStoryIds.toSet();
+
+      // 3.0 Anti-resurrection: Xóa sạch progress và history trong targetScope cho các truyện bị tombstone
+      for (final tombstonedStoryId in tombstonedSet) {
+        await txn.delete(
+          'local_reading_progress',
+          where: 'owner_scope = ? AND story_id = ?',
+          whereArgs: [targetScope, tombstonedStoryId],
+        );
+        await txn.delete(
+          'local_reading_history',
+          where: 'owner_scope = ? AND story_id = ?',
+          whereArgs: [targetScope, tombstonedStoryId],
+        );
+      }
+
+      // 3.0.1 Negative cache reconciliation: Trong phạm vi các story có authoritative history snapshot,
+      // xóa mọi cache history cũ trong targetScope không còn tồn tại trong authoritative snapshot
+      final authoritativeChaptersByStory = <String, Set<String>>{};
+      for (final readState in finalization.finalizedChapterReadStates) {
+        if (!tombstonedSet.contains(readState.storyId)) {
+          authoritativeChaptersByStory
+              .putIfAbsent(readState.storyId, () => <String>{})
+              .add(readState.chapterId);
+        }
+      }
+
+      for (final entry in authoritativeChaptersByStory.entries) {
+        final storyId = entry.key;
+        final validChapterIds = entry.value;
+
+        final existingTargetHistory = await txn.query(
+          'local_reading_history',
+          columns: ['chapter_id'],
+          where: 'owner_scope = ? AND story_id = ?',
+          whereArgs: [targetScope, storyId],
+        );
+
+        for (final row in existingTargetHistory) {
+          final chId = row['chapter_id'] as String;
+          if (!validChapterIds.contains(chId)) {
+            await txn.delete(
+              'local_reading_history',
+              where: 'owner_scope = ? AND story_id = ? AND chapter_id = ?',
+              whereArgs: [targetScope, storyId, chId],
+            );
+          }
+        }
+      }
 
       // Invariant 3: Pre-validate và thu thập metadata lịch sử trước khi cập nhật
       // Thu thập metadata từ cả sourceScope và targetScope
@@ -553,8 +593,13 @@ class LocalLibraryDao {
         whereArgs: [sourceScope],
       );
 
-      // 5. Xóa Checkpoint Recovery Journal cho claimId với bảo vệ quyền sở hữu
-      await _deleteJournalRecord(txn, claimId, targetScope);
+      // 5. Xóa Checkpoint Recovery Journal cho claimId với bảo vệ quyền sở hữu đa chiều
+      await _deleteJournalRecord(
+        txn: txn,
+        claimId: claimId,
+        sourceScope: sourceScope,
+        targetScope: targetScope,
+      );
 
       // 6. Hook kiểm thử rollback atomic
       if (onBeforeCommitHook != null) {
@@ -563,15 +608,21 @@ class LocalLibraryDao {
     });
   }
 
-  /// Helper xóa bản ghi trong recovery journal với kiểm tra an toàn quyền sở hữu claimId & userId
-  Future<void> _deleteJournalRecord(
-    DatabaseExecutor txn,
-    String claimId,
-    String targetScope,
-  ) async {
+  /// Helper xóa bản ghi trong recovery journal với kiểm tra an toàn đa chiều:
+  /// Ràng buộc chính xác claimId, userId, guestProfileId và xác nhận phase hợp lệ trước khi finalization.
+  /// Nếu context không khớp, ném StateError để SQLite transaction rollback.
+  Future<void> _deleteJournalRecord({
+    required DatabaseExecutor txn,
+    required String claimId,
+    required String sourceScope,
+    required String targetScope,
+  }) async {
     final expectedUserId = targetScope.startsWith('account:')
         ? targetScope.substring('account:'.length)
         : targetScope;
+    final expectedGuestProfileId = sourceScope.startsWith('guest:')
+        ? sourceScope.substring('guest:'.length)
+        : sourceScope;
 
     final journalRows = await txn.query(
       'guest_claim_recovery_journal',
@@ -581,7 +632,11 @@ class LocalLibraryDao {
     );
 
     if (journalRows.isNotEmpty) {
-      final journalUserId = journalRows.first['user_id'] as String?;
+      final row = journalRows.first;
+      final journalUserId = row['user_id'] as String?;
+      final journalGuestId = row['guest_profile_id'] as String?;
+      final journalPhase = row['phase'] as String?;
+
       if (journalUserId != null &&
           journalUserId.isNotEmpty &&
           journalUserId != expectedUserId) {
@@ -589,12 +644,26 @@ class LocalLibraryDao {
           'Security guard: Recovery journal $claimId belongs to user $journalUserId, cannot be deleted by $expectedUserId',
         );
       }
-    }
 
-    await txn.delete(
-      'guest_claim_recovery_journal',
-      where: 'claim_id = ?',
-      whereArgs: [claimId],
-    );
+      if (journalGuestId != null &&
+          journalGuestId.isNotEmpty &&
+          journalGuestId != expectedGuestProfileId) {
+        throw StateError(
+          'Security guard: Recovery journal $claimId belongs to guest profile $journalGuestId, cannot be deleted by $expectedGuestProfileId',
+        );
+      }
+
+      if (journalPhase != 'committing' && journalPhase != 'committedServer') {
+        throw StateError(
+          'Security guard: Recovery journal $claimId is in invalid phase "$journalPhase" for finalization cleanup',
+        );
+      }
+
+      await txn.delete(
+        'guest_claim_recovery_journal',
+        where: 'claim_id = ? AND user_id = ? AND guest_profile_id = ?',
+        whereArgs: [claimId, expectedUserId, expectedGuestProfileId],
+      );
+    }
   }
 }

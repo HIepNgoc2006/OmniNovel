@@ -428,7 +428,7 @@ void main() {
       expect(remainingJournal, isNotEmpty);
     });
 
-    test('rebindScope should handle legacy claim with finalization == null safely (bookmark only)', () async {
+    test('rebindScope should handle legacy claim with finalization == null safely (bookmark additive merge, zero guest deletion)', () async {
       await dao.saveBookmark(LocalBookmark(
         ownerScope: guestScope,
         storyId: 'story-legacy',
@@ -443,15 +443,16 @@ void main() {
         finalization: null, // Legacy server without finalization_data
       );
 
-      // Bookmark merged into target
+      // Bookmark merged additively into target
       final targetBm = await dao.getBookmark(ownerScope: targetScope, storyId: 'story-legacy');
       expect(targetBm, isNotNull);
 
-      // Guest partition purged when only bookmarks existed
-      expect(await dao.hasGuestData(guestScope), isFalse);
+      // Guest partition remains untouched (zero destructive cleanup without authoritative finalization)
+      expect(await dao.hasGuestData(guestScope), isTrue);
+      expect(await dao.isBookmarked(ownerScope: guestScope, storyId: 'story-legacy'), isTrue);
     });
 
-    test('rebindScope should preserve guest reading progress, history and recovery journal when finalization == null (non-destructive legacy fallback)', () async {
+    test('rebindScope should preserve guest bookmarks, reading progress, history and recovery journal when finalization == null (100% non-destructive legacy fallback)', () async {
       // Seed guest bookmark, progress and history
       await dao.saveBookmark(LocalBookmark(
         ownerScope: guestScope,
@@ -505,9 +506,9 @@ void main() {
       final targetBm = await dao.getBookmark(ownerScope: targetScope, storyId: 'story-legacy-preserve');
       expect(targetBm, isNotNull);
 
-      // 2. Guest bookmark is removed
+      // 2. Guest bookmark is PRESERVED 100%
       final guestBm = await dao.getBookmark(ownerScope: guestScope, storyId: 'story-legacy-preserve');
-      expect(guestBm, isNull);
+      expect(guestBm, isNotNull);
 
       // 3. Guest reading progress and history are PRESERVED 100% (non-destructive)
       final guestProg = await dao.getProgress(ownerScope: guestScope, storyId: 'story-legacy-preserve');
@@ -528,6 +529,209 @@ void main() {
         whereArgs: [claimId],
       );
       expect(journalRows, isNotEmpty);
+    });
+
+    test('rebindScope should prune stale target cache within authoritative scope while preserving stories outside claim', () async {
+      // 1. Target cache has an old chapter for the story about to be claimed, AND another story outside claim
+      await dao.saveHistory(LocalReadingHistory(
+        ownerScope: targetScope,
+        storyId: 'story-reconcile',
+        chapterId: 'chap-stale-old',
+        storyTitle: 'Reconcile Story',
+        chapterNumber: '1',
+        progressPercentage: 100.0,
+        lastReadAt: DateTime.now().toUtc(),
+      ));
+
+      await dao.saveHistory(LocalReadingHistory(
+        ownerScope: targetScope,
+        storyId: 'story-outside-claim',
+        chapterId: 'chap-outside-1',
+        storyTitle: 'Outside Story',
+        chapterNumber: '1',
+        progressPercentage: 80.0,
+        lastReadAt: DateTime.now().toUtc(),
+      ));
+
+      // 2. Guest has new progress for story-reconcile
+      await dao.saveHistory(LocalReadingHistory(
+        ownerScope: guestScope,
+        storyId: 'story-reconcile',
+        chapterId: 'chap-authoritative-new',
+        storyTitle: 'Reconcile Story',
+        chapterNumber: '2',
+        progressPercentage: 90.0,
+        lastReadAt: DateTime.now().toUtc(),
+      ));
+
+      final db = offlineDb.database;
+      await db.insert('guest_claim_recovery_journal', {
+        'claim_id': claimId,
+        'user_id': 'user-uuid-5678',
+        'guest_profile_id': 'profile-uuid-1234',
+        'expected_state_fingerprint': 'f' * 64,
+        'conflict_decisions': '{}',
+        'phase': 'committedServer',
+        'preview_data': null,
+        'created_at': 1700000000000,
+        'updated_at': 1700000000000,
+      });
+
+      // 3. Authoritative finalization ONLY contains chap-authoritative-new for story-reconcile
+      final finalization = GuestClaimFinalizationData(
+        tombstonedStoryIds: [],
+        finalizedProgress: [],
+        finalizedChapterReadStates: [
+          ClaimFinalizedChapterReadStateItem(
+            storyId: 'story-reconcile',
+            chapterId: 'chap-authoritative-new',
+            chapterVersionId: 'ver-new',
+            progressPercentage: 90.0,
+            lastReadAt: '2026-10-14T12:00:00.000Z',
+          ),
+        ],
+      );
+
+      await dao.rebindScope(
+        sourceScope: guestScope,
+        targetScope: targetScope,
+        claimId: claimId,
+        finalization: finalization,
+      );
+
+      // Invariant: The authoritative chapter must be present in targetScope
+      final newHist = await dao.getHistoryItem(
+        ownerScope: targetScope,
+        storyId: 'story-reconcile',
+        chapterId: 'chap-authoritative-new',
+      );
+      expect(newHist, isNotNull);
+      expect(newHist!.progressPercentage, equals(90.0));
+
+      // Negative assertion: The stale chapter (within story-reconcile scope but absent from server snapshot) MUST BE PRUNED
+      final staleHist = await dao.getHistoryItem(
+        ownerScope: targetScope,
+        storyId: 'story-reconcile',
+        chapterId: 'chap-stale-old',
+      );
+      expect(staleHist, isNull);
+
+      // Safety assertion: The story outside claim scope MUST BE 100% PRESERVED
+      final outsideHist = await dao.getHistoryItem(
+        ownerScope: targetScope,
+        storyId: 'story-outside-claim',
+        chapterId: 'chap-outside-1',
+      );
+      expect(outsideHist, isNotNull);
+      expect(outsideHist!.progressPercentage, equals(80.0));
+    });
+
+    test('rebindScope should rollback and throw StateError on journal ownership or phase mismatch', () async {
+      final db = offlineDb.database;
+
+      // Seed guest bookmark
+      await dao.saveBookmark(LocalBookmark(
+        ownerScope: guestScope,
+        storyId: 'story-ownership-guard',
+        title: 'Ownership Guard Story',
+        createdAt: DateTime.now().toUtc(),
+      ));
+
+      // Case 1: Journal user_id mismatch
+      await db.insert('guest_claim_recovery_journal', {
+        'claim_id': 'claim-mismatch-user',
+        'user_id': 'other-user-9999',
+        'guest_profile_id': 'profile-uuid-1234',
+        'expected_state_fingerprint': '1' * 64,
+        'conflict_decisions': '{}',
+        'phase': 'committedServer',
+        'preview_data': null,
+        'created_at': 1700000000000,
+        'updated_at': 1700000000000,
+      });
+
+      await expectLater(
+        dao.rebindScope(
+          sourceScope: guestScope,
+          targetScope: targetScope,
+          claimId: 'claim-mismatch-user',
+          finalization: const GuestClaimFinalizationData(
+            tombstonedStoryIds: [],
+            finalizedProgress: [],
+            finalizedChapterReadStates: [],
+          ),
+        ),
+        throwsA(isA<StateError>().having(
+          (e) => e.message,
+          'message',
+          contains('belongs to user other-user-9999'),
+        )),
+      );
+
+      // Verify guest bookmark was not purged (rolled back)
+      expect(await dao.getBookmark(ownerScope: guestScope, storyId: 'story-ownership-guard'), isNotNull);
+
+      // Case 2: Journal guest_profile_id mismatch
+      await db.insert('guest_claim_recovery_journal', {
+        'claim_id': 'claim-mismatch-guest',
+        'user_id': 'user-uuid-5678',
+        'guest_profile_id': 'other-guest-8888',
+        'expected_state_fingerprint': '2' * 64,
+        'conflict_decisions': '{}',
+        'phase': 'committedServer',
+        'preview_data': null,
+        'created_at': 1700000000000,
+        'updated_at': 1700000000000,
+      });
+
+      await expectLater(
+        dao.rebindScope(
+          sourceScope: guestScope,
+          targetScope: targetScope,
+          claimId: 'claim-mismatch-guest',
+          finalization: const GuestClaimFinalizationData(
+            tombstonedStoryIds: [],
+            finalizedProgress: [],
+            finalizedChapterReadStates: [],
+          ),
+        ),
+        throwsA(isA<StateError>().having(
+          (e) => e.message,
+          'message',
+          contains('belongs to guest profile other-guest-8888'),
+        )),
+      );
+
+      // Case 3: Journal invalid phase (e.g., 'prepared' - not yet committed)
+      await db.insert('guest_claim_recovery_journal', {
+        'claim_id': 'claim-invalid-phase',
+        'user_id': 'user-uuid-5678',
+        'guest_profile_id': 'profile-uuid-1234',
+        'expected_state_fingerprint': '3' * 64,
+        'conflict_decisions': '{}',
+        'phase': 'prepared',
+        'preview_data': null,
+        'created_at': 1700000000000,
+        'updated_at': 1700000000000,
+      });
+
+      await expectLater(
+        dao.rebindScope(
+          sourceScope: guestScope,
+          targetScope: targetScope,
+          claimId: 'claim-invalid-phase',
+          finalization: const GuestClaimFinalizationData(
+            tombstonedStoryIds: [],
+            finalizedProgress: [],
+            finalizedChapterReadStates: [],
+          ),
+        ),
+        throwsA(isA<StateError>().having(
+          (e) => e.message,
+          'message',
+          contains('is in invalid phase "prepared"'),
+        )),
+      );
     });
   });
 }

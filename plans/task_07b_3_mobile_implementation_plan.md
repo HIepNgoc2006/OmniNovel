@@ -187,29 +187,30 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
   Lệnh: `flutter test test/core/storage/local_library_dao_rebind_test.dart`
   Kết quả: FAIL như mong đợi (thiếu `hasGuestData`, `getClaimedStoryIds`, `rebindScope` trên `LocalLibraryDao`). Đã xác nhận trạng thái RED chuẩn xác.
 
-- [x] **Step 3: Triển khai mã nguồn Task 2 (GREEN)**
+- [x] **Step 3: Triển khai mã nguồn Task 2 (GREEN & Review Gate Hardening)**
   - Trong `local_library_dao.dart`:
     * Thêm `Future<bool> hasGuestData(String ownerScope)`.
     * Thêm `Future<Set<String>> getClaimedStoryIds(String ownerScope)`.
     * Thêm `Future<void> rebindScope({...})`:
       - Chạy trong `_db.transaction((txn) async { ... })`.
       - 1. Bookmarks: Additive merge `INSERT OR IGNORE` (KHÔNG lọc theo tombstone).
-      - 2. Legacy fallback an toàn: Nếu `finalization == null`, chỉ rebind bookmarks và bảo toàn 100% reading state + journal để coordinator quyết định.
-      - 3. History: Pre-validate metadata từ source/target, ném `StateError` fail-closed nếu thiếu; Reconcile theo `finalizedChapterReadStates` (loại trừ `tombstonedStoryIds`).
-      - 4. Reading progress: Reconcile theo `finalizedReadingProgress` với đầy đủ 12 cột NOT NULL (`device_timestamp`, `updated_at` chuẩn hóa).
-      - 5. Purge sạch 3 bảng của `sourceScope`.
-      - 6. Xóa checkpoint tương ứng trong `guest_claim_recovery_journal` với bảo vệ đối chiếu `user_id`.
+      - 2. Legacy fallback an toàn (Review Gate Amendment P0): Nếu `finalization == null`, chỉ rebind bookmarks additively và bảo toàn 100% mọi dữ liệu partition khách (bookmarks, progress, history) và recovery journal để coordinator quyết định; tuyệt đối không xóa bất kỳ bản ghi nào của khách.
+      - 3. Negative cache reconciliation (Review Gate Amendment P1): Trong phạm vi các story có authoritative history snapshot, xóa sạch mọi chapter history cũ trong targetScope không còn tồn tại trong snapshot; bảo toàn 100% các story ngoài phạm vi claim.
+      - 4. History: Pre-validate metadata từ source/target, ném `StateError` fail-closed nếu thiếu; Reconcile theo `finalizedChapterReadStates` (loại trừ `tombstonedStoryIds`).
+      - 5. Reading progress: Reconcile theo `finalizedReadingProgress` với đầy đủ 12 cột NOT NULL (`device_timestamp`, `updated_at` chuẩn hóa).
+      - 6. Purge sạch 3 bảng của `sourceScope`.
+      - 7. Xóa checkpoint tương ứng trong `guest_claim_recovery_journal` với bảo vệ đối chiếu đa chiều (Review Gate Amendment P0): Ràng buộc chính xác `claim_id`, `user_id`, `guest_profile_id` và xác nhận phase hợp lệ (`committing`, `committedServer`) trước khi xóa; rollback transaction nếu context không khớp.
 
 - [x] **Step 4: Chạy test và xác nhận vượt qua (Green)**
-  Lệnh: `flutter test test/core/storage/local_library_dao_rebind_test.dart`
-  Kết quả: Toàn bộ 8/8 tests PASS 100% (bao gồm round-trip 12 cột, authoritative override, anti-resurrection, atomic rollback, security journal delete guard, legacy non-destructive fallback).
+  - Lệnh: `flutter test test/core/storage/local_library_dao_rebind_test.dart`
+  - Kết quả: Toàn bộ 10/10 tests PASS 100% (bao gồm round-trip 12 cột, authoritative override, anti-resurrection, atomic rollback, multi-dimensional security journal delete guard, legacy non-destructive fallback, negative cache reconciliation).
 
 - [x] **Step 5: Chạy regression tests toàn bộ Core Storage & Mobile**
-  Lệnh: `flutter test test/core/storage/` -> 18/18 tests PASS 100%.
-  Lệnh: `flutter test` -> 426/426 tests PASS 100% (0 errors).
+  - Lệnh: `flutter test test/core/storage/` -> 19/19 tests PASS 100%.
+  - Lệnh: `flutter test` -> 428/428 tests PASS 100% (0 errors).
 
-- [x] **Step 6: Commit mã nguồn Task 2**
-  Lệnh: `git add apps/mobile/lib/core/storage/local_library_dao.dart apps/mobile/test/core/storage/local_library_dao_rebind_test.dart plans/task_07b_3_mobile_implementation_plan.md && git commit -m "feat(mobile): complete Task 2 GREEN with 12-column rebindScope, authoritative snapshot reconciliation, and non-destructive legacy fallback"`
+- [x] **Step 6: Commit mã nguồn Task 2 Hardening**
+  - Lệnh: `git add apps/mobile/lib/core/storage/local_library_dao.dart apps/mobile/test/core/storage/local_library_dao_rebind_test.dart plans/task_07b_3_mobile_implementation_plan.md && git commit -m "fix(mobile): resolve Task 2 review gate conditions with non-destructive fallback, multi-field journal verification, and negative reconciliation"`
 
 ---
 

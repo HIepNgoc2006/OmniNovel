@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:sqflite/sqflite.dart';
+import '../claim/models/guest_claim_models.dart';
 import 'local_library_models.dart';
 import 'offline_database.dart';
 
@@ -290,5 +291,310 @@ class LocalLibraryDao {
         await onBeforeCommitHook();
       }
     });
+  }
+
+  // ==================== GUEST CLAIM REBIND & RECONCILIATION ====================
+
+  /// Kiểm tra xem partition của `ownerScope` có bất kỳ dữ liệu nào không (bookmarks, progress, history).
+  /// Fail-closed: ném lỗi nếu truy vấn database thất bại.
+  Future<bool> hasGuestData(String ownerScope) async {
+    final bookmarksCount = Sqflite.firstIntValue(await _db.rawQuery(
+      'SELECT COUNT(*) FROM local_library_bookmarks WHERE owner_scope = ?',
+      [ownerScope],
+    )) ?? 0;
+    if (bookmarksCount > 0) return true;
+
+    final progressCount = Sqflite.firstIntValue(await _db.rawQuery(
+      'SELECT COUNT(*) FROM local_reading_progress WHERE owner_scope = ?',
+      [ownerScope],
+    )) ?? 0;
+    if (progressCount > 0) return true;
+
+    final historyCount = Sqflite.firstIntValue(await _db.rawQuery(
+      'SELECT COUNT(*) FROM local_reading_history WHERE owner_scope = ?',
+      [ownerScope],
+    )) ?? 0;
+    return historyCount > 0;
+  }
+
+  /// Trích xuất tập hợp distinct story_id từ cả 3 bảng của `ownerScope`.
+  Future<Set<String>> getClaimedStoryIds(String ownerScope) async {
+    final storyIds = <String>{};
+
+    final bmRows = await _db.rawQuery(
+      'SELECT DISTINCT story_id FROM local_library_bookmarks WHERE owner_scope = ?',
+      [ownerScope],
+    );
+    for (final row in bmRows) {
+      final id = row['story_id'] as String?;
+      if (id != null && id.isNotEmpty) storyIds.add(id);
+    }
+
+    final progRows = await _db.rawQuery(
+      'SELECT DISTINCT story_id FROM local_reading_progress WHERE owner_scope = ?',
+      [ownerScope],
+    );
+    for (final row in progRows) {
+      final id = row['story_id'] as String?;
+      if (id != null && id.isNotEmpty) storyIds.add(id);
+    }
+
+    final histRows = await _db.rawQuery(
+      'SELECT DISTINCT story_id FROM local_reading_history WHERE owner_scope = ?',
+      [ownerScope],
+    );
+    for (final row in histRows) {
+      final id = row['story_id'] as String?;
+      if (id != null && id.isNotEmpty) storyIds.add(id);
+    }
+
+    return storyIds;
+  }
+
+  /// Rebind dữ liệu từ `sourceScope` sang `targetScope` và áp dụng Authoritative Finalization Snapshot.
+  ///
+  /// Thực thi toàn bộ trong một Transaction nguyên tử:
+  /// 1. Bookmarks: Additive merge (INSERT OR IGNORE) vào targetScope, không bị lọc bởi tombstone.
+  /// 2. Authoritative Snapshot Reconciliation:
+  ///    - Nếu `finalization != null`:
+  ///      * Lọc bỏ truyện trong `finalization.tombstonedStoryIds` (anti-resurrection).
+  ///      * Ghép và validate metadata lịch sử từ bản ghi nguồn/đích trước khi cập nhật.
+  ///      * Ghi đè authoritative progress (12 cột đầy đủ) và chapter read state vào targetScope.
+  ///    - Nếu `finalization == null`:
+  ///      * Fallback an toàn không phá hủy dữ liệu (non-destructive): merge bookmarks, nhưng bảo toàn
+  ///        reading progress/history của khách và giữ journal record nếu có reading state chưa reconcile.
+  /// 3. Purge dữ liệu sourceScope và xóa bản ghi `guest_claim_recovery_journal` tương ứng.
+  /// 4. Atomic Rollback: Nếu bất kỳ bước nào lỗi (hoặc [onBeforeCommitHook] throw), toàn bộ transaction rollback.
+  Future<void> rebindScope({
+    required String sourceScope,
+    required String targetScope,
+    required String claimId,
+    GuestClaimFinalizationData? finalization,
+    Future<void> Function()? onBeforeCommitHook,
+  }) async {
+    await _db.transaction((txn) async {
+      // 1. Bookmarks Additive Merge (INSERT OR IGNORE vào targetScope)
+      final sourceBookmarks = await txn.query(
+        'local_library_bookmarks',
+        where: 'owner_scope = ?',
+        whereArgs: [sourceScope],
+      );
+
+      for (final bmRow in sourceBookmarks) {
+        final targetBm = Map<String, dynamic>.from(bmRow);
+        targetBm['owner_scope'] = targetScope;
+        await txn.insert(
+          'local_library_bookmarks',
+          targetBm,
+          conflictAlgorithm: ConflictAlgorithm.ignore,
+        );
+      }
+
+      // 2. Kiểm tra xem sourceScope có reading progress / history không
+      final sourceProgressCount = Sqflite.firstIntValue(await txn.rawQuery(
+            'SELECT COUNT(*) FROM local_reading_progress WHERE owner_scope = ?',
+            [sourceScope],
+          )) ??
+          0;
+      final sourceHistoryCount = Sqflite.firstIntValue(await txn.rawQuery(
+            'SELECT COUNT(*) FROM local_reading_history WHERE owner_scope = ?',
+            [sourceScope],
+          )) ??
+          0;
+      final hasSourceReadingState =
+          sourceProgressCount > 0 || sourceHistoryCount > 0;
+
+      if (finalization == null) {
+        // Invariant 2: Non-destructive Legacy Fallback
+        // Chỉ xóa bookmarks của sourceScope. Nếu có reading state, bảo toàn 100% partition và journal.
+        await txn.delete(
+          'local_library_bookmarks',
+          where: 'owner_scope = ?',
+          whereArgs: [sourceScope],
+        );
+
+        if (!hasSourceReadingState) {
+          // Không có reading state -> an toàn xóa journal record
+          await _deleteJournalRecord(txn, claimId, targetScope);
+        }
+
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook();
+        }
+        return;
+      }
+
+      // 3. Authoritative Reconciliation (Phương án A)
+      final tombstonedSet = finalization.tombstonedStoryIds.toSet();
+
+      // Invariant 3: Pre-validate và thu thập metadata lịch sử trước khi cập nhật
+      // Thu thập metadata từ cả sourceScope và targetScope
+      final existingHistoryRows = await txn.query(
+        'local_reading_history',
+        where: 'owner_scope = ? OR owner_scope = ?',
+        whereArgs: [sourceScope, targetScope],
+      );
+
+      // Map (storyId, chapterId) -> row
+      final exactHistoryMap = <String, Map<String, dynamic>>{};
+      // Map storyId -> row (dùng để fallback metadata truyện khi chapter mới)
+      final storyMetadataMap = <String, Map<String, dynamic>>{};
+
+      for (final row in existingHistoryRows) {
+        final sId = row['story_id'] as String;
+        final cId = row['chapter_id'] as String;
+        exactHistoryMap['$sId:$cId'] = row;
+        storyMetadataMap.putIfAbsent(sId, () => row);
+      }
+
+      // 3.1 Reconcile Reading History (Authoritative)
+      for (final readState in finalization.finalizedChapterReadStates) {
+        if (tombstonedSet.contains(readState.storyId)) {
+          continue; // Anti-resurrection: loại trừ truyện bị tombstone
+        }
+
+        final exactMeta = exactHistoryMap['${readState.storyId}:${readState.chapterId}'];
+        final storyMeta = storyMetadataMap[readState.storyId];
+
+        final storyTitle = (exactMeta?['story_title'] ?? storyMeta?['story_title']) as String?;
+        final chapterNumber = (exactMeta?['chapter_number'] ?? storyMeta?['chapter_number']) as String?;
+
+        if (storyTitle == null || chapterNumber == null) {
+          throw StateError(
+            'Missing required metadata for story ${readState.storyId}, chapter ${readState.chapterId}',
+          );
+        }
+
+        final storySlug = (exactMeta?['story_slug'] ?? storyMeta?['story_slug']) as String?;
+        final storyCoverUrl = (exactMeta?['story_cover_url'] ?? storyMeta?['story_cover_url']) as String?;
+        final chapterTitle = exactMeta?['chapter_title'] as String?;
+
+        DateTime lastReadAt;
+        try {
+          lastReadAt = DateTime.parse(readState.lastReadAt).toUtc();
+        } catch (_) {
+          lastReadAt = DateTime.now().toUtc();
+        }
+
+        final historyItem = LocalReadingHistory(
+          ownerScope: targetScope,
+          storyId: readState.storyId,
+          chapterId: readState.chapterId,
+          chapterVersionId: readState.chapterVersionId,
+          storyTitle: storyTitle,
+          storySlug: storySlug,
+          storyCoverUrl: storyCoverUrl,
+          chapterNumber: chapterNumber,
+          chapterTitle: chapterTitle,
+          progressPercentage: readState.progressPercentage,
+          lastReadAt: lastReadAt,
+        );
+
+        await txn.insert(
+          'local_reading_history',
+          historyItem.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+
+      // 3.2 Reconcile Reading Progress (Authoritative - Đầy đủ 12 cột NOT NULL)
+      for (final prog in finalization.finalizedProgress) {
+        if (tombstonedSet.contains(prog.storyId)) {
+          continue; // Anti-resurrection
+        }
+
+        DateTime updatedAt;
+        try {
+          updatedAt = DateTime.parse(prog.updatedAt).toUtc();
+        } catch (_) {
+          updatedAt = DateTime.now().toUtc();
+        }
+
+        final deviceTimestamp = prog.deviceTimestamp != null
+            ? DateTime.fromMillisecondsSinceEpoch(prog.deviceTimestamp!, isUtc: true)
+            : updatedAt;
+
+        final targetProg = LocalReadingProgress(
+          ownerScope: targetScope,
+          storyId: prog.storyId,
+          chapterId: prog.chapterId,
+          chapterVersionId: prog.chapterVersionId,
+          readingMode: prog.readingMode.value,
+          progressPercentage: prog.progressPercentage,
+          scrollPosition: prog.scrollPosition,
+          pageIndex: prog.pageIndex >= 1 ? prog.pageIndex : 1,
+          anchorBlockId: prog.anchorBlockId,
+          textOffset: prog.textOffset,
+          updatedAt: updatedAt,
+          deviceTimestamp: deviceTimestamp,
+        );
+
+        await txn.insert(
+          'local_reading_progress',
+          targetProg.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+
+      // 4. Purge Partition Khách (sourceScope)
+      await txn.delete(
+        'local_library_bookmarks',
+        where: 'owner_scope = ?',
+        whereArgs: [sourceScope],
+      );
+      await txn.delete(
+        'local_reading_progress',
+        where: 'owner_scope = ?',
+        whereArgs: [sourceScope],
+      );
+      await txn.delete(
+        'local_reading_history',
+        where: 'owner_scope = ?',
+        whereArgs: [sourceScope],
+      );
+
+      // 5. Xóa Checkpoint Recovery Journal cho claimId với bảo vệ quyền sở hữu
+      await _deleteJournalRecord(txn, claimId, targetScope);
+
+      // 6. Hook kiểm thử rollback atomic
+      if (onBeforeCommitHook != null) {
+        await onBeforeCommitHook();
+      }
+    });
+  }
+
+  /// Helper xóa bản ghi trong recovery journal với kiểm tra an toàn quyền sở hữu claimId & userId
+  Future<void> _deleteJournalRecord(
+    DatabaseExecutor txn,
+    String claimId,
+    String targetScope,
+  ) async {
+    final expectedUserId = targetScope.startsWith('account:')
+        ? targetScope.substring('account:'.length)
+        : targetScope;
+
+    final journalRows = await txn.query(
+      'guest_claim_recovery_journal',
+      where: 'claim_id = ?',
+      whereArgs: [claimId],
+      limit: 1,
+    );
+
+    if (journalRows.isNotEmpty) {
+      final journalUserId = journalRows.first['user_id'] as String?;
+      if (journalUserId != null &&
+          journalUserId.isNotEmpty &&
+          journalUserId != expectedUserId) {
+        throw StateError(
+          'Security guard: Recovery journal $claimId belongs to user $journalUserId, cannot be deleted by $expectedUserId',
+        );
+      }
+    }
+
+    await txn.delete(
+      'guest_claim_recovery_journal',
+      where: 'claim_id = ?',
+      whereArgs: [claimId],
+    );
   }
 }

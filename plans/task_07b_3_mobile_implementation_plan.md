@@ -187,28 +187,29 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
   Lệnh: `flutter test test/core/storage/local_library_dao_rebind_test.dart`
   Kết quả: FAIL như mong đợi (thiếu `hasGuestData`, `getClaimedStoryIds`, `rebindScope` trên `LocalLibraryDao`). Đã xác nhận trạng thái RED chuẩn xác.
 
-- [ ] **Step 3: Triển khai mã nguồn Task 2 (GREEN)**
+- [x] **Step 3: Triển khai mã nguồn Task 2 (GREEN)**
   - Trong `local_library_dao.dart`:
     * Thêm `Future<bool> hasGuestData(String ownerScope)`.
     * Thêm `Future<Set<String>> getClaimedStoryIds(String ownerScope)`.
     * Thêm `Future<void> rebindScope({...})`:
       - Chạy trong `_db.transaction((txn) async { ... })`.
       - 1. Bookmarks: Additive merge `INSERT OR IGNORE` (KHÔNG lọc theo tombstone).
-      - 2. History: Reconcile theo `finalizedChapterReadStates` (loại trừ `tombstonedStoryIds`), ghép metadata từ guest history map (fail-closed nếu thiếu).
-      - 3. Reading progress conflicts & non-conflicts: Reconcile theo `finalizedReadingProgress` với đầy đủ 12 cột NOT NULL.
-      - 4. Purge sạch 3 bảng của `sourceScope`.
-      - 5. Xóa checkpoint tương ứng trong `guest_claim_recovery_journal`.
+      - 2. Legacy fallback an toàn: Nếu `finalization == null`, chỉ rebind bookmarks và bảo toàn 100% reading state + journal để coordinator quyết định.
+      - 3. History: Pre-validate metadata từ source/target, ném `StateError` fail-closed nếu thiếu; Reconcile theo `finalizedChapterReadStates` (loại trừ `tombstonedStoryIds`).
+      - 4. Reading progress: Reconcile theo `finalizedReadingProgress` với đầy đủ 12 cột NOT NULL (`device_timestamp`, `updated_at` chuẩn hóa).
+      - 5. Purge sạch 3 bảng của `sourceScope`.
+      - 6. Xóa checkpoint tương ứng trong `guest_claim_recovery_journal` với bảo vệ đối chiếu `user_id`.
 
-- [ ] **Step 4: Chạy test và xác nhận vượt qua (Green)**
+- [x] **Step 4: Chạy test và xác nhận vượt qua (Green)**
   Lệnh: `flutter test test/core/storage/local_library_dao_rebind_test.dart`
-  Kỳ vọng: Toàn bộ tests PASS 100%.
+  Kết quả: Toàn bộ 8/8 tests PASS 100% (bao gồm round-trip 12 cột, authoritative override, anti-resurrection, atomic rollback, security journal delete guard, legacy non-destructive fallback).
 
-- [ ] **Step 5: Chạy regression tests toàn bộ Core Storage**
-  Lệnh: `flutter test test/core/storage/`
-  Kỳ vọng: Toàn bộ tests PASS 100%.
+- [x] **Step 5: Chạy regression tests toàn bộ Core Storage & Mobile**
+  Lệnh: `flutter test test/core/storage/` -> 18/18 tests PASS 100%.
+  Lệnh: `flutter test` -> 426/426 tests PASS 100% (0 errors).
 
-- [ ] **Step 6: Commit mã nguồn Task 2**
-  Lệnh: `git add apps/mobile/lib/core/storage/local_library_dao.dart apps/mobile/test/core/storage/ && git commit -m "feat(mobile): implement 12-column SQLite rebindScope with authoritative reconciliation and atomic purge"`
+- [x] **Step 6: Commit mã nguồn Task 2**
+  Lệnh: `git add apps/mobile/lib/core/storage/local_library_dao.dart apps/mobile/test/core/storage/local_library_dao_rebind_test.dart plans/task_07b_3_mobile_implementation_plan.md && git commit -m "feat(mobile): complete Task 2 GREEN with 12-column rebindScope, authoritative snapshot reconciliation, and non-destructive legacy fallback"`
 
 ---
 

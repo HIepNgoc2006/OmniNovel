@@ -49,7 +49,7 @@ void main() {
     } catch (_) {}
   });
 
-  group('Task 2: LocalLibraryDao Rebind & Authoritative Reconciliation (TDD RED)', () {
+  group('Task 2: LocalLibraryDao Rebind & Authoritative Reconciliation (Task 2 GREEN)', () {
     test('hasGuestData should return true when any guest table has data and false when empty', () async {
       // 1. Initially empty
       expect(await dao.hasGuestData(guestScope), isFalse);
@@ -428,7 +428,7 @@ void main() {
       expect(remainingJournal, isNotEmpty);
     });
 
-    test('rebindScope should handle legacy claim with finalization == null safely', () async {
+    test('rebindScope should handle legacy claim with finalization == null safely (bookmark only)', () async {
       await dao.saveBookmark(LocalBookmark(
         ownerScope: guestScope,
         storyId: 'story-legacy',
@@ -447,8 +447,87 @@ void main() {
       final targetBm = await dao.getBookmark(ownerScope: targetScope, storyId: 'story-legacy');
       expect(targetBm, isNotNull);
 
-      // Guest partition purged
+      // Guest partition purged when only bookmarks existed
       expect(await dao.hasGuestData(guestScope), isFalse);
+    });
+
+    test('rebindScope should preserve guest reading progress, history and recovery journal when finalization == null (non-destructive legacy fallback)', () async {
+      // Seed guest bookmark, progress and history
+      await dao.saveBookmark(LocalBookmark(
+        ownerScope: guestScope,
+        storyId: 'story-legacy-preserve',
+        title: 'Legacy Preserve Story',
+        createdAt: DateTime.now().toUtc(),
+      ));
+
+      await dao.saveProgress(LocalReadingProgress(
+        ownerScope: guestScope,
+        storyId: 'story-legacy-preserve',
+        chapterId: 'chap-1',
+        progressPercentage: 50.0,
+        scrollPosition: 100.0,
+        updatedAt: DateTime.now().toUtc(),
+        deviceTimestamp: DateTime.now().toUtc(),
+      ));
+
+      await dao.saveHistory(LocalReadingHistory(
+        ownerScope: guestScope,
+        storyId: 'story-legacy-preserve',
+        chapterId: 'chap-1',
+        storyTitle: 'Legacy Preserve Story',
+        chapterNumber: '1',
+        progressPercentage: 50.0,
+        lastReadAt: DateTime.now().toUtc(),
+      ));
+
+      final db = offlineDb.database;
+      await db.insert('guest_claim_recovery_journal', {
+        'claim_id': claimId,
+        'user_id': 'user-uuid-5678',
+        'guest_profile_id': 'profile-uuid-1234',
+        'expected_state_fingerprint': 'e' * 64,
+        'conflict_decisions': '{}',
+        'phase': 'committing',
+        'preview_data': null,
+        'created_at': 1700000000000,
+        'updated_at': 1700000000000,
+      });
+
+      // Call rebindScope with finalization == null
+      await dao.rebindScope(
+        sourceScope: guestScope,
+        targetScope: targetScope,
+        claimId: claimId,
+        finalization: null,
+      );
+
+      // 1. Bookmark is merged into target
+      final targetBm = await dao.getBookmark(ownerScope: targetScope, storyId: 'story-legacy-preserve');
+      expect(targetBm, isNotNull);
+
+      // 2. Guest bookmark is removed
+      final guestBm = await dao.getBookmark(ownerScope: guestScope, storyId: 'story-legacy-preserve');
+      expect(guestBm, isNull);
+
+      // 3. Guest reading progress and history are PRESERVED 100% (non-destructive)
+      final guestProg = await dao.getProgress(ownerScope: guestScope, storyId: 'story-legacy-preserve');
+      expect(guestProg, isNotNull);
+      expect(guestProg!.progressPercentage, equals(50.0));
+
+      final guestHist = await dao.getHistoryItem(
+        ownerScope: guestScope,
+        storyId: 'story-legacy-preserve',
+        chapterId: 'chap-1',
+      );
+      expect(guestHist, isNotNull);
+
+      // 4. Recovery journal is PRESERVED so coordinator can safely inspect/retry
+      final journalRows = await db.query(
+        'guest_claim_recovery_journal',
+        where: 'claim_id = ?',
+        whereArgs: [claimId],
+      );
+      expect(journalRows, isNotEmpty);
     });
   });
 }

@@ -565,6 +565,15 @@ void main() {
         title: 'Claim Story 1',
         createdAt: DateTime.now().toUtc(),
       ));
+      await dao.saveHistory(LocalReadingHistory(
+        ownerScope: 'guest:$testGuestProfileId',
+        storyId: 'story-claim-1',
+        chapterId: 'chap-1',
+        storyTitle: 'Claim Story 1',
+        chapterNumber: '1',
+        progressPercentage: 50.0,
+        lastReadAt: DateTime.now().toUtc(),
+      ));
 
       await offlineDb.database.insert('guest_claim_recovery_journal', {
         'claim_id': testClaimId,
@@ -670,6 +679,382 @@ void main() {
       // Retains transitioning fail-closed
       expect(fakeBridge.resolveCalls, isEmpty);
       expect(fakeBridge.pendingUnavailableCalls.length, equals(1));
+    });
+
+    test('13. HTTP commit timeout, server actually COMMITTED -> GET /status recovers, rebinds, and resolves without blind retry', () async {
+      await dao.saveBookmark(LocalBookmark(
+        ownerScope: 'guest:$testGuestProfileId',
+        storyId: 'story-claim-1',
+        title: 'Claim Story 1',
+        createdAt: DateTime.now().toUtc(),
+      ));
+      await dao.saveHistory(LocalReadingHistory(
+        ownerScope: 'guest:$testGuestProfileId',
+        storyId: 'story-claim-1',
+        chapterId: 'chap-1',
+        storyTitle: 'Claim Story 1',
+        chapterNumber: '1',
+        progressPercentage: 50.0,
+        lastReadAt: DateTime.now().toUtc(),
+      ));
+
+      await offlineDb.database.insert('guest_claim_recovery_journal', {
+        'claim_id': testClaimId,
+        'user_id': testUserId,
+        'guest_profile_id': testGuestProfileId,
+        'expected_state_fingerprint': testFingerprint,
+        'conflict_decisions': '{}',
+        'phase': 'prepared',
+        'preview_data': jsonEncode(standardPreviewJson),
+        'created_at': 1700000000000,
+        'updated_at': 1700000000000,
+      });
+
+      // POST /commit throws Timeout exception
+      when(() => mockApiClient.post<Map<String, dynamic>>(
+            ApiEndpoints.guestClaimCommit(testClaimId),
+            data: any(named: 'data'),
+          )).thenThrow(DioException(
+        requestOptions: RequestOptions(path: ApiEndpoints.guestClaimCommit(testClaimId)),
+        type: DioExceptionType.connectionTimeout,
+        error: 'Connection timeout during commit',
+      ));
+
+      // But subsequent GET /status discovers server actually COMMITTED!
+      when(() => mockApiClient.get<Map<String, dynamic>>(
+            ApiEndpoints.guestClaimStatus(testClaimId),
+          )).thenAnswer((_) async => Response(
+            requestOptions: RequestOptions(path: ApiEndpoints.guestClaimStatus(testClaimId)),
+            statusCode: 200,
+            data: {
+              'claimId': testClaimId,
+              'status': 'COMMITTED',
+              'expiresAt': '2026-10-15T12:00:00.000Z',
+              'committedAt': '2026-10-14T12:00:00.000Z',
+              'previewData': standardPreviewJson,
+              'resultSummary': standardCommitJson['summary'],
+              'finalization': standardCommitJson['finalization'],
+            },
+          ));
+
+      final coordinator = createCoordinator();
+      coordinator.currentClaimId = testClaimId;
+      coordinator.currentUserId = testUserId;
+      coordinator.isOpen = true;
+      coordinator.previewData = GuestClaimPreviewResult.fromJson(standardPreviewJson);
+
+      await coordinator.confirmClaim(testUserId, {});
+
+      // Invariant: Resolved via status check recovery without blind retry
+      expect(coordinator.isOpen, isFalse);
+      expect(fakeBridge.resolveCalls.length, equals(1));
+      expect(fakeBridge.resolveCalls.first['userId'], equals(testUserId));
+
+      // Guest partition purged and journal deleted
+      expect(await dao.hasGuestData('guest:$testGuestProfileId'), isFalse);
+      expect(await offlineDb.database.query('guest_claim_recovery_journal'), isEmpty);
+    });
+
+    test('14. HTTP commit timeout, status unavailable -> keeps phase committing, skipClaim is strictly blocked', () async {
+      await offlineDb.database.insert('guest_claim_recovery_journal', {
+        'claim_id': testClaimId,
+        'user_id': testUserId,
+        'guest_profile_id': testGuestProfileId,
+        'expected_state_fingerprint': testFingerprint,
+        'conflict_decisions': '{}',
+        'phase': 'prepared',
+        'preview_data': jsonEncode(standardPreviewJson),
+        'created_at': 1700000000000,
+        'updated_at': 1700000000000,
+      });
+
+      when(() => mockApiClient.post<Map<String, dynamic>>(
+            ApiEndpoints.guestClaimCommit(testClaimId),
+            data: any(named: 'data'),
+          )).thenThrow(DioException(
+        requestOptions: RequestOptions(path: ApiEndpoints.guestClaimCommit(testClaimId)),
+        type: DioExceptionType.connectionTimeout,
+        error: 'Connection timeout during commit',
+      ));
+
+      when(() => mockApiClient.get<Map<String, dynamic>>(
+            ApiEndpoints.guestClaimStatus(testClaimId),
+          )).thenThrow(DioException(
+        requestOptions: RequestOptions(path: ApiEndpoints.guestClaimStatus(testClaimId)),
+        error: 'Network unreachable',
+      ));
+
+      final coordinator = createCoordinator();
+      coordinator.currentClaimId = testClaimId;
+      coordinator.currentUserId = testUserId;
+      coordinator.isOpen = true;
+      coordinator.previewData = GuestClaimPreviewResult.fromJson(standardPreviewJson);
+
+      await coordinator.confirmClaim(testUserId, {});
+
+      // Verify journal remains in 'committing' phase
+      final journalRows = await offlineDb.database.query(
+        'guest_claim_recovery_journal',
+        where: 'claim_id = ?',
+        whereArgs: [testClaimId],
+      );
+      expect(journalRows.length, equals(1));
+      expect(journalRows.first['phase'], equals('committing'));
+
+      // Invariant: Attempting to skip when commit is in indeterminate state throws StateError
+      await expectLater(
+        coordinator.skipClaim(testUserId),
+        throwsA(isA<StateError>().having(
+          (e) => e.message,
+          'message',
+          contains('Cannot skip claim once commit has started'),
+        )),
+      );
+
+      // Account must not be resolved
+      expect(fakeBridge.resolveCalls, isEmpty);
+      expect(fakeBridge.pendingUnavailableCalls.length, equals(1));
+    });
+
+    test('15. Server COMMITTED, finalization == null -> does NOT purge guest or delete journal, keeps transitioning for recovery', () async {
+      await dao.saveBookmark(LocalBookmark(
+        ownerScope: 'guest:$testGuestProfileId',
+        storyId: 'story-claim-1',
+        title: 'Claim Story 1',
+        createdAt: DateTime.now().toUtc(),
+      ));
+
+      await offlineDb.database.insert('guest_claim_recovery_journal', {
+        'claim_id': testClaimId,
+        'user_id': testUserId,
+        'guest_profile_id': testGuestProfileId,
+        'expected_state_fingerprint': testFingerprint,
+        'conflict_decisions': '{}',
+        'phase': 'prepared',
+        'preview_data': jsonEncode(standardPreviewJson),
+        'created_at': 1700000000000,
+        'updated_at': 1700000000000,
+      });
+
+      // Server returns COMMITTED with finalization: null
+      when(() => mockApiClient.post<Map<String, dynamic>>(
+            ApiEndpoints.guestClaimCommit(testClaimId),
+            data: any(named: 'data'),
+          )).thenAnswer((_) async => Response(
+            requestOptions: RequestOptions(path: ApiEndpoints.guestClaimCommit(testClaimId)),
+            statusCode: 200,
+            data: {
+              'claimId': testClaimId,
+              'status': 'COMMITTED',
+              'committedAt': '2026-10-14T12:00:00.000Z',
+              'summary': standardCommitJson['summary'],
+              'finalization': null,
+            },
+          ));
+
+      final coordinator = createCoordinator();
+      coordinator.currentClaimId = testClaimId;
+      coordinator.currentUserId = testUserId;
+      coordinator.isOpen = true;
+      coordinator.previewData = GuestClaimPreviewResult.fromJson(standardPreviewJson);
+
+      await coordinator.confirmClaim(testUserId, {});
+
+      // Invariant: Guest partition and journal are NOT deleted (pending recovery)
+      expect(await dao.hasGuestData('guest:$testGuestProfileId'), isTrue);
+      final remainingJournal = await offlineDb.database.query('guest_claim_recovery_journal');
+      expect(remainingJournal, isNotEmpty);
+
+      // Account is NOT resolved as claim completed
+      expect(fakeBridge.resolveCalls, isEmpty);
+      expect(coordinator.isPendingUnavailable, isTrue);
+      expect(fakeBridge.pendingUnavailableCalls.length, equals(1));
+    });
+
+    test('16. Server COMMITTED, SQLite rebind error -> retains recovery context (committedServer), can retry', () async {
+      await dao.saveBookmark(LocalBookmark(
+        ownerScope: 'guest:$testGuestProfileId',
+        storyId: 'story-claim-1',
+        title: 'Claim Story 1',
+        createdAt: DateTime.now().toUtc(),
+      ));
+      // Omit saving history to cause metadata validation error during rebindScope!
+
+      await offlineDb.database.insert('guest_claim_recovery_journal', {
+        'claim_id': testClaimId,
+        'user_id': testUserId,
+        'guest_profile_id': testGuestProfileId,
+        'expected_state_fingerprint': testFingerprint,
+        'conflict_decisions': '{}',
+        'phase': 'prepared',
+        'preview_data': jsonEncode(standardPreviewJson),
+        'created_at': 1700000000000,
+        'updated_at': 1700000000000,
+      });
+
+      when(() => mockApiClient.post<Map<String, dynamic>>(
+            ApiEndpoints.guestClaimCommit(testClaimId),
+            data: any(named: 'data'),
+          )).thenAnswer((_) async => Response(
+            requestOptions: RequestOptions(path: ApiEndpoints.guestClaimCommit(testClaimId)),
+            statusCode: 200,
+            data: standardCommitJson,
+          ));
+
+      final coordinator = createCoordinator();
+      coordinator.currentClaimId = testClaimId;
+      coordinator.currentUserId = testUserId;
+      coordinator.isOpen = true;
+      coordinator.previewData = GuestClaimPreviewResult.fromJson(standardPreviewJson);
+
+      await coordinator.confirmClaim(testUserId, {});
+
+      // SQLite rebind rolled back due to missing history metadata
+      // But journal phase was transitioned to committedServer before rebind attempt!
+      final journalRows = await offlineDb.database.query(
+        'guest_claim_recovery_journal',
+        where: 'claim_id = ?',
+        whereArgs: [testClaimId],
+      );
+      expect(journalRows.length, equals(1));
+      expect(journalRows.first['phase'], equals('committedServer'));
+
+      // Account is NOT resolved
+      expect(fakeBridge.resolveCalls, isEmpty);
+      expect(coordinator.isPendingUnavailable, isTrue);
+      expect(fakeBridge.pendingUnavailableCalls.length, equals(1));
+    });
+
+    test('17. 409 stale preview -> re-prepares, updates journal, and resets conflict decisions', () async {
+      await offlineDb.database.insert('guest_claim_recovery_journal', {
+        'claim_id': testClaimId,
+        'user_id': testUserId,
+        'guest_profile_id': testGuestProfileId,
+        'expected_state_fingerprint': testFingerprint,
+        'conflict_decisions': '{"story-claim-1":"USE_GUEST"}',
+        'phase': 'prepared',
+        'preview_data': jsonEncode(standardPreviewJson),
+        'created_at': 1700000000000,
+        'updated_at': 1700000000000,
+      });
+
+      when(() => mockApiClient.post<Map<String, dynamic>>(
+            ApiEndpoints.guestClaimCommit(testClaimId),
+            data: any(named: 'data'),
+          )).thenThrow(DioException(
+        requestOptions: RequestOptions(path: ApiEndpoints.guestClaimCommit(testClaimId)),
+        response: Response(
+          requestOptions: RequestOptions(path: ApiEndpoints.guestClaimCommit(testClaimId)),
+          statusCode: 409,
+          data: {'message': 'State fingerprint conflict'},
+        ),
+      ));
+
+      final newPreviewJson = Map<String, dynamic>.from(standardPreviewJson);
+      newPreviewJson['claimId'] = 're-prepared-claim-5555';
+      newPreviewJson['stateFingerprint'] = 'c' * 64;
+
+      when(() => mockApiClient.post<Map<String, dynamic>>(
+            ApiEndpoints.guestClaimPrepare,
+            data: any(named: 'data'),
+          )).thenAnswer((_) async => Response(
+            requestOptions: RequestOptions(path: ApiEndpoints.guestClaimPrepare),
+            statusCode: 200,
+            data: newPreviewJson,
+          ));
+
+      final coordinator = createCoordinator();
+      coordinator.currentClaimId = testClaimId;
+      coordinator.currentUserId = testUserId;
+      coordinator.isOpen = true;
+      coordinator.previewData = GuestClaimPreviewResult.fromJson(standardPreviewJson);
+
+      await coordinator.confirmClaim(testUserId, {'story-claim-1': ConflictResolution.useGuest});
+
+      // Journal was replaced with new claimId and conflict_decisions reset to '{}'
+      final journalRows = await offlineDb.database.query(
+        'guest_claim_recovery_journal',
+        where: 'claim_id = ?',
+        whereArgs: ['re-prepared-claim-5555'],
+      );
+      expect(journalRows.length, equals(1));
+      expect(journalRows.first['phase'], equals('prepared'));
+      expect(journalRows.first['conflict_decisions'], equals('{}'));
+      expect(journalRows.first['expected_state_fingerprint'], equals('c' * 64));
+    });
+
+    test('18. Auth user changed between prepare and commit -> Triple-check blocks resolve and does not rebind to wrong account', () async {
+      await dao.saveBookmark(LocalBookmark(
+        ownerScope: 'guest:$testGuestProfileId',
+        storyId: 'story-claim-1',
+        title: 'Claim Story 1',
+        createdAt: DateTime.now().toUtc(),
+      ));
+
+      await offlineDb.database.insert('guest_claim_recovery_journal', {
+        'claim_id': testClaimId,
+        'user_id': testUserId,
+        'guest_profile_id': testGuestProfileId,
+        'expected_state_fingerprint': testFingerprint,
+        'conflict_decisions': '{}',
+        'phase': 'prepared',
+        'preview_data': jsonEncode(standardPreviewJson),
+        'created_at': 1700000000000,
+        'updated_at': 1700000000000,
+      });
+
+      final coordinator = createCoordinator();
+      coordinator.currentClaimId = testClaimId;
+      coordinator.currentUserId = testUserId;
+      coordinator.activeGeneration = 1;
+      coordinator.isOpen = true;
+      coordinator.previewData = GuestClaimPreviewResult.fromJson(standardPreviewJson);
+
+      // User logged out or switched to User B!
+      fakeAuthService.updateUser(const User(
+        id: 'user-b-9999',
+        username: 'user_b',
+        email: 'b@example.com',
+        role: 'READER',
+      ));
+
+      await coordinator.confirmClaim(testUserId, {});
+
+      // Invariant: Triple-check blocked commit, no HTTP call and no resolve
+      verifyZeroInteractions(mockApiClient);
+      expect(fakeBridge.resolveCalls, isEmpty);
+    });
+
+    test('19. Crash after SQLite commit before resolve -> restart checkAndPrepareClaim cleanly resolves without duplicate rebind or data loss', () async {
+      // 1. Initial rebind completed: target has data, guest is purged, journal deleted
+      await dao.saveBookmark(LocalBookmark(
+        ownerScope: 'account:$testUserId',
+        storyId: 'story-claim-1',
+        title: 'Claim Story 1',
+        createdAt: DateTime.now().toUtc(),
+      ));
+
+      // Guest partition is empty (already purged)
+      expect(await dao.hasGuestData('guest:$testGuestProfileId'), isFalse);
+      // Journal is empty (already deleted in rebind transaction)
+      expect(await offlineDb.database.query('guest_claim_recovery_journal'), isEmpty);
+
+      // App crashed right before resolveToAccount was called.
+      // Now app restarts, new coordinator instance created:
+      final restartedCoordinator = createCoordinator();
+
+      // On restart, checkCrashRecovery finds no journal
+      await restartedCoordinator.checkCrashRecovery(testUserId);
+      expect(restartedCoordinator.isOpen, isFalse);
+
+      // checkAndPrepareClaim is called by bootstrap:
+      await restartedCoordinator.checkAndPrepareClaim(testUserId);
+
+      // Invariant: Since guest partition is already empty, immediately resolves to account without modal or error
+      expect(restartedCoordinator.isOpen, isFalse);
+      expect(fakeBridge.resolveCalls.length, equals(1));
+      expect(fakeBridge.resolveCalls.first['userId'], equals(testUserId));
+      verifyZeroInteractions(mockApiClient);
     });
   });
 }

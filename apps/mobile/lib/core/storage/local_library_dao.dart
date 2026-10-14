@@ -653,9 +653,9 @@ class LocalLibraryDao {
         );
       }
 
-      if (journalPhase != 'committing' && journalPhase != 'committedServer') {
+      if (journalPhase != 'committedServer') {
         throw StateError(
-          'Security guard: Recovery journal $claimId is in invalid phase "$journalPhase" for finalization cleanup',
+          'Security guard: Recovery journal $claimId is in invalid phase "$journalPhase" for finalization cleanup (strictly requires "committedServer")',
         );
       }
 

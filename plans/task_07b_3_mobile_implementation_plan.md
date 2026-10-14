@@ -254,26 +254,26 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
   Lệnh: `flutter test test/core/claim/guest_claim_coordinator_test.dart`
   Kỳ vọng: FAIL vì chưa có file `guest_claim_coordinator.dart`.
 
-- [ ] **Step 3: Triển khai mã nguồn Task 3 (GREEN)**
+- [x] **Step 3: Triển khai mã nguồn Task 3 (GREEN)**
   - Viết `apps/mobile/lib/core/claim/guest_claim_coordinator.dart`:
     * Quản lý trạng thái: `isOpen`, `isPreparing`, `isCommitting`, `previewData`, `error`, `currentUserId`.
-    * Triển khai Triple-Check guard: bắt giữ `capturedGeneration = _scopeCoordinator.transitionGeneration`, `capturedUserId = userId`.
+    * Triển khai Triple-Check guard: bắt giữ `capturedGeneration = _scopeCoordinator.transitionGeneration`, `capturedUserId = userId`, `capturedClaimId = activeClaimId`, kiểm tra `authService.state.isAuthenticated == true` và `authService.state.user?.id == capturedUserId`.
     * Triển khai `checkAndPrepareClaim(userId)`.
     * Triển khai `confirmClaim(userId, conflictDecisions)`.
-    * Triển khai `skipClaim(userId)` có guard chặn khi `isCommitting`.
+    * Triển khai `skipClaim(userId)` có guard chặn khi `isCommitting` hoặc `committedServer`.
     * Triển khai `checkCrashRecovery(userId)`.
-    * Ghi journal bền vững qua `OfflineDatabase.database` ở từng checkpoint.
+    * Ghi journal bền vững qua `OfflineDatabase.database` ở từng checkpoint 3-phase (`prepared`, `committing`, `committedServer`).
 
-- [ ] **Step 4: Chạy test và xác nhận vượt qua (Green)**
-  Lệnh: `flutter test test/core/claim/guest_claim_coordinator_test.dart`
-  Kỳ vọng: Toàn bộ tests PASS 100%.
+- [x] **Step 4: Chạy test và xác nhận vượt qua (Green)**
+  - Lệnh: `flutter test test/core/claim/guest_claim_coordinator_test.dart`
+  - Kết quả: Toàn bộ 19/19 tests PASS 100% (bao gồm 12 kịch bản RED gốc + 7 acceptance cases mở rộng theo Review Gate).
 
-- [ ] **Step 5: Chạy regression tests toàn bộ Claim module**
-  Lệnh: `flutter test test/core/claim/`
-  Kỳ vọng: Toàn bộ tests PASS 100%.
+- [x] **Step 5: Chạy regression tests toàn bộ Claim module & Full Mobile suite**
+  - Lệnh: `flutter test test/core/storage/ test/core/claim/` -> 53/53 tests PASS 100%.
+  - Lệnh: `flutter test` -> 447/447 tests PASS 100% (0 errors).
 
-- [ ] **Step 6: Commit mã nguồn Task 3**
-  Lệnh: `git add apps/mobile/lib/core/claim/ apps/mobile/test/core/claim/ && git commit -m "feat(mobile): implement GuestClaimCoordinator with triple-check concurrency guard and 3-phase journal"`
+- [x] **Step 6: Commit mã nguồn Task 3**
+  - Lệnh: `git add apps/mobile/lib/core/ apps/mobile/test/core/ plans/task_07b_3_mobile_implementation_plan.md && git commit -m "feat(mobile): complete Task 3 GREEN with GuestClaimCoordinator, triple-check concurrency guard, and 3-phase journal recovery"`
 
 ---
 

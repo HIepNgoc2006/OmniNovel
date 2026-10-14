@@ -167,7 +167,7 @@ void main() {
         'guest_profile_id': 'profile-uuid-1234',
         'expected_state_fingerprint': 'a' * 64,
         'conflict_decisions': '{}',
-        'phase': 'committing',
+        'phase': 'committedServer',
         'preview_data': null,
         'created_at': 1700000000000,
         'updated_at': 1700000000000,
@@ -387,7 +387,7 @@ void main() {
         'guest_profile_id': 'profile-uuid-1234',
         'expected_state_fingerprint': 'c' * 64,
         'conflict_decisions': '{}',
-        'phase': 'committing',
+        'phase': 'committedServer',
         'preview_data': null,
         'created_at': 1700000000000,
         'updated_at': 1700000000000,
@@ -732,6 +732,40 @@ void main() {
           contains('is in invalid phase "prepared"'),
         )),
       );
+
+      // Case 4 (P0-1 Negative Test): Journal in 'committing' phase must NOT destructive purge
+      await db.insert('guest_claim_recovery_journal', {
+        'claim_id': 'claim-still-committing',
+        'user_id': 'user-uuid-5678',
+        'guest_profile_id': 'profile-uuid-1234',
+        'expected_state_fingerprint': '4' * 64,
+        'conflict_decisions': '{}',
+        'phase': 'committing',
+        'preview_data': null,
+        'created_at': 1700000000000,
+        'updated_at': 1700000000000,
+      });
+
+      await expectLater(
+        dao.rebindScope(
+          sourceScope: guestScope,
+          targetScope: targetScope,
+          claimId: 'claim-still-committing',
+          finalization: const GuestClaimFinalizationData(
+            tombstonedStoryIds: [],
+            finalizedProgress: [],
+            finalizedChapterReadStates: [],
+          ),
+        ),
+        throwsA(isA<StateError>().having(
+          (e) => e.message,
+          'message',
+          contains('is in invalid phase "committing" for finalization cleanup (strictly requires "committedServer")'),
+        )),
+      );
+
+      // Verify guest bookmark was preserved (rolled back)
+      expect(await dao.getBookmark(ownerScope: guestScope, storyId: 'story-ownership-guard'), isNotNull);
     });
   });
 }

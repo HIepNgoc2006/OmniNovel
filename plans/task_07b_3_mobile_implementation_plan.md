@@ -51,11 +51,11 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 
 - [ ] **Step 2: Viết test kiểm tra migration v3 → v4 trong `OfflineDatabase` (RED)**
   Tạo `apps/mobile/test/core/storage/offline_database_migration_v4_test.dart`:
-  - Tạo SQLite database v3 với các bảng hiện hữu (`local_library_bookmarks`, `local_reading_progress`, `local_reading_history`, `download_tasks`, `offline_chapters`).
-  - Chèn dữ liệu mẫu vào cả 5 bảng v3.
+  - Tạo SQLite database v3 với các bảng hiện hữu (`local_library_bookmarks`, `local_reading_progress`, `local_reading_history`, `download_tasks`, `offline_chapters`, `offline_deletion_tombstones`).
+  - Chèn dữ liệu mẫu vào cả 6 bảng v3.
   - Chạy `initialize()` nâng cấp lên v4:
     * Kiểm tra bảng `guest_claim_recovery_journal` tồn tại với đủ **9 cột**: `claim_id`, `user_id`, `guest_profile_id`, `expected_state_fingerprint`, `conflict_decisions`, `phase`, `preview_data`, `created_at`, `updated_at`.
-    * Kiểm tra toàn bộ dữ liệu mẫu trong 5 bảng v3 cũ vẫn nguyên vẹn 100%, không bị mất hay lỗi dữ liệu.
+    * Kiểm tra toàn bộ dữ liệu mẫu trong 6 bảng v3 cũ (bao gồm cả `offline_deletion_tombstones`) vẫn nguyên vẹn 100%, không bị mất hay lỗi dữ liệu.
 
 - [ ] **Step 3: Chạy test và xác nhận thất bại (Red)**
   Lệnh: `flutter test test/core/claim/models/pending_guest_claim_test.dart test/core/storage/offline_database_migration_v4_test.dart`
@@ -86,9 +86,65 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 
 ---
 
-### Task 2: SQLite DAO Rebind (12 Cột) & Finalization Engine
+### Task 1.5: Backend Finalization Prerequisite Gate (Canonical Contracts, PostgreSQL Durability & Global Tombstone Fix)
 
-**Mục tiêu:** Cập nhật `LocalLibraryDao`: Thêm `hasGuestData(ownerScope)` (fail-closed), `getClaimedStoryIds(ownerScope)`, và `rebindScope(...)` đảm bảo schema mapping 12 cột cho `local_reading_progress` (đầy đủ `device_timestamp` và `updated_at` dạng integer milliseconds `INTEGER NOT NULL`), áp dụng Cloud Precedence và Authoritative Finalization Snapshot (Phương án A), thực hiện merge bookmarks (`INSERT OR IGNORE`), monotonic history merge, purge guest partition và xóa recovery journal checkpoint trong CÙNG MỘT SQLite transaction nguyên tử. Viết kiểm thử round-trip model → SQLite → model.
+**Mục tiêu:** Hoàn thiện hạ tầng Backend và Canonical Types trước khi Mobile Task 2/3 tích hợp. Cập nhật Shared TS contracts, DTOs backend, TypeORM migration bổ sung `finalization_data` JSONB vào bảng `guest_claims`, sửa triệt để lỗ hổng Global Tombstone Sentinel (`00000000-0000-0000-0000-000000000000`) trong `fetchCloudState()`, lưu snapshot `finalization` bền vững trong PostgreSQL tại transaction `COMMITTED`, cập nhật `GET /status` và retry commit trả về cùng một snapshot, viết regression tests backend và cập nhật Dart mirror model.
+
+**Files:**
+- Modify: `packages/shared/src/types/claim.types.ts`
+- Modify: `services/api/src/modules/claims/entities/guest-claim.entity.ts`
+- Create: `services/api/src/database/migrations/1700000000020-AddGuestClaimFinalizationData.ts`
+- Modify: `services/api/src/modules/claims/dto/guest-claim-response.dto.ts`
+- Modify: `services/api/src/modules/claims/guest-claim.service.ts`
+- Modify: `services/api/test/app.e2e-spec.ts` (hoặc tạo test claim tombstone regression)
+- Modify: `apps/mobile/lib/core/claim/models/guest_claim_models.dart`
+
+**Interfaces:**
+- Produces: `ClaimFinalizedProgressItem`, `ClaimFinalizedChapterReadStateItem` (kèm `storyId`), `GuestClaimFinalizationData`, `GuestClaimCommitResult.finalization`, `GuestClaimStatusResult.finalization`
+- Consumes: PostgreSQL `guest_claims.finalization_data`, `reading_history_tombstones`
+
+- [ ] **Step 1: Cập nhật Canonical Shared TypeScript Contracts**
+  Trong `packages/shared/src/types/claim.types.ts`:
+  - Thêm `ClaimFinalizedProgressItem` (10 trường canonical progress).
+  - Thêm `ClaimFinalizedChapterReadStateItem` (`storyId`, `chapterId`, `maxProgressPercentage`, `completedAt`, `lastReadAt`).
+  - Thêm `GuestClaimFinalizationData` (`tombstonedStoryIds`, `finalizedReadingProgress`, `finalizedChapterReadStates`).
+  - Thêm `finalization?: GuestClaimFinalizationData` vào `GuestClaimCommitResult` và `GuestClaimStatusResult`.
+
+- [ ] **Step 2: Cập nhật Backend DTOs & PostgreSQL Entity Migration**
+  - Tạo migration TypeORM `1700000000020-AddGuestClaimFinalizationData.ts`:
+    `ALTER TABLE guest_claims ADD COLUMN IF NOT EXISTS finalization_data JSONB;`
+  - Cập nhật `GuestClaim` entity với `@Column({ name: 'finalization_data', type: 'jsonb', nullable: true }) finalizationData: any | null;`.
+  - Cập nhật `GuestClaimCommitResponseDto` và `GuestClaimStatusResponseDto` trong NestJS.
+
+- [ ] **Step 3: Sửa Global Tombstone Gap & Lưu Bền Vững Finalization trong `GuestClaimService`**
+  - Trong `fetchCloudState()`:
+    Khi `storyIds.length > 0`, câu truy vấn tombstones BẮT BUỘC bao gồm cả sentinel toàn cục:
+    `WHERE user_id = $1 AND (story_id = ANY($2) OR story_id = '00000000-0000-0000-0000-000000000000'::uuid)`
+  - Trong logic anti-resurrection:
+    `const hasGlobalTombstone = tombstoneSet.has('00000000-0000-0000-0000-000000000000');`
+    Nếu `hasGlobalTombstone || tombstoneSet.has(h.storyId)`, áp dụng anti-resurrection loại bỏ history & progress.
+  - Xây dựng `finalization_data`:
+    * `tombstonedStoryIds`: Tập các storyId bị chặn bởi tombstone (hoặc toàn bộ claimed storyIds nếu có global sentinel).
+    * `finalizedReadingProgress`: Snapshot tiến độ đọc mới nhất của các truyện trong claim.
+    * `finalizedChapterReadStates`: Snapshot authoritative của mọi chapter thuộc phạm vi claim kèm `storyId`.
+  - Lưu bền vững:
+    Trong `UPDATE guest_claims SET status = 'COMMITTED'`, lưu đồng thời `finalization_data = $X`.
+  - Idempotency & Status:
+    Khi `status === 'COMMITTED'`, retry commit và `getClaimStatus` đọc `finalization_data` từ DB trả về cho client.
+
+- [ ] **Step 4: Viết Backend Regression Test (Anti-Resurrection & Durability)**
+  - Test kịch bản: `clearAllReadingHistory()` -> User có global tombstone sentinel -> Guest chuẩn bị claim truyện A -> `prepare` ghi nhận `readStatesIgnoredAntiResurrectionCount > 0` -> `commit` không import history/progress của truyện A -> retry commit và `GET /status` trả về `finalization` nhất quán.
+
+- [ ] **Step 5: Cập nhật Dart Mirror Model**
+  - Trong `apps/mobile/lib/core/claim/models/guest_claim_models.dart`:
+    Thêm `ClaimFinalizedProgressItem`, `ClaimFinalizedChapterReadStateItem`, `GuestClaimFinalizationData`.
+    Cập nhật `GuestClaimCommitResult.fromJson` và `GuestClaimStatusResult.fromJson` để parse `finalization`.
+
+---
+
+### Task 2: SQLite DAO Rebind (12 Cột) & Authoritative Reconciliation
+
+**Mục tiêu:** Cập nhật `LocalLibraryDao`: Thêm `hasGuestData(ownerScope)` (fail-closed), `getClaimedStoryIds(ownerScope)`, và `rebindScope(...)` đảm bảo schema mapping 12 cột cho `local_reading_progress` (đầy đủ `device_timestamp` và `updated_at` dạng integer milliseconds `INTEGER NOT NULL`), áp dụng Cloud Precedence và Authoritative Finalization Snapshot (Phương án A), thực hiện merge bookmarks (`INSERT OR IGNORE`) theo cơ chế additive (KHÔNG lọc theo reading tombstone), monotonic history merge theo authoritative snapshot (loại trừ `tombstonedStoryIds`), ghép metadata cho `local_reading_history` từ bản ghi guest với fail-closed check, purge guest partition và xóa recovery journal checkpoint trong CÙNG MỘT SQLite transaction nguyên tử. Viết kiểm thử round-trip model → SQLite → model.
 
 **Files:**
 - Modify: `apps/mobile/lib/core/storage/local_library_dao.dart`
@@ -96,19 +152,20 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 
 **Interfaces:**
 - Produces: `LocalLibraryDao.hasGuestData`, `LocalLibraryDao.getClaimedStoryIds`, `LocalLibraryDao.rebindScope`
-- Consumes: `LocalReadingProgress`, `LocalBookmark`, `LocalReadingHistory`, `ConflictResolution`, `ReadingProgressConflict`, `ClaimFinalizedProgressItem`, `ClaimFinalizedReadStateItem`
+- Consumes: `LocalReadingProgress`, `LocalBookmark`, `LocalReadingHistory`, `ConflictResolution`, `ReadingProgressConflict`, `ClaimFinalizedProgressItem`, `ClaimFinalizedChapterReadStateItem`, `GuestClaimFinalizationData`
 
 - [ ] **Step 1: Viết test cho SQLite Rebind 12 Cột, Authoritative Finalization & Round-Trip (RED)**
   Tạo `apps/mobile/test/core/storage/local_library_dao_rebind_test.dart`:
   - Test `hasGuestData(guestScope)`: trả `true` khi có dữ liệu; trả `false` khi trống; rethrow exception fail-closed khi DB lỗi.
   - Test `getClaimedStoryIds(guestScope)`: trích xuất đúng tập hợp `story_id` phân biệt từ 3 bảng của khách.
+  - Test Bookmarks: Additive merge (`INSERT OR IGNORE`), không bị loại bỏ ngay cả khi story có trong `tombstonedStoryIds`.
   - Test `rebindScope` 12 cột:
     * `local_reading_progress` mapping đầy đủ 12 cột, không bị lỗi `NOT NULL constraint failed` trên `device_timestamp` và `updated_at`.
     * Test round-trip: Model `LocalReadingProgress` → Insert qua `rebindScope` → Query lại bằng `getProgress()` → `LocalReadingProgress.fromMap()` giải mã thành công không lỗi type cast hay rỗng trường.
-    * Monotonic MAX cho `local_reading_history`.
-    * Primary Key collision an toàn cho `local_library_bookmarks` (`INSERT OR IGNORE`).
+    * Reconcile chính xác các row trong `local_reading_progress` và `local_reading_history` theo authoritative snapshot, ghi đè đúng giá trị server thay vì chỉ `MAX` đơn thuần.
+    * Tái tạo metadata `local_reading_history`: Ghép đúng `storyTitle`, `chapterNumber` từ bản ghi guest; ném lỗi fail-closed nếu thiếu dữ liệu bắt buộc.
     * Conflict `KEEP_CLOUD` khi local target chưa cache: Lấy `conflict.cloudProgress` (chuyển đổi ISO string sang integer milliseconds) ghi đủ 12 cột vào targetScope.
-    * Áp dụng authoritative finalization snapshot: Áp dụng `appliedReadingProgress` và `appliedChapterReadStates`, loại trừ các truyện trong `tombstonedStoryIds`.
+    * Áp dụng authoritative finalization snapshot: Áp dụng `finalizedReadingProgress` và `finalizedChapterReadStates`, loại trừ các truyện trong `tombstonedStoryIds`.
     * Atomic Transaction & Purge: Partition khách bị xóa sạch và bản ghi recovery journal bị xóa TRONG CÙNG TRANSACTION; nếu có exception giữa chừng, toàn bộ transaction rollback, partition khách và journal được bảo toàn 100%.
 
 - [ ] **Step 2: Chạy test và xác nhận thất bại (Red)**
@@ -121,16 +178,11 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
     * Thêm `Future<Set<String>> getClaimedStoryIds(String ownerScope)`.
     * Thêm `Future<void> rebindScope({...})`:
       - Chạy trong `_db.transaction((txn) async { ... })`.
-      - 1. Bookmarks: `INSERT OR IGNORE` (loại trừ `tombstonedStoryIds`).
-      - 2. History: `INSERT INTO ... ON CONFLICT DO UPDATE SET progress_percentage = MAX(...)` (loại trừ `tombstonedStoryIds`).
-      - 3. Reading progress conflicts: `INSERT OR REPLACE` với đầy đủ 12 cột:
-        `owner_scope, story_id, chapter_id, chapter_version_id, reading_mode, progress_percentage, scroll_position, page_index, anchor_block_id, text_offset, updated_at, device_timestamp`.
-        Chuyển đổi `updatedAt` từ ISO string sang integer milliseconds: `DateTime.tryParse(p.updatedAt ?? '')?.toUtc().millisecondsSinceEpoch ?? DateTime.now().toUtc().millisecondsSinceEpoch`.
-        Gán `device_timestamp = updatedAtMs`.
-      - 4. Reading progress non-conflicts: `INSERT OR IGNORE` với đầy đủ 12 cột lấy từ `sourceScope` bao gồm `device_timestamp` (loại trừ `tombstonedStoryIds`).
-      - 5. Apply authoritative `finalization` snapshot nếu có (tombstones, canonical progress, chapter states).
-      - 6. Purge sạch 3 bảng của `sourceScope`.
-      - 7. Xóa checkpoint tương ứng trong `guest_claim_recovery_journal`.
+      - 1. Bookmarks: Additive merge `INSERT OR IGNORE` (KHÔNG lọc theo tombstone).
+      - 2. History: Reconcile theo `finalizedChapterReadStates` (loại trừ `tombstonedStoryIds`), ghép metadata từ guest history map (fail-closed nếu thiếu).
+      - 3. Reading progress conflicts & non-conflicts: Reconcile theo `finalizedReadingProgress` với đầy đủ 12 cột NOT NULL.
+      - 4. Purge sạch 3 bảng của `sourceScope`.
+      - 5. Xóa checkpoint tương ứng trong `guest_claim_recovery_journal`.
 
 - [ ] **Step 4: Chạy test và xác nhận vượt qua (Green)**
   Lệnh: `flutter test test/core/storage/local_library_dao_rebind_test.dart`
@@ -141,21 +193,22 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
   Kỳ vọng: Toàn bộ tests PASS 100%.
 
 - [ ] **Step 6: Commit mã nguồn Task 2**
-  Lệnh: `git add apps/mobile/lib/core/storage/local_library_dao.dart apps/mobile/test/core/storage/ && git commit -m "feat(mobile): implement 12-column SQLite rebindScope with authoritative finalization and atomic purge"`
+  Lệnh: `git add apps/mobile/lib/core/storage/local_library_dao.dart apps/mobile/test/core/storage/ && git commit -m "feat(mobile): implement 12-column SQLite rebindScope with authoritative reconciliation and atomic purge"`
 
 ---
 
 ### Task 3: GuestClaimCoordinator Engine & Durable Crash Recovery
 
-**Mục tiêu:** Xây dựng `GuestClaimCoordinator` kế thừa `ChangeNotifier`. Quản lý state machine claim với SQLite journal 3-phase (`prepared`, `committing`, `committedServer`). Bảo vệ concurrency bằng **Triple-Check Concurrency Guard** (user id, generation, claim id) chống stale callback từ tài khoản trước hoặc async request muộn. Khóa cứng `skipClaim(userId)` khi claim đã bước vào `committing` hoặc `committedServer`. Điều phối authoritative finalization snapshot (Phương án A) và fallback (Phương án B). Xử lý ma trận crash recovery toàn diện.
+**Mục tiêu:** Xây dựng `GuestClaimCoordinator` kế thừa `ChangeNotifier`. Quản lý state machine claim với SQLite journal 3-phase (`prepared`, `committing`, `committedServer`). Sử dụng interface `ScopeCoordinatorClaimBridge` (Dependency Injection) để tách biệt phụ thuộc và biên dịch độc lập trước Task 4. Bảo vệ concurrency bằng **Triple-Check Concurrency Guard** (user id, generation, active claim id, actual AuthService user) chống stale callback từ tài khoản trước hoặc async request muộn. Khóa cứng `skipClaim(userId)` khi claim đã bước vào `committing` hoặc `committedServer`. Điều phối authoritative finalization snapshot (Phương án A) và fallback (Phương án B bảo toàn partition guest). Xử lý ma trận crash recovery toàn diện.
 
 **Files:**
+- Create: `apps/mobile/lib/core/claim/scope_coordinator_claim_bridge.dart`
 - Create: `apps/mobile/lib/core/claim/guest_claim_coordinator.dart`
 - Create: `apps/mobile/test/core/claim/guest_claim_coordinator_test.dart`
 
 **Interfaces:**
-- Produces: `GuestClaimCoordinator` (ChangeNotifier): `checkAndPrepareClaim`, `confirmClaim`, `skipClaim`, `checkCrashRecovery`
-- Consumes: `LocalLibraryDao`, `ActiveScopeCoordinator`, `GuestProfileIdentityProvider`, `ApiClient`, `OfflineDatabase`
+- Produces: `ScopeCoordinatorClaimBridge` (abstract interface), `GuestClaimCoordinator` (ChangeNotifier): `checkAndPrepareClaim`, `confirmClaim`, `skipClaim`, `checkCrashRecovery`
+- Consumes: `LocalLibraryDao`, `ScopeCoordinatorClaimBridge`, `GuestProfileIdentityProvider`, `ApiClient`, `OfflineDatabase`, `AuthService`
 
 - [ ] **Step 1: Viết test cho Coordinator State Machine, Concurrency Guard và Durable Recovery (RED)**
   Tạo `apps/mobile/test/core/claim/guest_claim_coordinator_test.dart`:
@@ -222,8 +275,8 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 - Produces: `ActiveScopeCoordinator.transitionGeneration`, `ActiveScopeCoordinator.setTransitioning()`, `ActiveScopeCoordinator.resolveToAccount(String userId, {required int expectedGeneration})`, `AuthScopeBridge.lastError`, `AuthService.register(...)`
 - Consumes: `AuthStatus`, `AuthState`, `GuestClaimCoordinator`
 
-- [ ] **Step 1: Viết test cho Zero-Bypass, Generation Guard, Bridge Error Observability và Bootstrap (RED)**
-  Tạo `active_scope_coordinator_claim_test.dart` và cập nhật các test trong `active_scope_coordinator_test.dart`:
+- [ ] **Step 1: Viết test cho Zero-Bypass, Generation Guard, Bridge Error Observability, AC-09 Network Resilience và Bootstrap (RED)**
+  Tạo `active_scope_coordinator_claim_test.dart` và cập nhật các test trong `active_scope_coordinator_test.dart`, `auth_service_test.dart`:
   - Test zero-bypass: `onAuthStatusChanged(AuthStatus.authenticated, userId: 'u1')` -> State BẮT BUỘC là `ActiveScopeState.transitioning`, `activeScope == null`, `canMutateUserState == false`. Cấm tự động mở `account:u1`.
   - Test strict `resolveToAccount(userId, expectedGeneration: gen)`:
     * Khi state đang `transitioning` và `expectedGeneration == coordinator.transitionGeneration`: State chuyển `account`, `activeScope == 'account:u1'`, `canMutateUserState == true`.
@@ -231,15 +284,17 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
     * Khi state không phải `transitioning`: Ném `StateError`.
     * Khi `userId` rỗng: Fallback về `bootstrapping`.
   - Test `AuthScopeBridge`: Báo lỗi chuyển trạng thái qua `lastError`, giữ fail-closed thay vì nuốt lỗi âm thầm.
+  - Test AC-09: `AuthService.initializeAuth()` gặp lỗi mạng tạm thời khi gọi `/auth/me` nhưng có saved token: Không chuyển về `unauthenticated`, không xóa token, giữ nguyên phiên làm việc và recovery context.
   - Test Bootstrap Readiness: `bootstrap.dart` hoàn thành khởi tạo router và trả kết quả `bootstrapReady` ngay cả khi scope đang ở `transitioning`.
 
 - [ ] **Step 2: Chạy test và xác nhận thất bại (Red)**
-  Lệnh: `flutter test test/core/identity/active_scope_coordinator_claim_test.dart`
-  Kỳ vọng: FAIL vì chưa có `expectedGeneration` và `onAuthStatusChanged` cũ chưa chuyển hoàn toàn sang `setTransitioning()`.
+  Lệnh: `flutter test test/core/identity/active_scope_coordinator_claim_test.dart test/core/auth/auth_service_test.dart`
+  Kỳ vọng: FAIL vì chưa có `expectedGeneration`, `onAuthStatusChanged` cũ chưa chuyển hoàn toàn sang `setTransitioning()`, và `initializeAuth()` cũ hạ cấp unauthenticated khi lỗi mạng.
 
 - [ ] **Step 3: Triển khai mã nguồn Task 4 (GREEN)**
   - Trong `active_scope_coordinator.dart`:
     * Thêm `int _transitionGeneration = 0`.
+    * Implements `ScopeCoordinatorClaimBridge`.
     * Thêm `void setTransitioning()`: `_transitionGeneration++; _state = ActiveScopeState.transitioning; _activeScope = null; notifyListeners();`.
     * Thêm `void resolveToAccount(String userId, {required int expectedGeneration})`:
       - Kiểm tra `_state == ActiveScopeState.transitioning` (ném `StateError` nếu sai).
@@ -252,6 +307,7 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
     * Không nuốt lỗi trong `_enqueueTransition`, log error và giữ fail-closed.
   - Trong `auth_service.dart`:
     * Bổ sung `Future<void> register({required String username, required String email, required String password})`.
+    * Sửa đổi `initializeAuth()`: Phân biệt lỗi mạng và lỗi xác thực 401/403. Chỉ chuyển sang `unauthenticated` khi có lỗi xác thực dứt khoát hoặc không có token. Nếu gặp lỗi mạng tạm thời, không downgrade `unauthenticated` để bảo vệ AC-09.
   - Trong `app/bootstrap.dart`:
     * Tách biệt `bootstrapReady` khỏi `scopeResolved`. Không chờ `waitForResolvedScope()` chặn tạo Router.
   - Cập nhật các assertions cũ trong `active_scope_coordinator_test.dart` và `auth_scope_bridge_test.dart`.

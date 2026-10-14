@@ -22,21 +22,29 @@ Task 7B.3 Mobile Client Integration hoàn thiện luồng chuyển giao dữ li�
    - `resolveToAccount` bắt buộc kiểm tra đồng thời: `_state == ActiveScopeState.transitioning` và `expectedGeneration == _transitionGeneration`. Stale callback từ các tác vụ async cũ hoặc từ tài khoản trước bị hủy bỏ ngay lập tức.
    - `GuestClaimBottomSheet` được điều phối từ tầng Root Application Shell (`AppShell` / Top-level Builder), không phụ thuộc vòng đời riêng của `LoginScreen`.
 
-2. **P0-2 — Authoritative Cloud Reconciliation (Phương Án A — Backend Finalization Contract):**
+2. **P0-2 — Authoritative Cloud Reconciliation (Phương Án A — Backend Finalization Contract & PostgreSQL Durability):**
    - Loại bỏ hoàn toàn mọi phỏng đoán heuristic (như giả định 100 history gần nhất).
-   - Backend `POST /api/v1/account/guest-claims/:claimId/commit` và `GET /api/v1/account/guest-claims/:claimId/status` bổ sung trường authoritative `finalization`:
-     * `tombstonedStoryIds`: Danh sách truyện bị Cloud từ chối do có Tombstone xóa lịch sử.
-     * `appliedReadingProgress`: Snapshot tiến độ đọc chính thức cho các truyện trong claim.
-     * `appliedChapterReadStates`: Danh sách trạng thái đọc chương chính thức (kèm `maxProgressPercentage`).
-   - Mobile áp dụng trực tiếp dữ liệu authoritative này vào SQLite trong **CÙNG MỘT TRANSACTION NGUYÊN TỬ** với bookmarks merge, guest partition purge, và journal cleanup (All-or-Nothing).
-   - Dự phòng (Fallback Phương án B): Nếu backend không trả `finalization`, client vô hiệu hóa cache cục bộ của các truyện thuộc claim và fetch lại từ Cloud API thay vì import dữ liệu khách chưa kiểm chứng.
+   - **Backend Prerequisite Gate:** Cần cập nhật đồng bộ backend DTOs, Shared TypeScript types, Dart mirror, commit/status APIs và regression tests trước khi tích hợp Mobile DAO/Coordinator:
+     * Snapshot `finalization` được lưu bền vững vào bảng PostgreSQL `guest_claims` (`finalization_data` JSONB) trong cùng transaction `COMMITTED`, bảo đảm retry `/commit` và `GET /status` trả về kết quả nhất quán 100% ngay cả khi server khởi động lại.
+     * Sửa lỗ hổng Global Tombstone trong `fetchCloudState()`: Truy vấn phải bao gồm cả sentinel `00000000-0000-0000-0000-000000000000` (được tạo khi `clearAllReadingHistory()`) để áp dụng anti-resurrection chuẩn xác.
+     * Cấu trúc `finalization`:
+       - `tombstonedStoryIds`: Danh sách `story_id` bị Cloud từ chối do có Tombstone xóa lịch sử (bao gồm cả trường hợp có global sentinel).
+       - `finalizedReadingProgress`: Snapshot tiến độ đọc chính thức cho các truyện trong claim (đầy đủ 10 trường canonical).
+       - `finalizedChapterReadStates`: Danh sách trạng thái đọc chính thức theo phạm vi claim (bắt buộc gồm `storyId`, `chapterId`, `maxProgressPercentage`, `completedAt`, `lastReadAt`).
+   - **Quy tắc gộp dữ liệu theo từng Domain:**
+     * `Bookmarks`: Additive merge (`INSERT OR IGNORE`), **TUYỆT ĐỐI KHÔNG** lọc bỏ theo reading history tombstone (xóa lịch sử đọc không làm mất bookmark).
+     * `Reading History` & `Reading Progress`: Áp dụng nghiêm ngặt chính sách Anti-Resurrection dựa trên tombstone (story tombstone hoặc global sentinel).
+     * `Finalized local state`: Reconcile/ghi đè chính xác các row liên quan trong `local_reading_progress` và `local_reading_history` theo snapshot authoritative của server, không chỉ `MAX` hoặc `INSERT OR IGNORE` lên cache cũ để triệt tiêu chênh lệch.
+   - **Tái tạo Metadata cho `local_reading_history`:** Client ghép dữ liệu authoritative (`storyId`, `chapterId`, `maxProgressPercentage`, `lastReadAt`) với metadata truyện/chương đã có trong bản ghi SQLite của khách (`storyTitle`, `chapterNumber`, v.v.). Nếu thiếu metadata bắt buộc, client xử lý fail-closed, tuyệt đối không tạo placeholder rác.
+   - **Dự phòng (Fallback Phương án B):** Nếu backend không trả `finalization`, client bảo toàn phân vùng nguồn của guest (không tự ý purge dữ liệu chưa thể tái tạo), vô hiệu hóa cache cục bộ của các truyện thuộc claim và fetch lại từ Cloud API.
 
 3. **P0-3 — SQLite Recovery Journal Bền Vững (ACID Durability 9 Cột, 3 Observable Phases):**
    - Loại bỏ hoàn toàn `SharedPreferences` cho việc lưu trữ recovery context.
-   - Bảng SQLite `guest_claim_recovery_journal` gồm **9 cột**: `claim_id`, `user_id`, `guest_profile_id`, `expected_state_fingerprint`, `conflict_decisions`, `phase`, `preview_data`, `created_at`, `updated_at`. Migration test v3 → v4 trên database có sẵn dữ liệu thực tế bảo toàn 100% dữ liệu cũ.
+   - Bảng SQLite `guest_claim_recovery_journal` gồm **9 cột**: `claim_id`, `user_id`, `guest_profile_id`, `expected_state_fingerprint`, `conflict_decisions`, `phase`, `preview_data`, `created_at`, `updated_at`. Migration test v3 → v4 trên database có sẵn dữ liệu thực tế bảo toàn 100% dữ liệu cũ (bao gồm cả `offline_deletion_tombstones`).
    - Quản lý **3 observable phases**: `prepared`, `committing`, `committedServer`. Loại bỏ `rebindCompleted` vì bước xóa journal diễn ra cùng transaction với rebind.
    - Lưu trữ checkpoint bền vững trước khi mở BottomSheet (`prepared`) và trước khi gửi request `/commit` (`committing`).
    - `skipClaim(userId)` bị khóa cứng (throw `StateError`) khi claim đang ở phase `committing` hoặc `committedServer`.
+   - Xử lý mã lỗi `409 Conflict`: Khi gặp 409 (cloud state thay đổi), client xác nhận chưa commit, hủy journal phiên cũ và thay thế bằng phiên prepare mới, reset lại các decisions.
 
 4. **P0-4 — SQLite Schema Mapping Đầy Đủ 12 Cột & Integer Milliseconds:**
    - SQLite Rebind bảo toàn trọn vẹn 12 cột của bảng `local_reading_progress` (bao gồm `device_timestamp` và `updated_at` dưới dạng số nguyên milliseconds `INTEGER NOT NULL`).
@@ -45,8 +53,9 @@ Task 7B.3 Mobile Client Integration hoàn thiện luồng chuyển giao dữ li�
    - Kiểm thử round-trip: Model `LocalReadingProgress` → Insert qua `rebindScope` → Query SQLite → `LocalReadingProgress.fromMap()` giải mã thành công không lỗi type cast hay rỗng trường.
 
 5. **P0-5 — Tách Rời SQLite Local Library Transaction Khỏi Offline Filesystem Handover & Safe Ordering:**
-   - SQLite Transaction chỉ áp dụng nguyên tử cho 3 bảng của Local Library: `local_library_bookmarks`, `local_reading_progress`, `local_reading_history` cùng bảng `guest_claim_recovery_journal`. Phân vùng file tải ngoại tuyến (`files/offline/<userScope>/...`) và bảng download (`offline_chapters`, `download_tasks`) được bảo toàn partition guest an toàn.
-   - Thứ tự triển khai đảm bảo tính khả dụng (No Broken Interim State): Hạ tầng Storage & DAO (Task 1 & 2) → Claim Engine (Task 3) → Tích hợp AuthScopeBridge & Bootstrap readiness (Task 4) để không bao giờ có commit trung gian khiến ứng dụng bị treo deadlock tại `waitForResolvedScope()`.
+   - SQLite Transaction chỉ áp dụng nguyên tử cho 3 bảng của Local Library: `local_library_bookmarks`, `local_reading_progress`, `local_reading_history` cùng bảng `guest_claim_recovery_journal`. Phân vùng file tải ngoại tuyến (`files/offline/<userScope>/...`) và bảng download (`offline_chapters`, `download_tasks`, `offline_deletion_tombstones`) được bảo toàn partition guest an toàn.
+   - **Độc lập Interface giữa Task 3 và Task 4 (No Broken Interim State):** Task 3 định nghĩa interface `ScopeCoordinatorClaimBridge` (chứa `transitionGeneration` và `resolveToAccount`) qua Dependency Injection để có thể biên dịch và pass test 100% với fake adapter. Task 4 hoàn thiện việc nối dây thực tế vào `ActiveScopeCoordinator`. Không merge commit trung gian không biên dịch lên branch chính.
+   - **Khả Năng Phục Hồi Mạng Cho AC-09 (`AuthService.initializeAuth`):** Sửa đổi `AuthService.initializeAuth()` để lỗi mạng tạm thời khi gọi `/auth/me` không tự động hạ cấp state về `unauthenticated` khi access/refresh token còn hiệu lực, bảo toàn recovery context cho đến khi kết nối mạng được phục hồi.
 
 ---
 
@@ -224,13 +233,14 @@ class PendingGuestClaim {
 |---|---|---|
 | `pending.userId != currentUserId` | Bất kỳ | Không can thiệp, bỏ qua claim của user khác, bảo vệ isolation |
 | Generation mismatch / Stale | Bất kỳ | Drop stale callback, không thay đổi state, ghi log cảnh báo |
+| Concurrency Triple-Check | Bất kỳ | Kiểm tra đồng thời: targetUserId, expectedGeneration, activeClaimId và actual AuthService user |
 | Normal Crash Recovery | `COMMITTED` | Nhận authoritative finalization, chạy atomic SQLite rebind + purge + delete journal, gọi `resolveToAccount` |
 | Normal Crash Recovery | `PREPARED` | Giữ scope `TRANSITIONING`, đọc preview data từ SQLite journal, mở lại `GuestClaimBottomSheet` kèm decisions |
 | Normal Crash Recovery | `EXPIRED` hoặc `ABORTED` | Nếu SQLite khách vẫn còn dữ liệu: tạo phiên prepare mới; xóa journal cũ; không tự ý bỏ qua |
 | Kiểm tra status mất mạng / offline | Lỗi mạng | Giữ nguyên scope `TRANSITIONING` (`PENDING_UNAVAILABLE`), cung cấp nút Thử lại |
 | Lỗi mạng khi đang gửi `/commit` | Timeout / 5xx | Gọi `GET /status` kiểm tra xem commit đã vào DB server chưa trước khi quyết định retry hay rebind |
 | Lỗi SQLite Rebind nội bộ | Exception | Rollback transaction tự động; SQLite journal giữ nguyên, cho phép thử lại an toàn |
-| Crash sau SQLite commit nhưng trước `resolveToAccount` | Đã Rebind | Khi restart: SQLite đã có dữ liệu account, journal trống, guest partition đã xóa -> an toàn gọi `resolveToAccount` |
+| Crash sau SQLite commit nhưng trước `resolveToAccount` (AC-06) | Đã Rebind | Khi restart: Journal trống; thực hiện kiểm tra an toàn: guest partition đã purge và target account đã sẵn sàng trước khi gọi `resolveToAccount`, không suy luận mù quáng chỉ từ journal trống |
 | **Xóa Recovery Journal** | Chỉ khi hoàn tất 100% | Chỉ xóa journal row trong cùng transaction với rebind và purge guest partition |
 
 ---
@@ -250,10 +260,10 @@ class PendingGuestClaim {
      required String targetScope,
      Map<String, ConflictResolution>? conflictDecisions,
      List<ReadingProgressConflict>? previewConflicts,
-     Map<String, LocalReadingProgress>? authoritativeCloudProgress,
+     GuestClaimFinalizationData? finalization,
    }) async {
      await _db.transaction((txn) async {
-       // 1. Bookmarks: INSERT OR IGNORE chống crash Primary Key (owner_scope, story_id)
+       // 1. Bookmarks: Additive merge (INSERT OR IGNORE) - TUYỆT ĐỐI KHÔNG loại bỏ theo reading tombstone
        await txn.execute('''
          INSERT OR IGNORE INTO local_library_bookmarks (owner_scope, story_id, title, slug, cover_url, created_at)
          SELECT ?, story_id, title, slug, cover_url, created_at
@@ -363,28 +373,32 @@ class PendingGuestClaim {
    ```
 
 #### 2.3.1. Scoped Authoritative Cloud Reconciliation (Phương Án A & Fallback Phương Án B)
-Loại bỏ hoàn toàn mọi cơ chế phỏng đoán heurictic:
+Loại bỏ hoàn toàn mọi cơ chế phỏng đoán heuristic:
 
-1. **Phương Án A — Khuyến Nghị (Backend Authoritative Finalization Contract):**
+1. **Phương Án A — Khuyến Nghị (Backend Authoritative Finalization Contract & PostgreSQL Persistence):**
    - Backend API (`POST /commit` và `GET /status`) trả về trường `finalization`:
-     * `tombstonedStoryIds`: Danh sách các `story_id` bị Cloud từ chối vì có Tombstone.
-     * `appliedReadingProgress`: Danh sách canonical reading progress cho các truyện trong claim (đầy đủ chapterId, readingMode, pageIndex, scrollPosition, progressPercentage, updatedAt).
-     * `appliedChapterReadStates`: Danh sách trạng thái đọc từng chương chính thức (chapterId, maxProgressPercentage, completedAt, lastReadAt).
-   - Client nhận snapshot này trực tiếp từ response commit / status check và chuyển vào `rebindScope` để ghi trực tiếp vào SQLite.
+     * `tombstonedStoryIds`: Danh sách các `story_id` bị Cloud từ chối vì có Tombstone (hoặc Global Sentinel).
+     * `finalizedReadingProgress`: Snapshot tiến độ đọc chính thức cho các truyện trong claim (đầy đủ 10 trường canonical: storyId, chapterId, chapterVersionId, readingMode, pageIndex, scrollPosition, progressPercentage, anchorBlockId, textOffset, updatedAt).
+     * `finalizedChapterReadStates`: Danh sách trạng thái đọc authoritative cho mọi chương thuộc phạm vi claim (bắt buộc gồm `storyId`, `chapterId`, `maxProgressPercentage`, `completedAt`, `lastReadAt`).
+   - Phân biệt rõ rệt: `finalizedChapterReadStates` là snapshot authoritative cuối cùng cho toàn bộ các chapter trong claim scope (không chỉ riêng những dòng vừa thay đổi), bảo đảm Mobile biết rõ các giá trị Cloud đã tồn tại trước đó được giữ nguyên.
+   - Client nhận snapshot này trực tiếp từ response commit / status check và chuyển vào `rebindScope`:
+     * Ghi đè/reconcile chính xác các row liên quan trong `local_reading_progress` và `local_reading_history` theo snapshot authoritative, ngăn chặn tình trạng cache cũ cục bộ có giá trị sai cao hơn vẫn tồn tại nếu chỉ dùng phép `MAX` đơn thuần.
+     * Đối với `local_reading_history`: Ghép các trường authoritative (`storyId`, `chapterId`, `maxProgressPercentage`, `lastReadAt`) với metadata chương/truyện từ bản ghi guest (`storyTitle`, `chapterNumber`, v.v.). Nếu thiếu dữ liệu bắt buộc -> fail-closed, không tạo placeholder rác.
    - **Lợi ích tuyệt đối:** Server là SSoT tính toán toàn bộ logic, Mobile chỉ áp dụng (Apply), triệt tiêu 100% rủi ro desynchronization giữa backend và mobile cache.
 
 2. **Dự Phòng (Fallback Phương Án B):**
    - Nếu kết nối tới backend mock/legacy không trả trường `finalization`:
-   - Mobile sau khi commit sẽ vô hiệu hóa (invalidate) cache cục bộ của các truyện thuộc `claimedStoryIds`, không import bất kỳ reading history hay reading progress nào của khách chưa được xác minh.
-   - Chỉ giữ bookmarks và dựng lại tiến độ đọc khi người dùng mở truyện đọc qua các API chuẩn (`/library/reading-progress/:storyId`).
+   - Mobile bảo toàn phân vùng nguồn `guest:<guestProfileId>` trong SQLite (tuyệt đối không tự ý purge dữ liệu chưa thể tái tạo xác thực).
+   - Vô hiệu hóa (invalidate) cache cục bộ của các truyện thuộc `claimedStoryIds`, không import bất kỳ reading history hay reading progress nào của khách chưa được xác minh.
+   - Chỉ merge bookmarks (`INSERT OR IGNORE`) và dựng lại tiến độ đọc khi người dùng mở truyện đọc qua các API chuẩn (`/library/reading-progress/:storyId`).
 
 3. **Thực Thi Nguyên Tử Apply & Purge Trong Cùng SQLite Transaction:**
    - Dữ liệu authoritative được chuyển vào `rebindScope`.
    - Toàn bộ quá trình:
-     * Ghi nhận bookmarks của khách vào tài khoản (`INSERT OR IGNORE`).
-     * Sáp nhập lịch sử theo authoritative `appliedChapterReadStates` hoặc monotonic MAX (loại trừ `tombstonedStoryIds`).
-     * Ghi tiến độ đọc đủ 12 cột (integer milliseconds) theo authoritative `appliedReadingProgress`.
-     * **PURGE** sạch phân vùng nguồn `guest:<guestProfileId>` trong SQLite.
+     * Ghi nhận bookmarks của khách vào tài khoản (`INSERT OR IGNORE`) — additive merge, không loại chỉ vì reading history tombstone.
+     * Sáp nhập lịch sử theo authoritative `finalizedChapterReadStates` (loại trừ `tombstonedStoryIds`).
+     * Ghi tiến độ đọc đủ 12 cột (integer milliseconds) theo authoritative `finalizedReadingProgress` (loại trừ `tombstonedStoryIds`).
+     * **PURGE** sạch phân vùng nguồn `guest:<guestProfileId>` trong SQLite (chỉ khi có finalization hợp lệ).
      * Xóa bản ghi checkpoint trong `guest_claim_recovery_journal`.
    - Diễn ra nguyên tử trong **MỘT TRANSACTION SQLITE DUY NHẤT** (All-or-Nothing).
    - Nếu xảy ra sự cố mạng trước khi lấy xong response commit: Phân vùng khách và tài khoản hoàn toàn không bị thay đổi, journal giữ nguyên để retry an toàn.
@@ -446,29 +460,53 @@ Loại bỏ hoàn toàn mọi cơ chế phỏng đoán heurictic:
 
 Thứ tự triển khai được cấu trúc lại chặt chẽ theo hướng **Bottom-Up Layered Slice**, loại bỏ hoàn toàn tình trạng deadlock trung gian:
 
-1. **Phase 1: Storage Schema & Recovery Models**
+1. **Phase 1: Task 1 — Storage Schema & Recovery Models (Độc lập, sẵn sàng TDD RED)**
    - Triển khai schema SQLite v4 cho `guest_claim_recovery_journal` (9 cột).
-   - Migration test v3 → v4 trên database có sẵn dữ liệu đầy đủ.
+   - Migration test v3 → v4 trên database có sẵn dữ liệu đầy đủ (bao gồm `offline_deletion_tombstones`).
    - Model `PendingGuestClaim` (3 observable phases: `prepared`, `committing`, `committedServer`).
    - Hardening DTOs: validate 64-char hex SHA-256 fingerprint, fail-closed `GuestClaimStatus`, 1-based `pageIndex`.
-2. **Phase 2: SQLite DAO Rebind & Finalization Engine**
+
+2. **Backend Prerequisite Gate: Backend Authoritative Finalization & Global Tombstone Fix (Bắt buộc trước Task 2/3)**
+   - Shared Canonical Types (`packages/shared/src/types/claim.types.ts`):
+     * `ClaimFinalizedProgressItem`, `ClaimFinalizedChapterReadStateItem`, `GuestClaimFinalizationData`.
+     * Cập nhật `GuestClaimCommitResult` và `GuestClaimStatusResult`.
+   - PostgreSQL Persistence: Bổ sung cột `finalization_data` JSONB vào `guest_claims` qua migration TypeORM.
+   - Core API Service (`guest-claim.service.ts`):
+     * Khắc phục Global Tombstone Sentinel: `fetchCloudState()` truy vấn cả `00000000-0000-0000-0000-000000000000`.
+     * Áp dụng anti-resurrection khi có sentinel hoặc story tombstone.
+     * Lưu `finalization_data` bền vững trong transaction `COMMITTED`.
+     * `getClaimStatus` và `commitClaim` idempotent replay trả về `finalization` nhất quán.
+     * Thêm backend regression tests: `clearAllReadingHistory() -> prepare -> commit`.
+   - Dart Mirror: Cập nhật `guest_claim_models.dart`.
+
+3. **Phase 2: Task 2 — SQLite DAO Rebind & Finalization Engine**
    - `LocalLibraryDao`: `hasGuestData` (fail-closed), `getClaimedStoryIds`.
-   - `rebindScope`: mapping 12 cột cho `local_reading_progress` (integer milliseconds), hỗ trợ `finalization` snapshot, atomic purge guest partition và delete journal row trong CÙNG MỘT transaction.
+   - `rebindScope`: mapping 12 cột cho `local_reading_progress` (integer milliseconds), hỗ trợ `finalization` snapshot (reconcile chính xác các row), bookmarks additive merge (`INSERT OR IGNORE`, không loại theo tombstone), atomic purge guest partition và delete journal row trong CÙNG MỘT transaction.
+   - Tái tạo metadata cho `local_reading_history` từ bản ghi guest với fail-closed check.
    - Kiểm thử round-trip model → SQLite → model.
-3. **Phase 3: GuestClaimCoordinator Engine & Durable Recovery**
-   - Triển khai `GuestClaimCoordinator` (ChangeNotifier):
+
+4. **Phase 3 & 4: Task 3 & Task 4 — Claim Engine & Identity Scope (Vertical Slice Integration)**
+   - **Task 3: GuestClaimCoordinator Engine & Durable Recovery:**
      * State machine claim với SQLite journal 3-phase.
-     * Concurrency Triple-Check guard (user, generation, claimId).
-     * Guard `skipClaim` (chặn khi `committing` / `committedServer`).
+     * Sử dụng interface `ScopeCoordinatorClaimBridge` (DI) để biên dịch độc lập trước khi Task 4 hoàn thiện.
+     * Concurrency Triple-Check guard (user, generation, claimId, actual AuthService user).
+     * Guard `skipClaim` (chặn khi `committing` / `committedServer`), 409 re-prepare journal replacement.
      * Crash recovery matrix xử lý đầy đủ các kịch bản.
-4. **Phase 4: Identity Scope & Bootstrap Synchronization Gate**
-   - Cập nhật `ActiveScopeCoordinator`: `setTransitioning()`, `resolveToAccount(userId, {required int expectedGeneration})`.
-   - `onAuthStatusChanged(AuthStatus.authenticated)` luôn gọi `setTransitioning()`.
-   - Cập nhật `AuthScopeBridge`: cơ chế báo lỗi có thể quan sát (`lastError`), không nuốt lỗi âm thầm.
-   - Cập nhật `bootstrap.dart`: tách biệt `bootstrapReady` khỏi `scopeResolved`.
-   - Cập nhật toàn bộ existing identity tests (`active_scope_coordinator_test.dart`, `auth_scope_bridge_test.dart`). Luồng Auth → Claim Coordinator → Bootstrap hoàn toàn thông suốt tại checkpoint này!
-5. **Phase 5: Presentation & Root Shell Orchestration (`GuestClaimBottomSheet`)**
+   - **Task 4: Identity Scope & Bootstrap Synchronization Gate:**
+     * Nối dây thật vào `ActiveScopeCoordinator`: `setTransitioning()`, `resolveToAccount(userId, {required int expectedGeneration})`.
+     * `onAuthStatusChanged(AuthStatus.authenticated)` luôn gọi `setTransitioning()`.
+     * Cập nhật `AuthScopeBridge`: cơ chế báo lỗi có thể quan sát (`lastError`), không nuốt lỗi âm thầm.
+     * Cập nhật `AuthService.initializeAuth()`: lỗi mạng tạm thời không hạ cấp về `unauthenticated` (AC-09).
+     * Cập nhật `bootstrap.dart`: tách biệt `bootstrapReady` khỏi `scopeResolved`.
+     * Cập nhật toàn bộ existing identity tests. Luồng Auth → Claim Coordinator → Bootstrap hoàn toàn thông suốt tại checkpoint này!
+
+5. **Phase 5: Task 5 — Presentation & Root Shell Orchestration (`GuestClaimBottomSheet`)**
    - Xây dựng `GuestClaimBottomSheet` với `PopScope(canPop: false)`, disable Skip khi `isCommitting`, retry button.
+   - Gắn `GuestClaimListener` tại Root Widget Shell.
+
+6. **Phase 6: Task 6 — Comprehensive Acceptance Suite (12 Scenarios) & Full Regression**
+   - 12 Cross-Layer Acceptance Scenarios (`guest_claim_acceptance_test.dart`).
+   - Chạy full `flutter test` bảo đảm 410+ tests PASS 100%.
    - Gắn `GuestClaimListener` tại Root Widget Shell.
 6. **Phase 6: Comprehensive Testing Suite & Regression Verification**
    - 12 Cross-Layer Acceptance Scenarios (`guest_claim_acceptance_test.dart`).

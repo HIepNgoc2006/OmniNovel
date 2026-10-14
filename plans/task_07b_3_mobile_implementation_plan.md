@@ -169,7 +169,7 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 - Produces: `LocalLibraryDao.hasGuestData`, `LocalLibraryDao.getClaimedStoryIds`, `LocalLibraryDao.rebindScope`
 - Consumes: `LocalReadingProgress`, `LocalBookmark`, `LocalReadingHistory`, `ConflictResolution`, `ReadingProgressConflict`, `ClaimFinalizedProgressItem`, `ClaimFinalizedChapterReadStateItem`, `GuestClaimFinalizationData`
 
-- [ ] **Step 1: Viết test cho SQLite Rebind 12 Cột, Authoritative Finalization & Round-Trip (RED)**
+- [x] **Step 1: Viết test cho SQLite Rebind 12 Cột, Authoritative Finalization & Round-Trip (RED)**
   Tạo `apps/mobile/test/core/storage/local_library_dao_rebind_test.dart`:
   - Test `hasGuestData(guestScope)`: trả `true` khi có dữ liệu; trả `false` khi trống; rethrow exception fail-closed khi DB lỗi.
   - Test `getClaimedStoryIds(guestScope)`: trích xuất đúng tập hợp `story_id` phân biệt từ 3 bảng của khách.
@@ -183,9 +183,9 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
     * Áp dụng authoritative finalization snapshot: Áp dụng `finalizedReadingProgress` và `finalizedChapterReadStates`, loại trừ các truyện trong `tombstonedStoryIds`.
     * Atomic Transaction & Purge: Partition khách bị xóa sạch và bản ghi recovery journal bị xóa TRONG CÙNG TRANSACTION; nếu có exception giữa chừng, toàn bộ transaction rollback, partition khách và journal được bảo toàn 100%.
 
-- [ ] **Step 2: Chạy test và xác nhận thất bại (Red)**
+- [x] **Step 2: Chạy test và xác nhận thất bại (Red)**
   Lệnh: `flutter test test/core/storage/local_library_dao_rebind_test.dart`
-  Kỳ vọng: FAIL vì chưa có `hasGuestData`, `getClaimedStoryIds`, `rebindScope`.
+  Kết quả: FAIL như mong đợi (thiếu `hasGuestData`, `getClaimedStoryIds`, `rebindScope` trên `LocalLibraryDao`). Đã xác nhận trạng thái RED chuẩn xác.
 
 - [ ] **Step 3: Triển khai mã nguồn Task 2 (GREEN)**
   - Trong `local_library_dao.dart`:

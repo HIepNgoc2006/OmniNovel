@@ -524,6 +524,9 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
         if (sql.includes('INSERT INTO bookmarks')) {
           return [[], 1]; // 1 row inserted
         }
+        if (sql.includes('UPDATE guest_claims')) {
+          return [{ claim_id: claimId }];
+        }
         return [];
       });
 
@@ -577,6 +580,9 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
         }
         if (sql.includes('INSERT INTO bookmarks')) {
           return [[], 1];
+        }
+        if (sql.includes('UPDATE guest_claims')) {
+          return [{ claim_id: claimId }];
         }
         return [];
       });
@@ -650,6 +656,9 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
         if (sql.includes('FROM chapter_read_states crs')) {
           return []; // post-merge chapter_read_states
         }
+        if (sql.includes('UPDATE guest_claims')) {
+          return [{ claim_id: claimId }];
+        }
         return [];
       });
 
@@ -720,7 +729,7 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
         if (sql.includes('UPDATE guest_claims')) {
           // SQL params should include finalization_data
           persistedFinalizationData = JSON.parse(params[2]);
-          return [];
+          return [{ claim_id: claimId }];
         }
         if (sql.includes('SELECT story_id, chapter_id, chapter_version_id, reading_mode')) {
           return [

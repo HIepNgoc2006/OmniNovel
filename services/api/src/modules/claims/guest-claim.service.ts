@@ -898,7 +898,7 @@ export class GuestClaimService {
 
       // 5. Cập nhật Sổ cái Ledger (Atomic Transaction gồm cả COMMITTED, summary, decisions và finalization_data)
       const committedAt = new Date();
-      await runner.query(
+      const updateRes: { claim_id: string }[] = await runner.query(
         `UPDATE guest_claims
          SET status = 'COMMITTED',
              result_summary = $1,
@@ -906,15 +906,21 @@ export class GuestClaimService {
              finalization_data = $3,
              committed_at = $4,
              updated_at = NOW()
-         WHERE claim_id = $5`,
+         WHERE claim_id = $5 AND user_id = $6
+         RETURNING claim_id`,
         [
           JSON.stringify(summary),
           JSON.stringify(dto.conflictDecisions || {}),
           JSON.stringify(finalizationData),
           committedAt,
           claimId,
+          userId,
         ],
       );
+
+      if (Array.isArray(updateRes) && updateRes.length === 0) {
+        throw new NotFoundException(`Claim ${claimId} not found or not owned by user`);
+      }
 
       await runner.commitTransaction();
 

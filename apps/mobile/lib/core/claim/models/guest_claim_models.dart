@@ -8,6 +8,22 @@ enum GuestClaimStatus {
   final String value;
   const GuestClaimStatus(this.value);
 
+  /// Parser nghiêm ngặt (Fail-Closed): Ném ArgumentError nếu gặp status lạ hoặc null/empty.
+  static GuestClaimStatus fromStrictString(String? val) {
+    if (val == null) {
+      throw ArgumentError('GuestClaimStatus string cannot be null');
+    }
+    final upper = val.trim().toUpperCase();
+    if (upper.isEmpty) {
+      throw ArgumentError('GuestClaimStatus string cannot be empty');
+    }
+    for (final s in GuestClaimStatus.values) {
+      if (s.value == upper) return s;
+    }
+    throw ArgumentError('Invalid or unsupported GuestClaimStatus: "$val"');
+  }
+
+  /// Parser linh hoạt hỗ trợ fallback về prepared khi cần thiết cho backward compatibility.
   static GuestClaimStatus fromString(String? val) {
     if (val == null) return GuestClaimStatus.prepared;
     final upper = val.trim().toUpperCase();
@@ -145,6 +161,9 @@ class GuestProgressItem {
     this.updatedAt,
   }) : pageIndex = pageIndex < 1 ? 1 : pageIndex; // Bound check: 1-based >= 1
 
+  /// Đảm bảo pageIndex luôn >= 1 theo chuẩn canonical (1-based index)
+  int get safePageIndex => pageIndex < 1 ? 1 : pageIndex;
+
   factory GuestProgressItem.fromJson(Map<String, dynamic> json) {
     final rawPageIndex = json['pageIndex'] is num ? (json['pageIndex'] as num).toInt() : 1;
     return GuestProgressItem(
@@ -271,7 +290,7 @@ class GuestClaimPreviewResult {
   factory GuestClaimPreviewResult.fromJson(Map<String, dynamic> json) {
     return GuestClaimPreviewResult(
       claimId: json['claimId'] as String,
-      status: GuestClaimStatus.fromString(json['status'] as String?),
+      status: GuestClaimStatus.fromStrictString(json['status'] as String?),
       stateFingerprint: json['stateFingerprint'] as String? ?? '',
       expiresAt: json['expiresAt'] as String? ?? '',
       bookmarksToImport: (json['bookmarksToImport'] as num?)?.toInt() ?? 0,
@@ -303,6 +322,8 @@ class GuestClaimPreviewResult {
 
 /// Payload sent to POST /api/v1/account/guest-claims/:claimId/commit.
 class CommitGuestClaimPayload {
+  static final RegExp _fingerprintRegex = RegExp(r'^[a-fA-F0-9]{64}$');
+
   final String expectedStateFingerprint;
   final Map<String, ConflictResolution> conflictDecisions;
 
@@ -310,6 +331,23 @@ class CommitGuestClaimPayload {
     this.expectedStateFingerprint = '',
     this.conflictDecisions = const {},
   });
+
+  /// Factory constructor xác thực chặt chẽ (fail-closed) trước khi dispatch request POST /commit.
+  factory CommitGuestClaimPayload.validated({
+    required String expectedStateFingerprint,
+    Map<String, ConflictResolution> conflictDecisions = const {},
+  }) {
+    final trimmed = expectedStateFingerprint.trim();
+    if (trimmed.isEmpty || !_fingerprintRegex.hasMatch(trimmed)) {
+      throw ArgumentError(
+        'expectedStateFingerprint must be a valid 64-character hexadecimal SHA-256 string, got: "$expectedStateFingerprint"',
+      );
+    }
+    return CommitGuestClaimPayload(
+      expectedStateFingerprint: trimmed,
+      conflictDecisions: conflictDecisions,
+    );
+  }
 
   factory CommitGuestClaimPayload.fromJson(Map<String, dynamic> json) {
     final decisions = <String, ConflictResolution>{};
@@ -380,7 +418,7 @@ class GuestClaimCommitResult {
   factory GuestClaimCommitResult.fromJson(Map<String, dynamic> json) {
     return GuestClaimCommitResult(
       claimId: json['claimId'] as String,
-      status: GuestClaimStatus.fromString(json['status'] as String?),
+      status: GuestClaimStatus.fromStrictString(json['status'] as String?),
       committedAt: json['committedAt'] as String? ?? '',
       summary: GuestClaimCommitSummary.fromJson(
         json['summary'] as Map<String, dynamic>? ?? const {},
@@ -417,7 +455,7 @@ class GuestClaimStatusResult {
   factory GuestClaimStatusResult.fromJson(Map<String, dynamic> json) {
     return GuestClaimStatusResult(
       claimId: json['claimId'] as String,
-      status: GuestClaimStatus.fromString(json['status'] as String?),
+      status: GuestClaimStatus.fromStrictString(json['status'] as String?),
       expiresAt: json['expiresAt'] as String? ?? '',
       committedAt: json['committedAt'] as String?,
       previewData: GuestClaimPreviewResult.fromJson(

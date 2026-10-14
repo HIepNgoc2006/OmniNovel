@@ -5,7 +5,7 @@ import 'package:sqflite/sqflite.dart';
 /// Quản lý SQLite schema v1 gồm bảng `download_tasks` và `offline_chapters`.
 class OfflineDatabase {
   static const String databaseName = 'omninovel_offline.db';
-  static const int databaseVersion = 3;
+  static const int databaseVersion = 4;
 
   Database? _db;
 
@@ -74,6 +74,7 @@ class OfflineDatabase {
   Future<void> _onCreate(Database db, int version) async {
     await _createV2Tables(db);
     await _createV3LocalLibraryTables(db);
+    await _createV4RecoveryJournalTable(db);
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -93,6 +94,12 @@ class OfflineDatabase {
       // Toàn bộ dữ liệu offline_chapters, download_tasks, offline_deletion_tombstones giữ nguyên 100%.
       // Chỉ tạo thêm 3 bảng Local Library mới.
       await _createV3LocalLibraryTables(db);
+    }
+    if (oldVersion < 4) {
+      // Migration v3 ➔ v4:
+      // Invariant: Toàn bộ 6 bảng cũ (v2 + v3) giữ nguyên 100% dữ liệu.
+      // Chỉ tạo thêm bảng guest_claim_recovery_journal (9 cột) cho crash recovery.
+      await _createV4RecoveryJournalTable(db);
     }
   }
 
@@ -156,6 +163,27 @@ class OfflineDatabase {
     );
     await db.execute(
       'CREATE INDEX IF NOT EXISTS idx_local_history_owner_time ON local_reading_history(owner_scope, last_read_at DESC);',
+    );
+  }
+
+  Future<void> _createV4RecoveryJournalTable(Database db) async {
+    // Bảng quản lý Guest Claim Recovery Journal (Durable ACID Crash Recovery Ledger - 9 Cột)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS guest_claim_recovery_journal (
+        claim_id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        guest_profile_id TEXT NOT NULL,
+        expected_state_fingerprint TEXT NOT NULL,
+        conflict_decisions TEXT NOT NULL,
+        phase TEXT NOT NULL,
+        preview_data TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+    ''');
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_guest_claim_journal_user ON guest_claim_recovery_journal(user_id);',
     );
   }
 

@@ -155,7 +155,7 @@ void main() {
 
       // 4. Kiểm tra Database Version
       final currentVersion = await migratedDb.getVersion();
-      expect(currentVersion, 3, reason: 'Database version must be upgraded to 3');
+      expect(currentVersion, greaterThanOrEqualTo(3), reason: 'Database version must be upgraded to at least 3');
 
       // 5. Invariant 1: Toàn bộ dữ liệu v2 còn nguyên vẹn 100%
       final chapters = await migratedDb.query('offline_chapters');

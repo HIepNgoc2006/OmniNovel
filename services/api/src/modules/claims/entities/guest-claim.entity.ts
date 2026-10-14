@@ -58,6 +58,9 @@ export class GuestClaim {
   @Column({ name: 'result_summary', type: 'jsonb', nullable: true })
   resultSummary: any | null;
 
+  @Column({ name: 'finalization_data', type: 'jsonb', nullable: true })
+  finalizationData: any | null;
+
   @Column({ name: 'expires_at', type: 'timestamptz' })
   expiresAt: Date;
 

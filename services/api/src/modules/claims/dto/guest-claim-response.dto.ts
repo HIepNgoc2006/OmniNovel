@@ -36,6 +36,35 @@ export interface GuestClaimPreviewResponseDto {
   conflicts: ReadingProgressConflictDetail[];
 }
 
+export interface ClaimFinalizedProgressItemDto {
+  storyId: string;
+  chapterId: string;
+  chapterVersionId?: string | null;
+  readingMode: string;
+  pageIndex: number;
+  scrollPosition: number;
+  progressPercentage: number;
+  anchorBlockId?: string | null;
+  textOffset?: number | null;
+  updatedAt: string;
+  deviceTimestamp?: number | null;
+}
+
+export interface ClaimFinalizedChapterReadStateItemDto {
+  storyId: string;
+  chapterId: string;
+  chapterVersionId?: string | null;
+  progressPercentage: number;
+  completedAt?: string | null;
+  lastReadAt: string;
+}
+
+export interface GuestClaimFinalizationDataDto {
+  tombstonedStoryIds: string[];
+  finalizedProgress: ClaimFinalizedProgressItemDto[];
+  finalizedChapterReadStates: ClaimFinalizedChapterReadStateItemDto[];
+}
+
 export interface GuestClaimCommitResponseDto {
   claimId: string;
   status: string;
@@ -46,6 +75,7 @@ export interface GuestClaimCommitResponseDto {
     progressUpdated: number;
     conflictsResolved: number;
   };
+  finalization?: GuestClaimFinalizationDataDto | null;
 }
 
 export interface GuestClaimStatusResponseDto {
@@ -62,4 +92,5 @@ export interface GuestClaimStatusResponseDto {
     progressUpdated: number;
     conflictsResolved: number;
   } | null;
+  finalization?: GuestClaimFinalizationDataDto | null;
 }

@@ -120,6 +120,44 @@ export interface CommitGuestClaimPayload {
 }
 
 /**
+ * Canonical finalized reading progress item in claim finalization data
+ */
+export interface ClaimFinalizedProgressItem {
+  storyId: string;
+  chapterId: string;
+  chapterVersionId?: string | null;
+  readingMode: ReadingMode;
+  pageIndex: number;
+  scrollPosition: number;
+  progressPercentage: number;
+  anchorBlockId?: string | null;
+  textOffset?: number | null;
+  updatedAt: string;
+  deviceTimestamp?: number | null;
+}
+
+/**
+ * Chapter read-state record in claim finalization data
+ */
+export interface ClaimFinalizedChapterReadStateItem {
+  storyId: string;
+  chapterId: string;
+  chapterVersionId?: string | null;
+  progressPercentage: number;
+  completedAt?: string | null;
+  lastReadAt: string;
+}
+
+/**
+ * Authoritative cloud reconciliation snapshot generated post-merge
+ */
+export interface GuestClaimFinalizationData {
+  tombstonedStoryIds: string[];
+  finalizedProgress: ClaimFinalizedProgressItem[];
+  finalizedChapterReadStates: ClaimFinalizedChapterReadStateItem[];
+}
+
+/**
  * Response payload for POST /api/v1/account/guest-claims/:claimId/commit
  */
 export interface GuestClaimCommitResult {
@@ -132,6 +170,7 @@ export interface GuestClaimCommitResult {
     progressUpdated: number;
     conflictsResolved: number;
   };
+  finalization?: GuestClaimFinalizationData | null;
 }
 
 /**
@@ -144,4 +183,5 @@ export interface GuestClaimStatusResult {
   committedAt?: string | null;
   previewData: GuestClaimPreviewResult;
   resultSummary?: GuestClaimCommitResult['summary'] | null;
+  finalization?: GuestClaimFinalizationData | null;
 }

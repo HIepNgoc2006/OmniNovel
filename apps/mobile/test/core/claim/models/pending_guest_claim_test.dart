@@ -174,6 +174,101 @@ void main() {
         );
         expect(itemValid.safePageIndex, 42);
       });
+
+      test('GuestClaimCommitResult and GuestClaimStatusResult parse finalization snapshot correctly', () {
+        final jsonWithFinalization = {
+          'claimId': 'claim-1111',
+          'status': 'COMMITTED',
+          'committedAt': '2026-10-14T10:00:00.000Z',
+          'summary': {
+            'bookmarksImported': 1,
+            'historyMerged': 2,
+            'progressUpdated': 1,
+            'conflictsResolved': 0,
+          },
+          'finalization': {
+            'tombstonedStoryIds': ['story-dead-1'],
+            'finalizedProgress': [
+              {
+                'storyId': 'story-live-1',
+                'chapterId': 'chap-1',
+                'chapterVersionId': 'ver-1',
+                'readingMode': 'PAGED',
+                'pageIndex': 15,
+                'scrollPosition': 0.0,
+                'progressPercentage': 65.0,
+                'anchorBlockId': null,
+                'textOffset': null,
+                'updatedAt': '2026-10-14T10:00:00.000Z',
+              },
+            ],
+            'finalizedChapterReadStates': [
+              {
+                'storyId': 'story-live-1',
+                'chapterId': 'chap-1',
+                'chapterVersionId': 'ver-1',
+                'progressPercentage': 100.0,
+                'completedAt': '2026-10-14T10:00:00.000Z',
+                'lastReadAt': '2026-10-14T10:00:00.000Z',
+              },
+            ],
+          },
+        };
+
+        // 1. Commit result parsing
+        final commitResult = GuestClaimCommitResult.fromJson(jsonWithFinalization);
+        expect(commitResult.status, GuestClaimStatus.committed);
+        expect(commitResult.finalization, isNotNull);
+        expect(commitResult.finalization!.tombstonedStoryIds, contains('story-dead-1'));
+        expect(commitResult.finalization!.finalizedProgress.length, 1);
+        expect(commitResult.finalization!.finalizedProgress.first.storyId, 'story-live-1');
+        expect(commitResult.finalization!.finalizedProgress.first.pageIndex, 15);
+        expect(commitResult.finalization!.finalizedChapterReadStates.length, 1);
+        expect(commitResult.finalization!.finalizedChapterReadStates.first.storyId, 'story-live-1');
+
+        // 2. Status result parsing
+        final jsonStatusWithFinalization = {
+          'claimId': 'claim-1111',
+          'status': 'COMMITTED',
+          'expiresAt': '2026-10-14T10:15:00.000Z',
+          'committedAt': '2026-10-14T10:00:00.000Z',
+          'previewData': {
+            'claimId': 'claim-1111',
+            'status': 'COMMITTED',
+            'stateFingerprint': 'a' * 64,
+            'expiresAt': '2026-10-14T10:15:00.000Z',
+            'bookmarksToImport': 1,
+            'historyToImport': 2,
+            'progressToImport': 1,
+            'conflictsCount': 0,
+            'readStatesIgnoredAntiResurrectionCount': 1,
+          },
+          'resultSummary': jsonWithFinalization['summary'],
+          'finalization': jsonWithFinalization['finalization'],
+        };
+
+        final statusResult = GuestClaimStatusResult.fromJson(jsonStatusWithFinalization);
+        expect(statusResult.status, GuestClaimStatus.committed);
+        expect(statusResult.finalization, isNotNull);
+        expect(statusResult.finalization!.tombstonedStoryIds, contains('story-dead-1'));
+        expect(statusResult.finalization!.finalizedProgress.first.pageIndex, 15);
+        expect(statusResult.finalization!.finalizedChapterReadStates.first.storyId, 'story-live-1');
+
+        // 3. Backward compatibility: legacy committed claim without finalization field
+        final jsonLegacy = {
+          'claimId': 'claim-legacy',
+          'status': 'COMMITTED',
+          'committedAt': '2026-10-01T10:00:00.000Z',
+          'summary': {
+            'bookmarksImported': 0,
+            'historyMerged': 0,
+            'progressUpdated': 0,
+            'conflictsResolved': 0,
+          },
+        };
+        final legacyCommit = GuestClaimCommitResult.fromJson(jsonLegacy);
+        expect(legacyCommit.finalization, isNull);
+      });
     });
   });
 }

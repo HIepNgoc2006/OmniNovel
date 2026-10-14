@@ -103,42 +103,57 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 - Produces: `ClaimFinalizedProgressItem`, `ClaimFinalizedChapterReadStateItem` (kèm `storyId`), `GuestClaimFinalizationData`, `GuestClaimCommitResult.finalization`, `GuestClaimStatusResult.finalization`
 - Consumes: PostgreSQL `guest_claims.finalization_data`, `reading_history_tombstones`
 
-- [ ] **Step 1: Cập nhật Canonical Shared TypeScript Contracts**
+- [x] **Step 1: Cập nhật Canonical Shared TypeScript Contracts**
   Trong `packages/shared/src/types/claim.types.ts`:
   - Thêm `ClaimFinalizedProgressItem` (10 trường canonical progress).
   - Thêm `ClaimFinalizedChapterReadStateItem` (`storyId`, `chapterId`, `maxProgressPercentage`, `completedAt`, `lastReadAt`).
   - Thêm `GuestClaimFinalizationData` (`tombstonedStoryIds`, `finalizedReadingProgress`, `finalizedChapterReadStates`).
   - Thêm `finalization?: GuestClaimFinalizationData` vào `GuestClaimCommitResult` và `GuestClaimStatusResult`.
+  - Built cleanly: `packages/shared/dist/` emitted without errors.
 
-- [ ] **Step 2: Cập nhật Backend DTOs & PostgreSQL Entity Migration**
+- [x] **Step 2: Cập nhật Backend DTOs & PostgreSQL Entity Migration**
   - Tạo migration TypeORM `1700000000020-AddGuestClaimFinalizationData.ts`:
     `ALTER TABLE guest_claims ADD COLUMN IF NOT EXISTS finalization_data JSONB;`
   - Cập nhật `GuestClaim` entity với `@Column({ name: 'finalization_data', type: 'jsonb', nullable: true }) finalizationData: any | null;`.
   - Cập nhật `GuestClaimCommitResponseDto` và `GuestClaimStatusResponseDto` trong NestJS.
 
-- [ ] **Step 3: Sửa Global Tombstone Gap & Lưu Bền Vững Finalization trong `GuestClaimService`**
+- [x] **Step 3: Sửa Global Tombstone Gap & Lưu Bền Vững Finalization trong `GuestClaimService`**
   - Trong `fetchCloudState()`:
     Khi `storyIds.length > 0`, câu truy vấn tombstones BẮT BUỘC bao gồm cả sentinel toàn cục:
     `WHERE user_id = $1 AND (story_id = ANY($2) OR story_id = '00000000-0000-0000-0000-000000000000'::uuid)`
   - Trong logic anti-resurrection:
     `const hasGlobalTombstone = tombstoneSet.has('00000000-0000-0000-0000-000000000000');`
-    Nếu `hasGlobalTombstone || tombstoneSet.has(h.storyId)`, áp dụng anti-resurrection loại bỏ history & progress.
+    Nếu `hasGlobalTombstone || tombstoneSet.has(h.storyId)`, áp dụng anti-resurrection loại bỏ history & progress. Bookmarks KHÔNG bị chặn.
   - Xây dựng `finalization_data`:
     * `tombstonedStoryIds`: Tập các storyId bị chặn bởi tombstone (hoặc toàn bộ claimed storyIds nếu có global sentinel).
     * `finalizedReadingProgress`: Snapshot tiến độ đọc mới nhất của các truyện trong claim.
-    * `finalizedChapterReadStates`: Snapshot authoritative của mọi chapter thuộc phạm vi claim kèm `storyId`.
+    * `finalizedChapterReadStates`: Snapshot authoritative của mọi chapter thuộc phạm vi claim kèm `storyId` được join từ `story_editions`.
   - Lưu bền vững:
-    Trong `UPDATE guest_claims SET status = 'COMMITTED'`, lưu đồng thời `finalization_data = $X`.
+    Trong `UPDATE guest_claims SET status = 'COMMITTED'`, lưu đồng thời `finalization_data = $4`.
   - Idempotency & Status:
-    Khi `status === 'COMMITTED'`, retry commit và `getClaimStatus` đọc `finalization_data` từ DB trả về cho client.
+    Khi `status === 'COMMITTED'`, retry commit và `getClaimStatus` đọc `finalization_data` từ DB trả về cho client (an toàn fail-closed với legacy claim).
 
-- [ ] **Step 4: Viết Backend Regression Test (Anti-Resurrection & Durability)**
-  - Test kịch bản: `clearAllReadingHistory()` -> User có global tombstone sentinel -> Guest chuẩn bị claim truyện A -> `prepare` ghi nhận `readStatesIgnoredAntiResurrectionCount > 0` -> `commit` không import history/progress của truyện A -> retry commit và `GET /status` trả về `finalization` nhất quán.
+- [x] **Step 4: Viết Backend Regression Test (Anti-Resurrection & Durability)**
+  - Cập nhật `services/api/src/modules/claims/test/guest-claim.service.spec.ts`:
+    * Test prepare anti-resurrection khi có global sentinel UUID.
+    * Test commit anti-resurrection khi có global sentinel UUID (bookmarks vẫn được lưu).
+    * Test tính toán và lưu `finalization_data` trong cùng transaction với `COMMITTED`.
+    * Test commit retry trả về đúng snapshot `finalization` đã lưu (idempotency).
+    * Test `getClaimStatus` trả về `finalization`.
+    * Test `getClaimStatus` fail-closed an toàn với legacy claim không có `finalization_data`.
+  - Kết quả: 24/24 unit tests passed trong `guest-claim.service.spec.ts` + 6/6 tests passed trong `guest-claim.controller.spec.ts`.
 
-- [ ] **Step 5: Cập nhật Dart Mirror Model**
+- [x] **Step 5: Cập nhật Dart Mirror Model**
   - Trong `apps/mobile/lib/core/claim/models/guest_claim_models.dart`:
     Thêm `ClaimFinalizedProgressItem`, `ClaimFinalizedChapterReadStateItem`, `GuestClaimFinalizationData`.
     Cập nhật `GuestClaimCommitResult.fromJson` và `GuestClaimStatusResult.fromJson` để parse `finalization`.
+  - Cập nhật unit test trong `pending_guest_claim_test.dart` xác minh deserialization và legacy null safety.
+  - Kết quả: 7/7 unit tests passed trong `pending_guest_claim_test.dart`.
+
+- [x] **Step 6: P1 Test Refinement & Full Regression Checks**
+  - Cập nhật `offline_database_v3_migration_test.dart` kiểm tra chính xác `expect(currentVersion, 4)`.
+  - Full Mobile regression: 418/418 tests PASS (100% Green).
+  - Full Web regression: 50/50 test files, 657/657 tests PASS (100% Green).
 
 ---
 

@@ -27,6 +27,9 @@ import {
   GuestClaimCommitResponseDto,
   GuestClaimStatusResponseDto,
   ReadingProgressConflictDetail,
+  GuestClaimFinalizationDataDto,
+  ClaimFinalizedProgressItemDto,
+  ClaimFinalizedChapterReadStateItemDto,
 } from './dto/guest-claim-response.dto';
 
 @Injectable()
@@ -102,12 +105,13 @@ export class GuestClaimService {
       );
     }
 
-    // 2. Tombstones
+    // 2. Tombstones (Story-specific + Global Sentinel '00000000-0000-0000-0000-000000000000')
+    const GLOBAL_TOMBSTONE_SENTINEL = '00000000-0000-0000-0000-000000000000';
     let tombstoneRows: { story_id: string; epoch: number }[] = [];
     if (storyIds.length > 0) {
       tombstoneRows = await runner.query(
-        `SELECT story_id, epoch FROM reading_history_tombstones WHERE user_id = $1 AND story_id = ANY($2)${forUpdateClause}`,
-        [userId, storyIds],
+        `SELECT story_id, epoch FROM reading_history_tombstones WHERE user_id = $1 AND (story_id = ANY($2) OR story_id = $3)${forUpdateClause}`,
+        [userId, storyIds, GLOBAL_TOMBSTONE_SENTINEL],
       );
     } else {
       tombstoneRows = await runner.query(
@@ -379,12 +383,18 @@ export class GuestClaimService {
         }
       }
 
+      const hasGlobalTombstone = tombstoneRows.some(
+        (t) => t.story_id === '00000000-0000-0000-0000-000000000000',
+      );
+      const isStoryTombstoned = (sId: string) =>
+        hasGlobalTombstone || cloudTombstoneSet.has(sId);
+
       let readStatesIgnoredAntiResurrectionCount = 0;
       let historyToImport = 0;
       const seenGuestChapters = new Set<string>();
 
       for (const h of dto.history) {
-        if (cloudTombstoneSet.has(h.storyId)) {
+        if (isStoryTombstoned(h.storyId)) {
           readStatesIgnoredAntiResurrectionCount++;
           continue;
         }
@@ -404,7 +414,7 @@ export class GuestClaimService {
       const conflicts: ReadingProgressConflictDetail[] = [];
 
       for (const p of dto.progress) {
-        if (cloudTombstoneSet.has(p.storyId)) {
+        if (isStoryTombstoned(p.storyId)) {
           readStatesIgnoredAntiResurrectionCount++;
           continue;
         }
@@ -589,6 +599,8 @@ export class GuestClaimService {
         claim.resultSummary ?? (claim as any).result_summary;
       const claimExpiresAt = claim.expiresAt ?? (claim as any).expires_at;
       const claimCommittedAt = claim.committedAt ?? (claim as any).committed_at;
+      const claimFinalizationData =
+        claim.finalizationData ?? (claim as any).finalization_data ?? null;
 
       if (claimUserId !== userId) {
         throw new ForbiddenException('You do not own this claim');
@@ -609,6 +621,7 @@ export class GuestClaimService {
             progressUpdated: 0,
             conflictsResolved: 0,
           },
+          finalization: claimFinalizationData,
         };
       }
 
@@ -714,9 +727,14 @@ export class GuestClaimService {
         conflictsResolved: 0,
       };
 
+      const hasGlobalTombstone = tombstoneRows.some(
+        (t) => t.story_id === '00000000-0000-0000-0000-000000000000',
+      );
       const tombstoneSet = new Set(tombstoneRows.map((t) => t.story_id));
+      const isStoryTombstoned = (sId: string) =>
+        hasGlobalTombstone || tombstoneSet.has(sId);
 
-      // 4.1 Bookmarks Merge
+      // 4.1 Bookmarks Merge (Additive merge: KHÔNG bị chặn bởi reading tombstones)
       for (const b of storedPayload.bookmarks || []) {
         const insertRes = await runner.query(
           `INSERT INTO bookmarks (user_id, story_id, created_at)
@@ -734,9 +752,9 @@ export class GuestClaimService {
         }
       }
 
-      // 4.2 History Merge (Anti-Resurrection: loại bỏ story có tombstone)
+      // 4.2 History Merge (Anti-Resurrection: loại bỏ story có tombstone hoặc khi có global tombstone)
       for (const h of storedPayload.history || []) {
-        if (tombstoneSet.has(h.storyId)) {
+        if (isStoryTombstoned(h.storyId)) {
           continue;
         }
 
@@ -754,13 +772,13 @@ export class GuestClaimService {
         summary.historyMerged++;
       }
 
-      // 4.3 Reading Progress Merge (1-based pageIndex >= 1)
+      // 4.3 Reading Progress Merge (1-based pageIndex >= 1; loại bỏ story có tombstone)
       const conflictList: ReadingProgressConflictDetail[] =
         claimPreviewData?.conflicts || [];
       const conflictStoryIds = new Set(conflictList.map((c) => c.storyId));
 
       for (const p of storedPayload.progress || []) {
-        if (tombstoneSet.has(p.storyId)) {
+        if (isStoryTombstoned(p.storyId)) {
           continue;
         }
 
@@ -812,19 +830,87 @@ export class GuestClaimService {
         summary.progressUpdated++;
       }
 
-      // 5. Cập nhật Sổ cái Ledger
+      // 4.4 Tạo Authoritative Finalization Snapshot (Scoped theo claim)
+      const tombstonedStoryIds = hasGlobalTombstone
+        ? Array.from(
+            new Set([
+              ...storyIds,
+              ...tombstoneRows
+                .map((t) => t.story_id)
+                .filter((id) => id !== '00000000-0000-0000-0000-000000000000'),
+            ]),
+          )
+        : tombstoneRows
+            .map((t) => t.story_id)
+            .filter((id) => id !== '00000000-0000-0000-0000-000000000000');
+
+      let finalizedProgress: ClaimFinalizedProgressItemDto[] = [];
+      if (storyIds.length > 0) {
+        const postProgressRows = await runner.query(
+          `SELECT story_id, chapter_id, chapter_version_id, reading_mode,
+                  page_index, scroll_position, progress_percentage,
+                  anchor_block_id, text_offset, updated_at
+           FROM reading_progress
+           WHERE user_id = $1 AND story_id = ANY($2)`,
+          [userId, storyIds],
+        );
+        finalizedProgress = postProgressRows.map((r: any) => ({
+          storyId: r.story_id,
+          chapterId: r.chapter_id,
+          chapterVersionId: r.chapter_version_id || null,
+          readingMode: r.reading_mode,
+          pageIndex: Number(r.page_index),
+          scrollPosition: Number(r.scroll_position),
+          progressPercentage: Number(r.progress_percentage),
+          anchorBlockId: r.anchor_block_id || null,
+          textOffset: r.text_offset != null ? Number(r.text_offset) : null,
+          updatedAt: new Date(r.updated_at).toISOString(),
+          deviceTimestamp: null,
+        }));
+      }
+
+      let finalizedChapterReadStates: ClaimFinalizedChapterReadStateItemDto[] = [];
+      if (chapterIds.length > 0) {
+        const postReadStatesRows = await runner.query(
+          `SELECT crs.chapter_id, crs.last_version_id, crs.max_progress_percentage,
+                  crs.completed_at, crs.last_read_at, se.story_id
+           FROM chapter_read_states crs
+           JOIN chapters c ON c.id = crs.chapter_id
+           JOIN story_editions se ON se.id = c.story_edition_id
+           WHERE crs.user_id = $1 AND crs.chapter_id = ANY($2)`,
+          [userId, chapterIds],
+        );
+        finalizedChapterReadStates = postReadStatesRows.map((r: any) => ({
+          storyId: r.story_id,
+          chapterId: r.chapter_id,
+          chapterVersionId: r.last_version_id || null,
+          progressPercentage: Number(r.max_progress_percentage),
+          completedAt: r.completed_at ? new Date(r.completed_at).toISOString() : null,
+          lastReadAt: new Date(r.last_read_at).toISOString(),
+        }));
+      }
+
+      const finalizationData: GuestClaimFinalizationDataDto = {
+        tombstonedStoryIds,
+        finalizedProgress,
+        finalizedChapterReadStates,
+      };
+
+      // 5. Cập nhật Sổ cái Ledger (Atomic Transaction gồm cả COMMITTED, summary, decisions và finalization_data)
       const committedAt = new Date();
       await runner.query(
         `UPDATE guest_claims
          SET status = 'COMMITTED',
              result_summary = $1,
              conflict_decisions = $2,
-             committed_at = $3,
+             finalization_data = $3,
+             committed_at = $4,
              updated_at = NOW()
-         WHERE claim_id = $4`,
+         WHERE claim_id = $5`,
         [
           JSON.stringify(summary),
           JSON.stringify(dto.conflictDecisions || {}),
+          JSON.stringify(finalizationData),
           committedAt,
           claimId,
         ],
@@ -837,6 +923,7 @@ export class GuestClaimService {
         status: 'COMMITTED',
         committedAt: committedAt.toISOString(),
         summary,
+        finalization: finalizationData,
       };
     } catch (err) {
       if (runner.isTransactionActive) {
@@ -892,6 +979,9 @@ export class GuestClaimService {
       delete preview.payload;
     }
 
+    const claimFinalizationData =
+      claim.finalizationData ?? (claim as any).finalization_data ?? null;
+
     return {
       claimId: claimIdVal,
       status: claimStatus,
@@ -901,6 +991,7 @@ export class GuestClaimService {
       committedAt: claimCommittedAt ? new Date(claimCommittedAt).toISOString() : null,
       previewData: preview,
       resultSummary: claimResultSummary,
+      finalization: claimFinalizationData,
     };
   }
 }

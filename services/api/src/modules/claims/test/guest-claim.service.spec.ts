@@ -293,6 +293,42 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
       expect(preview.progressToImport).toBe(0);
       expect(preview.conflictsCount).toBe(0);
     });
+
+    it('should ignore guest history and progress when global sentinel tombstone exists (00000000-0000-0000-0000-000000000000) while still importing bookmarks', async () => {
+      const GLOBAL_SENTINEL = '00000000-0000-0000-0000-000000000000';
+      queryRunnerMock.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('FROM stories')) {
+          return [{ id: storyId1, visibility: 'PUBLIC', status: 'ONGOING' }];
+        }
+        if (sql.includes('FROM chapters')) {
+          return [{ id: chapterId1, story_id: storyId1, has_published_version: true }];
+        }
+        if (sql.includes('SELECT story_id FROM bookmarks')) {
+          return []; // Not bookmarked yet
+        }
+        if (sql.includes('SELECT story_id, epoch FROM reading_history_tombstones')) {
+          // Global sentinel tombstone!
+          return [{ story_id: GLOBAL_SENTINEL, epoch: 5 }];
+        }
+        if (sql.includes('SELECT chapter_id, max_progress_percentage FROM chapter_read_states')) {
+          return [];
+        }
+        if (sql.includes('SELECT story_id, chapter_id, reading_mode')) {
+          return [];
+        }
+        return [];
+      });
+
+      const preview = await service.prepareClaim(userId, validDto);
+
+      // Bookmarks must NOT be ignored (bookmarks are additive)
+      expect(preview.bookmarksToImport).toBe(1);
+      // History and Progress must be ignored by global anti-resurrection sentinel
+      expect(preview.readStatesIgnoredAntiResurrectionCount).toBe(2);
+      expect(preview.historyToImport).toBe(0);
+      expect(preview.progressToImport).toBe(0);
+      expect(preview.conflictsCount).toBe(0);
+    });
   });
 
   describe('commitClaim', () => {
@@ -554,6 +590,243 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
       expect(res.summary.bookmarksImported).toBe(1);
       expect(queryRunnerMock.commitTransaction).toHaveBeenCalled();
     });
+
+    it('should ignore guest history and progress during commit when global sentinel tombstone exists while still importing bookmarks', async () => {
+      const GLOBAL_SENTINEL = '00000000-0000-0000-0000-000000000000';
+      const storedPayload: PrepareGuestClaimDto = {
+        guestProfileId: '77777777-7777-4777-8777-777777777777',
+        bookmarks: [{ storyId: storyId1 }],
+        history: [
+          {
+            storyId: storyId1,
+            chapterId: chapterId1,
+            progressPercentage: 100,
+          },
+        ],
+        progress: [
+          {
+            storyId: storyId1,
+            chapterId: chapterId1,
+            readingMode: CanonicalReadingMode.PAGED,
+            pageIndex: 10,
+            scrollPosition: 0,
+            progressPercentage: 50,
+          },
+        ],
+      };
+
+      const emptyFingerprintWithGlobalTombstone = (service as any).computeCloudFingerprint({
+        bookmarks: [],
+        tombstones: [{ storyId: GLOBAL_SENTINEL, epoch: 5 }],
+        readStates: [],
+        progress: [],
+      });
+
+      queryRunnerMock.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT * FROM guest_claims WHERE claim_id')) {
+          return [
+            {
+              claimId,
+              userId,
+              status: GuestClaimStatusEnum.PREPARED,
+              expiresAt: new Date(Date.now() + 100000),
+              stateFingerprint: emptyFingerprintWithGlobalTombstone,
+              previewData: {
+                payload: storedPayload,
+                conflicts: [],
+              },
+            },
+          ];
+        }
+        if (sql.includes('SELECT story_id, epoch FROM reading_history_tombstones')) {
+          return [{ story_id: GLOBAL_SENTINEL, epoch: 5 }];
+        }
+        if (sql.includes('INSERT INTO bookmarks')) {
+          return [[], 1]; // Bookmark is inserted
+        }
+        if (sql.includes('SELECT story_id, chapter_id, chapter_version_id, reading_mode')) {
+          return []; // post-merge reading_progress
+        }
+        if (sql.includes('FROM chapter_read_states crs')) {
+          return []; // post-merge chapter_read_states
+        }
+        return [];
+      });
+
+      const res = await service.commitClaim(userId, claimId, {
+        expectedStateFingerprint: emptyFingerprintWithGlobalTombstone,
+      });
+
+      expect(res.status).toBe('COMMITTED');
+      // Bookmarks imported = 1, but historyMerged = 0 and progressUpdated = 0 due to global sentinel
+      expect(res.summary.bookmarksImported).toBe(1);
+      expect(res.summary.historyMerged).toBe(0);
+      expect(res.summary.progressUpdated).toBe(0);
+      expect(res.finalization).toBeDefined();
+      expect(res.finalization!.tombstonedStoryIds).toContain(storyId1);
+    });
+
+    it('should compute post-merge authoritative finalization snapshot with storyId, progress, chapter read states, and persist in finalization_data', async () => {
+      const storedPayload: PrepareGuestClaimDto = {
+        guestProfileId: '77777777-7777-4777-8777-777777777777',
+        bookmarks: [{ storyId: storyId1 }],
+        history: [
+          {
+            storyId: storyId1,
+            chapterId: chapterId1,
+            progressPercentage: 100,
+          },
+        ],
+        progress: [
+          {
+            storyId: storyId1,
+            chapterId: chapterId1,
+            readingMode: CanonicalReadingMode.PAGED,
+            pageIndex: 10,
+            scrollPosition: 0,
+            progressPercentage: 50,
+          },
+        ],
+      };
+
+      const emptyFingerprint = (service as any).computeCloudFingerprint({
+        bookmarks: [],
+        tombstones: [],
+        readStates: [],
+        progress: [],
+      });
+
+      let persistedFinalizationData: any = null;
+
+      queryRunnerMock.query.mockImplementation(async (sql: string, params: any[]) => {
+        if (sql.includes('SELECT * FROM guest_claims WHERE claim_id')) {
+          return [
+            {
+              claimId,
+              userId,
+              status: GuestClaimStatusEnum.PREPARED,
+              expiresAt: new Date(Date.now() + 100000),
+              stateFingerprint: emptyFingerprint,
+              previewData: {
+                payload: storedPayload,
+                conflicts: [],
+              },
+            },
+          ];
+        }
+        if (sql.includes('INSERT INTO bookmarks')) {
+          return [[], 1];
+        }
+        if (sql.includes('UPDATE guest_claims')) {
+          // SQL params should include finalization_data
+          persistedFinalizationData = JSON.parse(params[2]);
+          return [];
+        }
+        if (sql.includes('SELECT story_id, chapter_id, chapter_version_id, reading_mode')) {
+          return [
+            {
+              story_id: storyId1,
+              chapter_id: chapterId1,
+              chapter_version_id: null,
+              reading_mode: 'PAGED',
+              page_index: 10,
+              scroll_position: 0,
+              progress_percentage: 50,
+              anchor_block_id: null,
+              text_offset: 0,
+              updated_at: new Date('2026-10-14T10:00:00Z'),
+            },
+          ];
+        }
+        if (sql.includes('FROM chapter_read_states crs')) {
+          return [
+            {
+              chapter_id: chapterId1,
+              last_version_id: null,
+              max_progress_percentage: 100,
+              completed_at: new Date('2026-10-14T10:00:00Z'),
+              last_read_at: new Date('2026-10-14T10:00:00Z'),
+              story_id: storyId1,
+            },
+          ];
+        }
+        return [];
+      });
+
+      const res = await service.commitClaim(userId, claimId, {
+        expectedStateFingerprint: emptyFingerprint,
+      });
+
+      expect(res.status).toBe('COMMITTED');
+      expect(res.finalization).toBeDefined();
+      expect(res.finalization!.finalizedProgress).toHaveLength(1);
+      expect(res.finalization!.finalizedProgress[0].storyId).toBe(storyId1);
+      expect(res.finalization!.finalizedProgress[0].pageIndex).toBe(10);
+      expect(res.finalization!.finalizedChapterReadStates).toHaveLength(1);
+      expect(res.finalization!.finalizedChapterReadStates[0].storyId).toBe(storyId1);
+      expect(res.finalization!.finalizedChapterReadStates[0].chapterId).toBe(chapterId1);
+      expect(res.finalization!.finalizedChapterReadStates[0].progressPercentage).toBe(100);
+
+      expect(persistedFinalizationData).toBeDefined();
+      expect(persistedFinalizationData.finalizedProgress[0].storyId).toBe(storyId1);
+      expect(persistedFinalizationData.finalizedChapterReadStates[0].storyId).toBe(storyId1);
+    });
+
+    it('should return persisted finalization snapshot on commit retry (idempotent 200)', async () => {
+      const summary = {
+        bookmarksImported: 1,
+        historyMerged: 1,
+        progressUpdated: 1,
+        conflictsResolved: 0,
+      };
+      const finalizationSnapshot = {
+        tombstonedStoryIds: [],
+        finalizedProgress: [
+          {
+            storyId: storyId1,
+            chapterId: chapterId1,
+            readingMode: 'PAGED',
+            pageIndex: 10,
+            scrollPosition: 0,
+            progressPercentage: 50,
+            updatedAt: '2026-10-14T10:00:00.000Z',
+          },
+        ],
+        finalizedChapterReadStates: [
+          {
+            storyId: storyId1,
+            chapterId: chapterId1,
+            progressPercentage: 100,
+            lastReadAt: '2026-10-14T10:00:00.000Z',
+          },
+        ],
+      };
+
+      queryRunnerMock.query.mockImplementation(async (sql: string) => {
+        if (sql.includes('SELECT * FROM guest_claims WHERE claim_id')) {
+          return [
+            {
+              claimId,
+              userId,
+              status: GuestClaimStatusEnum.COMMITTED,
+              resultSummary: summary,
+              finalizationData: finalizationSnapshot,
+              committedAt: new Date('2026-10-07T12:00:00Z'),
+            },
+          ];
+        }
+        return [];
+      });
+
+      const res = await service.commitClaim(userId, claimId, {
+        expectedStateFingerprint: mockFingerprint,
+      });
+
+      expect(res.status).toBe('COMMITTED');
+      expect(res.summary).toEqual(summary);
+      expect(res.finalization).toEqual(finalizationSnapshot);
+      expect(queryRunnerMock.rollbackTransaction).toHaveBeenCalled();
+    });
   });
 
   describe('getClaimStatus', () => {
@@ -596,6 +869,54 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
       expect(res.status).toBe(GuestClaimStatusEnum.COMMITTED);
       expect(res.previewData.bookmarksToImport).toBe(1);
       expect((res.previewData as any).payload).toBeUndefined();
+    });
+
+    it('should return finalization snapshot for COMMITTED claim', async () => {
+      const finalizationSnapshot = {
+        tombstonedStoryIds: [storyId1],
+        finalizedProgress: [],
+        finalizedChapterReadStates: [],
+      };
+
+      guestClaimRepoMock.findOne.mockResolvedValueOnce({
+        claimId,
+        userId,
+        status: GuestClaimStatusEnum.COMMITTED,
+        stateFingerprint: 'mock_fingerprint',
+        createdAt: new Date('2026-10-07T10:00:00Z'),
+        expiresAt: new Date('2026-10-07T10:15:00Z'),
+        committedAt: new Date('2026-10-07T10:05:00Z'),
+        previewData: {
+          bookmarksToImport: 1,
+        },
+        resultSummary: { bookmarksImported: 1 },
+        finalizationData: finalizationSnapshot,
+      });
+
+      const res = await service.getClaimStatus(userId, claimId);
+      expect(res.status).toBe(GuestClaimStatusEnum.COMMITTED);
+      expect(res.finalization).toEqual(finalizationSnapshot);
+    });
+
+    it('should return finalization: null safely for legacy claim without finalization_data', async () => {
+      guestClaimRepoMock.findOne.mockResolvedValueOnce({
+        claimId,
+        userId,
+        status: GuestClaimStatusEnum.COMMITTED,
+        stateFingerprint: 'mock_fingerprint',
+        createdAt: new Date('2026-10-07T10:00:00Z'),
+        expiresAt: new Date('2026-10-07T10:15:00Z'),
+        committedAt: new Date('2026-10-07T10:05:00Z'),
+        previewData: {
+          bookmarksToImport: 1,
+        },
+        resultSummary: { bookmarksImported: 1 },
+        finalizationData: null,
+      });
+
+      const res = await service.getClaimStatus(userId, claimId);
+      expect(res.status).toBe(GuestClaimStatusEnum.COMMITTED);
+      expect(res.finalization).toBeNull();
     });
   });
 });

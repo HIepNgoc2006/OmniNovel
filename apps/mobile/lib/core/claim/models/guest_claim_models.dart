@@ -401,18 +401,159 @@ class GuestClaimCommitSummary {
       };
 }
 
+/// Canonical finalized reading progress item in claim finalization data.
+class ClaimFinalizedProgressItem {
+  final String storyId;
+  final String chapterId;
+  final String? chapterVersionId;
+  final ReadingMode readingMode;
+  final int pageIndex;
+  final double scrollPosition;
+  final double progressPercentage;
+  final String? anchorBlockId;
+  final int? textOffset;
+  final String updatedAt;
+  final int? deviceTimestamp;
+
+  const ClaimFinalizedProgressItem({
+    required this.storyId,
+    required this.chapterId,
+    this.chapterVersionId,
+    required this.readingMode,
+    required this.pageIndex,
+    required this.scrollPosition,
+    required this.progressPercentage,
+    this.anchorBlockId,
+    this.textOffset,
+    required this.updatedAt,
+    this.deviceTimestamp,
+  });
+
+  factory ClaimFinalizedProgressItem.fromJson(Map<String, dynamic> json) {
+    final rawPageIndex = json['pageIndex'] is num ? (json['pageIndex'] as num).toInt() : 1;
+    return ClaimFinalizedProgressItem(
+      storyId: json['storyId'] as String,
+      chapterId: json['chapterId'] as String,
+      chapterVersionId: json['chapterVersionId'] as String?,
+      readingMode: ReadingMode.fromString(json['readingMode'] as String?),
+      pageIndex: rawPageIndex < 1 ? 1 : rawPageIndex,
+      scrollPosition: (json['scrollPosition'] as num?)?.toDouble() ?? 0.0,
+      progressPercentage: (json['progressPercentage'] as num?)?.toDouble() ?? 0.0,
+      anchorBlockId: json['anchorBlockId'] as String?,
+      textOffset: json['textOffset'] is num ? (json['textOffset'] as num).toInt() : null,
+      updatedAt: json['updatedAt'] as String? ?? '',
+      deviceTimestamp: json['deviceTimestamp'] is num ? (json['deviceTimestamp'] as num).toInt() : null,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'storyId': storyId,
+        'chapterId': chapterId,
+        if (chapterVersionId != null) 'chapterVersionId': chapterVersionId,
+        'readingMode': readingMode.value,
+        'pageIndex': pageIndex,
+        'scrollPosition': scrollPosition,
+        'progressPercentage': progressPercentage,
+        if (anchorBlockId != null) 'anchorBlockId': anchorBlockId,
+        if (textOffset != null) 'textOffset': textOffset,
+        'updatedAt': updatedAt,
+        if (deviceTimestamp != null) 'deviceTimestamp': deviceTimestamp,
+      };
+}
+
+/// Chapter read-state record in claim finalization data.
+class ClaimFinalizedChapterReadStateItem {
+  final String storyId;
+  final String chapterId;
+  final String? chapterVersionId;
+  final double progressPercentage;
+  final String? completedAt;
+  final String lastReadAt;
+
+  const ClaimFinalizedChapterReadStateItem({
+    required this.storyId,
+    required this.chapterId,
+    this.chapterVersionId,
+    required this.progressPercentage,
+    this.completedAt,
+    required this.lastReadAt,
+  });
+
+  factory ClaimFinalizedChapterReadStateItem.fromJson(Map<String, dynamic> json) {
+    return ClaimFinalizedChapterReadStateItem(
+      storyId: json['storyId'] as String,
+      chapterId: json['chapterId'] as String,
+      chapterVersionId: json['chapterVersionId'] as String?,
+      progressPercentage: (json['progressPercentage'] as num?)?.toDouble() ?? 0.0,
+      completedAt: json['completedAt'] as String?,
+      lastReadAt: json['lastReadAt'] as String? ?? '',
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'storyId': storyId,
+        'chapterId': chapterId,
+        if (chapterVersionId != null) 'chapterVersionId': chapterVersionId,
+        'progressPercentage': progressPercentage,
+        if (completedAt != null) 'completedAt': completedAt,
+        'lastReadAt': lastReadAt,
+      };
+}
+
+/// Authoritative cloud reconciliation snapshot generated post-merge.
+class GuestClaimFinalizationData {
+  final List<String> tombstonedStoryIds;
+  final List<ClaimFinalizedProgressItem> finalizedProgress;
+  final List<ClaimFinalizedChapterReadStateItem> finalizedChapterReadStates;
+
+  const GuestClaimFinalizationData({
+    this.tombstonedStoryIds = const [],
+    this.finalizedProgress = const [],
+    this.finalizedChapterReadStates = const [],
+  });
+
+  factory GuestClaimFinalizationData.fromJson(Map<String, dynamic> json) {
+    return GuestClaimFinalizationData(
+      tombstonedStoryIds: (json['tombstonedStoryIds'] as List<dynamic>?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          const [],
+      finalizedProgress: (json['finalizedProgress'] as List<dynamic>?)
+              ?.map((e) =>
+                  ClaimFinalizedProgressItem.fromJson(e as Map<String, dynamic>))
+              .toList() ??
+          const [],
+      finalizedChapterReadStates:
+          (json['finalizedChapterReadStates'] as List<dynamic>?)
+                  ?.map((e) => ClaimFinalizedChapterReadStateItem.fromJson(
+                      e as Map<String, dynamic>))
+                  .toList() ??
+              const [],
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'tombstonedStoryIds': tombstonedStoryIds,
+        'finalizedProgress': finalizedProgress.map((e) => e.toJson()).toList(),
+        'finalizedChapterReadStates':
+            finalizedChapterReadStates.map((e) => e.toJson()).toList(),
+      };
+}
+
 /// Response returned from POST /api/v1/account/guest-claims/:claimId/commit.
 class GuestClaimCommitResult {
   final String claimId;
   final GuestClaimStatus status;
   final String committedAt;
   final GuestClaimCommitSummary summary;
+  final GuestClaimFinalizationData? finalization;
 
   const GuestClaimCommitResult({
     required this.claimId,
     required this.status,
     required this.committedAt,
     required this.summary,
+    this.finalization,
   });
 
   factory GuestClaimCommitResult.fromJson(Map<String, dynamic> json) {
@@ -423,6 +564,11 @@ class GuestClaimCommitResult {
       summary: GuestClaimCommitSummary.fromJson(
         json['summary'] as Map<String, dynamic>? ?? const {},
       ),
+      finalization: json['finalization'] != null
+          ? GuestClaimFinalizationData.fromJson(
+              json['finalization'] as Map<String, dynamic>,
+            )
+          : null,
     );
   }
 
@@ -431,6 +577,7 @@ class GuestClaimCommitResult {
         'status': status.value,
         'committedAt': committedAt,
         'summary': summary.toJson(),
+        if (finalization != null) 'finalization': finalization!.toJson(),
       };
 }
 
@@ -442,6 +589,7 @@ class GuestClaimStatusResult {
   final String? committedAt;
   final GuestClaimPreviewResult previewData;
   final GuestClaimCommitSummary? resultSummary;
+  final GuestClaimFinalizationData? finalization;
 
   const GuestClaimStatusResult({
     required this.claimId,
@@ -450,6 +598,7 @@ class GuestClaimStatusResult {
     this.committedAt,
     required this.previewData,
     this.resultSummary,
+    this.finalization,
   });
 
   factory GuestClaimStatusResult.fromJson(Map<String, dynamic> json) {
@@ -466,6 +615,11 @@ class GuestClaimStatusResult {
               json['resultSummary'] as Map<String, dynamic>,
             )
           : null,
+      finalization: json['finalization'] != null
+          ? GuestClaimFinalizationData.fromJson(
+              json['finalization'] as Map<String, dynamic>,
+            )
+          : null,
     );
   }
 
@@ -476,5 +630,6 @@ class GuestClaimStatusResult {
         if (committedAt != null) 'committedAt': committedAt,
         'previewData': previewData.toJson(),
         if (resultSummary != null) 'resultSummary': resultSummary!.toJson(),
+        if (finalization != null) 'finalization': finalization!.toJson(),
       };
 }

@@ -227,7 +227,7 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 - Produces: `ScopeCoordinatorClaimBridge` (abstract interface), `GuestClaimCoordinator` (ChangeNotifier): `checkAndPrepareClaim`, `confirmClaim`, `skipClaim`, `checkCrashRecovery`
 - Consumes: `LocalLibraryDao`, `ScopeCoordinatorClaimBridge`, `GuestProfileIdentityProvider`, `ApiClient`, `OfflineDatabase`, `AuthService`
 
-- [ ] **Step 1: Viết test cho Coordinator State Machine, Concurrency Guard và Durable Recovery (RED)**
+- [x] **Step 1: Viết test cho Coordinator State Machine, Concurrency Guard và Durable Recovery (RED)**
   Tạo `apps/mobile/test/core/claim/guest_claim_coordinator_test.dart`:
   - Test `checkAndPrepareClaim`:
     * Không có dữ liệu khách -> Gọi ngay `resolveToAccount(userId, expectedGeneration: gen)`, không mở modal.
@@ -248,7 +248,9 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
     * Server `PREPARED`: Đọc preview data từ SQLite journal, mở lại dialog kèm decisions đã chọn.
     * Server lỗi mạng: Giữ nguyên `TRANSITIONING` (`PENDING_UNAVAILABLE`), cung cấp nút Thử lại.
 
-- [ ] **Step 2: Chạy test và xác nhận thất bại (Red)**
+- [x] **Step 2: Chạy test và xác nhận thất bại (Red)**
+  - Lệnh: `flutter test test/core/claim/guest_claim_coordinator_test.dart`
+  - Kết quả: Thất bại với lỗi compilation error chuẩn TDD RED: `Error when reading 'lib/core/claim/guest_claim_coordinator.dart': The system cannot find the file specified`.
   Lệnh: `flutter test test/core/claim/guest_claim_coordinator_test.dart`
   Kỳ vọng: FAIL vì chưa có file `guest_claim_coordinator.dart`.
 
@@ -304,7 +306,9 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
   - Test AC-09: `AuthService.initializeAuth()` gặp lỗi mạng tạm thời khi gọi `/auth/me` nhưng có saved token: Không chuyển về `unauthenticated`, không xóa token, giữ nguyên phiên làm việc và recovery context.
   - Test Bootstrap Readiness: `bootstrap.dart` hoàn thành khởi tạo router và trả kết quả `bootstrapReady` ngay cả khi scope đang ở `transitioning`.
 
-- [ ] **Step 2: Chạy test và xác nhận thất bại (Red)**
+- [x] **Step 2: Chạy test và xác nhận thất bại (Red)**
+  - Lệnh: `flutter test test/core/claim/guest_claim_coordinator_test.dart`
+  - Kết quả: Thất bại với lỗi compilation error chuẩn TDD RED: `Error when reading 'lib/core/claim/guest_claim_coordinator.dart': The system cannot find the file specified`.
   Lệnh: `flutter test test/core/identity/active_scope_coordinator_claim_test.dart test/core/auth/auth_service_test.dart`
   Kỳ vọng: FAIL vì chưa có `expectedGeneration`, `onAuthStatusChanged` cũ chưa chuyển hoàn toàn sang `setTransitioning()`, và `initializeAuth()` cũ hạ cấp unauthenticated khi lỗi mạng.
 
@@ -367,7 +371,9 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
   - Test error banner và nút Retry khi có lỗi mạng.
   - Test `GuestClaimListener`: tự động hiển thị modal khi `coordinator.isOpen == true`.
 
-- [ ] **Step 2: Chạy test và xác nhận thất bại (Red)**
+- [x] **Step 2: Chạy test và xác nhận thất bại (Red)**
+  - Lệnh: `flutter test test/core/claim/guest_claim_coordinator_test.dart`
+  - Kết quả: Thất bại với lỗi compilation error chuẩn TDD RED: `Error when reading 'lib/core/claim/guest_claim_coordinator.dart': The system cannot find the file specified`.
   Lệnh: `flutter test test/features/claim/guest_claim_bottom_sheet_test.dart`
   Kỳ vọng: FAIL vì chưa có các widget.
 

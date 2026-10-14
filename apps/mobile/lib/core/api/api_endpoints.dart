@@ -46,4 +46,9 @@ class ApiEndpoints {
   static String aiJobPreviews(String id) => '/ai/jobs/$id/previews';
   static String aiJobSegments(String id) => '/ai/jobs/$id/segments';
   static String aiJobApply(String id) => '/ai/jobs/$id/apply';
+
+  // Guest Claim (Phase 7B.3)
+  static const String guestClaimPrepare = '/account/guest-claims/prepare';
+  static String guestClaimCommit(String claimId) => '/account/guest-claims/$claimId/commit';
+  static String guestClaimStatus(String claimId) => '/account/guest-claims/$claimId/status';
 }

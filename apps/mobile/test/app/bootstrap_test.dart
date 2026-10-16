@@ -130,6 +130,25 @@ void main() {
       expect(result.activeScopeCoordinator.activeScope, equals('guest:$storedGuestId'));
     });
 
+    test('AppBootstrap.run() completes bootstrapReady when cold-booting authenticated without hanging on waitForResolvedScope', () async {
+      const mockJwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLWJvb3QtOTk5IiwidXNlcm5hbWUiOiJib290X3VzZXIiLCJyb2xlIjoiUkVBREVSIn0.dummy_signature';
+      when(() => mockTokenStorage.getAccessToken()).thenAnswer((_) async => mockJwt);
+      when(() => mockTokenStorage.getRefreshToken()).thenAnswer((_) async => 'valid_refresh');
+
+      final result = await AppBootstrap.run(
+        customOfflineDatabase: offlineDb,
+        customSecureStorage: mockSecureStorage,
+        customTokenStorage: mockTokenStorage,
+      );
+
+      // Router is created and bootstrap completes cleanly without deadlock
+      expect(result.router, isNotNull);
+      expect(result.authService.state.isAuthenticated, isTrue);
+      expect(result.activeScopeCoordinator.state, equals(ActiveScopeState.transitioning));
+      expect(result.activeScopeCoordinator.activeScope, isNull);
+      expect(result.activeScopeCoordinator.canMutateUserState, isFalse);
+    });
+
     testWidgets('OmniNovelApp exposes all DI providers through MultiProvider without error', (tester) async {
       final result = await AppBootstrap.run(
         customOfflineDatabase: offlineDb,

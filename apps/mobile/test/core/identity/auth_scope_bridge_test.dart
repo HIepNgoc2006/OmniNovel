@@ -134,6 +134,15 @@ void main() {
       await authService.initializeAuth();
       await bridge.settle();
 
+      // P0 Zero-Bypass: Authenticated state enters transitioning, awaiting claim resolution
+      expect(coordinator.state, equals(ActiveScopeState.transitioning));
+      expect(coordinator.activeScope, isNull);
+
+      // Claim finalization opens account
+      await coordinator.resolveToAccount(
+        'user-alpha-123',
+        expectedGeneration: coordinator.transitionGeneration,
+      );
       expect(coordinator.state, equals(ActiveScopeState.account));
       expect(coordinator.activeScope, equals('account:user-alpha-123'));
 
@@ -215,6 +224,15 @@ void main() {
       await authService.login(identifier: 'userA', password: 'password123');
       await bridge.settle();
 
+      // P0 Zero-Bypass: Login enters transitioning, only resolveToAccount opens account
+      expect(coordinator.state, equals(ActiveScopeState.transitioning));
+      expect(coordinator.activeScope, isNull);
+
+      await coordinator.resolveToAccount(
+        'user_A',
+        expectedGeneration: coordinator.transitionGeneration,
+      );
+
       expect(coordinator.state, equals(ActiveScopeState.account));
       expect(coordinator.activeScope, equals('account:user_A'));
     });
@@ -254,6 +272,10 @@ void main() {
 
       await authService.login(identifier: 'userA', password: 'password123');
       await bridge.settle();
+      await coordinator.resolveToAccount(
+        'user_A',
+        expectedGeneration: coordinator.transitionGeneration,
+      );
       expect(coordinator.activeScope, equals('account:user_A'));
 
       // 3. User A Logout
@@ -299,6 +321,10 @@ void main() {
               ));
       await authService.initializeAuth();
       await bridge.settle();
+      await coordinator.resolveToAccount(
+        'user_A',
+        expectedGeneration: coordinator.transitionGeneration,
+      );
       expect(coordinator.activeScope, equals('account:user_A'));
 
       // 2. Kích hoạt session expired

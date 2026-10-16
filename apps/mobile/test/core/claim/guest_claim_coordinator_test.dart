@@ -1056,5 +1056,50 @@ void main() {
       expect(fakeBridge.resolveCalls.first['userId'], equals(testUserId));
       verifyZeroInteractions(mockApiClient);
     });
+
+    test('20. Stale commit response arrives when activeClaimId was cleared or changed to claim B -> callback is rejected even if generation unchanged', () async {
+      await offlineDb.database.insert('guest_claim_recovery_journal', {
+        'claim_id': testClaimId,
+        'user_id': testUserId,
+        'guest_profile_id': testGuestProfileId,
+        'expected_state_fingerprint': testFingerprint,
+        'conflict_decisions': '{}',
+        'phase': 'prepared',
+        'preview_data': jsonEncode(standardPreviewJson),
+        'created_at': 1700000000000,
+        'updated_at': 1700000000000,
+      });
+
+      final coordinator = createCoordinator();
+      coordinator.currentClaimId = testClaimId;
+      coordinator.currentUserId = testUserId;
+      coordinator.activeGeneration = 1;
+      coordinator.isOpen = true;
+      coordinator.previewData = GuestClaimPreviewResult.fromJson(standardPreviewJson);
+
+      when(() => mockApiClient.post<Map<String, dynamic>>(
+            ApiEndpoints.guestClaimCommit(testClaimId),
+            data: any(named: 'data'),
+          )).thenAnswer((_) async {
+        // While request is in-flight, activeClaimId is reset to null (or switched to claim-B)
+        coordinator.currentClaimId = null;
+        return Response(
+          requestOptions: RequestOptions(path: ApiEndpoints.guestClaimCommit(testClaimId)),
+          statusCode: 200,
+          data: standardCommitJson,
+        );
+      });
+
+      await coordinator.confirmClaim(testUserId, {});
+
+      // Invariant: Response A came late and activeClaimId was null (or claim-B).
+      // Callback MUST BE REJECTED! No resolveToAccount call!
+      expect(fakeBridge.resolveCalls, isEmpty);
+
+      // Database journal was NOT transitioned to committedServer!
+      final rows = await offlineDb.database.query('guest_claim_recovery_journal');
+      expect(rows.isNotEmpty, isTrue);
+      expect(rows.first['phase'], isNot(equals('committedServer')));
+    });
   });
 }

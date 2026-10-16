@@ -122,10 +122,11 @@ class AppBootstrap {
     authScopeBridge.attach();
 
     // 4. Check initial auth session & await synchronization gate
-    // P0 Invariant: Chờ settle() và waitForResolvedScope() hoàn tất trước khi tạo Router
+    // P0 Invariant: Chờ settle() hoàn tất để AuthScopeBridge đồng bộ trạng thái ban đầu.
+    // Router và UI Shell được khởi tạo ngay khi bootstrapReady, KHÔNG chờ waitForResolvedScope()
+    // để tránh deadlock khi cold-boot với tài khoản đã đăng nhập đang cần claim/recovery.
     await authService.initializeAuth();
     await authScopeBridge.settle();
-    await activeScopeCoordinator.waitForResolvedScope();
 
     // 4b. Setup ThemeController & Prime initial auth state
     final currentUserId = authService.state.user?.id;

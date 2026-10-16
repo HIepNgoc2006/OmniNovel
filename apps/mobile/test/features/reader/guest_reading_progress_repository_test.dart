@@ -134,6 +134,10 @@ void main() {
         AuthStatus.authenticated,
         userId: 'usr-acc-123',
       );
+      await coordinator.resolveToAccount(
+        'usr-acc-123',
+        expectedGeneration: coordinator.transitionGeneration,
+      );
 
       final now = DateTime.now().toUtc();
       final dummyProgress = LocalReadingProgress(

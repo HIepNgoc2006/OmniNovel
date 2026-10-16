@@ -136,6 +136,10 @@ void main() {
         AuthStatus.authenticated,
         userId: 'usr-account-999',
       );
+      await coordinator.resolveToAccount(
+        'usr-account-999',
+        expectedGeneration: coordinator.transitionGeneration,
+      );
       expect(coordinator.state, ActiveScopeState.account);
       expect(coordinator.activeScope, 'account:usr-account-999');
 

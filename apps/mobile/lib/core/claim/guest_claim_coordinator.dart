@@ -105,7 +105,8 @@ class GuestClaimCoordinator extends ChangeNotifier {
 
     if (currentGen != expectedGeneration) return false;
     if (!isAuthenticated || currentUser != expectedUserId) return false;
-    if (expectedClaimId != null && _currentClaimId != expectedClaimId) return false;
+    if (_currentUserId != null && _currentUserId != expectedUserId) return false;
+    if (expectedClaimId != null && expectedClaimId != _currentClaimId) return false;
     return true;
   }
 
@@ -289,6 +290,16 @@ class GuestClaimCoordinator extends ChangeNotifier {
     required int capturedGen,
     required GuestClaimCommitResult commitResult,
   }) async {
+    // 1. Triple-Check Guard ngay từ đầu (TRƯỚC KHI THỰC HIỆN BẤT KỲ CẬP NHẬT SQLITE / JOURNAL NÀO)
+    if (!isSessionValid(
+      expectedGeneration: capturedGen,
+      expectedUserId: userId,
+      expectedClaimId: claimId,
+    )) {
+      _isCommitting = false;
+      return;
+    }
+
     // Trường hợp server không trả finalization data (legacy server)
     if (commitResult.finalization == null) {
       // Rebind non-destructive bookmarks, bảo toàn 100% partition khách và giữ nguyên journal
@@ -340,7 +351,9 @@ class GuestClaimCoordinator extends ChangeNotifier {
 
     _isOpen = false;
     _isCommitting = false;
+    _currentUserId = null;
     _currentClaimId = null;
+    _activeGeneration = null;
     _previewData = null;
     notifyListeners();
 
@@ -504,7 +517,9 @@ class GuestClaimCoordinator extends ChangeNotifier {
 
     // 3. Đóng dialog và mở account
     _isOpen = false;
+    _currentUserId = null;
     _currentClaimId = null;
+    _activeGeneration = null;
     _previewData = null;
     notifyListeners();
 

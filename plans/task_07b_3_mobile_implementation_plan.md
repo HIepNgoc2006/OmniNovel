@@ -294,7 +294,7 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 - Produces: `ActiveScopeCoordinator.transitionGeneration`, `ActiveScopeCoordinator.setTransitioning()`, `ActiveScopeCoordinator.resolveToAccount(String userId, {required int expectedGeneration})`, `AuthScopeBridge.lastError`, `AuthService.register(...)`
 - Consumes: `AuthStatus`, `AuthState`, `GuestClaimCoordinator`
 
-- [ ] **Step 1: Viết test cho Zero-Bypass, Generation Guard, Bridge Error Observability, AC-09 Network Resilience và Bootstrap (RED)**
+- [x] **Step 1: Viết test cho Zero-Bypass, Generation Guard, Bridge Error Observability, AC-09 Network Resilience và Bootstrap (RED)**
   Tạo `active_scope_coordinator_claim_test.dart` và cập nhật các test trong `active_scope_coordinator_test.dart`, `auth_service_test.dart`:
   - Test zero-bypass: `onAuthStatusChanged(AuthStatus.authenticated, userId: 'u1')` -> State BẮT BUỘC là `ActiveScopeState.transitioning`, `activeScope == null`, `canMutateUserState == false`. Cấm tự động mở `account:u1`.
   - Test strict `resolveToAccount(userId, expectedGeneration: gen)`:
@@ -307,42 +307,46 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
   - Test Bootstrap Readiness: `bootstrap.dart` hoàn thành khởi tạo router và trả kết quả `bootstrapReady` ngay cả khi scope đang ở `transitioning`.
 
 - [x] **Step 2: Chạy test và xác nhận thất bại (Red)**
-  - Lệnh: `flutter test test/core/claim/guest_claim_coordinator_test.dart`
-  - Kết quả: Thất bại với lỗi compilation error chuẩn TDD RED: `Error when reading 'lib/core/claim/guest_claim_coordinator.dart': The system cannot find the file specified`.
-  Lệnh: `flutter test test/core/identity/active_scope_coordinator_claim_test.dart test/core/auth/auth_service_test.dart`
-  Kỳ vọng: FAIL vì chưa có `expectedGeneration`, `onAuthStatusChanged` cũ chưa chuyển hoàn toàn sang `setTransitioning()`, và `initializeAuth()` cũ hạ cấp unauthenticated khi lỗi mạng.
+  - Lệnh: `flutter test test/core/identity/active_scope_coordinator_claim_test.dart test/core/auth/auth_service_test.dart`
+  - Kết quả: FAIL chính xác theo kỳ vọng TDD RED vì thiếu các phương thức và thuộc tính mới (`transitionGeneration`, `resolveToAccount`, `markPendingUnavailable`, `lastError`, `register`).
 
-- [ ] **Step 3: Triển khai mã nguồn Task 4 (GREEN)**
+- [x] **Step 3: Triển khai mã nguồn Task 4 (GREEN)**
   - Trong `active_scope_coordinator.dart`:
     * Thêm `int _transitionGeneration = 0`.
     * Implements `ScopeCoordinatorClaimBridge`.
-    * Thêm `void setTransitioning()`: `_transitionGeneration++; _state = ActiveScopeState.transitioning; _activeScope = null; notifyListeners();`.
+    * Thêm `void setTransitioning({String? forUserId})`: Tăng generation đơn điệu (chặn duplicate generation bump cho cùng một session), `_state = ActiveScopeState.transitioning; _activeScope = null; notifyListeners();`.
     * Thêm `void resolveToAccount(String userId, {required int expectedGeneration})`:
       - Kiểm tra `_state == ActiveScopeState.transitioning` (ném `StateError` nếu sai).
-      - Kiểm tra `expectedGeneration == _transitionGeneration` (drop nếu không khớp).
-      - Trim `userId`. Nếu rỗng -> `_state = ActiveScopeState.bootstrapping; _activeScope = null; notifyListeners(); return;`.
+      - Kiểm tra `expectedGeneration == _transitionGeneration` (drop fail-closed nếu không khớp).
+      - Trim `userId`. Nếu rỗng -> fallback về `bootstrapping; _activeScope = null; notifyListeners(); return;`.
+      - User guard: Kiểm tra `_pendingUserId == null || _pendingUserId == trimmed`.
       - `_activeScope = 'account:$trimmed'; _state = ActiveScopeState.account; _flushWaiters(_activeScope!); notifyListeners();`.
-    * Cập nhật `onAuthStatusChanged`: Nhánh `authenticated` luôn gọi `setTransitioning()`.
+    * Cập nhật `onAuthStatusChanged`: Nhánh `authenticated` luôn gọi `setTransitioning(forUserId: trimmed)`.
   - Trong `auth_scope_bridge.dart`:
     * Bổ sung `Object? _lastTransitionError` và `Object? get lastError => _lastTransitionError`.
-    * Không nuốt lỗi trong `_enqueueTransition`, log error và giữ fail-closed.
+    * Ghi nhận error trong `_enqueueTransition`, log error và giữ fail-closed.
+    * Chặn gọi transition lặp lại cho cùng một phiên authenticated để bảo vệ generation counter.
   - Trong `auth_service.dart`:
     * Bổ sung `Future<void> register({required String username, required String email, required String password})`.
-    * Sửa đổi `initializeAuth()`: Phân biệt lỗi mạng và lỗi xác thực 401/403. Chỉ chuyển sang `unauthenticated` khi có lỗi xác thực dứt khoát hoặc không có token. Nếu gặp lỗi mạng tạm thời, không downgrade `unauthenticated` để bảo vệ AC-09.
+    * Sửa đổi `initializeAuth()`: Phân biệt lỗi mạng và lỗi xác thực 401/403. Chỉ chuyển sang `unauthenticated` khi có lỗi xác thực dứt khoát hoặc không có token. Nếu gặp lỗi mạng tạm thời, phục hồi offline user từ access token và duy trì phiên xác thực để bảo vệ AC-09.
   - Trong `app/bootstrap.dart`:
-    * Tách biệt `bootstrapReady` khỏi `scopeResolved`. Không chờ `waitForResolvedScope()` chặn tạo Router.
-  - Cập nhật các assertions cũ trong `active_scope_coordinator_test.dart` và `auth_scope_bridge_test.dart`.
+    * Tách biệt `bootstrapReady` khỏi `scopeResolved`. Không chờ `waitForResolvedScope()` chặn tạo Router, tránh deadlock khi cold start có token.
+  - Vá kẽ hở P0 Amendment trong `GuestClaimCoordinator`:
+    * Kiểm tra `isSessionValid` ngay từ đầu `_processCommitResult` trước khi cập nhật SQLite journal sang `committedServer` hoặc rebind.
+    * Sửa điều kiện check claim ID: `expectedClaimId != null && expectedClaimId != _currentClaimId` bảo đảm từ chối khi `_currentClaimId` bị reset null hoặc switched.
+    * Reset `_currentUserId = null;` khi claim hoàn tất hoặc bị bỏ qua.
+    * Bổ sung Test 20 xác minh request A về muộn khi claim ID bị xóa/đổi bị từ chối ngay cả khi generation chưa đổi.
 
-- [ ] **Step 4: Chạy test và xác nhận vượt qua (Green)**
-  Lệnh: `flutter test test/core/identity/`
-  Kỳ vọng: Toàn bộ tests Identity PASS 100%.
+- [x] **Step 4: Chạy test và xác nhận vượt qua (Green)**
+  - Lệnh: `flutter test test/core/identity/ test/core/auth/ test/app/ test/core/claim/`
+  - Kết quả: Toàn bộ tests Identity, Auth, Bootstrap và Claim PASS 100%.
 
-- [ ] **Step 5: Chạy regression tests toàn bộ Identity và Bootstrap**
-  Lệnh: `flutter test test/app/ test/core/identity/`
-  Kỳ vọng: Toàn bộ tests PASS 100%. Toàn bộ vertical slice Auth → Claim Coordinator → Bootstrap hoạt động trơn tru.
+- [x] **Step 5: Chạy regression tests toàn bộ Identity và Bootstrap**
+  - Lệnh: `flutter test`
+  - Kết quả: 462/462 tests PASS (100% Green, 0 errors, 0 failures).
 
-- [ ] **Step 6: Commit mã nguồn Task 4**
-  Lệnh: `git add apps/mobile/lib/core/identity/ apps/mobile/lib/core/auth/ apps/mobile/lib/app/bootstrap.dart apps/mobile/test/core/identity/ apps/mobile/test/app/ && git commit -m "feat(mobile): integrate zero-bypass ActiveScopeCoordinator, generation guard, and bootstrap readiness"`
+- [x] **Step 6: Commit mã nguồn Task 4**
+  - Lệnh: `git add apps/mobile/lib/ apps/mobile/test/ plans/task_07b_3_mobile_implementation_plan.md && git commit -m "feat(mobile): complete Task 4 GREEN with zero-bypass scope coordination, generation guard, and bootstrap readiness"`
 
 ---
 

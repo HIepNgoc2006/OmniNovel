@@ -159,7 +159,7 @@ void main() {
       expect(coordinator.activeScope, startsWith('guest:'));
     });
 
-    test('transitions bootstrapping -> account when AuthStatus.authenticated', () async {
+    test('transitions bootstrapping -> transitioning when AuthStatus.authenticated, then resolveToAccount opens account', () async {
       final prefs = await SharedPreferences.getInstance();
       final installProvider = InstallationIdentityProvider(
         secureStorage: mockSecureStorage,
@@ -174,6 +174,17 @@ void main() {
       await coordinator.onAuthStatusChanged(
         AuthStatus.authenticated,
         userId: 'user-mobile-999',
+      );
+
+      // P0 Zero-Bypass: authenticated enters transitioning
+      expect(coordinator.state, ActiveScopeState.transitioning);
+      expect(coordinator.canMutateUserState, false);
+      expect(coordinator.activeScope, isNull);
+
+      // Only resolveToAccount opens account
+      await coordinator.resolveToAccount(
+        'user-mobile-999',
+        expectedGeneration: coordinator.transitionGeneration,
       );
 
       expect(coordinator.state, ActiveScopeState.account);
@@ -233,6 +244,12 @@ void main() {
       await coordinator.onAuthStatusChanged(
         AuthStatus.authenticated,
         userId: 'user-waiter-111',
+      );
+
+      // Resolving via claim finalization
+      await coordinator.resolveToAccount(
+        'user-waiter-111',
+        expectedGeneration: coordinator.transitionGeneration,
       );
 
       final results = await Future.wait<String>([future1, future2]);

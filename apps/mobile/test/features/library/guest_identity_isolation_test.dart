@@ -282,6 +282,10 @@ void main() {
 
       // 1. User Alice đăng nhập
       await coordinator.onAuthStatusChanged(AuthStatus.authenticated, userId: 'usr-alice');
+      await coordinator.resolveToAccount(
+        'usr-alice',
+        expectedGeneration: coordinator.transitionGeneration,
+      );
       expect(coordinator.activeScope, equals('account:usr-alice'));
 
       // 2. User Alice đăng xuất -> Rotate sang fresh guest G2
@@ -320,6 +324,10 @@ void main() {
 
       // 4. User Bob đăng nhập trên cùng máy
       await coordinator.onAuthStatusChanged(AuthStatus.authenticated, userId: 'usr-bob');
+      await coordinator.resolveToAccount(
+        'usr-bob',
+        expectedGeneration: coordinator.transitionGeneration,
+      );
       expect(coordinator.activeScope, equals('account:usr-bob'));
 
       // INVARIANT 1: Bob tách biệt hoàn toàn khỏi G2 và Alice

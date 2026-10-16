@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import '../auth/auth_service.dart';
 import '../auth/auth_state.dart';
+import '../logging/app_logger.dart';
 import 'active_scope_coordinator.dart';
 
 /// Cầu nối đồng bộ giữa AuthService (ChangeNotifier) và ActiveScopeCoordinator (State Machine).
@@ -22,10 +23,14 @@ import 'active_scope_coordinator.dart';
 class AuthScopeBridge {
   final AuthService _authService;
   final ActiveScopeCoordinator _coordinator;
+  final AppLogger _logger;
 
   AuthStatus _previousStatus = AuthStatus.initial;
   String? _previousUserId;
   VoidCallback? _authListener;
+
+  Object? _lastTransitionError;
+  StackTrace? _lastTransitionStackTrace;
 
   // Chuỗi Future tuần tự hóa (serialized execution queue)
   Future<void> _currentTransition = Future.value();
@@ -33,11 +38,15 @@ class AuthScopeBridge {
   AuthScopeBridge({
     required AuthService authService,
     required ActiveScopeCoordinator coordinator,
+    AppLogger logger = const AppLogger('AuthScopeBridge'),
   })  : _authService = authService,
-        _coordinator = coordinator;
+        _coordinator = coordinator,
+        _logger = logger;
 
   AuthStatus get previousStatus => _previousStatus;
   String? get previousUserId => _previousUserId;
+  Object? get lastError => _lastTransitionError;
+  StackTrace? get lastStackTrace => _lastTransitionStackTrace;
 
   /// Gắn listener vào AuthService để tự động đồng bộ khi AuthState thay đổi.
   void attach() {
@@ -59,7 +68,10 @@ class AuthScopeBridge {
   /// Đưa transition của state vào hàng đợi tuần tự hóa để bảo đảm không bị race.
   Future<void> _enqueueTransition(AuthState state) {
     _currentTransition = _currentTransition.then((_) => _applyTransition(state)).catchError((e, s) {
-      // Nuốt lỗi nội bộ để không phá vỡ chuỗi Future của các transition tương lai
+      _lastTransitionError = e;
+      _lastTransitionStackTrace = s;
+      _logger.e('Lỗi chuyển đổi trạng thái AuthScopeBridge: $e', e, s);
+      // Giữ coordinator ở trạng thái an toàn fail-closed (canMutateUserState = false)
     });
     return _currentTransition;
   }
@@ -79,7 +91,7 @@ class AuthScopeBridge {
     final nextStatus = state.status;
     final nextUserId = state.user?.id;
 
-    // Tránh transition dư thừa nếu status và userId không đổi
+    // Tránh transition dư thừa nếu status và userId không đổi (bảo vệ generation counter không bị bump giả lập)
     if (_previousStatus == nextStatus && _previousUserId == nextUserId) {
       return;
     }
@@ -95,11 +107,12 @@ class AuthScopeBridge {
 
       case AuthStatus.authenticating:
         // Bắt đầu quá trình đăng nhập (unauthenticated -> authenticating)
-        await _coordinator.onAuthStatusChanged(AuthStatus.authenticating);
+        await _coordinator.onAuthStatusChanged(AuthStatus.authenticating, userId: nextUserId);
         break;
 
       case AuthStatus.authenticated:
         // Xác thực thành công (authenticating -> authenticated hoặc cold-boot initial -> authenticated)
+        // P0 Invariant: Nhánh này chuyển sang transitioning, không bao giờ tự mở account
         await _coordinator.onAuthStatusChanged(
           AuthStatus.authenticated,
           userId: nextUserId,

@@ -11,6 +11,7 @@ import '../storage/local_library_dao.dart';
 import '../storage/offline_database.dart';
 import 'models/guest_claim_models.dart';
 import 'models/pending_guest_claim.dart';
+export 'models/pending_guest_claim.dart' show CrashRecoveryResult;
 import 'scope_coordinator_claim_bridge.dart';
 
 /// Coordinator quản lý toàn bộ vòng đời Chuyển Giao Dữ Liệu Khách sang Tài Khoản
@@ -157,6 +158,19 @@ class GuestClaimCoordinator extends ChangeNotifier {
     _error = null;
     _isPendingUnavailable = false;
     notifyListeners();
+
+    // Invariant P0-2: Nếu đã có journal pending của user này trong SQLite, cấm tạo prepare mới!
+    final existingRows = await _offlineDb.database.query(
+      'guest_claim_recovery_journal',
+      where: 'user_id = ?',
+      whereArgs: [userId],
+      limit: 1,
+    );
+    if (existingRows.isNotEmpty) {
+      _isPreparing = false;
+      notifyListeners();
+      return;
+    }
 
     try {
       final guestProfileId = await _guestProvider.getOrCreateGuestProfileId();
@@ -572,7 +586,7 @@ class GuestClaimCoordinator extends ChangeNotifier {
   // ==================== CRASH RECOVERY MATRIX ====================
 
   /// Phục hồi sự cố khi ứng dụng khởi động lại hoặc mở lại app.
-  Future<void> checkCrashRecovery(String userId) async {
+  Future<CrashRecoveryResult> checkCrashRecovery(String userId) async {
     _currentUserId = userId;
     final rows = await _offlineDb.database.query(
       'guest_claim_recovery_journal',
@@ -581,7 +595,16 @@ class GuestClaimCoordinator extends ChangeNotifier {
       limit: 1,
     );
 
-    if (rows.isEmpty) return;
+    if (rows.isEmpty) {
+      final anyRows = await _offlineDb.database.query(
+        'guest_claim_recovery_journal',
+        limit: 1,
+      );
+      if (anyRows.isNotEmpty) {
+        return CrashRecoveryResult.blockedByOtherUser;
+      }
+      return CrashRecoveryResult.noPending;
+    }
 
     final row = rows.first;
     final claimId = row['claim_id'] as String;
@@ -610,14 +633,16 @@ class GuestClaimCoordinator extends ChangeNotifier {
             if (isSessionValid(expectedGeneration: capturedGen, expectedUserId: userId)) {
               await _scopeBridge.resolveToAccount(userId, expectedGeneration: capturedGen);
             }
+            return CrashRecoveryResult.finalized;
           }
+          return CrashRecoveryResult.pendingUnavailable;
         } catch (e) {
           _isPendingUnavailable = true;
           _error = e.toString();
           notifyListeners();
           _scopeBridge.markPendingUnavailable(_error!);
+          return CrashRecoveryResult.pendingUnavailable;
         }
-        break;
 
       case 'committing':
         // Crash trong lúc gửi commit -> Query GET /status kiểm tra kết quả
@@ -650,6 +675,7 @@ class GuestClaimCoordinator extends ChangeNotifier {
             if (isSessionValid(expectedGeneration: capturedGen, expectedUserId: userId)) {
               await _scopeBridge.resolveToAccount(userId, expectedGeneration: capturedGen);
             }
+            return CrashRecoveryResult.finalized;
           } else if (statusResult.status == GuestClaimStatus.prepared) {
             // Server vẫn ở prepared -> mở lại modal
             _currentUserId = userId;
@@ -658,14 +684,16 @@ class GuestClaimCoordinator extends ChangeNotifier {
             _previewData = statusResult.previewData;
             _isOpen = true;
             notifyListeners();
+            return CrashRecoveryResult.userActionRequired;
           }
+          return CrashRecoveryResult.pendingUnavailable;
         } catch (e) {
           _isPendingUnavailable = true;
           _error = e.toString();
           notifyListeners();
           _scopeBridge.markPendingUnavailable(_error!);
+          return CrashRecoveryResult.pendingUnavailable;
         }
-        break;
 
       case 'prepared':
         // Crash khi modal đang mở -> khôi phục previewData từ journal và mở lại modal
@@ -680,7 +708,8 @@ class GuestClaimCoordinator extends ChangeNotifier {
         _activeGeneration = capturedGen;
         _isOpen = true;
         notifyListeners();
-        break;
+        return CrashRecoveryResult.userActionRequired;
     }
+    return CrashRecoveryResult.noPending;
   }
 }

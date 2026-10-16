@@ -163,5 +163,30 @@ void main() {
 
       verify(() => mockCoordinator.confirmClaim('user-modal-1', any())).called(1);
     });
+
+    testWidgets('6. PopScope has canPop: false in both prepared and committing states (P0-3)', (tester) async {
+      when(() => mockCoordinator.isCommitting).thenReturn(false);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: GuestClaimBottomSheet(
+              coordinator: mockCoordinator,
+              userId: 'user-modal-1',
+            ),
+          ),
+        ),
+      );
+
+      var popScope = tester.widget<PopScope>(find.byType(PopScope));
+      expect(popScope.canPop, isFalse);
+
+      // Now set committing true
+      when(() => mockCoordinator.isCommitting).thenReturn(true);
+      await tester.pump();
+
+      popScope = tester.widget<PopScope>(find.byType(PopScope));
+      expect(popScope.canPop, isFalse);
+    });
   });
 }

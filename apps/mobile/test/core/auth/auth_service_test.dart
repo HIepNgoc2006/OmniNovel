@@ -218,7 +218,7 @@ void main() {
       verifyNever(() => mockTokenStorage.clearTokens());
     });
 
-    test('P0-1: initializeAuth with expired token (exp in past) -> unauthenticated, does not enter pendingVerification', () async {
+    test('P0-1: initializeAuth with expired token (exp in past) but refresh stored -> pendingVerification, does not conclude logout', () async {
       // Expired exp (-1 hour in the past)
       final pastExp = (DateTime.now().millisecondsSinceEpoch ~/ 1000) - 3600;
       final payload = base64Url.encode(utf8.encode(jsonEncode({
@@ -241,12 +241,13 @@ void main() {
 
       await authService.initializeAuth();
 
-      // Invariant: Expired JWT cannot be trusted offline -> sets unauthenticated
-      expect(authService.state.status, equals(AuthStatus.unauthenticated));
+      // Invariant P0-1: Expired access token with refresh stored stays in pendingVerification
+      expect(authService.state.status, equals(AuthStatus.pendingVerification));
       expect(authService.state.isAuthenticated, isFalse);
+      expect(authService.state.user?.id, equals('expired-user'));
     });
 
-    test('P0-1: initializeAuth with tampered / corrupted JWT payload -> unauthenticated', () async {
+    test('P0-1: initializeAuth with tampered / corrupted JWT payload -> pendingVerification with null hintUser, never authenticated', () async {
       const tamperedJwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.corrupted_not_valid_base64_json!@#.dummy_sig';
 
       when(() => mockTokenStorage.getAccessToken()).thenAnswer((_) async => tamperedJwt);
@@ -261,9 +262,10 @@ void main() {
 
       await authService.initializeAuth();
 
-      // Invariant: Corrupted JWT cannot be parsed -> unauthenticated
-      expect(authService.state.status, equals(AuthStatus.unauthenticated));
+      // Invariant P0-1: Corrupted JWT cannot be parsed but refresh exists -> pendingVerification without hintUser
+      expect(authService.state.status, equals(AuthStatus.pendingVerification));
       expect(authService.state.isAuthenticated, isFalse);
+      expect(authService.state.hintUser, isNull);
     });
 
     test('initializeAuth 401 Unauthorized clears tokens and sets unauthenticated', () async {

@@ -289,8 +289,10 @@ class GuestClaimPreviewResult {
 
   factory GuestClaimPreviewResult.fromJson(Map<String, dynamic> json) {
     return GuestClaimPreviewResult(
-      claimId: json['claimId'] as String,
-      status: GuestClaimStatus.fromStrictString(json['status'] as String?),
+      claimId: json['claimId'] as String? ?? '',
+      status: json['status'] != null
+          ? GuestClaimStatus.fromStrictString(json['status'] as String?)
+          : GuestClaimStatus.prepared,
       stateFingerprint: json['stateFingerprint'] as String? ?? '',
       expiresAt: json['expiresAt'] as String? ?? '',
       bookmarksToImport: (json['bookmarksToImport'] as num?)?.toInt() ?? 0,
@@ -513,12 +515,13 @@ class GuestClaimFinalizationData {
   });
 
   factory GuestClaimFinalizationData.fromJson(Map<String, dynamic> json) {
+    final rawProgress = (json['finalizedProgress'] ?? json['finalizedReadingProgress']) as List<dynamic>?;
     return GuestClaimFinalizationData(
       tombstonedStoryIds: (json['tombstonedStoryIds'] as List<dynamic>?)
               ?.map((e) => e.toString())
               .toList() ??
           const [],
-      finalizedProgress: (json['finalizedProgress'] as List<dynamic>?)
+      finalizedProgress: rawProgress
               ?.map((e) =>
                   ClaimFinalizedProgressItem.fromJson(e as Map<String, dynamic>))
               .toList() ??
@@ -603,13 +606,27 @@ class GuestClaimStatusResult {
 
   factory GuestClaimStatusResult.fromJson(Map<String, dynamic> json) {
     return GuestClaimStatusResult(
-      claimId: json['claimId'] as String,
+      claimId: json['claimId'] as String? ?? '',
       status: GuestClaimStatus.fromStrictString(json['status'] as String?),
       expiresAt: json['expiresAt'] as String? ?? '',
       committedAt: json['committedAt'] as String?,
-      previewData: GuestClaimPreviewResult.fromJson(
-        json['previewData'] as Map<String, dynamic>? ?? const {},
-      ),
+      previewData: json['previewData'] != null
+          ? GuestClaimPreviewResult.fromJson(
+              json['previewData'] as Map<String, dynamic>,
+            )
+          : GuestClaimPreviewResult(
+              claimId: json['claimId'] as String? ?? '',
+              status: json['status'] != null
+                  ? GuestClaimStatus.fromStrictString(json['status'] as String?)
+                  : GuestClaimStatus.prepared,
+              stateFingerprint: json['stateFingerprint'] as String? ?? '',
+              expiresAt: json['expiresAt'] as String? ?? '',
+              bookmarksToImport: 0,
+              historyToImport: 0,
+              progressToImport: 0,
+              conflictsCount: 0,
+              readStatesIgnoredAntiResurrectionCount: 0,
+            ),
       resultSummary: json['resultSummary'] != null
           ? GuestClaimCommitSummary.fromJson(
               json['resultSummary'] as Map<String, dynamic>,

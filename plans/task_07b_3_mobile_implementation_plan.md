@@ -426,7 +426,7 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 **Interfaces:**
 - Kiểm thử tích hợp toàn diện: `ActiveScopeCoordinator`, `AuthScopeBridge`, `GuestClaimCoordinator`, `LocalLibraryDao`, `OfflineDatabase`, `GuestClaimBottomSheet`.
 
-- [ ] **Step 1: Viết 12 kịch bản chấp nhận trong `guest_claim_acceptance_test.dart` (RED)**
+- [x] **Step 1: Viết 19 kịch bản chấp nhận trong `guest_claim_acceptance_test.dart` (12 AC gốc + 7 AC mở rộng P0) (RED)**
   - AC-01: Login/Register thành công -> Scope giữ nguyên `TRANSITIONING`, `canMutateUserState == false`, không tự mở account.
   - AC-02: GoRouter chuyển hướng khỏi `/login` -> `GuestClaimBottomSheet` vẫn hiển thị ở Root Shell.
   - AC-03: Cold start có pending claim -> Bootstrap không bị deadlock chờ scope (`bootstrapReady`).
@@ -439,17 +439,24 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
   - AC-10: Account A có pending claim, sau đó login Account B -> Generation guard hủy stale callback cũ, không merge chéo giữa hai tài khoản.
   - AC-11: Thao tác claim không làm rách nát hay xóa tệp ngoại tuyến của khách.
   - AC-12: User chọn Bỏ qua (Skip) -> Chỉ cho phép khi ở phase `prepared`, lưu marker quarantine vào SharedPreferences, giữ nguyên 100% partition SQLite của guest, mở ACCOUNT.
+  - AC-13 (P0-1): Access token hết hạn + refresh token còn lưu + offline -> Duy trì `pendingVerification`, không rotate guest profile.
+  - AC-14 (P0-1): Tampered JWT payload -> Tuyệt đối không tạo Verified Auth chỉ bằng decode phía client (RFC 7519, unverified JWT chỉ là identity hint).
+  - AC-15 (P0-2): Recovery journal `committing` + timeout -> Trả về `CrashRecoveryResult.pendingUnavailable` và chặn hoàn toàn dispatch `checkAndPrepareClaim`.
+  - AC-16 (P0-2): Recovery journal `committedServer` -> Ưu tiên finalization/recovery hoàn tất trước mọi phiên claim mới.
+  - AC-17 (P0-3): System Back khi modal `prepared` -> `PopScope(canPop: false)` chặn pop âm thầm, không để lọt user bỏ qua claim mà không chọn CTA.
+  - AC-18: Chuyển từ Verified sang Pending Verification -> Không mở scope mới và không cho phép ghi dữ liệu trái phép.
+  - AC-19: Mạng khôi phục sau offline -> Xác thực phiên qua GET /auth/me và tiếp tục recovery chính xác một lần duy nhất.
 
-- [ ] **Step 2: Chạy test chấp nhận và xác nhận toàn bộ PASS (GREEN)**
+- [x] **Step 2: Chạy test chấp nhận và xác nhận toàn bộ PASS (GREEN)**
   Lệnh: `flutter test test/features/claim/guest_claim_acceptance_test.dart`
-  Kỳ vọng: 12/12 acceptance tests PASS.
+  Kết quả: 19/19 acceptance tests PASS 100%.
 
-- [ ] **Step 3: Chạy full regression test suite cho Mobile**
+- [x] **Step 3: Chạy full regression test suite cho Mobile**
   Lệnh: `flutter test`
-  Kỳ vọng: Toàn bộ 410+ tests PASS 100%, 0 failures, 0 regressions.
+  Kết quả: Toàn bộ 500/500 tests PASS 100%, 0 failures, 0 regressions.
 
-- [ ] **Step 4: Commit mã nguồn Task 6 và hoàn tất Task 7B.3 Mobile**
-  Lệnh: `git add apps/mobile/test/features/claim/guest_claim_acceptance_test.dart && git commit -m "test(mobile): verify 12 cross-layer acceptance tests and 4 P0 invariants for mobile claim"`
+- [x] **Step 4: Commit mã nguồn Task 6 và hoàn tất Task 7B.3 Mobile**
+  Lệnh: `git add . && git commit -m "feat(mobile): complete Task 6 GREEN with 19 cross-layer acceptance tests and 3 P0 hardening amendments"`
 
 ---
 

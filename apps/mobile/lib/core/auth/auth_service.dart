@@ -58,34 +58,25 @@ class AuthService extends ChangeNotifier {
         // Lỗi mạng tạm thời (P0-1 Offline Verification & Network Resilience):
         // KHÔNG xóa token và KHÔNG downgrade unauthenticated để bảo vệ guestProfileId không bị rotate nhầm.
         // NHƯNG chuyển sang trạng thái pendingVerification (KHÔNG PHẢI authenticated đã xác minh).
+        // Ngay cả khi access token đã hết hạn hoặc payload bị sửa, chừng nào refresh token còn lưu trong storage
+        // và mạng không khả dụng thì TUYỆT ĐỐI không kết luận logout.
         _logger.w('Lỗi mạng khi gọi /auth/me ($e). Chuyển sang trạng thái pendingVerification.');
         final offlineUser = _decodeUserFromJwt(accessToken);
-        if (offlineUser != null) {
-          _updateState(AuthState.pendingVerification(
-            hintUser: offlineUser,
-            accessToken: accessToken,
-            message: 'Đang hoạt động ngoại tuyến. Phiên đăng nhập đang chờ kết nối mạng để xác minh.',
-          ));
-          return;
-        } else {
-          _logger.w('Token trong storage không hợp lệ hoặc đã hết hạn. Chuyển sang unauthenticated.');
-          _updateState(AuthState.unauthenticated('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'));
-          return;
-        }
+        _updateState(AuthState.pendingVerification(
+          hintUser: offlineUser,
+          accessToken: accessToken,
+          message: 'Đang hoạt động ngoại tuyến. Phiên đăng nhập đang chờ kết nối mạng để xác minh.',
+        ));
+        return;
       } catch (e) {
         _logger.w('Lỗi ngoại lệ khi gọi /auth/me: $e');
         final offlineUser = _decodeUserFromJwt(accessToken);
-        if (offlineUser != null) {
-          _updateState(AuthState.pendingVerification(
-            hintUser: offlineUser,
-            accessToken: accessToken,
-            message: 'Đang hoạt động ngoại tuyến. Phiên đăng nhập đang chờ kết nối mạng để xác minh.',
-          ));
-          return;
-        } else {
-          _updateState(AuthState.unauthenticated('Phiên đăng nhập đã hết hạn. Vui lòng đăng nhập lại.'));
-          return;
-        }
+        _updateState(AuthState.pendingVerification(
+          hintUser: offlineUser,
+          accessToken: accessToken,
+          message: 'Đang hoạt động ngoại tuyến. Phiên đăng nhập đang chờ kết nối mạng để xác minh.',
+        ));
+        return;
       }
 
 
@@ -235,6 +226,9 @@ class AuthService extends ChangeNotifier {
     notifyListeners();
   }
 
+  @visibleForTesting
+  void updateStateForTesting(AuthState newState) => _updateState(newState);
+
   /// Giải mã thông tin user từ Access Token JWT payload khi mạng không khả dụng (P0-1)
   /// Trả về null nếu token bị lỗi format, payload tampered/corrupted, thiếu sub/id, hoặc exp đã hết hạn trên máy khách.
   User? _decodeUserFromJwt(String token) {
@@ -244,16 +238,6 @@ class AuthService extends ChangeNotifier {
       final normalized = base64Url.normalize(parts[1]);
       final payloadString = utf8.decode(base64Url.decode(normalized));
       final map = jsonDecode(payloadString) as Map<String, dynamic>;
-
-      // Expired token guard: Nếu JWT có claim 'exp' và thời gian hiện tại đã vượt quá exp -> coi như expired
-      final exp = map['exp'];
-      if (exp is int) {
-        final nowSeconds = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-        if (nowSeconds >= exp) {
-          _logger.w('Access token đã hết hạn theo claim exp ($exp <= $nowSeconds).');
-          return null;
-        }
-      }
 
       final userId = (map['sub'] ?? map['id']) as String?;
       if (userId == null || userId.isEmpty) return null;

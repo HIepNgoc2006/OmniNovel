@@ -49,7 +49,7 @@ class _GuestClaimBottomSheetState extends State<GuestClaimBottomSheet> {
         final error = coordinator.error;
 
         return PopScope(
-          canPop: !isCommitting,
+          canPop: false,
           child: Container(
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
             decoration: BoxDecoration(

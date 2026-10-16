@@ -41,8 +41,8 @@ class AuthState {
       );
 
   factory AuthState.pendingVerification({
-    required User hintUser,
-    required String accessToken,
+    User? hintUser,
+    String? accessToken,
     String? message,
   }) =>
       AuthState(
@@ -52,6 +52,7 @@ class AuthState {
         errorMessage: message,
       );
 
+  User? get hintUser => status == AuthStatus.pendingVerification ? user : null;
   bool get isAuthenticated => status == AuthStatus.authenticated;
   bool get isPendingVerification => status == AuthStatus.pendingVerification;
   bool get isVerifiedAuth => status == AuthStatus.authenticated;

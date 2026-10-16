@@ -39,7 +39,7 @@ void main() {
       when(() => mockCoordinator.isCommitting).thenReturn(false);
       when(() => mockCoordinator.error).thenReturn(null);
       when(() => mockCoordinator.isOpen).thenReturn(false);
-      when(() => mockCoordinator.checkCrashRecovery(any())).thenAnswer((_) async {});
+      when(() => mockCoordinator.checkCrashRecovery(any())).thenAnswer((_) async => CrashRecoveryResult.noPending);
       when(() => mockCoordinator.checkAndPrepareClaim(any())).thenAnswer((_) async {});
       when(() => mockCoordinator.resetSession()).thenReturn(null);
 
@@ -200,6 +200,33 @@ void main() {
 
       expect(find.byType(GuestClaimBottomSheet), findsNothing);
       verify(() => mockCoordinator.resetSession()).called(1);
+    });
+
+    testWidgets('6. When checkCrashRecovery returns pendingUnavailable or userActionRequired -> does NOT trigger checkAndPrepareClaim (P0-2)', (tester) async {
+      final user = const User(id: 'u-orch-1', username: 'testuser', email: 'test@example.com', role: 'READER');
+      when(() => mockAuthService.state).thenReturn(AuthState.authenticated(user: user, accessToken: 'token'));
+      when(() => mockCoordinator.checkCrashRecovery(any())).thenAnswer((_) async => CrashRecoveryResult.pendingUnavailable);
+
+      await tester.pumpWidget(
+        MultiProvider(
+          providers: [
+            ChangeNotifierProvider<GuestClaimCoordinator>.value(value: mockCoordinator),
+            ChangeNotifierProvider<AuthService>.value(value: mockAuthService),
+          ],
+          child: const MaterialApp(
+            home: Scaffold(
+              body: GuestClaimListener(
+                child: Text('App Shell Child'),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      verify(() => mockCoordinator.checkCrashRecovery('u-orch-1')).called(1);
+      // Invariant P0-2: checkAndPrepareClaim MUST NOT be called!
+      verifyNever(() => mockCoordinator.checkAndPrepareClaim(any()));
     });
   });
 }

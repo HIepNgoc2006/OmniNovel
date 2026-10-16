@@ -23,6 +23,24 @@ enum ClaimRecoveryPhase {
   }
 }
 
+/// Kết quả ngữ nghĩa của tiến trình kiểm tra Crash Recovery (P0-2)
+enum CrashRecoveryResult {
+  /// Không có pending claim nào trong journal cần xử lý
+  noPending,
+
+  /// Có pending claim ở trạng thái prepared (hoặc server còn prepared) -> cần người dùng thao tác trên UI
+  userActionRequired,
+
+  /// Đang có claim (committing hoặc committedServer) nhưng không thể liên lạc với server -> chặn tạo claim mới
+  pendingUnavailable,
+
+  /// Server đã committed và hoàn tất rebindScope thành công
+  finalized,
+
+  /// Pending claim trong journal thuộc về người dùng khác
+  blockedByOtherUser,
+}
+
 /// Model Bản ghi Nhật ký Phục hồi Claim Khách (Guest Claim Recovery Journal).
 ///
 /// Quản lý trạng thái bền vững trong bảng SQLite `guest_claim_recovery_journal` gồm đúng 9 cột:

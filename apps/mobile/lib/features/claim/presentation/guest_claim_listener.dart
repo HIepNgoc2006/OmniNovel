@@ -68,9 +68,11 @@ class _GuestClaimListenerState extends State<GuestClaimListener> {
         WidgetsBinding.instance.addPostFrameCallback((_) async {
           if (!mounted) return;
           // Bước 1: Ưu tiên phục hồi crash recovery journal nếu có
-          await coordinator.checkCrashRecovery(currentUserId);
-          // Bước 2: Nếu chưa mở modal phục hồi và phiên vẫn hợp lệ, chuẩn bị claim mới
-          if (!coordinator.isOpen) {
+          final recoveryResult = await coordinator.checkCrashRecovery(currentUserId);
+          // Bước 2: Chỉ khi kết quả là noPending và phiên Auth đã verified mới cho phép prepare claim mới (P0-2)
+          if (recoveryResult == CrashRecoveryResult.noPending &&
+              !coordinator.isOpen &&
+              authService.state.isVerifiedAuth) {
             await coordinator.checkAndPrepareClaim(currentUserId);
           }
         });
@@ -101,6 +103,7 @@ class _GuestClaimListenerState extends State<GuestClaimListener> {
     final navContext = AppRouter.rootNavigatorKey.currentContext ?? context;
     showModalBottomSheet(
       context: navContext,
+      useRootNavigator: true,
       isDismissible: false,
       enableDrag: false,
       isScrollControlled: true,
@@ -112,7 +115,13 @@ class _GuestClaimListenerState extends State<GuestClaimListener> {
         );
       },
     ).then((_) {
-      _isModalShowing = false;
+      if (mounted) {
+        setState(() {
+          _isModalShowing = false;
+        });
+      } else {
+        _isModalShowing = false;
+      }
     });
   }
 

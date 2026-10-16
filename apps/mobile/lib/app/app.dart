@@ -3,10 +3,12 @@ import 'package:provider/provider.dart';
 import 'bootstrap.dart';
 import '../core/auth/auth_service.dart';
 import '../core/api/api_client.dart';
+import '../core/claim/guest_claim_coordinator.dart';
 import '../core/storage/preferences_service.dart';
 import '../core/storage/local_library_dao.dart';
 import '../core/identity/active_scope_coordinator.dart';
 import '../core/theme/theme_controller.dart';
+import '../../features/claim/presentation/guest_claim_listener.dart';
 import '../../features/gamification/repositories/gamification_repository.dart';
 import '../../features/library/repositories/guest_library_repository.dart';
 import '../../features/reader/repositories/guest_reading_progress_repository.dart';
@@ -26,6 +28,7 @@ class OmniNovelApp extends StatelessWidget {
         ChangeNotifierProvider<AuthService>.value(value: bootstrapResult.authService),
         ChangeNotifierProvider<ThemeController>.value(value: bootstrapResult.themeController),
         ChangeNotifierProvider<ActiveScopeCoordinator>.value(value: bootstrapResult.activeScopeCoordinator),
+        ChangeNotifierProvider<GuestClaimCoordinator>.value(value: bootstrapResult.guestClaimCoordinator),
         Provider<ApiClient>.value(value: bootstrapResult.apiClient),
         Provider<PreferencesService>.value(value: bootstrapResult.preferencesService),
         Provider<GamificationRepository>.value(value: bootstrapResult.gamificationRepository),
@@ -44,9 +47,15 @@ class OmniNovelApp extends StatelessWidget {
             darkTheme: theme,
             themeMode: ThemeMode.dark,
             routerConfig: bootstrapResult.router,
+            builder: (context, child) {
+              return GuestClaimListener(
+                child: child ?? const SizedBox.shrink(),
+              );
+            },
           );
         },
       ),
     );
   }
 }
+

@@ -364,44 +364,55 @@ Triển khai hoàn chỉnh luồng chuyển giao dữ liệu Khách sang Tài kh
 - Produces: `GuestClaimBottomSheet`, `GuestClaimListener`
 - Consumes: `GuestClaimCoordinator`, `AppColors`
 
-- [ ] **Step 1: Viết widget test cho `GuestClaimBottomSheet` và Root Listener (RED)**
-  Tạo `apps/mobile/test/features/claim/guest_claim_bottom_sheet_test.dart`:
+- [x] **Step 1: Viết widget test cho `GuestClaimBottomSheet` và Root Listener (RED)**
+  Tạo `apps/mobile/test/features/claim/guest_claim_bottom_sheet_test.dart`, `guest_claim_listener_test.dart`, và `guest_claim_lifecycle_orchestration_test.dart`:
   - Test hiển thị số lượng bookmarks, history, progress từ preview.
   - Test hiển thị bảng so sánh conflict và Radio chọn `KEEP_CLOUD` vs `USE_GUEST`.
-  - Test `PopScope(canPop: false)`: chặn Back button khi claim đang pending.
-  - Test primary CTA "Gộp vào tài khoản" kích hoạt `confirmClaim` kèm loading state.
+  - Test `PopScope(canPop: !isCommitting)`: chặn Back button khi commit đang diễn ra.
+  - Test primary CTA "Chuyển giao dữ liệu" kích hoạt `confirmClaim` kèm loading state.
   - Test secondary CTA "Bỏ qua" kích hoạt `skipClaim` khi ở phase `prepared`.
   - Test nút "Bỏ qua" bị disable khi `isCommitting == true`.
   - Test error banner và nút Retry khi có lỗi mạng.
-  - Test `GuestClaimListener`: tự động hiển thị modal khi `coordinator.isOpen == true`.
+  - Test `GuestClaimListener`: tự động checkCrashRecovery và checkAndPrepareClaim khi verified auth.
+  - Test rebuild resilience và router redirect không làm đóng hay duplicate modal.
+  - Test logout tự động pop modal và gọi `resetSession()`.
 
 - [x] **Step 2: Chạy test và xác nhận thất bại (Red)**
-  - Lệnh: `flutter test test/core/claim/guest_claim_coordinator_test.dart`
-  - Kết quả: Thất bại với lỗi compilation error chuẩn TDD RED: `Error when reading 'lib/core/claim/guest_claim_coordinator.dart': The system cannot find the file specified`.
-  Lệnh: `flutter test test/features/claim/guest_claim_bottom_sheet_test.dart`
-  Kỳ vọng: FAIL vì chưa có các widget.
+  - Lệnh: `flutter test test/features/claim/guest_claim_bottom_sheet_test.dart test/features/claim/guest_claim_listener_test.dart`
+  - Kết quả: Thất bại chuẩn TDD RED khi chưa có widget và listener.
 
-- [ ] **Step 3: Triển khai mã nguồn Task 5 (GREEN)**
+- [x] **Step 3: Triển khai mã nguồn Task 5 (GREEN)**
   - Viết `apps/mobile/lib/features/claim/presentation/guest_claim_bottom_sheet.dart`:
     * Material 3 BottomSheet, responsive layout.
-    * Bọc trong `PopScope(canPop: false)`.
-    * Conflict selector component.
+    * Bọc trong `PopScope(canPop: !coordinator.isCommitting)`.
+    * Radio conflict selector (`USE_GUEST` vs `KEEP_CLOUD`).
     * Nút "Bỏ qua" bị disable khi `coordinator.isCommitting == true`.
+    * Error banner + Retry CTA khi có lỗi.
   - Viết `apps/mobile/lib/features/claim/presentation/guest_claim_listener.dart`:
-    * Lắng nghe `GuestClaimCoordinator` và gọi `showModalBottomSheet(isDismissible: false, enableDrag: false)`.
+    * Lắng nghe AuthState và Coordinator qua `AppRouter.rootNavigatorKey`.
+    * Chỉ kích hoạt checkCrashRecovery và checkAndPrepareClaim khi `auth.isVerifiedAuth == true`.
+    * Tự động đóng modal và reset session khi user đăng xuất.
+  - Cập nhật `apps/mobile/lib/app/router/app_router.dart`:
+    * Khởi tạo `static final GlobalKey<NavigatorState> rootNavigatorKey` và gán vào `GoRouter(navigatorKey: rootNavigatorKey)`.
+  - Cập nhật `apps/mobile/lib/app/bootstrap.dart`:
+    * Thêm `guestClaimCoordinator` vào `BootstrapResult`, inject `customApiClient` DI testing.
   - Cập nhật `apps/mobile/lib/app/app.dart`:
-    * Bọc `GuestClaimListener` tại Root Shell.
+    * Bọc `GuestClaimListener` tại Root Shell (`MaterialApp.router(builder: ...)`).
+    * Cung cấp `GuestClaimCoordinator` qua MultiProvider.
+  - Triển khai 2 P0 Amendments:
+    * P0-1: `AuthStatus.pendingVerification` cho offline cold boot, không xoay guest, không commit claim, không mở account scope.
+    * P0-2: `_currentUserId == expectedUserId` so sánh nghiêm ngặt kèm `_prepareRequestId` / `_activeOperationId` chống race condition.
 
-- [ ] **Step 4: Chạy test và xác nhận vượt qua (Green)**
-  Lệnh: `flutter test test/features/claim/guest_claim_bottom_sheet_test.dart`
-  Kỳ vọng: Toàn bộ tests PASS 100%.
+- [x] **Step 4: Chạy test và xác nhận vượt qua (Green)**
+  - Lệnh: `flutter test test/features/claim/`
+  - Kết quả: 35/35 tests trong feature claim PASS 100%.
 
-- [ ] **Step 5: Chạy regression tests toàn bộ Features Presentation**
-  Lệnh: `flutter test test/features/claim/`
-  Kỳ vọng: Toàn bộ tests PASS 100%.
+- [x] **Step 5: Chạy regression tests toàn bộ Features Presentation**
+  - Lệnh: `flutter test`
+  - Kết quả: 479/479 tests toàn bộ Mobile app PASS 100% (0 errors, 0 failures).
 
-- [ ] **Step 6: Commit mã nguồn Task 5**
-  Lệnh: `git add apps/mobile/lib/features/claim/ apps/mobile/lib/app/ apps/mobile/test/features/claim/ && git commit -m "feat(mobile): implement GuestClaimBottomSheet with PopScope and root shell listener"`
+- [x] **Step 6: Commit mã nguồn Task 5**
+  - Lệnh: `git add . && git commit -m "feat(mobile): complete Task 5 guest claim presentation and root shell orchestration with P0 fixes"`
 
 ---
 

@@ -143,11 +143,13 @@ void main() {
 
       // Router is created and bootstrap completes cleanly without deadlock
       expect(result.router, isNotNull);
-      expect(result.authService.state.isAuthenticated, isTrue);
-      expect(result.activeScopeCoordinator.state, equals(ActiveScopeState.transitioning));
-      expect(result.activeScopeCoordinator.activeScope, isNull);
-      expect(result.activeScopeCoordinator.canMutateUserState, isFalse);
+      // P0-1 Invariant: Khi offline, auth state là pendingVerification (không tự ý coi là authenticated)
+      expect(result.authService.state.isPendingVerification, isTrue);
+      expect(result.authService.state.user?.id, equals('user-boot-999'));
+      expect(result.activeScopeCoordinator.state, equals(ActiveScopeState.guest));
+      expect(result.activeScopeCoordinator.canMutateUserState, isTrue);
     });
+
 
     testWidgets('OmniNovelApp exposes all DI providers through MultiProvider without error', (tester) async {
       final result = await AppBootstrap.run(

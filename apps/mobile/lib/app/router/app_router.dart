@@ -36,6 +36,8 @@ import '../../features/story/presentation/story_detail_screen.dart';
 import '../../features/story/repositories/story_repository.dart';
 
 class AppRouter {
+  static final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
+
   static GoRouter create({
     required AuthService authService,
     required ApiClient apiClient,
@@ -124,7 +126,9 @@ class AppRouter {
     bool wasAuthenticated = authService.state.isAuthenticated;
 
     return GoRouter(
+      navigatorKey: rootNavigatorKey,
       initialLocation: '/home',
+
       refreshListenable: authService,
       redirect: (BuildContext context, GoRouterState state) {
         final authState = authService.state;

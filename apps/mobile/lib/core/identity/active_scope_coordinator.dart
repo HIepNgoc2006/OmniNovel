@@ -167,6 +167,20 @@ class ActiveScopeCoordinator extends ChangeNotifier implements ScopeCoordinatorC
         // Chỉ GuestClaimCoordinator mới được resolveToAccount().
         setTransitioning(forUserId: trimmed);
         break;
+
+      case AuthStatus.pendingVerification:
+        // P0-1 Amendment: Trong Pending Verification, không xoay guest identity,
+        // không tự ý commit claim và không mở account mutation scope chỉ dựa vào JWT decode.
+        // Duy trì guest scope hiện tại để người dùng có thể tiếp tục đọc truyện offline.
+        final profileId = await _guestProfileProvider.getOrCreateGuestProfileId();
+        final guestScope = 'guest:$profileId';
+        _activeScope = guestScope;
+        _state = ActiveScopeState.guest;
+        _pendingUserId = null;
+        _flushWaiters(_activeScope!);
+        notifyListeners();
+        break;
+
     }
   }
 

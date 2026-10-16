@@ -5,6 +5,7 @@ enum AuthStatus {
   unauthenticated,
   authenticating,
   authenticated,
+  pendingVerification,
 }
 
 class AuthState {
@@ -39,6 +40,21 @@ class AuthState {
         accessToken: accessToken,
       );
 
+  factory AuthState.pendingVerification({
+    required User hintUser,
+    required String accessToken,
+    String? message,
+  }) =>
+      AuthState(
+        status: AuthStatus.pendingVerification,
+        user: hintUser,
+        accessToken: accessToken,
+        errorMessage: message,
+      );
+
   bool get isAuthenticated => status == AuthStatus.authenticated;
+  bool get isPendingVerification => status == AuthStatus.pendingVerification;
+  bool get isVerifiedAuth => status == AuthStatus.authenticated;
   bool get isLoading => status == AuthStatus.authenticating || status == AuthStatus.initial;
 }
+

@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -184,8 +185,17 @@ void main() {
       );
     });
 
-    test('AC-09: initializeAuth network error with valid tokens preserves session (never unauthenticated or wipe tokens)', () async {
-      const mockJwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLWFjMDkiLCJ1c2VybmFtZSI6Im9mZmxpbmVfdXNlciIsInJvbGUiOiJSRUFERVIifQ.dummy_signature';
+    test('P0-1: initializeAuth network error with valid tokens enters Pending Verification (never authenticated, never wipe tokens)', () async {
+      // Future exp (+1 hour)
+      final futureExp = (DateTime.now().millisecondsSinceEpoch ~/ 1000) + 3600;
+      final payload = base64Url.encode(utf8.encode(jsonEncode({
+        'sub': 'user-ac09',
+        'username': 'offline_user',
+        'role': 'READER',
+        'exp': futureExp,
+      }))).replaceAll('=', '');
+      final mockJwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.$payload.dummy_signature';
+
       when(() => mockTokenStorage.getAccessToken()).thenAnswer((_) async => mockJwt);
       when(() => mockTokenStorage.getRefreshToken()).thenAnswer((_) async => 'valid_refresh');
 
@@ -200,10 +210,60 @@ void main() {
 
       await authService.initializeAuth();
 
-      // Invariant AC-09: Preserves authenticated session, user id recovered from token, tokens intact
-      expect(authService.state.status, equals(AuthStatus.authenticated));
+      // P0-1 Invariant: Chuyển sang pendingVerification, KHÔNG BAO GIỜ tự coi là authenticated!
+      expect(authService.state.status, equals(AuthStatus.pendingVerification));
+      expect(authService.state.isAuthenticated, isFalse);
+      expect(authService.state.isPendingVerification, isTrue);
       expect(authService.state.user?.id, equals('user-ac09'));
       verifyNever(() => mockTokenStorage.clearTokens());
+    });
+
+    test('P0-1: initializeAuth with expired token (exp in past) -> unauthenticated, does not enter pendingVerification', () async {
+      // Expired exp (-1 hour in the past)
+      final pastExp = (DateTime.now().millisecondsSinceEpoch ~/ 1000) - 3600;
+      final payload = base64Url.encode(utf8.encode(jsonEncode({
+        'sub': 'expired-user',
+        'username': 'expired_user',
+        'role': 'READER',
+        'exp': pastExp,
+      }))).replaceAll('=', '');
+      final expiredJwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.$payload.dummy_signature';
+
+      when(() => mockTokenStorage.getAccessToken()).thenAnswer((_) async => expiredJwt);
+      when(() => mockTokenStorage.getRefreshToken()).thenAnswer((_) async => 'expired_refresh');
+
+      when(() => mockApiClient.get<Map<String, dynamic>>(ApiEndpoints.me)).thenThrow(
+        DioException(
+          requestOptions: RequestOptions(path: ApiEndpoints.me),
+          type: DioExceptionType.connectionTimeout,
+        ),
+      );
+
+      await authService.initializeAuth();
+
+      // Invariant: Expired JWT cannot be trusted offline -> sets unauthenticated
+      expect(authService.state.status, equals(AuthStatus.unauthenticated));
+      expect(authService.state.isAuthenticated, isFalse);
+    });
+
+    test('P0-1: initializeAuth with tampered / corrupted JWT payload -> unauthenticated', () async {
+      const tamperedJwt = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.corrupted_not_valid_base64_json!@#.dummy_sig';
+
+      when(() => mockTokenStorage.getAccessToken()).thenAnswer((_) async => tamperedJwt);
+      when(() => mockTokenStorage.getRefreshToken()).thenAnswer((_) async => 'some_refresh');
+
+      when(() => mockApiClient.get<Map<String, dynamic>>(ApiEndpoints.me)).thenThrow(
+        DioException(
+          requestOptions: RequestOptions(path: ApiEndpoints.me),
+          type: DioExceptionType.connectionTimeout,
+        ),
+      );
+
+      await authService.initializeAuth();
+
+      // Invariant: Corrupted JWT cannot be parsed -> unauthenticated
+      expect(authService.state.status, equals(AuthStatus.unauthenticated));
+      expect(authService.state.isAuthenticated, isFalse);
     });
 
     test('initializeAuth 401 Unauthorized clears tokens and sets unauthenticated', () async {
@@ -229,3 +289,4 @@ void main() {
     });
   });
 }
+

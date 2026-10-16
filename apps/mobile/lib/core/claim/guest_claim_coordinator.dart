@@ -82,22 +82,46 @@ class GuestClaimCoordinator extends ChangeNotifier {
   int? get activeGeneration => _activeGeneration;
   set activeGeneration(int? val) => _activeGeneration = val;
 
+  int? get activeOperationId => _activeOperationId;
+  set activeOperationId(int? val) => _activeOperationId = val;
+
   GuestClaimPreviewResult? get previewData => _previewData;
   set previewData(GuestClaimPreviewResult? val) => _previewData = val;
 
   String? get error => _error;
 
+  int _prepareRequestId = 0;
+  int? _activeOperationId;
+
+  /// Đặt lại toàn bộ phiên claim khi đăng xuất hoặc hủy phiên (P0-2)
+  void resetSession() {
+    _isOpen = false;
+    _isPreparing = false;
+    _isCommitting = false;
+    _currentUserId = null;
+    _currentClaimId = null;
+    _activeGeneration = null;
+    _activeOperationId = null;
+    _previewData = null;
+    _error = null;
+    _isPendingUnavailable = false;
+    notifyListeners();
+  }
+
   // ==================== TRIPLE-CHECK CONCURRENCY GUARD (P0-2) ====================
 
-  /// Xác minh tính hợp lệ 4 chiều chống race condition:
+  /// Xác minh tính hợp lệ 5 chiều chống race condition:
   /// 1. `expectedGeneration == scopeBridge.transitionGeneration` (chống stale callback từ phiên trước).
   /// 2. `expectedUserId == authService.state.user?.id` (đúng user đang đăng nhập thực tế).
   /// 3. `authService.state.isAuthenticated == true` (user không ở trạng thái logout).
-  /// 4. Nếu truyền `expectedClaimId`, phải khớp `_currentClaimId`.
+  /// 4. So sánh nghiêm ngặt: `_currentUserId == expectedUserId` (khi _currentUserId bị reset về null hoặc mismatch, lập tức từ chối).
+  /// 5. Nếu truyền `expectedClaimId`, phải khớp `_currentClaimId`.
+  /// 6. Nếu truyền `expectedOperationId`, phải khớp `_activeOperationId`.
   bool isSessionValid({
     required int expectedGeneration,
     required String expectedUserId,
     String? expectedClaimId,
+    int? expectedOperationId,
   }) {
     final currentGen = _scopeBridge.transitionGeneration;
     final currentUser = _authService.state.user?.id;
@@ -105,8 +129,9 @@ class GuestClaimCoordinator extends ChangeNotifier {
 
     if (currentGen != expectedGeneration) return false;
     if (!isAuthenticated || currentUser != expectedUserId) return false;
-    if (_currentUserId != null && _currentUserId != expectedUserId) return false;
+    if (_currentUserId != expectedUserId) return false;
     if (expectedClaimId != null && expectedClaimId != _currentClaimId) return false;
+    if (expectedOperationId != null && expectedOperationId != _activeOperationId) return false;
     return true;
   }
 
@@ -116,8 +141,15 @@ class GuestClaimCoordinator extends ChangeNotifier {
   Future<void> checkAndPrepareClaim(String userId) async {
     final capturedGen = _scopeBridge.transitionGeneration;
     final capturedUserId = userId;
+    final opId = ++_prepareRequestId;
+    _activeOperationId = opId;
+    _currentUserId = userId;
 
-    if (!isSessionValid(expectedGeneration: capturedGen, expectedUserId: capturedUserId)) {
+    if (!isSessionValid(
+      expectedGeneration: capturedGen,
+      expectedUserId: capturedUserId,
+      expectedOperationId: opId,
+    )) {
       return;
     }
 
@@ -137,7 +169,11 @@ class GuestClaimCoordinator extends ChangeNotifier {
         notifyListeners();
 
         // Triple-check guard trước khi resolve
-        if (!isSessionValid(expectedGeneration: capturedGen, expectedUserId: capturedUserId)) {
+        if (!isSessionValid(
+          expectedGeneration: capturedGen,
+          expectedUserId: capturedUserId,
+          expectedOperationId: opId,
+        )) {
           return;
         }
 
@@ -158,11 +194,16 @@ class GuestClaimCoordinator extends ChangeNotifier {
 
       final preview = GuestClaimPreviewResult.fromJson(data);
 
-      // Post-network Triple-Check Guard: Nếu user đã logout hoặc generation thay đổi, bỏ qua ngay
-      if (!isSessionValid(expectedGeneration: capturedGen, expectedUserId: capturedUserId)) {
+      // Post-network Triple-Check Guard: Nếu user đã logout, gen thay đổi, session reset, hoặc có request prepare mới hơn
+      if (!isSessionValid(
+        expectedGeneration: capturedGen,
+        expectedUserId: capturedUserId,
+        expectedOperationId: opId,
+      )) {
         _isPreparing = false;
         return;
       }
+
 
       // Invariant: Lập tức ghi PendingGuestClaim(phase: prepared) vào SQLite journal TRƯỚC KHI mở modal
       final now = DateTime.now().millisecondsSinceEpoch;
@@ -354,6 +395,7 @@ class GuestClaimCoordinator extends ChangeNotifier {
     _currentUserId = null;
     _currentClaimId = null;
     _activeGeneration = null;
+    _activeOperationId = null;
     _previewData = null;
     notifyListeners();
 
@@ -520,6 +562,7 @@ class GuestClaimCoordinator extends ChangeNotifier {
     _currentUserId = null;
     _currentClaimId = null;
     _activeGeneration = null;
+    _activeOperationId = null;
     _previewData = null;
     notifyListeners();
 
@@ -530,6 +573,7 @@ class GuestClaimCoordinator extends ChangeNotifier {
 
   /// Phục hồi sự cố khi ứng dụng khởi động lại hoặc mở lại app.
   Future<void> checkCrashRecovery(String userId) async {
+    _currentUserId = userId;
     final rows = await _offlineDb.database.query(
       'guest_claim_recovery_journal',
       where: 'user_id = ?',

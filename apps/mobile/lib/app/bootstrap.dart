@@ -17,6 +17,7 @@ import '../core/theme/theme_controller.dart';
 import '../../features/gamification/repositories/gamification_repository.dart';
 import '../../features/library/repositories/guest_library_repository.dart';
 import '../../features/reader/repositories/guest_reading_progress_repository.dart';
+import '../core/claim/guest_claim_coordinator.dart';
 import 'router/app_router.dart';
 
 class BootstrapResult {
@@ -32,6 +33,7 @@ class BootstrapResult {
   final LocalLibraryDao localLibraryDao;
   final AuthScopeBridge authScopeBridge;
   final OfflineDatabase offlineDatabase;
+  final GuestClaimCoordinator guestClaimCoordinator;
 
   const BootstrapResult({
     required this.authService,
@@ -46,8 +48,10 @@ class BootstrapResult {
     required this.localLibraryDao,
     required this.authScopeBridge,
     required this.offlineDatabase,
+    required this.guestClaimCoordinator,
   });
 }
+
 
 class AppBootstrap {
   static Future<BootstrapResult> run({
@@ -56,6 +60,7 @@ class AppBootstrap {
     OfflineDatabase? customOfflineDatabase,
     ITokenStorage? customTokenStorage,
     FlutterSecureStorage? customSecureStorage,
+    ApiClient? customApiClient,
   }) async {
     WidgetsFlutterBinding.ensureInitialized();
     const logger = AppLogger('Bootstrap');
@@ -104,15 +109,17 @@ class AppBootstrap {
 
     // 3. API Client & AuthService wiring
     late final AuthService authService;
-    final apiClient = ApiClient(
-      tokenStorage: tokenStorage,
-      onSessionExpired: () => authService.handleSessionExpired(),
-    );
+    final apiClient = customApiClient ??
+        ApiClient(
+          tokenStorage: tokenStorage,
+          onSessionExpired: () => authService.handleSessionExpired(),
+        );
 
     authService = AuthService(
       apiClient: apiClient,
       tokenStorage: tokenStorage,
     );
+
 
     // 3b. AuthScopeBridge wiring & synchronization gate
     final authScopeBridge = AuthScopeBridge(
@@ -120,6 +127,19 @@ class AppBootstrap {
       coordinator: activeScopeCoordinator,
     );
     authScopeBridge.attach();
+
+    // 3c. GuestClaimCoordinator wiring (Task 5 DI)
+    final guestClaimCoordinator = GuestClaimCoordinator(
+      offlineDb: offlineDatabase,
+      dao: localLibraryDao,
+      scopeBridge: activeScopeCoordinator,
+      apiClient: apiClient,
+      guestProvider: guestProfileProvider,
+      authService: authService,
+      prefs: rawPrefs,
+    );
+
+
 
     // 4. Check initial auth session & await synchronization gate
     // P0 Invariant: Chờ settle() hoàn tất để AuthScopeBridge đồng bộ trạng thái ban đầu.
@@ -173,6 +193,8 @@ class AppBootstrap {
       localLibraryDao: localLibraryDao,
       authScopeBridge: authScopeBridge,
       offlineDatabase: offlineDatabase,
+      guestClaimCoordinator: guestClaimCoordinator,
     );
   }
+
 }

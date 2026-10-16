@@ -1101,5 +1101,73 @@ void main() {
       expect(rows.isNotEmpty, isTrue);
       expect(rows.first['phase'], isNot(equals('committedServer')));
     });
+
+    test('21. Negative test: Prepare A in-flight -> claim session reset (_currentUserId = null) -> prepare A completes late -> rejected, no journal, modal stays closed', () async {
+      await dao.saveBookmark(LocalBookmark(
+        ownerScope: 'guest:$testGuestProfileId',
+        storyId: 'story-claim-1',
+        title: 'Claim Story 1',
+        createdAt: DateTime.now().toUtc(),
+      ));
+
+      final coordinator = createCoordinator();
+
+      when(() => mockApiClient.post<Map<String, dynamic>>(
+            ApiEndpoints.guestClaimPrepare,
+            data: any(named: 'data'),
+          )).thenAnswer((_) async {
+        // Trong lúc prepare A đang in-flight, session bị reset (ví dụ resetSession hoặc user logout)
+        coordinator.resetSession();
+        return Response(
+          requestOptions: RequestOptions(path: ApiEndpoints.guestClaimPrepare),
+          statusCode: 200,
+          data: standardPreviewJson,
+        );
+      });
+
+      await coordinator.checkAndPrepareClaim(testUserId);
+
+      // Invariant: Callback prepare A hoàn tất muộn bị từ chối nghiêm ngặt!
+      expect(coordinator.isOpen, isFalse);
+      expect(coordinator.previewData, isNull);
+
+      // KHÔNG ĐƯỢC PHÉP ghi journal vào SQLite!
+      final rows = await offlineDb.database.query('guest_claim_recovery_journal');
+      expect(rows, isEmpty);
+    });
+
+    test('22. Negative test: Two prepares for same user in same generation -> prepare A in-flight, prepare B started -> prepare A completes late -> rejected by operationId', () async {
+      await dao.saveBookmark(LocalBookmark(
+        ownerScope: 'guest:$testGuestProfileId',
+        storyId: 'story-claim-1',
+        title: 'Claim Story 1',
+        createdAt: DateTime.now().toUtc(),
+      ));
+
+      final coordinator = createCoordinator();
+
+      when(() => mockApiClient.post<Map<String, dynamic>>(
+            ApiEndpoints.guestClaimPrepare,
+            data: any(named: 'data'),
+          )).thenAnswer((_) async {
+        // Mô phỏng prepare B chạy sau làm tăng activeOperationId
+        coordinator.activeOperationId = 999;
+        return Response(
+          requestOptions: RequestOptions(path: ApiEndpoints.guestClaimPrepare),
+          statusCode: 200,
+          data: standardPreviewJson,
+        );
+      });
+
+      await coordinator.checkAndPrepareClaim(testUserId);
+
+      // Invariant: Prepare A hoàn tất muộn bị từ chối bởi operationId mismatch
+      expect(coordinator.isOpen, isFalse);
+      expect(coordinator.previewData, isNull);
+      final rows = await offlineDb.database.query('guest_claim_recovery_journal');
+      expect(rows, isEmpty);
+    });
   });
 }
+
+

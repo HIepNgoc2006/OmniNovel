@@ -119,6 +119,14 @@ class AuthScopeBridge {
         );
         break;
 
+      case AuthStatus.pendingVerification:
+        // P0-1 Amendment: Giữ nguyên guest identity, không tự ý commit claim hay mở account
+        await _coordinator.onAuthStatusChanged(
+          AuthStatus.pendingVerification,
+          userId: nextUserId,
+        );
+        break;
+
       case AuthStatus.unauthenticated:
         if (prev == AuthStatus.authenticated) {
           // Ngữ nghĩa 3: Đăng xuất hoặc session expired từ Account
@@ -132,6 +140,7 @@ class AuthScopeBridge {
           await _coordinator.onAuthStatusChanged(AuthStatus.unauthenticated);
         }
         break;
+
     }
   }
 }

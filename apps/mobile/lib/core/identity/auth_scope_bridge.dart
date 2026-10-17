@@ -67,7 +67,7 @@ class AuthScopeBridge {
 
   /// Đưa transition của state vào hàng đợi tuần tự hóa để bảo đảm không bị race.
   Future<void> _enqueueTransition(AuthState state) {
-    _currentTransition = _currentTransition.then((_) => _applyTransition(state)).catchError((e, s) {
+    _currentTransition = _currentTransition.then((_) => _applyTransition(state)).catchError((Object e, StackTrace s) {
       _lastTransitionError = e;
       _lastTransitionStackTrace = s;
       _logger.e('Lỗi chuyển đổi trạng thái AuthScopeBridge: $e', e, s);

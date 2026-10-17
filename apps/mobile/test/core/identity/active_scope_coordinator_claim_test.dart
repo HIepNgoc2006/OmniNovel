@@ -7,7 +7,6 @@ import 'package:omninovel_mobile/core/identity/active_scope_coordinator.dart';
 import 'package:omninovel_mobile/core/identity/auth_scope_bridge.dart';
 import 'package:omninovel_mobile/core/identity/guest_profile_identity_provider.dart';
 import 'package:omninovel_mobile/core/identity/installation_identity_provider.dart';
-import 'package:omninovel_mobile/features/auth/models/auth_models.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class MockSecureStorage extends Mock implements FlutterSecureStorage {}
@@ -182,7 +181,7 @@ void main() {
   group('Task 4: AuthScopeBridge Error Observability & Serialization', () {
     test('Bridge captures transition errors in lastError and stays fail-closed', () async {
       final mockAuth = MockAuthService();
-      var currentState = AuthState.initial();
+      final currentState = AuthState.initial();
       when(() => mockAuth.state).thenAnswer((_) => currentState);
 
       final bridge = AuthScopeBridge(

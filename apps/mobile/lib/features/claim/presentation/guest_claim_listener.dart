@@ -31,7 +31,6 @@ class _GuestClaimListenerState extends State<GuestClaimListener> {
   AuthStatus _lastAuthStatus = AuthStatus.initial;
   String? _lastUserId;
   bool _isModalShowing = false;
-  BuildContext? _modalContext;
 
   @override
   void didChangeDependencies() {
@@ -101,7 +100,7 @@ class _GuestClaimListenerState extends State<GuestClaimListener> {
 
   void _showBottomSheet(GuestClaimCoordinator coordinator, String userId) {
     final navContext = AppRouter.rootNavigatorKey.currentContext ?? context;
-    showModalBottomSheet(
+    showModalBottomSheet<void>(
       context: navContext,
       useRootNavigator: true,
       isDismissible: false,

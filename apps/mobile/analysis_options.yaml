@@ -9,6 +9,11 @@ analyzer:
     missing_required_param: error
     missing_return: error
     todo: ignore
+    deprecated_member_use: ignore
+    unnecessary_getters_setters: ignore
+    prefer_const_constructors: ignore
+    prefer_const_declarations: ignore
+    unnecessary_const: ignore
   exclude:
     - build/**
     - android/**

@@ -581,7 +581,7 @@ void main() {
       coordinator.isOpen = true;
 
       // Mock authService state as authenticated
-      final authUser = const User(id: testUserId, username: 'testuser', email: 't@example.com', role: 'READER');
+      const authUser = User(id: testUserId, username: 'testuser', email: 't@example.com', role: 'READER');
       bootstrap.authService.updateStateForTesting(AuthState.authenticated(user: authUser, accessToken: 'token'));
 
       await coordinator.skipClaim(testUserId);
@@ -722,7 +722,7 @@ void main() {
       await bootstrap.guestClaimCoordinator.checkAndPrepareClaim(testUserId);
 
       // Verify no POST /prepare was dispatched
-      verifyNever(() => mockApiClient.post(ApiEndpoints.guestClaimPrepare, data: any(named: 'data')));
+      verifyNever(() => mockApiClient.post<dynamic>(ApiEndpoints.guestClaimPrepare, data: any<dynamic>(named: 'data')));
     });
 
     // =========================================================================
@@ -767,7 +767,7 @@ void main() {
       final result = await bootstrap.guestClaimCoordinator.checkCrashRecovery(testUserId);
 
       expect(result, equals(CrashRecoveryResult.finalized));
-      verifyNever(() => mockApiClient.post(ApiEndpoints.guestClaimPrepare, data: any(named: 'data')));
+      verifyNever(() => mockApiClient.post<dynamic>(ApiEndpoints.guestClaimPrepare, data: any<dynamic>(named: 'data')));
     });
 
     // =========================================================================

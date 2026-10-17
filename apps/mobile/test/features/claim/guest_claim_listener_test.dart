@@ -18,7 +18,7 @@ void main() {
     late MockGuestClaimCoordinator mockCoordinator;
     late MockAuthService mockAuthService;
 
-    final standardPreview = GuestClaimPreviewResult(
+    final standardPreview = const GuestClaimPreviewResult(
       claimId: 'claim-modal-1',
       status: GuestClaimStatus.prepared,
       stateFingerprint: 'fp-123',
@@ -47,7 +47,7 @@ void main() {
     });
 
     testWidgets('1. When Auth transitions to verified authenticated -> triggers checkCrashRecovery and checkAndPrepareClaim', (tester) async {
-      final user = const User(id: 'u-orch-1', username: 'testuser', email: 'test@example.com', role: 'READER');
+      const user = User(id: 'u-orch-1', username: 'testuser', email: 'test@example.com', role: 'READER');
       when(() => mockAuthService.state).thenReturn(AuthState.authenticated(user: user, accessToken: 'token'));
 
       await tester.pumpWidget(
@@ -72,7 +72,7 @@ void main() {
     });
 
     testWidgets('2. When Auth is in pendingVerification -> does NOT trigger checkAndPrepareClaim', (tester) async {
-      final hintUser = const User(id: 'u-offline-1', username: 'offline', email: 'off@example.com', role: 'READER');
+      const hintUser = User(id: 'u-offline-1', username: 'offline', email: 'off@example.com', role: 'READER');
       when(() => mockAuthService.state).thenReturn(AuthState.pendingVerification(hintUser: hintUser, accessToken: 'token'));
 
       await tester.pumpWidget(
@@ -97,7 +97,7 @@ void main() {
     });
 
     testWidgets('3. When coordinator.isOpen turns true -> displays GuestClaimBottomSheet', (tester) async {
-      final user = const User(id: 'u-orch-1', username: 'testuser', email: 'test@example.com', role: 'READER');
+      const user = User(id: 'u-orch-1', username: 'testuser', email: 'test@example.com', role: 'READER');
       when(() => mockAuthService.state).thenReturn(AuthState.authenticated(user: user, accessToken: 'token'));
       when(() => mockCoordinator.isOpen).thenReturn(true);
 
@@ -123,7 +123,7 @@ void main() {
     });
 
     testWidgets('4. Rebuild-resilience: root widget rebuilds do not open duplicate modal', (tester) async {
-      final user = const User(id: 'u-orch-1', username: 'testuser', email: 'test@example.com', role: 'READER');
+      const user = User(id: 'u-orch-1', username: 'testuser', email: 'test@example.com', role: 'READER');
       when(() => mockAuthService.state).thenReturn(AuthState.authenticated(user: user, accessToken: 'token'));
       when(() => mockCoordinator.isOpen).thenReturn(true);
 
@@ -153,7 +153,7 @@ void main() {
     });
 
     testWidgets('5. When Auth logs out while modal is showing -> automatically pops modal and calls resetSession', (tester) async {
-      final user = const User(id: 'u-orch-1', username: 'testuser', email: 'test@example.com', role: 'READER');
+      const user = User(id: 'u-orch-1', username: 'testuser', email: 'test@example.com', role: 'READER');
       when(() => mockAuthService.state).thenReturn(AuthState.authenticated(user: user, accessToken: 'token'));
       when(() => mockCoordinator.isOpen).thenReturn(true);
 
@@ -203,7 +203,7 @@ void main() {
     });
 
     testWidgets('6. When checkCrashRecovery returns pendingUnavailable or userActionRequired -> does NOT trigger checkAndPrepareClaim (P0-2)', (tester) async {
-      final user = const User(id: 'u-orch-1', username: 'testuser', email: 'test@example.com', role: 'READER');
+      const user = User(id: 'u-orch-1', username: 'testuser', email: 'test@example.com', role: 'READER');
       when(() => mockAuthService.state).thenReturn(AuthState.authenticated(user: user, accessToken: 'token'));
       when(() => mockCoordinator.checkCrashRecovery(any())).thenAnswer((_) async => CrashRecoveryResult.pendingUnavailable);
 

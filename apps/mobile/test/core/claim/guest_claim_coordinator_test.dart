@@ -9,7 +9,6 @@ import 'package:omninovel_mobile/core/auth/auth_service.dart';
 import 'package:omninovel_mobile/core/auth/auth_state.dart';
 import 'package:omninovel_mobile/core/claim/guest_claim_coordinator.dart';
 import 'package:omninovel_mobile/core/claim/models/guest_claim_models.dart';
-import 'package:omninovel_mobile/core/claim/models/pending_guest_claim.dart';
 import 'package:omninovel_mobile/core/claim/scope_coordinator_claim_bridge.dart';
 import 'package:omninovel_mobile/core/identity/guest_profile_identity_provider.dart';
 import 'package:omninovel_mobile/core/storage/local_library_dao.dart';
@@ -97,7 +96,7 @@ void main() {
     'progressToImport': 1,
     'conflictsCount': 0,
     'readStatesIgnoredAntiResurrectionCount': 0,
-    'conflicts': [],
+    'conflicts': <Map<String, dynamic>>[],
   };
 
   final standardCommitJson = {
@@ -111,7 +110,7 @@ void main() {
       'conflictsResolved': 0,
     },
     'finalization': {
-      'tombstonedStoryIds': [],
+      'tombstonedStoryIds': <String>[],
       'finalizedProgress': [
         {
           'storyId': 'story-claim-1',
@@ -234,7 +233,7 @@ void main() {
 
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimPrepare,
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenAnswer((_) async => Response(
             requestOptions: RequestOptions(path: ApiEndpoints.guestClaimPrepare),
             statusCode: 200,
@@ -275,7 +274,7 @@ void main() {
 
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimPrepare,
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenThrow(DioException(
         requestOptions: RequestOptions(path: ApiEndpoints.guestClaimPrepare),
         error: 'Network connection timeout',
@@ -302,7 +301,7 @@ void main() {
       // Simulate delay in network response during which generation bumps (user logout/login)
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimPrepare,
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenAnswer((_) async {
         fakeBridge.bumpGeneration(); // Transition generation bumped!
         return Response(
@@ -359,7 +358,7 @@ void main() {
       bool verifiedCommittingBeforeHttp = false;
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimCommit(testClaimId),
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenAnswer((_) async {
         // Verify in SQLite that phase was set to 'committing' BEFORE HTTP request was dispatched
         final rows = await offlineDb.database.query(
@@ -420,7 +419,7 @@ void main() {
       // Commit returns 409 Conflict
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimCommit(testClaimId),
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenThrow(DioException(
         requestOptions: RequestOptions(path: ApiEndpoints.guestClaimCommit(testClaimId)),
         response: Response(
@@ -436,7 +435,7 @@ void main() {
 
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimPrepare,
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenAnswer((_) async => Response(
             requestOptions: RequestOptions(path: ApiEndpoints.guestClaimPrepare),
             statusCode: 200,
@@ -713,7 +712,7 @@ void main() {
       // POST /commit throws Timeout exception
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimCommit(testClaimId),
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenThrow(DioException(
         requestOptions: RequestOptions(path: ApiEndpoints.guestClaimCommit(testClaimId)),
         type: DioExceptionType.connectionTimeout,
@@ -770,7 +769,7 @@ void main() {
 
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimCommit(testClaimId),
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenThrow(DioException(
         requestOptions: RequestOptions(path: ApiEndpoints.guestClaimCommit(testClaimId)),
         type: DioExceptionType.connectionTimeout,
@@ -839,7 +838,7 @@ void main() {
       // Server returns COMMITTED with finalization: null
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimCommit(testClaimId),
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenAnswer((_) async => Response(
             requestOptions: RequestOptions(path: ApiEndpoints.guestClaimCommit(testClaimId)),
             statusCode: 200,
@@ -894,7 +893,7 @@ void main() {
 
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimCommit(testClaimId),
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenAnswer((_) async => Response(
             requestOptions: RequestOptions(path: ApiEndpoints.guestClaimCommit(testClaimId)),
             statusCode: 200,
@@ -940,7 +939,7 @@ void main() {
 
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimCommit(testClaimId),
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenThrow(DioException(
         requestOptions: RequestOptions(path: ApiEndpoints.guestClaimCommit(testClaimId)),
         response: Response(
@@ -956,7 +955,7 @@ void main() {
 
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimPrepare,
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenAnswer((_) async => Response(
             requestOptions: RequestOptions(path: ApiEndpoints.guestClaimPrepare),
             statusCode: 200,
@@ -1079,7 +1078,7 @@ void main() {
 
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimCommit(testClaimId),
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenAnswer((_) async {
         // While request is in-flight, activeClaimId is reset to null (or switched to claim-B)
         coordinator.currentClaimId = null;
@@ -1114,7 +1113,7 @@ void main() {
 
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimPrepare,
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenAnswer((_) async {
         // Trong lúc prepare A đang in-flight, session bị reset (ví dụ resetSession hoặc user logout)
         coordinator.resetSession();
@@ -1148,7 +1147,7 @@ void main() {
 
       when(() => mockApiClient.post<Map<String, dynamic>>(
             ApiEndpoints.guestClaimPrepare,
-            data: any(named: 'data'),
+            data: any<dynamic>(named: 'data'),
           )).thenAnswer((_) async {
         // Mô phỏng prepare B chạy sau làm tăng activeOperationId
         coordinator.activeOperationId = 999;

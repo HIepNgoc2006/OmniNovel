@@ -73,6 +73,7 @@ class GuestClaimCoordinator extends ChangeNotifier {
   bool get isPreparing => _isPreparing;
   bool get isCommitting => _isCommitting;
   bool get isPendingUnavailable => _isPendingUnavailable;
+  SharedPreferences get prefs => _prefs;
 
   String? get currentUserId => _currentUserId;
   set currentUserId(String? val) => _currentUserId = val;

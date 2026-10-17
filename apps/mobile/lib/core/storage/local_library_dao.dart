@@ -390,20 +390,6 @@ class LocalLibraryDao {
         );
       }
 
-      // 2. Kiểm tra xem sourceScope có reading progress / history không
-      final sourceProgressCount = Sqflite.firstIntValue(await txn.rawQuery(
-            'SELECT COUNT(*) FROM local_reading_progress WHERE owner_scope = ?',
-            [sourceScope],
-          )) ??
-          0;
-      final sourceHistoryCount = Sqflite.firstIntValue(await txn.rawQuery(
-            'SELECT COUNT(*) FROM local_reading_history WHERE owner_scope = ?',
-            [sourceScope],
-          )) ??
-          0;
-      final hasSourceReadingState =
-          sourceProgressCount > 0 || sourceHistoryCount > 0;
-
       if (finalization == null) {
         // Invariant 2: Non-destructive Legacy Fallback
         // Khi không có authoritative finalization, chỉ thực hiện additive merge bookmarks

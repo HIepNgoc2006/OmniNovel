@@ -1,7 +1,6 @@
 import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:omninovel_mobile/core/claim/models/guest_claim_models.dart';
-import 'package:omninovel_mobile/core/claim/models/pending_guest_claim.dart';
 import 'package:omninovel_mobile/core/storage/local_library_dao.dart';
 import 'package:omninovel_mobile/core/storage/local_library_models.dart';
 import 'package:omninovel_mobile/core/storage/offline_database.dart';

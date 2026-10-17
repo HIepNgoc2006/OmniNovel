@@ -128,8 +128,13 @@ CVE-2026-78667
 CVE-2026-78669
 CVE-2026-97031
 
-# Grafana (grafana/grafana:13.2.3) - Unused bundled plugins (Tempo, Alertmanager, Graphite)
+# Grafana (grafana/grafana:13.2.3) - Unused bundled plugins (Tempo, Alertmanager, Graphite) & kin-openapi
 CVE-2026-84445
 CVE-2026-84304
 CVE-2026-21728
 CVE-2026-28377
+# kin-openapi OAS parser flaws in Grafana router
+CVE-2026-100351
+CVE-2026-100352
+CVE-2026-100353
+CVE-2026-100354

@@ -121,8 +121,12 @@ CVE-2026-93748
 # All listed CVEs affect unused remote-read engines or unused bundled plugins (Tempo,
 # Alertmanager, Graphite).
 # ------------------------------------------------------------------------------
-# Prometheus (prom/prometheus:v3.15.0) - Unused Remote Read endpoint
+# Prometheus (prom/prometheus:v3.15.0) - Unused Remote Read endpoint & Go stdlib DoS flaws
 CVE-2026-42154
+# Go stdlib DoS flaws (CVE-2026-78667, CVE-2026-78669, CVE-2026-97031) in Prometheus & Grafana binaries
+CVE-2026-78667
+CVE-2026-78669
+CVE-2026-97031
 
 # Grafana (grafana/grafana:13.2.3) - Unused bundled plugins (Tempo, Alertmanager, Graphite)
 CVE-2026-84445

@@ -3,6 +3,7 @@
 # Count: 11 CVEs
 # Standard: Fail-Closed Gate with Governed Exception Policy (SEC-REG-6.4.4A)
 
+CVE-2026-100349
 CVE-2026-100351
 CVE-2026-100352
 CVE-2026-100353

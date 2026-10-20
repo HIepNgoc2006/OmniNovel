@@ -43,6 +43,14 @@ DATE_PATTERN = re.compile(r"\b(\d{4}-\d{2}-\d{2})\b")
 
 VALID_IMAGES = {"api", "ai-worker", "nginx", "prometheus", "grafana"}
 
+IMAGE_ARTIFACT_PATTERNS = {
+    "api": re.compile(r"(?:^|/)(?:omninovel-)?api(?::|@|$)"),
+    "ai-worker": re.compile(r"(?:^|/)(?:omninovel-)?ai-worker(?::|@|$)"),
+    "nginx": re.compile(r"(?:^|/)(?:omninovel-)?nginx(?::|@|$)"),
+    "prometheus": re.compile(r"(?:^|/)(?:prom/)?prometheus(?::|@|$)"),
+    "grafana": re.compile(r"(?:^|/)(?:grafana/)?grafana(?::|@|$)"),
+}
+
 
 def is_image_token(s: str) -> bool:
     """Check if a string matches a container image identifier."""
@@ -289,6 +297,8 @@ def load_trivy_json_report(report_path: str, expected_image: str) -> Tuple[List[
     Fail-closed:
       - If report_path does not exist -> returns ([], "REPORT_MISSING: ...")
       - If report_path is corrupt / empty / invalid JSON -> returns ([], "REPORT_CORRUPT: ...")
+      - If report is missing 'Results' array -> returns ([], "REPORT_CORRUPT: ...")
+      - If report ArtifactName does not match expected_image -> returns ([], "IMAGE_IDENTITY_MISMATCH: ...")
       - If report is valid -> returns (findings, None)
     """
     if not os.path.isfile(report_path):
@@ -306,34 +316,48 @@ def load_trivy_json_report(report_path: str, expected_image: str) -> Tuple[List[
     if not isinstance(data, dict):
         return [], f"REPORT_CORRUPT: Trivy scan report for image '{expected_image}' at '{report_path}' is not a valid JSON object."
 
+    if "Results" not in data or not isinstance(data.get("Results"), list):
+        return [], f"REPORT_CORRUPT: Trivy scan report for image '{expected_image}' at '{report_path}' is missing 'Results' array."
+
+    # Strict container image identity validation via ArtifactName
+    artifact_name = data.get("ArtifactName", "")
+    pattern = IMAGE_ARTIFACT_PATTERNS.get(expected_image)
+    if not artifact_name or not pattern or not pattern.search(artifact_name):
+        return [], (
+            f"IMAGE_IDENTITY_MISMATCH: Scan report at '{report_path}' has ArtifactName '{artifact_name}', "
+            f"which does not match expected container image identity for '{expected_image}'."
+        )
+
     findings = []
     for result in data.get("Results", []):
+        if not isinstance(result, dict):
+            continue
         # 1. Standard active vulnerabilities
-        for vuln in result.get("Vulnerabilities", []):
+        for vuln in result.get("Vulnerabilities", []) or []:
             cve = vuln.get("VulnerabilityID")
             pkg = vuln.get("PkgName")
             pkg_id = vuln.get("PkgIdentifier")
             purl = pkg_id.get("PURL") if isinstance(pkg_id, dict) else (pkg_id if isinstance(pkg_id, str) else None)
-            if cve and pkg:
+            if cve:
                 findings.append({
                     "cve": cve,
                     "image": expected_image,
-                    "package": pkg,
+                    "package": pkg or "",
                     "purl": purl,
                     "severity": vuln.get("Severity", "UNKNOWN"),
                 })
         # 2. Suppressed / modified findings (when --show-suppressed or experimental flags used)
-        for mod in result.get("ExperimentalModifiedFindings", []) or result.get("ModifiedFindings", []):
+        for mod in (result.get("ExperimentalModifiedFindings", []) or result.get("ModifiedFindings", []) or []):
             vuln = mod.get("Vulnerability", mod)
             cve = vuln.get("VulnerabilityID")
             pkg = vuln.get("PkgName")
             pkg_id = vuln.get("PkgIdentifier")
             purl = pkg_id.get("PURL") if isinstance(pkg_id, dict) else (pkg_id if isinstance(pkg_id, str) else None)
-            if cve and pkg:
+            if cve:
                 findings.append({
                     "cve": cve,
                     "image": expected_image,
-                    "package": pkg,
+                    "package": pkg or "",
                     "purl": purl,
                     "severity": vuln.get("Severity", "UNKNOWN"),
                     "suppressed": True,
@@ -349,7 +373,7 @@ def validate_governance(
     audit_date: Optional[datetime.date] = None,
     image_reports: Optional[Dict[str, str]] = None,
     enforce_reports: bool = False,
-) -> Tuple[List[str], List[str], Dict[str, int], Dict[str, int]]:
+) -> Tuple[List[str], List[str], Dict[str, int], Dict[str, Dict[str, int]]]:
     """
     Run full governance validation:
       1. Register integrity & conflict checks
@@ -357,7 +381,7 @@ def validate_governance(
       3. Lifecycle & expiration date tracking
       4. Stale suppression detection
       5. Fail-closed Package-Binding Enforcement on Real Trivy Scan Reports
-    Returns: (errors, warnings, ignore_stats, report_stats)
+    Returns: (errors, warnings, ignore_stats, report_metrics)
     """
     if audit_date is None:
         audit_date = datetime.date.today()
@@ -366,7 +390,7 @@ def validate_governance(
     errors: List[str] = list(reg_errors)
     warnings: List[str] = []
     ignore_stats: Dict[str, int] = {}
-    report_stats: Dict[str, int] = {}
+    report_metrics: Dict[str, Dict[str, int]] = {}
 
     scoped_cves_by_image: Dict[str, Set[str]] = {}
 
@@ -449,6 +473,7 @@ def validate_governance(
                 continue
 
             suppressed_cves = scoped_cves_by_image.get(img, set())
+            matched_findings_count = 0
             verified_count = 0
 
             for f in findings:
@@ -458,6 +483,7 @@ def validate_governance(
 
                 # Only evaluate package binding for CVEs requested for suppression in this image
                 if cve in suppressed_cves:
+                    matched_findings_count += 1
                     entry = exceptions.get(cve)
                     if not entry:
                         errors.append(f"UNAPPROVED EXCEPTION: '{cve}' in report for '{img}' is not in Risk Register.")
@@ -469,18 +495,41 @@ def validate_governance(
                         )
                         continue
 
-                    if entry["packages"] and pkg:
-                        if not match_package(pkg, entry["packages"], purl=purl):
-                            errors.append(
-                                f"WRONG-PACKAGE SUPPRESSION: CVE '{cve}' was found in package '{pkg}' of image '{img}', "
-                                f"but Risk Register only authorizes it for package(s): {sorted(list(entry['packages']))}."
-                            )
-                        else:
-                            verified_count += 1
+                    if not pkg:
+                        errors.append(
+                            f"MISSING_PACKAGE_NAME: Finding for '{cve}' in image '{img}' has missing package name (PkgName). Cannot verify package binding fail-closed."
+                        )
+                        continue
 
-            report_stats[img] = verified_count
+                    if not entry["packages"]:
+                        errors.append(
+                            f"UNAUTHORIZED_PACKAGE: CVE '{cve}' in image '{img}' has no authorized package registered in Risk Register."
+                        )
+                        continue
 
-    return errors, warnings, ignore_stats, report_stats
+                    if not match_package(pkg, entry["packages"], purl=purl):
+                        errors.append(
+                            f"WRONG-PACKAGE SUPPRESSION: CVE '{cve}' was found in package '{pkg}' of image '{img}', "
+                            f"but Risk Register only authorizes it for package(s): {sorted(list(entry['packages']))}."
+                        )
+                    else:
+                        verified_count += 1
+
+            report_metrics[img] = {
+                "raw": len(findings),
+                "matched": matched_findings_count,
+                "verified": verified_count,
+            }
+
+        if enforce_reports:
+            total_verified = sum(m["verified"] for m in report_metrics.values())
+            if total_verified == 0:
+                errors.append(
+                    "ZERO_SUPPRESSIONS_VERIFIED: Under --enforce-reports, 0 suppressed CVE findings were verified across all raw reports. "
+                    "Ensure raw scan commands execute with --ignorefile='' so active vulnerabilities are captured and audited."
+                )
+
+    return errors, warnings, ignore_stats, report_metrics
 
 
 def run_tests() -> int:
@@ -603,11 +652,11 @@ def run_tests() -> int:
         with open(valid_report_path, "w", encoding="utf-8") as f:
             json.dump(valid_json, f)
 
-        errors, _, _, report_stats = validate_governance(
+        errors, _, _, report_metrics = validate_governance(
             t_trivy_dir, t_reg_file, image_reports={"grafana": valid_report_path}
         )
         assert len(errors) == 0, f"Test 8 failed with unexpected errors: {errors}"
-        assert report_stats.get("grafana") == 1
+        assert report_metrics.get("grafana", {}).get("verified") == 1
         print("  [PASS] Test 8: Real Trivy JSON fixture with valid package verified (PACKAGE-BINDING PASS)")
         passed_tests += 1
 
@@ -652,6 +701,51 @@ def run_tests() -> int:
         print("  [PASS] Test 10: Missing and corrupt reports correctly blocked fail-closed (REPORT_MISSING/REPORT_CORRUPT)")
         passed_tests += 1
 
+        # --- Test 11: Image identity mismatch fails ---
+        mismatched_json = {
+            "SchemaVersion": 2,
+            "ArtifactName": "omninovel-ai-worker:test",
+            "Results": [{
+                "Target": "usr/share/test",
+                "Vulnerabilities": []
+            }]
+        }
+        mismatched_report_path = os.path.join(test_dir, "mismatched.json")
+        with open(mismatched_report_path, "w", encoding="utf-8") as f:
+            json.dump(mismatched_json, f)
+
+        errors, _, _, _ = validate_governance(
+            t_trivy_dir, t_reg_file, image_reports={"api": mismatched_report_path}
+        )
+        assert any("IMAGE_IDENTITY_MISMATCH" in e for e in errors), f"Test 11 failed: {errors}"
+        print("  [PASS] Test 11: Image identity mismatch correctly blocked (IMAGE_IDENTITY_MISMATCH)")
+        passed_tests += 1
+
+        # --- Test 12: Suppressed finding with missing PkgName fails ---
+        missing_pkg_json = {
+            "SchemaVersion": 2,
+            "ArtifactName": "grafana/grafana:13.2.3",
+            "Results": [{
+                "Target": "usr/share/grafana/bin/grafana",
+                "Vulnerabilities": [{
+                    "VulnerabilityID": "CVE-2026-100351",
+                    "PkgName": "",
+                    "Severity": "HIGH"
+                }]
+            }]
+        }
+        missing_pkg_report_path = os.path.join(test_dir, "missing_pkg.json")
+        with open(missing_pkg_report_path, "w", encoding="utf-8") as f:
+            json.dump(missing_pkg_json, f)
+
+        errors, _, _, _ = validate_governance(
+            t_trivy_dir, t_reg_file, image_reports={"grafana": missing_pkg_report_path}
+        )
+        assert any("MISSING_PACKAGE_NAME" in e for e in errors), f"Test 12 failed: {errors}"
+        print("  [PASS] Test 12: Suppressed finding with missing PkgName correctly blocked (MISSING_PACKAGE_NAME)")
+        passed_tests += 1
+
+        total_tests = passed_tests
         print("--------------------------------------------------------------------------------")
         print(f"[TEST RESULT] {passed_tests}/{total_tests} Negative, Integration & Governance Tests PASSED (Validated Fail-Closed Scenarios)")
         print("================================================================================\n")
@@ -696,7 +790,7 @@ def main():
         for img, p in image_reports.items():
             print(f"  - [{img}]: {p}")
 
-    errors, warnings, ignore_stats, report_stats = validate_governance(
+    errors, warnings, ignore_stats, report_metrics = validate_governance(
         trivy_dir=TRIVY_DIR,
         register_file=REGISTER_PATH,
         root_trivyignore=ROOT_TRIVYIGNORE,
@@ -709,10 +803,14 @@ def main():
     for img, count in ignore_stats.items():
         print(f"  - {img:<12}: {count:>2} authorized CVE suppressions")
 
-    if report_stats:
-        print("\n[INFO] Real Trivy Scan Report Package-Binding Audit:")
-        for img, count in report_stats.items():
-            print(f"  - {img:<12}: {count:>2} suppressed findings verified against authorized packages")
+    if report_metrics:
+        print("\n[PACKAGE GOVERNANCE]")
+        for img in sorted(VALID_IMAGES):
+            if img in report_metrics:
+                m = report_metrics[img]
+                print(f"  - {img:<12}: raw findings {m['raw']:>3}, suppressed IDs matched {m['matched']:>2}, verified {m['verified']:>2}")
+            else:
+                print(f"  - {img:<12}: no scan report provided")
 
     if warnings:
         print(f"\n[WARNING] LIFECYCLE WARNINGS ({len(warnings)} upcoming reviews):")
@@ -729,7 +827,7 @@ def main():
         sys.exit(1)
 
     print("\n[PASS] TRIVY EXCEPTION AUDIT PASSED: 100% of suppressed CVEs are registered, strictly image-scoped, and within active lifecycle window.")
-    if report_stats:
+    if report_metrics:
         print("[PASS] PACKAGE-LEVEL BINDING GATE PASSED: All evaluated suppressions match authorized packages on real Trivy scan reports.")
     print("================================================================================")
     sys.exit(0)

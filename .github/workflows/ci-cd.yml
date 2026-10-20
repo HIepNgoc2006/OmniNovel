@@ -315,9 +315,12 @@ jobs:
 
       - name: Install Trivy CLI (for Package-Level Audit & Report Extraction)
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh -s -- -b /usr/local/bin v0.58.2
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin v0.58.2
+          trivy --version
 
       - name: Generate Raw Trivy JSON Vulnerability Reports (5 Container Images)
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p /tmp/trivy-reports
           echo "[INFO] Scanning 5 Container Images and exporting JSON Reports..."

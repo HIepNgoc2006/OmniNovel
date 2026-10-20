@@ -41,7 +41,7 @@ Tài liệu này theo dõi tiến độ toàn diện của dự án **OmniNovel*
   - `[x]` 7B.3b. Fail-Closed Scope Resolution Hardening (P0 Prepare failure keeps TRANSITIONING lock, P0 hasGuestData rejects on storage/cursor error, P0 refetchUser preserves TRANSITIONING state and blocks mutations — 50/50 Vitest pass, 657/657 tests pass, Next.js build pass — Hosted CI Run #435 ID 37662890229 Green 7/7) — *FROZEN CLEAN (Commit `9f74ea1`)* ✅.
   - `[x]` 7B.3. Web Client Integration (Guest Claim Coordinator, Transitioning Scope Lock, GuestClaimDialog, Marker Quarantine giữ nguyên physical partition, Rebind IndexedDB merge & purge source, Crash Recovery via pendingClaimId, Auto re-prepare on 409 conflict — 50/50 vitest PASS, Next.js build PASS, Playwright 31/31 PASS) — *FROZEN CLEAN (Run #435 Green 7/7, Commit `9f74ea1`)* ✅.
   - `[x]` 7B.3. Mobile Client Integration (Transitioning Scope Flow, GuestClaimListener, SQLite Transactional Merge & Journal v4, Marker Quarantine, Crash Recovery Matrix, 19/19 AC Tests PASS, 500/500 Full Mobile Regression PASS, Flutter Analyze 0 Issues) — *FROZEN CLEAN & OFFICIALLY ACCEPTED (Hosted CI Run #39008770517 Green 7/7, Tested Commit `0cbbfc9`, Lock Commit `656d060`)* ✅.
-  - `[ ]` 7B.4. Comprehensive Test Suite & Crash Acceptance Matrix.
+  - `[/]` 7B.4. Comprehensive Test Suite, Crash Acceptance Matrix & Zero-Gamification Verification ([phase_07b_4_test_crash_matrix_plan.md](phase_07b_4_test_crash_matrix_plan.md) — Đang triển khai E2E lifecycle & zero-gamification assertion).
 - **Phase 7C: Unified Multi-Device Sync Engine** `[ ] Chưa làm`
   - `[ ]` 7C.1. Core API Sync Hub (`GET /sync/changes?after=rev`, `POST /sync/mutations/batch`).
   - `[ ]` 7C.2. Table `sync_change_log` & Tombstone Anti-Resurrection Logic.

@@ -6,7 +6,7 @@
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# Category A: Base OS Packages (Alpine Linux & Debian Bookworm)
+# Category A: Base OS Packages (Alpine Linux & Debian 13 Trixie / Debian 12)
 # Technical Justification: Upstream distro packages. Containers run non-root
 # (UID 1000/10001) in isolated Docker bridge networks without shell access.
 # ------------------------------------------------------------------------------
@@ -15,7 +15,7 @@ CVE-2026-8286
 CVE-2026-8458
 CVE-2026-8927
 CVE-2026-93990
-# libexpat1 in Debian Bookworm (CVE-2026-77214) - XML_ParseBuffer heap over-read (No XML in AI Worker)
+# libexpat1 in Debian 13 Trixie (CVE-2026-77214) - XML_ParseBuffer heap over-read (No XML in AI Worker)
 CVE-2026-77214
 CVE-2026-12064
 CVE-2026-14456

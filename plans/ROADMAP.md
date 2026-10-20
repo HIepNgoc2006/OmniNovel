@@ -40,7 +40,7 @@ Tài liệu này theo dõi tiến độ toàn diện của dự án **OmniNovel*
   - `[x]` 7B.3a. Web Client Remediation (P0-1 Contract `expectedStateFingerprint` payload & DTO guard, P0-2 Zero-Mutation Window `deferScopeResolution` on Login/Register, P0-3 Conflict-Aware `rebindScope` honoring `KEEP_CLOUD`/`USE_GUEST`, P0/P1 Fail-Closed Tri-State Crash Recovery `PENDING_UNAVAILABLE`, P1 Canonical `register()` AuthProvider Bridge — Run #432 Green 7/7) — *REMEDIATED* 🛡️.
   - `[x]` 7B.3b. Fail-Closed Scope Resolution Hardening (P0 Prepare failure keeps TRANSITIONING lock, P0 hasGuestData rejects on storage/cursor error, P0 refetchUser preserves TRANSITIONING state and blocks mutations — 50/50 Vitest pass, 657/657 tests pass, Next.js build pass — Hosted CI Run #435 ID 37662890229 Green 7/7) — *FROZEN CLEAN (Commit `9f74ea1`)* ✅.
   - `[x]` 7B.3. Web Client Integration (Guest Claim Coordinator, Transitioning Scope Lock, GuestClaimDialog, Marker Quarantine giữ nguyên physical partition, Rebind IndexedDB merge & purge source, Crash Recovery via pendingClaimId, Auto re-prepare on 409 conflict — 50/50 vitest PASS, Next.js build PASS, Playwright 31/31 PASS) — *FROZEN CLEAN (Run #435 Green 7/7, Commit `9f74ea1`)* ✅.
-  - `[x]` 7B.3. Mobile Client Integration (Transitioning Scope Flow, GuestClaimListener, SQLite Transactional Merge & Journal v4, Marker Quarantine, Crash Recovery Matrix, 19/19 AC Tests PASS, 500/500 Full Mobile Regression PASS, Flutter Analyze 0 Issues) — *FROZEN CLEAN (Hosted CI Run #39008770517 Green 7/7, Mobile Implementation Commit `c6bbd6e1a17b4449c1e771192b5430f5189c6e77`, Pipeline Security Clean Commit `0cbbfc981dd65e3c11bda81ebb1f2ff3025ce8de`)* ✅.
+  - `[x]` 7B.3. Mobile Client Integration (Transitioning Scope Flow, GuestClaimListener, SQLite Transactional Merge & Journal v4, Marker Quarantine, Crash Recovery Matrix, 19/19 AC Tests PASS, 500/500 Full Mobile Regression PASS, Flutter Analyze 0 Issues) — *FROZEN CLEAN & OFFICIALLY ACCEPTED (Hosted CI Run #39008770517 Green 7/7, Tested Commit `0cbbfc9`, Lock Commit `656d060`)* ✅.
   - `[ ]` 7B.4. Comprehensive Test Suite & Crash Acceptance Matrix.
 - **Phase 7C: Unified Multi-Device Sync Engine** `[ ] Chưa làm`
   - `[ ]` 7C.1. Core API Sync Hub (`GET /sync/changes?after=rev`, `POST /sync/mutations/batch`).
@@ -67,6 +67,7 @@ Tài liệu này theo dõi tiến độ toàn diện của dự án **OmniNovel*
 ---
 
 ## 📌 Non-Blocking Technical Debt & P2 Backlog
+- [x] **P1 Trivy Exception Lifecycle & Expiry Gate:** Đã kích hoạt script `deploy/security/validate-trivy-exceptions.py` trong CI runner để chặn tự động ngoại lệ hết hạn và kiểm soát ràng buộc image/package scope (Lịch rà soát kế tiếp: 01/11/2026 cho dependencies và 01/12/2026 cho Base OS/Observability).
 - [ ] **React Test `act(...)` Warning:** Ghi nhận cảnh báo `act(...)` không đồng bộ trong một số React hook tests trên Web Vitest (không ảnh hưởng tính đúng đắn logic hay kết quả assertion).
 - [ ] **GitHub Actions Node.js 20 Deprecation:** Chuẩn bị nâng cấp actions runner lên Node.js 22 runtime theo lộ trình của GitHub Actions.
 

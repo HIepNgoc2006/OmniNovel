@@ -282,6 +282,10 @@ jobs:
           version: "3.88.16"
           extra_args: --only-verified
 
+      - name: Validate Trivy Exception Lifecycle, Scope & Expiry Gate (P1 Governance)
+        run: |
+          python3 deploy/security/validate-trivy-exceptions.py --test
+
   docker-build-scan:
     name: Docker Images Build & Security Scan
     needs: [ai-worker-test, core-api-test, web-client-test, mobile-foundation-test]
@@ -289,6 +293,10 @@ jobs:
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
+
+      - name: Validate Trivy Exception Lifecycle, Scope & Expiry Gate (P1 Governance)
+        run: |
+          python3 deploy/security/validate-trivy-exceptions.py --test
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -313,7 +321,7 @@ jobs:
           image-ref: omninovel-api:${{ github.sha }}
           format: table
           severity: CRITICAL,HIGH
-          trivyignores: .trivyignore
+          trivyignores: deploy/security/trivy/api.trivyignore
           exit-code: '1'
 
       - name: Trivy Vulnerability Scan (AI Worker Image)
@@ -324,7 +332,7 @@ jobs:
           image-ref: omninovel-ai-worker:${{ github.sha }}
           format: table
           severity: CRITICAL,HIGH
-          trivyignores: .trivyignore
+          trivyignores: deploy/security/trivy/ai-worker.trivyignore
           exit-code: '1'
 
       - name: Trivy Vulnerability Scan (Nginx Image)
@@ -335,7 +343,7 @@ jobs:
           image-ref: omninovel-nginx:${{ github.sha }}
           format: table
           severity: CRITICAL,HIGH
-          trivyignores: .trivyignore
+          trivyignores: deploy/security/trivy/nginx.trivyignore
           exit-code: '1'
 
       - name: Trivy Vulnerability Scan (Prometheus Observability Image - Gate 6.4.4a)
@@ -346,7 +354,7 @@ jobs:
           image-ref: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
           format: table
           severity: CRITICAL,HIGH
-          trivyignores: .trivyignore
+          trivyignores: deploy/security/trivy/prometheus.trivyignore
           exit-code: '1'
 
       - name: Trivy Vulnerability Scan (Grafana Observability Image - Gate 6.4.4a)
@@ -357,7 +365,7 @@ jobs:
           image-ref: grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
           format: table
           severity: CRITICAL,HIGH
-          trivyignores: .trivyignore
+          trivyignores: deploy/security/trivy/grafana.trivyignore
           exit-code: '1'
 
   deploy-vps:

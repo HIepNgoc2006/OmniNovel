@@ -17,6 +17,9 @@
    - **Compensating Control:** Xác nhận các tầng phòng thủ đa chiều (Defense in Depth: Non-root user, Network isolation, Ingress filtering, Input validation).
 3. **Vòng đời & Hạn Thu Hồi (Expiry Date):**
    - Mọi ngoại lệ đều có ngày hết hạn bắt buộc. Được xác thực tự động bởi CI gate (`deploy/security/validate-trivy-exceptions.py`). Khi đến hạn, đội ngũ kỹ thuật phải cập nhật bản vá upstream hoặc nâng cấp phiên bản runtime.
+4. **Ràng Buộc Phạm Vi Từng Image (Image-Scoped Isolation & Anti-Leakage):**
+   - Tuyệt đối không dùng chung một danh sách ignore toàn cục. Toàn bộ 5 container images được bảo vệ bằng file ignore riêng biệt (`deploy/security/trivy/<image>.trivyignore`).
+   - Cổng CI thẩm định tự động: ngoại lệ được phê duyệt cho Grafana (ví dụ `CVE-2026-100351`) tuyệt đối không thể bỏ qua lỗ hổng nếu xuất hiện trong Core API hay AI Worker.
 
 ---
 

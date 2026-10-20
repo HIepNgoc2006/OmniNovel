@@ -67,7 +67,7 @@ Tài liệu này theo dõi tiến độ toàn diện của dự án **OmniNovel*
 ---
 
 ## 📌 Non-Blocking Technical Debt & P2 Backlog
-- [x] **P1 Trivy Exception Lifecycle & Expiry Gate:** Đã kích hoạt script `deploy/security/validate-trivy-exceptions.py` trong CI runner để chặn tự động ngoại lệ hết hạn và kiểm soát ràng buộc image/package scope (Lịch rà soát kế tiếp: 01/11/2026 cho dependencies và 01/12/2026 cho Base OS/Observability).
+- [x] **P1 Trivy Exception Lifecycle, Image Scope & Expiry Gate:** Đã hoàn thiện và tích hợp vào CI: (1) Cách ly file ignore độc lập cho từng image (`deploy/security/trivy/*.trivyignore`); (2) Script validator kiểm tra chính xác image/package token và chặn rò rỉ cross-image; (3) Bộ 6 negative test cases tự động (unapproved, expired, cross-image, stale resolved, conflict, missing expiry); (4) Kích hoạt trực tiếp trong 2 CI jobs (`security-scan` & `docker-build-scan`) với cờ `--test` fail-closed (Lịch rà soát định kỳ: 01/11/2026 & 01/12/2026).
 - [ ] **React Test `act(...)` Warning:** Ghi nhận cảnh báo `act(...)` không đồng bộ trong một số React hook tests trên Web Vitest (không ảnh hưởng tính đúng đắn logic hay kết quả assertion).
 - [ ] **GitHub Actions Node.js 20 Deprecation:** Chuẩn bị nâng cấp actions runner lên Node.js 22 runtime theo lộ trình của GitHub Actions.
 

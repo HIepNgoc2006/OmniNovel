@@ -6,14 +6,15 @@ Standard: Fail-Closed Gate (SEC-REG-6.4.4A)
 Enforces:
   1. Image-Scoped Enforcement: Every CVE in deploy/security/trivy/<image>.trivyignore
      must be explicitly registered AND authorized for that specific container image.
-  2. Package-Level Governance: Every CVE suppression binds to authorized packages/PURLs.
+  2. Package-Level Governance Gate: Cross-references CVE suppressions with real Trivy scan findings.
+     Every suppressed CVE must strictly match the authorized package/PURL from the Risk Register.
      Cross-package leakage within the same image is detected and rejected fail-closed.
   3. Lifecycle Gate: Every exception must have a valid future expiration date (expiry_date >= today).
   4. No Stale Suppressions: Resolved CVEs (e.g., CVE-2026-90711) must not appear in any ignore file.
   5. Conflict Prevention: Rejects duplicate records in Risk Register with mismatched images,
      packages, or expiration dates.
-  6. Accurate Token Matching: Image and package identifiers are parsed distinctly without false positives.
-  7. Automated Test Suite: Supports '--test' mode with validated negative test matrix (8/8 scenarios).
+  6. Fail-Closed Report Handling: Missing or corrupt Trivy reports trigger immediate failure.
+  7. Automated Integration Test Suite: Supports '--test' mode with full negative matrix (10/10 scenarios).
 """
 
 import datetime
@@ -21,6 +22,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 from typing import Dict, List, Set, Tuple, Optional
 
 # Ensure UTF-8 output on all platforms
@@ -122,25 +124,62 @@ def parse_scope_cell(scope_col: str) -> Tuple[Set[str], Set[str], List[str]]:
     return detected_images, package_tokens, package_lines
 
 
+def extract_purl_pkg_name(purl: str) -> Optional[str]:
+    """
+    Extract canonical package name from a Package URL (PURL).
+    Examples:
+      pkg:golang/github.com/getkin/kin-openapi@0.129.0 -> github.com/getkin/kin-openapi
+      pkg:npm/%40nestjs/swagger@7.4.2 -> @nestjs/swagger
+      pkg:deb/debian/libexpat1@2.9.0-1 -> libexpat1
+      pkg:pypi/pillow@10.2.0 -> pillow
+      pkg:apk/alpine/libcrypto3@3.3.2-r0 -> libcrypto3
+    """
+    if not purl or not purl.startswith("pkg:"):
+        return None
+    remainder = re.sub(r"^pkg:[^/]+/", "", purl)
+    pkg_part = re.split(r"[@?#]", remainder)[0]
+    decoded = urllib.parse.unquote(pkg_part).strip().lower()
+    return decoded if decoded else None
+
+
+def normalize_pkg_name(name: str) -> str:
+    """Normalize package identifier for exact comparison."""
+    clean = name.strip().lower()
+    clean = clean.split("@")[0].strip()
+    return clean
+
+
 def match_package(detected_pkg: str, authorized_pkgs: Set[str], purl: Optional[str] = None) -> bool:
     """
-    Verify whether a detected package or PURL matches the set of authorized packages.
-    Supports canonical name matching, PURL subpath matching, and base OS library normalization.
+    Strict package match without arbitrary substring leakage.
+    Matches:
+      1. Exact normalized package name.
+      2. Exact normalized PURL package name.
+      3. Base library normalization for OS packages (e.g. libexpat1 == libexpat, libcurl4t64 == libcurl).
+      4. Trailing component match for scoped/namespaced packages (e.g. 'kin-openapi' vs 'github.com/getkin/kin-openapi').
     """
-    det_norm = detected_pkg.strip().lower()
-    purl_norm = (purl or "").strip().lower()
+    det_norm = normalize_pkg_name(detected_pkg)
+    purl_pkg = extract_purl_pkg_name(purl) if purl else None
+    det_base = re.sub(r"\d+.*$", "", det_norm)
 
     for auth in authorized_pkgs:
-        auth_norm = auth.strip().lower()
+        auth_norm = normalize_pkg_name(auth)
+        # 1. Exact match with detected_pkg
         if det_norm == auth_norm:
             return True
-        if purl_norm and auth_norm in purl_norm:
+        # 2. Exact match with purl_pkg
+        if purl_pkg and purl_pkg == auth_norm:
             return True
-        # Base package normalization (e.g. libexpat vs libexpat1, libcurl4t64 vs libcurl)
+        # 3. Base name match for OS libraries (e.g. libexpat vs libexpat1)
         auth_base = re.sub(r"\d+.*$", "", auth_norm)
-        det_base = re.sub(r"\d+.*$", "", det_norm)
         if len(auth_base) >= 4 and auth_base == det_base:
             return True
+        # 4. Trailing component match for scoped packages
+        if "/" in auth_norm and auth_norm.endswith(f"/{det_norm}"):
+            return True
+        if "/" in det_norm and det_norm.endswith(f"/{auth_norm}"):
+            return True
+
     return False
 
 
@@ -155,7 +194,7 @@ def load_register(register_file: str) -> Tuple[Dict[str, dict], List[str]]:
           expiry_date: date,
           is_resolved: bool
         }
-      - errors: list of parsing/consistency errors (e.g. duplicate conflicting rows, missing expiry)
+      - errors: list of parsing/consistency errors
     """
     if not os.path.isfile(register_file):
         return {}, [f"Risk register file not found at: {register_file}"]
@@ -243,85 +282,64 @@ def load_ignore_file(file_path: str) -> Set[str]:
     return cves
 
 
-def load_trivy_json_report(report_path: str, default_image: Optional[str] = None) -> List[dict]:
+def load_trivy_json_report(report_path: str, expected_image: str) -> Tuple[List[dict], Optional[str]]:
     """
-    Parse a Trivy JSON vulnerability scan report.
-    Returns list of findings: [{'cve': ..., 'image': ..., 'package': ..., 'purl': ...}]
+    Load and parse a Trivy JSON scan report.
+    Returns: (findings_list, error_message)
+    Fail-closed:
+      - If report_path does not exist -> returns ([], "REPORT_MISSING: ...")
+      - If report_path is corrupt / empty / invalid JSON -> returns ([], "REPORT_CORRUPT: ...")
+      - If report is valid -> returns (findings, None)
     """
     if not os.path.isfile(report_path):
-        return []
-    findings = []
+        return [], f"REPORT_MISSING: Expected Trivy scan report for image '{expected_image}' at '{report_path}' was not found."
+
     try:
         with open(report_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception:
-        return []
+            content = f.read().strip()
+            if not content:
+                return [], f"REPORT_CORRUPT: Trivy scan report for image '{expected_image}' at '{report_path}' is empty."
+            data = json.loads(content)
+    except Exception as e:
+        return [], f"REPORT_CORRUPT: Failed to parse Trivy scan report for image '{expected_image}' at '{report_path}': {e}"
 
-    artifact_name = data.get("ArtifactName", "")
-    inferred_image = default_image
-    if not inferred_image:
-        for img in VALID_IMAGES:
-            if img in artifact_name.lower():
-                inferred_image = img
-                break
+    if not isinstance(data, dict):
+        return [], f"REPORT_CORRUPT: Trivy scan report for image '{expected_image}' at '{report_path}' is not a valid JSON object."
 
+    findings = []
     for result in data.get("Results", []):
+        # 1. Standard active vulnerabilities
         for vuln in result.get("Vulnerabilities", []):
             cve = vuln.get("VulnerabilityID")
             pkg = vuln.get("PkgName")
-            purl = None
             pkg_id = vuln.get("PkgIdentifier")
-            if isinstance(pkg_id, dict):
-                purl = pkg_id.get("PURL")
-            elif isinstance(pkg_id, str):
-                purl = pkg_id
-
+            purl = pkg_id.get("PURL") if isinstance(pkg_id, dict) else (pkg_id if isinstance(pkg_id, str) else None)
             if cve and pkg:
                 findings.append({
                     "cve": cve,
-                    "image": inferred_image or "unknown",
+                    "image": expected_image,
                     "package": pkg,
                     "purl": purl,
+                    "severity": vuln.get("Severity", "UNKNOWN"),
                 })
-    return findings
+        # 2. Suppressed / modified findings (when --show-suppressed or experimental flags used)
+        for mod in result.get("ExperimentalModifiedFindings", []) or result.get("ModifiedFindings", []):
+            vuln = mod.get("Vulnerability", mod)
+            cve = vuln.get("VulnerabilityID")
+            pkg = vuln.get("PkgName")
+            pkg_id = vuln.get("PkgIdentifier")
+            purl = pkg_id.get("PURL") if isinstance(pkg_id, dict) else (pkg_id if isinstance(pkg_id, str) else None)
+            if cve and pkg:
+                findings.append({
+                    "cve": cve,
+                    "image": expected_image,
+                    "package": pkg,
+                    "purl": purl,
+                    "severity": vuln.get("Severity", "UNKNOWN"),
+                    "suppressed": True,
+                })
 
-
-def validate_package_bindings(
-    scan_findings: List[dict],
-    exceptions: Dict[str, dict],
-) -> List[str]:
-    """
-    Enforces package-level binding gate.
-    Every finding must match an authorized package/PURL registered for that CVE and image.
-    """
-    errors = []
-    for item in scan_findings:
-        cve = item.get("cve")
-        img = item.get("image")
-        pkg = item.get("package", "")
-        purl = item.get("purl")
-
-        if not cve or not img:
-            continue
-
-        if cve not in exceptions:
-            errors.append(f"UNAPPROVED EXCEPTION: Finding '{cve}' in '{img}' is not registered in Risk Register.")
-            continue
-
-        entry = exceptions[cve]
-        if img not in entry["images"]:
-            errors.append(
-                f"CROSS-IMAGE LEAKAGE: Finding '{cve}' in image '{img}' is only authorized for {sorted(list(entry['images']))}."
-            )
-            continue
-
-        if entry["packages"] and pkg:
-            if not match_package(pkg, entry["packages"], purl=purl):
-                errors.append(
-                    f"WRONG-PACKAGE SUPPRESSION: CVE '{cve}' detected in package '{pkg}' of image '{img}', "
-                    f"but is only authorized for package(s) {sorted(list(entry['packages']))}."
-                )
-    return errors
+    return findings, None
 
 
 def validate_governance(
@@ -329,16 +347,17 @@ def validate_governance(
     register_file: str,
     root_trivyignore: Optional[str] = None,
     audit_date: Optional[datetime.date] = None,
-    scan_findings: Optional[List[dict]] = None,
-) -> Tuple[List[str], List[str], Dict[str, int]]:
+    image_reports: Optional[Dict[str, str]] = None,
+    enforce_reports: bool = False,
+) -> Tuple[List[str], List[str], Dict[str, int], Dict[str, int]]:
     """
     Run full governance validation:
       1. Register integrity & conflict checks
       2. Image-scoped ignore file authorization
       3. Lifecycle & expiration date tracking
       4. Stale suppression detection
-      5. Package-binding enforcement (if scan_findings provided)
-    Returns: (errors, warnings, stats)
+      5. Fail-closed Package-Binding Enforcement on Real Trivy Scan Reports
+    Returns: (errors, warnings, ignore_stats, report_stats)
     """
     if audit_date is None:
         audit_date = datetime.date.today()
@@ -346,7 +365,10 @@ def validate_governance(
     exceptions, reg_errors = load_register(register_file)
     errors: List[str] = list(reg_errors)
     warnings: List[str] = []
-    stats: Dict[str, int] = {}
+    ignore_stats: Dict[str, int] = {}
+    report_stats: Dict[str, int] = {}
+
+    scoped_cves_by_image: Dict[str, Set[str]] = {}
 
     # 1. Validate image-scoped ignore files
     for img in sorted(VALID_IMAGES):
@@ -356,7 +378,8 @@ def validate_governance(
             continue
 
         cves_in_file = load_ignore_file(ignore_path)
-        stats[img] = len(cves_in_file)
+        ignore_stats[img] = len(cves_in_file)
+        scoped_cves_by_image[img] = cves_in_file
 
         for cve in sorted(cves_in_file):
             if cve not in exceptions:
@@ -404,18 +427,66 @@ def validate_governance(
             elif exceptions[cve]["expiry_date"] and exceptions[cve]["expiry_date"] < audit_date:
                 errors.append(f"EXPIRED EXCEPTION: '{cve}' in root .trivyignore expired on {exceptions[cve]['expiry_date']}.")
 
-    # 3. Validate package-level bindings if findings provided
-    if scan_findings:
-        binding_errors = validate_package_bindings(scan_findings, exceptions)
-        errors.extend(binding_errors)
+    # 3. Fail-Closed Package-Binding Enforcement on Real Trivy Scan Reports
+    if image_reports is not None or enforce_reports:
+        reports = image_reports or {}
 
-    return errors, warnings, stats
+        if enforce_reports:
+            for img in sorted(VALID_IMAGES):
+                if img not in reports:
+                    errors.append(
+                        f"MISSING_IMAGE_REPORT: Required scan report for image '{img}' was not provided under --enforce-reports."
+                    )
+
+        for img, report_path in sorted(reports.items()):
+            if img not in VALID_IMAGES:
+                errors.append(f"UNKNOWN_IMAGE_REPORT: Report provided for unrecognized container image '{img}'.")
+                continue
+
+            findings, report_err = load_trivy_json_report(report_path, expected_image=img)
+            if report_err:
+                errors.append(report_err)
+                continue
+
+            suppressed_cves = scoped_cves_by_image.get(img, set())
+            verified_count = 0
+
+            for f in findings:
+                cve = f.get("cve")
+                pkg = f.get("package", "")
+                purl = f.get("purl")
+
+                # Only evaluate package binding for CVEs requested for suppression in this image
+                if cve in suppressed_cves:
+                    entry = exceptions.get(cve)
+                    if not entry:
+                        errors.append(f"UNAPPROVED EXCEPTION: '{cve}' in report for '{img}' is not in Risk Register.")
+                        continue
+
+                    if img not in entry["images"]:
+                        errors.append(
+                            f"CROSS-IMAGE LEAKAGE: Finding '{cve}' in image '{img}' is only authorized for {sorted(list(entry['images']))}."
+                        )
+                        continue
+
+                    if entry["packages"] and pkg:
+                        if not match_package(pkg, entry["packages"], purl=purl):
+                            errors.append(
+                                f"WRONG-PACKAGE SUPPRESSION: CVE '{cve}' was found in package '{pkg}' of image '{img}', "
+                                f"but Risk Register only authorizes it for package(s): {sorted(list(entry['packages']))}."
+                            )
+                        else:
+                            verified_count += 1
+
+            report_stats[img] = verified_count
+
+    return errors, warnings, ignore_stats, report_stats
 
 
 def run_tests() -> int:
     """
-    Execute full negative and positive test matrix for P1 governance validator.
-    Covers 8 critical failure and verification scenarios.
+    Execute full negative, integration and positive test matrix for P1 governance validator.
+    Covers 10 critical failure and verification scenarios with realistic Trivy JSON fixtures.
     """
     import tempfile
     import shutil
@@ -440,14 +511,14 @@ def run_tests() -> int:
                         f.write(f"{cve}\n")
 
         passed_tests = 0
-        total_tests = 8
+        total_tests = 10
 
         # --- Test 1: Unregistered CVE fails ---
         write_test_env(
             reg_content="| **CVE-2026-1111** | `api`<br>`test` | desc | expl | comp | team | 2026-12-01 |\n",
             image_cves={"api": ["CVE-2026-1111", "CVE-2026-9999"]},
         )
-        errors, _, _ = validate_governance(t_trivy_dir, t_reg_file)
+        errors, _, _, _ = validate_governance(t_trivy_dir, t_reg_file)
         assert any("UNAPPROVED EXCEPTION" in e and "CVE-2026-9999" in e for e in errors), f"Test 1 failed: {errors}"
         print("  [PASS] Test 1: Unregistered CVE correctly blocked (UNAPPROVED EXCEPTION)")
         passed_tests += 1
@@ -457,7 +528,7 @@ def run_tests() -> int:
             reg_content="| **CVE-2026-2222** | `api`<br>`test` | desc | expl | comp | team | 2026-01-01 |\n",
             image_cves={"api": ["CVE-2026-2222"]},
         )
-        errors, _, _ = validate_governance(t_trivy_dir, t_reg_file, audit_date=datetime.date(2026, 10, 20))
+        errors, _, _, _ = validate_governance(t_trivy_dir, t_reg_file, audit_date=datetime.date(2026, 10, 20))
         assert any("EXPIRED EXCEPTION" in e and "CVE-2026-2222" in e for e in errors), f"Test 2 failed: {errors}"
         print("  [PASS] Test 2: Expired CVE correctly blocked (EXPIRED EXCEPTION)")
         passed_tests += 1
@@ -467,7 +538,7 @@ def run_tests() -> int:
             reg_content="| **CVE-2026-3333** | `grafana`<br>`kin-openapi` | desc | expl | comp | team | 2026-12-01 |\n",
             image_cves={"api": ["CVE-2026-3333"], "grafana": ["CVE-2026-3333"]},
         )
-        errors, _, _ = validate_governance(t_trivy_dir, t_reg_file)
+        errors, _, _, _ = validate_governance(t_trivy_dir, t_reg_file)
         assert any("CROSS-IMAGE LEAKAGE" in e and "CVE-2026-3333" in e for e in errors), f"Test 3 failed: {errors}"
         print("  [PASS] Test 3: Cross-image leakage correctly blocked (CROSS-IMAGE LEAKAGE)")
         passed_tests += 1
@@ -477,7 +548,7 @@ def run_tests() -> int:
             reg_content="| **CVE-2026-4444** | `api`<br>`proxy` | desc | expl | comp | team | ĐÃ GIẢI QUYẾT |\n",
             image_cves={"api": ["CVE-2026-4444"]},
         )
-        errors, _, _ = validate_governance(t_trivy_dir, t_reg_file)
+        errors, _, _, _ = validate_governance(t_trivy_dir, t_reg_file)
         assert any("STALE SUPPRESSION" in e and "CVE-2026-4444" in e for e in errors), f"Test 4 failed: {errors}"
         print("  [PASS] Test 4: Stale RESOLVED CVE correctly blocked (STALE SUPPRESSION)")
         passed_tests += 1
@@ -488,7 +559,7 @@ def run_tests() -> int:
             "| **CVE-2026-5555** | `nginx`<br>`lib2` | desc | expl | comp | team | 2026-11-01 |\n"
         )
         write_test_env(reg_content=conflicting_reg, image_cves={})
-        errors, _, _ = validate_governance(t_trivy_dir, t_reg_file)
+        errors, _, _, _ = validate_governance(t_trivy_dir, t_reg_file)
         assert any("CONFLICTING DUPLICATE RECORD" in e for e in errors), f"Test 5 failed: {errors}"
         print("  [PASS] Test 5: Conflicting duplicate records correctly blocked (CONFLICTING DUPLICATE RECORD)")
         passed_tests += 1
@@ -496,33 +567,93 @@ def run_tests() -> int:
         # --- Test 6: Missing expiry date in register fails ---
         missing_expiry_reg = "| **CVE-2026-6666** | `api`<br>`lib1` | desc | expl | comp | team | NoDateHere |\n"
         write_test_env(reg_content=missing_expiry_reg, image_cves={"api": ["CVE-2026-6666"]})
-        errors, _, _ = validate_governance(t_trivy_dir, t_reg_file)
+        errors, _, _, _ = validate_governance(t_trivy_dir, t_reg_file)
         assert any("MISSING EXPIRY" in e and "CVE-2026-6666" in e for e in errors), f"Test 6 failed: {errors}"
         print("  [PASS] Test 6: Missing expiry date correctly blocked (MISSING EXPIRY)")
         passed_tests += 1
 
-        # --- Test 7: Wrong package in valid image fails package-binding gate ---
-        wrong_pkg_reg = "| **CVE-2026-7777** | `api`<br>`fast-xml-parser` | desc | expl | comp | team | 2026-12-01 |\n"
-        write_test_env(reg_content=wrong_pkg_reg, image_cves={"api": ["CVE-2026-7777"]})
-        findings = [{"cve": "CVE-2026-7777", "image": "api", "package": "axios", "purl": "pkg:npm/axios@1.7.0"}]
-        errors, _, _ = validate_governance(t_trivy_dir, t_reg_file, scan_findings=findings)
-        assert any("WRONG-PACKAGE SUPPRESSION" in e and "axios" in e for e in errors), f"Test 7 failed: {errors}"
-        print("  [PASS] Test 7: Wrong package in valid image correctly blocked (WRONG-PACKAGE SUPPRESSION)")
-        passed_tests += 1
-
-        # --- Test 8: Conflicting duplicate records with mismatched package mapping fail ---
+        # --- Test 7: Conflicting duplicate records with mismatched package mapping fail ---
         conflicting_pkg_reg = (
             "| **CVE-2026-8888** | `ai-worker`<br>`pillow` | desc | expl | comp | team | 2026-12-01 |\n"
             "| **CVE-2026-8888** | `ai-worker`<br>`transformers` | desc | expl | comp | team | 2026-12-01 |\n"
         )
         write_test_env(reg_content=conflicting_pkg_reg, image_cves={})
-        errors, _, _ = validate_governance(t_trivy_dir, t_reg_file)
-        assert any("CONFLICTING DUPLICATE RECORD" in e and "packages" in e.lower() for e in errors), f"Test 8 failed: {errors}"
-        print("  [PASS] Test 8: Conflicting duplicate package mapping correctly blocked (CONFLICTING DUPLICATE RECORD)")
+        errors, _, _, _ = validate_governance(t_trivy_dir, t_reg_file)
+        assert any("CONFLICTING DUPLICATE RECORD" in e and "packages" in e.lower() for e in errors), f"Test 7 failed: {errors}"
+        print("  [PASS] Test 7: Conflicting duplicate package mapping correctly blocked (CONFLICTING DUPLICATE RECORD)")
+        passed_tests += 1
+
+        # --- Test 8: Real Trivy JSON fixture with valid package verified ---
+        fixture_reg = "| **CVE-2026-100351** | `grafana`<br>`github.com/getkin/kin-openapi` | desc | expl | comp | team | 2026-12-01 |\n"
+        write_test_env(reg_content=fixture_reg, image_cves={"grafana": ["CVE-2026-100351"]})
+        valid_json = {
+            "SchemaVersion": 2,
+            "ArtifactName": "grafana/grafana:13.2.3",
+            "Results": [{
+                "Target": "usr/share/grafana/bin/grafana",
+                "Vulnerabilities": [{
+                    "VulnerabilityID": "CVE-2026-100351",
+                    "PkgName": "github.com/getkin/kin-openapi",
+                    "PkgIdentifier": {"PURL": "pkg:golang/github.com/getkin/kin-openapi@0.129.0"},
+                    "Severity": "HIGH"
+                }]
+            }]
+        }
+        valid_report_path = os.path.join(test_dir, "grafana_valid.json")
+        with open(valid_report_path, "w", encoding="utf-8") as f:
+            json.dump(valid_json, f)
+
+        errors, _, _, report_stats = validate_governance(
+            t_trivy_dir, t_reg_file, image_reports={"grafana": valid_report_path}
+        )
+        assert len(errors) == 0, f"Test 8 failed with unexpected errors: {errors}"
+        assert report_stats.get("grafana") == 1
+        print("  [PASS] Test 8: Real Trivy JSON fixture with valid package verified (PACKAGE-BINDING PASS)")
+        passed_tests += 1
+
+        # --- Test 9: Real Trivy JSON fixture with wrong package fails ---
+        wrong_json = {
+            "SchemaVersion": 2,
+            "ArtifactName": "grafana/grafana:13.2.3",
+            "Results": [{
+                "Target": "usr/share/grafana/bin/grafana",
+                "Vulnerabilities": [{
+                    "VulnerabilityID": "CVE-2026-100351",
+                    "PkgName": "unauthorized-malicious-pkg",
+                    "PkgIdentifier": {"PURL": "pkg:golang/unauthorized-malicious-pkg@1.0.0"},
+                    "Severity": "HIGH"
+                }]
+            }]
+        }
+        wrong_report_path = os.path.join(test_dir, "grafana_wrong.json")
+        with open(wrong_report_path, "w", encoding="utf-8") as f:
+            json.dump(wrong_json, f)
+
+        errors, _, _, _ = validate_governance(
+            t_trivy_dir, t_reg_file, image_reports={"grafana": wrong_report_path}
+        )
+        assert any("WRONG-PACKAGE SUPPRESSION" in e and "unauthorized-malicious-pkg" in e for e in errors), f"Test 9 failed: {errors}"
+        print("  [PASS] Test 9: Real Trivy JSON fixture with wrong package correctly blocked (WRONG-PACKAGE SUPPRESSION)")
+        passed_tests += 1
+
+        # --- Test 10: Missing/Corrupt report under --enforce-reports fails ---
+        corrupt_report_path = os.path.join(test_dir, "corrupt.json")
+        with open(corrupt_report_path, "w", encoding="utf-8") as f:
+            f.write("{invalid_json_stream:")
+
+        errors, _, _, _ = validate_governance(
+            t_trivy_dir, t_reg_file,
+            image_reports={"api": corrupt_report_path, "ai-worker": os.path.join(test_dir, "missing.json")},
+            enforce_reports=True
+        )
+        assert any("REPORT_CORRUPT" in e for e in errors)
+        assert any("REPORT_MISSING" in e for e in errors)
+        assert any("MISSING_IMAGE_REPORT" in e for e in errors)
+        print("  [PASS] Test 10: Missing and corrupt reports correctly blocked fail-closed (REPORT_MISSING/REPORT_CORRUPT)")
         passed_tests += 1
 
         print("--------------------------------------------------------------------------------")
-        print(f"[TEST RESULT] {passed_tests}/{total_tests} Negative & Governance Tests PASSED (Validated Fail-Closed Scenarios)")
+        print(f"[TEST RESULT] {passed_tests}/{total_tests} Negative, Integration & Governance Tests PASSED (Validated Fail-Closed Scenarios)")
         print("================================================================================\n")
         return 0
     finally:
@@ -530,6 +661,8 @@ def run_tests() -> int:
 
 
 def main():
+    enforce_reports = "--enforce-reports" in sys.argv
+
     if "--test" in sys.argv:
         test_exit_code = run_tests()
         if test_exit_code != 0:
@@ -544,24 +677,42 @@ def main():
     print(f"[INFO] Risk Register: {os.path.relpath(REGISTER_PATH, REPO_ROOT)}")
     print(f"[INFO] Scoped Ignore Directory: {os.path.relpath(TRIVY_DIR, REPO_ROOT)}")
 
-    # Parse optional report paths from command line
-    scan_findings: List[dict] = []
+    # Parse reports from CLI: --report <image>=<path> or --report <path>
+    image_reports: Dict[str, str] = {}
     for idx, arg in enumerate(sys.argv):
         if arg == "--report" and idx + 1 < len(sys.argv):
-            r_path = sys.argv[idx + 1]
-            scan_findings.extend(load_trivy_json_report(r_path))
+            val = sys.argv[idx + 1]
+            if "=" in val:
+                img, path = val.split("=", 1)
+                image_reports[img.strip().lower()] = path.strip()
+            else:
+                for img_candidate in VALID_IMAGES:
+                    if img_candidate in os.path.basename(val).lower():
+                        image_reports[img_candidate] = val.strip()
+                        break
 
-    errors, warnings, stats = validate_governance(
+    if image_reports:
+        print(f"[INFO] Package-Level Binding Enforcement: Active across {len(image_reports)} report(s)")
+        for img, p in image_reports.items():
+            print(f"  - [{img}]: {p}")
+
+    errors, warnings, ignore_stats, report_stats = validate_governance(
         trivy_dir=TRIVY_DIR,
         register_file=REGISTER_PATH,
         root_trivyignore=ROOT_TRIVYIGNORE,
         audit_date=today,
-        scan_findings=scan_findings if scan_findings else None,
+        image_reports=image_reports if image_reports else None,
+        enforce_reports=enforce_reports,
     )
 
     print("\n[INFO] Active Scoped Exception Distribution:")
-    for img, count in stats.items():
+    for img, count in ignore_stats.items():
         print(f"  - {img:<12}: {count:>2} authorized CVE suppressions")
+
+    if report_stats:
+        print("\n[INFO] Real Trivy Scan Report Package-Binding Audit:")
+        for img, count in report_stats.items():
+            print(f"  - {img:<12}: {count:>2} suppressed findings verified against authorized packages")
 
     if warnings:
         print(f"\n[WARNING] LIFECYCLE WARNINGS ({len(warnings)} upcoming reviews):")
@@ -578,6 +729,8 @@ def main():
         sys.exit(1)
 
     print("\n[PASS] TRIVY EXCEPTION AUDIT PASSED: 100% of suppressed CVEs are registered, strictly image-scoped, and within active lifecycle window.")
+    if report_stats:
+        print("[PASS] PACKAGE-LEVEL BINDING GATE PASSED: All evaluated suppressions match authorized packages on real Trivy scan reports.")
     print("================================================================================")
     sys.exit(0)
 

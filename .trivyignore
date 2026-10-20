@@ -1,106 +1,92 @@
-# ==============================================================================
-# OmniNovel Container Security - Trivy Vulnerability Ignore Baseline
-# Standard: Fail-Closed Gate (exit-code: 1) with Governed Exception Policy
-# Governed Risk Register: deploy/security/trivy-exception-register.md
-# Review Cycle: Quarterly (Next Review: 2026-11-01 / 2026-12-01)
-# ==============================================================================
+# OmniNovel Container Security - Master Aggregated Trivy Ignore Baseline
+# Standard: Fail-Closed Gate with Governed Exception Policy (SEC-REG-6.4.4A)
+# Source of Truth: deploy/security/trivy-exception-register.md
+# Total Unique Active Suppressions: 99
 
-# ------------------------------------------------------------------------------
-# Category A: Base OS Packages (Alpine Linux & Debian 13 Trixie / Debian 12)
-# Technical Justification: Upstream distro packages. Containers run non-root
-# (UID 1000/10001) in isolated Docker bridge networks without shell access.
-# ------------------------------------------------------------------------------
 CVE-2024-21538
-CVE-2026-8286
-CVE-2026-8458
-CVE-2026-8927
-CVE-2026-93990
-# libexpat1 in Debian 13 Trixie (CVE-2026-77214) - XML_ParseBuffer heap over-read (No XML in AI Worker)
-CVE-2026-77214
-CVE-2026-12064
-CVE-2026-14456
-CVE-2026-45447
-CVE-2026-54369
-CVE-2026-66046
-CVE-2026-76642
-CVE-2026-76956
-CVE-2026-76957
-CVE-2026-78408
-CVE-2026-78409
-CVE-2026-78410
-CVE-2026-103111
-
-# ------------------------------------------------------------------------------
-# Category B: AI Worker ML Ecosystem (Transformers, PyTorch, Pillow, Starlette)
-# Technical Justification: manga-ocr inference engine. Model loading is
-# restricted to trusted local cached models; service runs in internal-only network
-# behind NestJS Core API with mandatory x-internal-key authentication.
-# ------------------------------------------------------------------------------
 CVE-2025-62727
-CVE-2026-4372
-CVE-2026-48818
-CVE-2026-5241
-CVE-2026-54283
-CVE-2026-59197
-CVE-2026-59199
-CVE-2026-59200
-CVE-2026-59204
-CVE-2026-59205
-CVE-2026-80047
-CVE-2026-9856
-CVE-2026-24049
-
-# ------------------------------------------------------------------------------
-# Category C: Transitive Node.js / NestJS Dependencies
-# Technical Justification: Transitive build/CLI tools and upload middleware.
-# User input is sanitized via Magic-Bytes and size limits; no unvalidated
-# YAML or TAR archives are extracted or processed in production endpoints.
-# ------------------------------------------------------------------------------
 CVE-2025-64756
 CVE-2025-69720
-CVE-2026-2359
-CVE-2026-3304
-CVE-2026-3520
-CVE-2026-4800
-CVE-2026-5079
-CVE-2026-6653
-CVE-2026-9496
-CVE-2026-9538
+CVE-2026-100349
+CVE-2026-100351
+CVE-2026-100352
+CVE-2026-100353
+CVE-2026-100354
+CVE-2026-102276
+CVE-2026-102278
+CVE-2026-102599
+CVE-2026-103111
+CVE-2026-12064
 CVE-2026-13149
 CVE-2026-14257
+CVE-2026-14456
 CVE-2026-16742
+CVE-2026-21728
+CVE-2026-2359
 CVE-2026-23745
 CVE-2026-23949
 CVE-2026-23950
+CVE-2026-24049
 CVE-2026-24842
 CVE-2026-25990
 CVE-2026-26960
 CVE-2026-26996
 CVE-2026-27903
 CVE-2026-27904
+CVE-2026-28377
 CVE-2026-29786
 CVE-2026-31802
+CVE-2026-3304
+CVE-2026-3520
 CVE-2026-40192
+CVE-2026-42154
 CVE-2026-42311
+CVE-2026-4372
+CVE-2026-45447
+CVE-2026-4800
 CVE-2026-48815
+CVE-2026-48818
+CVE-2026-5079
+CVE-2026-5241
 CVE-2026-54058
 CVE-2026-54059
 CVE-2026-54060
+CVE-2026-54283
+CVE-2026-54369
 CVE-2026-55379
 CVE-2026-55380
+CVE-2026-59197
+CVE-2026-59199
+CVE-2026-59200
+CVE-2026-59204
+CVE-2026-59205
 CVE-2026-59869
-# js-yaml aliases (CVE-2026-59870 / GHSA-5p4m-2wfm-xmqj) via @nestjs/swagger@7.4.2
 CVE-2026-59870
-GHSA-5p4m-2wfm-xmqj
 CVE-2026-59873
 CVE-2026-59874
+CVE-2026-66046
+CVE-2026-6653
 CVE-2026-69152
 CVE-2026-69192
 CVE-2026-73566
 CVE-2026-74860
+CVE-2026-76642
+CVE-2026-76956
+CVE-2026-76957
 CVE-2026-77078
+CVE-2026-77214
+CVE-2026-78408
+CVE-2026-78409
+CVE-2026-78410
+CVE-2026-78667
+CVE-2026-78669
+CVE-2026-80047
 CVE-2026-82333
+CVE-2026-8286
+CVE-2026-84304
 CVE-2026-84375
+CVE-2026-84445
+CVE-2026-8458
 CVE-2026-86138
 CVE-2026-86139
 CVE-2026-86140
@@ -108,34 +94,11 @@ CVE-2026-86142
 CVE-2026-86143
 CVE-2026-86144
 CVE-2026-88806
-CVE-2026-102276
-CVE-2026-102278
-CVE-2026-102599
-# http-cache-semantics in base node npm package
+CVE-2026-8927
 CVE-2026-93748
-
-# ------------------------------------------------------------------------------
-# Category D: Observability Infrastructure (Prometheus & Grafana Images - Gate 6.4.4a)
-# Technical Justification: Upstream OSS monitoring containers. Both containers run
-# isolated on the omninovel-internal network (127.0.0.1 bind-only, zero edge ingress).
-# All listed CVEs affect unused remote-read engines or unused bundled plugins (Tempo,
-# Alertmanager, Graphite).
-# ------------------------------------------------------------------------------
-# Prometheus (prom/prometheus:v3.15.0) - Unused Remote Read endpoint & Go stdlib DoS flaws
-CVE-2026-42154
-# Go stdlib DoS flaws (CVE-2026-78667, CVE-2026-78669, CVE-2026-97031) in Prometheus & Grafana binaries
-CVE-2026-78667
-CVE-2026-78669
+CVE-2026-93990
+CVE-2026-9496
+CVE-2026-9538
 CVE-2026-97031
-
-# Grafana (grafana/grafana:13.2.3) - Unused bundled plugins (Tempo, Alertmanager, Graphite) & kin-openapi
-CVE-2026-84445
-CVE-2026-84304
-CVE-2026-21728
-CVE-2026-28377
-# kin-openapi OAS parser flaws in Grafana router
-CVE-2026-100349
-CVE-2026-100351
-CVE-2026-100352
-CVE-2026-100353
-CVE-2026-100354
+CVE-2026-9856
+GHSA-5p4m-2wfm-xmqj

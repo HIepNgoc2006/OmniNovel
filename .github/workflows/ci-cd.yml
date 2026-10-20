@@ -313,10 +313,14 @@ jobs:
         run: |
           docker build -t omninovel-nginx:${{ github.sha }} -f deploy/nginx/Dockerfile deploy/nginx
 
-      - name: Install Trivy CLI (for Package-Level Audit & Report Extraction)
-        run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sudo sh -s -- -b /usr/local/bin v0.58.2
-          trivy --version
+      - name: Set up Trivy CLI (for Package-Level Audit & Report Extraction)
+        uses: aquasecurity/setup-trivy@v0.3.1
+        with:
+          version: v0.76.0
+          cache: true
+
+      - name: Verify Trivy CLI Installation
+        run: trivy --version
 
       - name: Generate Raw Trivy JSON Vulnerability Reports (5 Container Images)
         env:
@@ -324,11 +328,11 @@ jobs:
         run: |
           mkdir -p /tmp/trivy-reports
           echo "[INFO] Scanning 5 Container Images and exporting JSON Reports..."
-          trivy image --format json --output /tmp/trivy-reports/api.json --severity CRITICAL,HIGH omninovel-api:${{ github.sha }}
-          trivy image --format json --output /tmp/trivy-reports/ai-worker.json --severity CRITICAL,HIGH omninovel-ai-worker:${{ github.sha }}
-          trivy image --format json --output /tmp/trivy-reports/nginx.json --severity CRITICAL,HIGH omninovel-nginx:${{ github.sha }}
-          trivy image --format json --output /tmp/trivy-reports/prometheus.json --severity CRITICAL,HIGH prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
-          trivy image --format json --output /tmp/trivy-reports/grafana.json --severity CRITICAL,HIGH grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
+          trivy image --format json --output /tmp/trivy-reports/api.json --severity CRITICAL,HIGH --exit-code 0 omninovel-api:${{ github.sha }}
+          trivy image --format json --output /tmp/trivy-reports/ai-worker.json --severity CRITICAL,HIGH --exit-code 0 omninovel-ai-worker:${{ github.sha }}
+          trivy image --format json --output /tmp/trivy-reports/nginx.json --severity CRITICAL,HIGH --exit-code 0 omninovel-nginx:${{ github.sha }}
+          trivy image --format json --output /tmp/trivy-reports/prometheus.json --severity CRITICAL,HIGH --exit-code 0 prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+          trivy image --format json --output /tmp/trivy-reports/grafana.json --severity CRITICAL,HIGH --exit-code 0 grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
           ls -lh /tmp/trivy-reports
 
       - name: Enforce Fail-Closed Package-Level Governance Gate on Real Scan Reports

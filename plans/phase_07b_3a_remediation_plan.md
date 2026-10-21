@@ -9,7 +9,7 @@
 **Tech Stack:** TypeScript, Next.js 16 (App Router), React 19, NestJS, TypeORM, PostgreSQL, IndexedDB (idb), Vitest, Jest, Supertest.
 
 ## Global Constraints
-- Local isolation: All packages and builds run strictly inside project root `e:\Workspace 2\Doctruyen_project`.
+- Local isolation: All packages and builds run strictly inside project root `e:\Workspace2\Doctruyen_project`.
 - Continuous Git: Commit with clear messages and push to `origin/main` via `gh` CLI.
 - KISS & YAGNI: Direct fixes without extraneous abstractions.
 - All existing tests (Vitest 50 files, NestJS E2E, Flutter Analyze) must remain green.

@@ -25,7 +25,7 @@
 ## 3. Quy định Cài đặt Môi trường & Đồng bộ Git
 - **Cô lập Môi trường Cục bộ (Local Isolation - Bắt buộc):**
   - Tuyệt đối **KHÔNG ĐƯỢC PHÉP** cài đặt bất kỳ công cụ, package, thư viện, CLI, Skill hay Plugin nào ra ngoài phạm vi dự án (toàn cục máy tính / Global PATH / User directory).
-  - Mọi công cụ và thư viện chỉ được phép cài đặt cục bộ bên trong thư mục dự án `e:\Workspace 2\Doctruyen_project` (ví dụ: `node_modules`, `.venv`, `.agents/skills/...`).
+  - Mọi công cụ và thư viện chỉ được phép cài đặt cục bộ bên trong thư mục dự án `e:\Workspace2\Doctruyen_project` (ví dụ: `node_modules`, `.venv`, `.agents/skills/...`).
   - Luôn chỉ rõ đường dẫn cụ thể của bất kỳ file/thư mục nào được tạo ra hoặc cài đặt.
 - **Đồng bộ Git Tự động & Liên tục (Continuous Commit & Push):**
   - Bất cứ khi nào có thay đổi (tạo mới, sửa đổi, xóa) các file không nằm trong danh sách loại trừ của `.gitignore`, phải lập tức thực hiện `git add`, `git commit` với thông điệp rõ ràng và `git push` lên repository từ xa ngay.

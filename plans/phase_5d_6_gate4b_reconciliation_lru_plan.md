@@ -14,7 +14,7 @@
 **Tech Stack:** Flutter / Dart, SQLite (`sqflite_common_ffi`), `crypto` (SHA-256), `mocktail`.
 
 ## Global Constraints
-- Tất cả đường dẫn và công cụ cài đặt phải cô lập 100% trong workspace `e:\Workspace 2\Doctruyen_project`.
+- Tất cả đường dẫn và công cụ cài đặt phải cô lập 100% trong workspace `e:\Workspace2\Doctruyen_project`.
 - Giữ nguyên toàn bộ 19/19 tests hiện tại của `storage_quota_eviction_acceptance_test.dart` và 109/109 tests của `features/reader`.
 - Không tạo abstraction ảo hoặc transaction xuyên domain SQLite - OS filesystem.
 - Git commit rõ ràng và push sau mỗi task hoàn thành theo quy chuẩn `.agents/AGENTS.md`.

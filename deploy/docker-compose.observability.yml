@@ -47,4 +47,5 @@ volumes:
 
 networks:
   omninovel-internal:
+    external: true
     name: omninovel-internal

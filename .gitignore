@@ -77,3 +77,6 @@ test-results/
 
 # Local isolated tools (e.g. pinned JDK)
 .tools/
+
+# Local MCP & Agent secrets (Project-specific)
+.agents/mcp_config.json

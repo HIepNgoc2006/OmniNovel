@@ -80,3 +80,6 @@ test-results/
 
 # Local MCP & Agent secrets (Project-specific)
 .agents/mcp_config.json
+
+# Local agent caches
+.github/context-mode/

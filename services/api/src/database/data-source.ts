@@ -21,9 +21,13 @@ const candidateEnvPaths = [
   path.resolve(__dirname, '../../../.env'),
 ];
 
+if (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('Camera_AI')) {
+  delete process.env.DATABASE_URL;
+}
+
 for (const envPath of candidateEnvPaths) {
   if (fs.existsSync(envPath)) {
-    dotenv.config({ path: envPath });
+    dotenv.config({ path: envPath, override: true });
   }
 }
 

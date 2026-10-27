@@ -435,9 +435,11 @@ jobs:
           GRAFANA_ADMIN_PASSWORD=dummy_grafana_password_secure_min8
           EOF
           docker compose --env-file .env -f deploy/docker-compose.yml config --quiet
-          docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/docker-compose.observability.yml config --quiet
+          echo "[INFO] Running VPS Production Topology Assertion Gate & Negative Test Matrix..."
+          python3 deploy/validate-compose-topology.py --test
+          docker compose --env-file .env -f deploy/docker-compose.yml -f deploy/docker-compose.observability.yml config --format json | python3 deploy/validate-compose-topology.py --stdin
           rm -f .env
-          echo "Docker Compose production and observability manifests: VALID (exit code 0)"
+          echo "Docker Compose production and observability manifests & topology: VALID & ASSERTED (exit code 0)"
 
       - name: Deploy to VPS via SSH / Docker Compose
         env:

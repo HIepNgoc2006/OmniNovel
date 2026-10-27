@@ -12,7 +12,10 @@
   - `body-parser`: Nâng cấp từ `1.20.4` lên `1.20.9` (khắc phục `CVE-2026-111181`).
   - `multer`: Nâng cấp từ `2.0.2` lên `2.5.0` (khắc phục `CVE-2026-113872`).
   - `zod`: Nâng cấp từ `3.25.76` lên `4.6.7` (khắc phục `CVE-2023-54404`).
-  - Đã cấu hình npm `overrides` trong root `package.json` và đồng bộ `package-lock.json`. Đã build Docker image cục bộ và quét Trivy xác nhận 0 lỗ hổng unsuppressed.
+  - Đã cấu hình npm `overrides` trong root `package.json` và đồng bộ `package-lock.json`. Đã build Docker image cục bộ và xác nhận Trivy Core API image scan PASS trên Hosted CI 40515739299.
+- [x] **P0 - Vá 27 CVEs trên AI Worker Docker Image (`omninovel-ai-worker`):**
+  - `pillow`: Nâng cấp từ `11.3.0` lên `13.0.0` trong `requirements-prod-cpu.txt`, `requirements.txt` và `requirements.lock` (khắc phục triệt để toàn bộ 27 CVEs mới phát sinh: `CVE-2026-112390`, `CVE-2026-112392`, `CVE-2026-112393`, `CVE-2026-112397`, `CVE-2026-112398`, `CVE-2026-112399`, `CVE-2026-112400`, `CVE-2026-112402`, `CVE-2026-112403`, `CVE-2026-112404`, `CVE-2026-112406`, `CVE-2026-112892`, `CVE-2026-112893`, `CVE-2026-112900`, `CVE-2026-96639`,...).
+  - Đã build image Docker cục bộ và xác nhận `import PIL; print(PIL.__version__)` = `13.0.0`, kiểm thử Pytest & OCR pass 100%.
 - [x] **P1 - Chuẩn Hóa Cách Ly Môi Trường Kiểm Thử (Fail-Closed Test Rig):**
   - Chuẩn hóa `services/api/test/setup-e2e.ts`: Ép buộc `NODE_ENV = 'test'`, cấm tuyệt đối kiểm thử kết nối tới Cloud/Production DB (Supabase poolers). Tự động liên kết container PostgreSQL kiểm thử cục bộ cô lập (`127.0.0.1:5433 / omninovel_db`).
   - Dọn sạch logic ad-hoc kiểm tra chuỗi `Camera_AI` trong `services/api/src/database/data-source.ts`.

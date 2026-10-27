@@ -1,6 +1,6 @@
 # 🧪 Phase 7B.4: Comprehensive Test Suite, Crash Acceptance Matrix & Zero-Gamification Verification
 
-> **Trạng thái:** `[/] Đang Hoàn Tất Hardening Nghiệm Thu Cuối Cùng (P1-A Dedicated E2E DB & P1-B Strict Exact-Set Topology)`  
+> **Trạng thái:** `[x] Hoàn Thành & Đóng Phase (CLOSED / FROZEN CLEAN)`  
 > **Mục tiêu:** Kiểm chứng toàn diện 11 kịch bản sự cố, bảo vệ tính toàn vẹn kinh tế ảo (Zero Gamification), ma trận phục hồi sau sự cố (Crash Matrix), vá bảo mật dependencies Trivy Docker API, và khóa cứng cổng kiểm soát không thoái lui (Zero Regression Gate) trên toàn bộ hệ thống Web, Mobile và Core API.
 
 ---
@@ -107,7 +107,7 @@ File kiểm thử toàn diện: `services/api/test/guest-claim-lifecycle.e2e-spe
 - [x] Security Audit: TruffleHog + P1 Trivy Governance 12/12 scenarios passed.
 - [x] Docker Build & Trivy Image Scans: 5/5 Trivy image scans pass (Core API, AI Worker, Nginx, Prometheus, Grafana) trên Hosted CI (186/186 bindings verified).
 - [x] VPS Deployment & Topology Verification: 17/17 unit tests & 6-service 3-network exact-set topology assertion verified. *(Lưu ý: Job VPS deployment trên CI hiện đóng vai trò Topology Dry-Run Verification, phân biệt rõ ràng với Production Live VPS Deployment).*
-- [ ] Hosted CI: 7/7 jobs SUCCESS (Chờ commit & push technical commit mới).
+- [x] Hosted CI: 7/7 jobs SUCCESS trên Run #40560232828 (Commit `c9aa80c`).
 
 ---
 
@@ -120,4 +120,23 @@ File kiểm thử toàn diện: `services/api/test/guest-claim-lifecycle.e2e-spe
 | **Bước 3** | Rà soát và hoàn thiện ma trận Crash Matrix trên Web & Mobile Client | `[x] Hoàn thành` |
 | **Bước 4** | Chạy kiểm thử toàn bộ hệ thống (Web 657 tests, Mobile 500 tests, AI Worker 323 tests, Core API) | `[x] Hoàn thành` |
 | **Bước 5** | Vá 3 CVEs Trivy Docker API, chuẩn hóa cách ly test DB, commit & push kích hoạt CI 7/7 | `[x] Hoàn thành (Hosted CI 7/7 Run #40530990139, Commit 4892dd2)` |
-| **Bước 6** | Tách riêng PostgreSQL E2E container/port/volume, siết strict exact-set topology gate, kích hoạt CI 7/7 và ký đóng FROZEN CLEAN | `[/] Đang làm` |
+| **Bước 6** | Tách riêng PostgreSQL E2E container/port/volume, siết strict exact-set topology gate, kích hoạt CI 7/7 và ký đóng FROZEN CLEAN | `[x] Hoàn thành (Hosted CI 7/7 Run #40560232828, Commit c9aa80c)` |
+
+---
+
+## 🏛️ 3. Nghiệm Thu & Khóa Baseline Kỹ Thuật (Final Frozen Sign-off)
+
+- **Technical Baseline Commit:** `c9aa80c231206fdc1acea681114c8e17aef0a4db`
+- **Hosted GitHub Actions CI Run:** [Run #40560232828](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/40560232828) (7/7 jobs SUCCESS)
+  1. *Security Audit & Secret Scanning* (ID 122386945766, 28s) — SUCCESS (TruffleHog OSS + Trivy Exception Lifecycle 12/12 tests PASS)
+  2. *Web Client Test Suite* (ID 122386945786, 12m19s) — SUCCESS (Lint, Typecheck, Vitest 657/657 PASS, Playwright 31/31 PASS)
+  3. *Mobile Client Test Suite* (ID 122386945939, 3m49s) — SUCCESS (Flutter analyze 0 errors, Foundation tests 500/500 PASS)
+  4. *AI Worker Test Suite* (ID 122386945283, 1m22s) — SUCCESS (Pytest 323/323 PASS, Real OCR model verification PASS)
+  5. *NestJS Core API Test Suite* (ID 122386945589, 3m10s) — SUCCESS (Unit 478 PASS, Integration & E2E 281/281 PASS trên dedicated DB `omninovel_test:55433`)
+  6. *Docker Images Build & Security Scan* (ID 122393717848, 5m39s) — SUCCESS (Fail-closed package governance 186/186 findings verified, 5/5 Trivy container scans PASS)
+  7. *VPS Production Deployment & Topology Verification* (ID 122396786703, 8s) — SUCCESS (17/17 topology invariants PASS, exact-set 3-network & 6-service validated)
+- **Scope & Governance Boundaries:**
+  - Hardening hoàn tất đúng phạm vi: tách biệt local PostgreSQL E2E và siết strict exact-set topology gate.
+  - Phân định rõ ràng: VPS verification trên CI là Topology Dry-Run Validation, không đồng nhất với Production Live VPS Deployment.
+  - Lịch rà soát định kỳ ngoại lệ Trivy: Đợt 1 vào `01/11/2026`, Đợt 2 vào `01/12/2026`.
+- **Kết luận:** **Phase 7B.4 CLOSED / FROZEN CLEAN**.

@@ -15,7 +15,10 @@
   - Đã cấu hình npm `overrides` trong root `package.json` và đồng bộ `package-lock.json`. Đã build Docker image cục bộ và xác nhận Trivy Core API image scan PASS trên Hosted CI 40515739299.
 - [x] **P0 - Vá 27 CVEs trên AI Worker Docker Image (`omninovel-ai-worker`):**
   - `pillow`: Nâng cấp từ `11.3.0` lên `13.0.0` trong `requirements-prod-cpu.txt`, `requirements.txt` và `requirements.lock` (khắc phục triệt để toàn bộ 27 CVEs mới phát sinh: `CVE-2026-112390`, `CVE-2026-112392`, `CVE-2026-112393`, `CVE-2026-112397`, `CVE-2026-112398`, `CVE-2026-112399`, `CVE-2026-112400`, `CVE-2026-112402`, `CVE-2026-112403`, `CVE-2026-112404`, `CVE-2026-112406`, `CVE-2026-112892`, `CVE-2026-112893`, `CVE-2026-112900`, `CVE-2026-96639`,...).
-  - Đã build image Docker cục bộ và xác nhận `import PIL; print(PIL.__version__)` = `13.0.0`, kiểm thử Pytest & OCR pass 100%.
+  - Đã build image Docker cục bộ và xác nhận `import PIL; print(PIL.__version__)` = `13.0.0`, kiểm thử Pytest & OCR pass 100%. Xác nhận scan Trivy AI Worker Image PASS trên Hosted CI 40521030994.
+- [x] **P0 - Vá 3 CVEs trên Nginx Docker Image (`omninovel-nginx`):**
+  - Nâng cấp base image `deploy/nginx/Dockerfile` từ `nginx:1.30.5-alpine` lên `nginx:1.30.6-alpine` (khắc phục triệt để 3 CVEs mức HIGH: `CVE-2026-15176`, `CVE-2026-93479`, `CVE-2026-97205` đã được vá trong `nginx 1.30.6-r0`).
+  - Đã build image cục bộ `omninovel-nginx:test` và xác nhận scan Trivy 0 vulnerabilities.
 - [x] **P1 - Chuẩn Hóa Cách Ly Môi Trường Kiểm Thử (Fail-Closed Test Rig):**
   - Chuẩn hóa `services/api/test/setup-e2e.ts`: Ép buộc `NODE_ENV = 'test'`, cấm tuyệt đối kiểm thử kết nối tới Cloud/Production DB (Supabase poolers). Tự động liên kết container PostgreSQL kiểm thử cục bộ cô lập (`127.0.0.1:5433 / omninovel_db`).
   - Dọn sạch logic ad-hoc kiểm tra chuỗi `Camera_AI` trong `services/api/src/database/data-source.ts`.

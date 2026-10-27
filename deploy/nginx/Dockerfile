@@ -1,4 +1,4 @@
-FROM nginx:1.30.5-alpine
+FROM nginx:1.30.6-alpine
 
 RUN apk upgrade --no-cache && apk add --no-cache openssl && rm -f /etc/nginx/conf.d/default.conf
 

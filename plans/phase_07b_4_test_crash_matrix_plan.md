@@ -1,6 +1,6 @@
 # 🧪 Phase 7B.4: Comprehensive Test Suite, Crash Acceptance Matrix & Zero-Gamification Verification
 
-> **Trạng thái:** `[/] Đang Hoàn Tất Hardening Nghiệm Thu (Hosted CI Run #40530990139 đạt 7/7 SUCCESS, đang kích hoạt CI run nghiệm thu bảo vệ cách ly)`  
+> **Trạng thái:** `[x] Đã Hoàn Thành & Nghiệm Thu Toàn Diện (CLOSED / FROZEN CLEAN - Hosted CI 7/7 Run #40541661660, Commit 526574b)`  
 > **Mục tiêu:** Kiểm chứng toàn diện 11 kịch bản sự cố, bảo vệ tính toàn vẹn kinh tế ảo (Zero Gamification), ma trận phục hồi sau sự cố (Crash Matrix), vá bảo mật dependencies Trivy Docker API, và khóa cứng cổng kiểm soát không thoái lui (Zero Regression Gate) trên toàn bộ hệ thống Web, Mobile và Core API.
 
 ---
@@ -12,22 +12,22 @@
   - `body-parser`: Nâng cấp từ `1.20.4` lên `1.20.9` (khắc phục `CVE-2026-111181`).
   - `multer`: Nâng cấp từ `2.0.2` lên `2.5.0` (khắc phục `CVE-2026-113872`).
   - `zod`: Nâng cấp từ `3.25.76` lên `4.6.7` (khắc phục `CVE-2023-54404`).
-  - Đã cấu hình npm `overrides` trong root `package.json` và đồng bộ `package-lock.json`. Đã build Docker image cục bộ và xác nhận Trivy Core API image scan PASS trên Hosted CI 40515739299 và Run 40530990139.
+  - Đã cấu hình npm `overrides` trong root `package.json` và đồng bộ `package-lock.json`. Đã build Docker image cục bộ và xác nhận Trivy Core API image scan PASS trên Hosted CI Run #40515739299, Run #40530990139 và Run #40541661660.
 - [x] **P0 - Vá 27 CVEs trên AI Worker Docker Image (`omninovel-ai-worker`):**
   - `pillow`: Nâng cấp từ `11.3.0` lên `13.0.0` trong `requirements-prod-cpu.txt`, `requirements.txt` và `requirements.lock` (khắc phục triệt để toàn bộ 27 CVEs: `CVE-2026-112390`, `CVE-2026-112392`, `CVE-2026-112393`, `CVE-2026-112397`, `CVE-2026-112398`, `CVE-2026-112399`, `CVE-2026-112400`, `CVE-2026-112402`, `CVE-2026-112403`, `CVE-2026-112404`, `CVE-2026-112406`, `CVE-2026-112892`, `CVE-2026-112893`, `CVE-2026-112900`, `CVE-2026-96639`,...).
-  - Đã build image Docker cục bộ và xác nhận `import PIL; print(PIL.__version__)` = `13.0.0`, kiểm thử Pytest & OCR pass 100%. Xác nhận scan Trivy AI Worker Image PASS trên Hosted CI 40521030994 và Run 40530990139.
+  - Đã build image Docker cục bộ và xác nhận `import PIL; print(PIL.__version__)` = `13.0.0`, kiểm thử Pytest & OCR pass 100%. Xác nhận scan Trivy AI Worker Image PASS trên Hosted CI Run #40521030994, Run #40530990139 và Run #40541661660.
 - [x] **P0 - Vá 3 CVEs trên Nginx Docker Image (`omninovel-nginx`):**
   - Nâng cấp base image `deploy/nginx/Dockerfile` từ `nginx:1.30.5-alpine` lên `nginx:1.30.6-alpine` (khắc phục triệt để 3 CVEs mức HIGH: `CVE-2026-15176`, `CVE-2026-93479`, `CVE-2026-97205` đã được vá trong `nginx 1.30.6-r0`).
-  - Scan Trivy Nginx Image PASS trên Hosted CI 40524208193 và Run 40530990139 (0 findings).
+  - Scan Trivy Nginx Image PASS trên Hosted CI Run #40524208193, Run #40530990139 và Run #40541661660 (0 findings).
 - [x] **P1 - Quản Trị Ngoại Lệ Lỗ Hổng Go Runtime & Alpine Base Utilities Mới Trên Hạ Tầng Observability:**
-  - `CVE-2026-111943` phát sinh trong Go `stdlib` (crypto/x509) của image bên thứ 3 bất biến `prom/prometheus:v3.15.0` (Go 1.27.1) và `grafana/grafana:13.2.3` (Go 1.26.6). Xác nhận Prometheus scan PASS trên Hosted CI 40528862086 và Run 40530990139.
+  - `CVE-2026-111943` phát sinh trong Go `stdlib` (crypto/x509) của image bên thứ 3 bất biến `prom/prometheus:v3.15.0` (Go 1.27.1) và `grafana/grafana:13.2.3` (Go 1.26.6). Xác nhận Prometheus scan PASS trên Hosted CI Run #40528862086, Run #40530990139 và Run #40541661660.
   - `CVE-2026-111497` (`brotli-libs`) và `CVE-2026-92392` (`curl`, `libcurl`) phát sinh trong Alpine packages của image bất biến `grafana/grafana:13.2.3`.
-  - Đã cập nhật Sổ Quản trị Ngoại lệ Rủi ro (`deploy/security/trivy-exception-register.md`), đồng bộ scoped ignore files (`prometheus.trivyignore`, `grafana.trivyignore`) và kiểm chứng qua 12/12 kịch bản negative & integration tests của `validate-trivy-exceptions.py`. Toàn bộ 186/186 findings được xác nhận binding hợp lệ trên Hosted CI Run 40530990139.
+  - Đã cập nhật Sổ Quản trị Ngoại lệ Rủi ro (`deploy/security/trivy-exception-register.md`), đồng bộ scoped ignore files (`prometheus.trivyignore`, `grafana.trivyignore`) và kiểm chứng qua 12/12 kịch bản negative & integration tests của `validate-trivy-exceptions.py`. Toàn bộ 186/186 findings được xác nhận binding hợp lệ trên Hosted CI Run #40530990139 và Run #40541661660.
   - **Lịch review định kỳ vòng đời ngoại lệ rủi ro:** Đợt 1 vào `01/11/2026` và Đợt 2 vào `01/12/2026`.
 - [x] **P1 - Khóa Chặt Bảo Vệ Cách Ly Kiểm Thử DB (Fail-Closed Test Isolation Guard):**
   - Xây dựng module bảo vệ độc lập `services/api/src/common/guards/test-isolation-guard.ts` với whitelist host nghiêm ngặt (`127.0.0.1`, `localhost`, `::1`, `postgres`, `omninovel-dev-postgres`) và danh sách đen cấm tuyệt đối các cloud/remote database hosts (`supabase.co`, `supabase.com`, `aws.com`, `neon.tech`, connection poolers) cũng như tên production DB (`omninovel_prod`, `omninovel_live`,...).
   - Chuẩn hóa `services/api/test/setup-e2e.ts`: Loại bỏ hoàn toàn nhánh bypass `if (process.env.TEST_DATABASE_URL) process.env.DATABASE_URL = ...`. Mọi cấu hình kết nối bắt buộc phải đi qua `validateTestDatabaseTarget()` trước khi khởi tạo kết nối.
-  - Bộ 12/12 unit tests (`test-isolation-guard.spec.ts`) và 2/2 integration tests (`test-isolation-guard.integration-spec.ts`) kiểm chứng chặn fail-closed 100%.
+  - Bộ 12/12 unit tests (`test-isolation-guard.spec.ts`) và 2/2 integration tests (`test-isolation-guard.integration-spec.ts`) kiểm chứng chặn fail-closed 100% trên Hosted CI Run #40541661660.
 - [x] **P1 - Khóa Cứng Ràng Buộc Topo VPS & Docker Compose (Topology Assertion Gate):**
   - Xây dựng công cụ kiểm toán topo `deploy/validate-compose-topology.py` không phụ thuộc thư viện ngoài (zero-dependency).
   - Kiểm tra tự động 4 bất biến topo:
@@ -35,7 +35,7 @@
     2. Phân vùng network thành viên chính xác từng service (`nginx` edge-only, `api` 3 networks, `ai-worker` internal+egress, `redis` internal-only, `prometheus` internal-only, `grafana` internal-only).
     3. Kiểm soát cổng phơi nhiễm: Chỉ `nginx` mở cổng public (80/443); backend nội bộ (`api`, `ai-worker`, `redis`) cấm mở cổng host; observability (`prometheus`, `grafana`) bắt buộc bind loopback `127.0.0.1`.
     4. Cố định digest bất biến SHA256 cho Prometheus và Grafana.
-  - Tích hợp 7/7 negative & positive unit tests matrix (`--test`) và pipe trực tiếp `docker compose config --format json` vào validator trong CI workflow `.github/workflows/ci-cd.yml`.
+  - Tích hợp 7/7 negative & positive unit tests matrix (`--test`) và pipe trực tiếp `docker compose config --format json` vào validator trong CI workflow `.github/workflows/ci-cd.yml`. Toàn bộ 7/7 tests và 6 services / 3 networks passed trên Hosted CI Run #40541661660.
 
 ---
 
@@ -72,7 +72,7 @@ File kiểm thử toàn diện: `services/api/test/guest-claim-lifecycle.e2e-spe
 ---
 
 ## 🏛️ 1.2. Web Client Crash Recovery & Transitioning Lock (`apps/web`)
-- [x] Xác nhận 50/50 test files, 657/657 tests Vitest bao phủ trọn vẹn:
+- [x] Xác nhận 50/50 test files, 657/657 tests Vitest và 31/31 Playwright E2E tests bao phủ trọn vẹn:
   - Khóa `TRANSITIONING` ngăn chặn triệt để account mutation khi đang xử lý claim.
   - Marker Quarantine: bấm Skip thì đánh dấu marker, bảo toàn partition vật lý `guest:<id>`.
   - Rebind & Purge: commit thành công thì sáp nhập vào IndexedDB account và dọn dẹp partition khách.
@@ -90,13 +90,14 @@ File kiểm thử toàn diện: `services/api/test/guest-claim-lifecycle.e2e-spe
 ---
 
 ## 🏛️ 1.4. Cổng Kiểm Soát Không Thoái Lui Toàn Hệ Thống (Regression Gate)
-- [x] NestJS Core API: Unit tests (476/476 pass - bao gồm 12 guard tests) & E2E tests (18/18 pass - bao gồm 2 guard integration tests).
-- [x] Web Client: Lint, Typecheck, Vitest (657/657 tests) pass 100%.
-- [x] Mobile Client: Flutter analyze 0 errors & 500/500 Flutter tests pass 100%.
-- [x] AI Worker: Pytest suite (323/323 tests) pass 100%.
-- [x] Security Audit: TruffleHog + P1 Trivy Governance 12/12 scenarios pass 100%.
-- [x] Docker Build & Trivy Image Scans: 5/5 Trivy image scans pass (Core API, AI Worker, Nginx, Prometheus, Grafana) trên Hosted CI Run #40530990139.
-- [ ] Hosted CI: 7/7 jobs SUCCESS (Run #40530990139 đã đạt 7/7 SUCCESS, đang kích hoạt run kiểm chứng hardening test isolation & topology assertions). *(Lưu ý: Job VPS deployment trên CI hiện đóng vai trò Topology Dry-Run Verification, phân biệt rõ ràng với Production Live VPS Deployment).*
+- [x] NestJS Core API: Unit tests (476/476 passed, 1 skipped) & E2E/Integration tests (277/277 passed).
+- [x] Web Client: Lint, Typecheck, Vitest (657/657 tests passed) & Playwright E2E (31/31 tests passed).
+- [x] Mobile Client: Flutter analyze 0 errors & 500/500 Flutter tests passed.
+- [x] AI Worker: Pytest suite (323/323 tests passed).
+- [x] Security Audit: TruffleHog + P1 Trivy Governance 12/12 scenarios passed.
+- [x] Docker Build & Trivy Image Scans: 5/5 Trivy image scans pass (Core API, AI Worker, Nginx, Prometheus, Grafana) trên Hosted CI Run #40541661660 (186/186 bindings verified).
+- [x] VPS Deployment & Topology Verification: 7/7 unit tests & 6-service 3-network topology assertion verified (Run #40541661660). *(Lưu ý: Job VPS deployment trên CI hiện đóng vai trò Topology Dry-Run Verification, phân biệt rõ ràng với Production Live VPS Deployment).*
+- [x] Hosted CI: 7/7 jobs SUCCESS trên Hosted CI Run #40541661660 (Commit `526574b`).
 
 ---
 
@@ -109,4 +110,4 @@ File kiểm thử toàn diện: `services/api/test/guest-claim-lifecycle.e2e-spe
 | **Bước 3** | Rà soát và hoàn thiện ma trận Crash Matrix trên Web & Mobile Client | `[x] Hoàn thành` |
 | **Bước 4** | Chạy kiểm thử toàn bộ hệ thống (Web 657 tests, Mobile 500 tests, AI Worker 323 tests, Core API) | `[x] Hoàn thành` |
 | **Bước 5** | Vá 3 CVEs Trivy Docker API, chuẩn hóa cách ly test DB, commit & push kích hoạt CI 7/7 | `[x] Hoàn thành (Hosted CI 7/7 Run #40530990139, Commit 4892dd2)` |
-| **Bước 6** | Hardening bảo vệ cách ly test DB & topo VPS assertions, kiểm chứng CI 7/7 và ký đóng FROZEN CLEAN Phase 7B.4 | `[/] Đang làm` |
+| **Bước 6** | Hardening bảo vệ cách ly test DB & topo VPS assertions, kiểm chứng CI 7/7 và ký đóng FROZEN CLEAN Phase 7B.4 | `[x] Hoàn thành (FROZEN CLEAN / CLOSED - Hosted CI 7/7 Run #40541661660, Commit 526574b)` |

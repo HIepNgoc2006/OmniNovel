@@ -19,8 +19,9 @@
 - [x] **P0 - Vá 3 CVEs trên Nginx Docker Image (`omninovel-nginx`):**
   - Nâng cấp base image `deploy/nginx/Dockerfile` từ `nginx:1.30.5-alpine` lên `nginx:1.30.6-alpine` (khắc phục triệt để 3 CVEs mức HIGH: `CVE-2026-15176`, `CVE-2026-93479`, `CVE-2026-97205` đã được vá trong `nginx 1.30.6-r0`).
   - Đã build image cục bộ `omninovel-nginx:test` và xác nhận scan Trivy 0 vulnerabilities. Scan Trivy Nginx Image PASS trên Hosted CI 40524208193.
-- [x] **P1 - Quản Trị Ngoại Lệ Lỗ Hổng Go Runtime Mới (`CVE-2026-111943`) Trên Hạ Tầng Observability:**
-  - `CVE-2026-111943` phát sinh trong Go `stdlib` (crypto/x509) của image bên thứ 3 bất biến `prom/prometheus:v3.15.0` (Go 1.27.1) và `grafana/grafana:13.2.3` (Go 1.26.6).
+- [x] **P1 - Quản Trị Ngoại Lệ Lỗ Hổng Go Runtime & Alpine Base Utilities Mới Trên Hạ Tầng Observability:**
+  - `CVE-2026-111943` phát sinh trong Go `stdlib` (crypto/x509) của image bên thứ 3 bất biến `prom/prometheus:v3.15.0` (Go 1.27.1) và `grafana/grafana:13.2.3` (Go 1.26.6). Xác nhận Prometheus scan PASS trên Hosted CI 40528862086.
+  - `CVE-2026-111497` (`brotli-libs`) và `CVE-2026-92392` (`curl`, `libcurl`) phát sinh trong Alpine packages của image bất biến `grafana/grafana:13.2.3`.
   - Đã cập nhật Sổ Quản trị Ngoại lệ Rủi ro (`deploy/security/trivy-exception-register.md`), đồng bộ scoped ignore files (`prometheus.trivyignore`, `grafana.trivyignore`) và kiểm chứng qua 12/12 kịch bản negative & integration tests của `validate-trivy-exceptions.py`.
 - [x] **P1 - Chuẩn Hóa Cách Ly Môi Trường Kiểm Thử (Fail-Closed Test Rig):**
   - Chuẩn hóa `services/api/test/setup-e2e.ts`: Ép buộc `NODE_ENV = 'test'`, cấm tuyệt đối kiểm thử kết nối tới Cloud/Production DB (Supabase poolers). Tự động liên kết container PostgreSQL kiểm thử cục bộ cô lập (`127.0.0.1:5433 / omninovel_db`).

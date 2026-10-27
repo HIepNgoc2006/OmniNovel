@@ -18,7 +18,10 @@
   - Đã build image Docker cục bộ và xác nhận `import PIL; print(PIL.__version__)` = `13.0.0`, kiểm thử Pytest & OCR pass 100%. Xác nhận scan Trivy AI Worker Image PASS trên Hosted CI 40521030994.
 - [x] **P0 - Vá 3 CVEs trên Nginx Docker Image (`omninovel-nginx`):**
   - Nâng cấp base image `deploy/nginx/Dockerfile` từ `nginx:1.30.5-alpine` lên `nginx:1.30.6-alpine` (khắc phục triệt để 3 CVEs mức HIGH: `CVE-2026-15176`, `CVE-2026-93479`, `CVE-2026-97205` đã được vá trong `nginx 1.30.6-r0`).
-  - Đã build image cục bộ `omninovel-nginx:test` và xác nhận scan Trivy 0 vulnerabilities.
+  - Đã build image cục bộ `omninovel-nginx:test` và xác nhận scan Trivy 0 vulnerabilities. Scan Trivy Nginx Image PASS trên Hosted CI 40524208193.
+- [x] **P1 - Quản Trị Ngoại Lệ Lỗ Hổng Go Runtime Mới (`CVE-2026-111943`) Trên Hạ Tầng Observability:**
+  - `CVE-2026-111943` phát sinh trong Go `stdlib` (crypto/x509) của image bên thứ 3 bất biến `prom/prometheus:v3.15.0` (Go 1.27.1) và `grafana/grafana:13.2.3` (Go 1.26.6).
+  - Đã cập nhật Sổ Quản trị Ngoại lệ Rủi ro (`deploy/security/trivy-exception-register.md`), đồng bộ scoped ignore files (`prometheus.trivyignore`, `grafana.trivyignore`) và kiểm chứng qua 12/12 kịch bản negative & integration tests của `validate-trivy-exceptions.py`.
 - [x] **P1 - Chuẩn Hóa Cách Ly Môi Trường Kiểm Thử (Fail-Closed Test Rig):**
   - Chuẩn hóa `services/api/test/setup-e2e.ts`: Ép buộc `NODE_ENV = 'test'`, cấm tuyệt đối kiểm thử kết nối tới Cloud/Production DB (Supabase poolers). Tự động liên kết container PostgreSQL kiểm thử cục bộ cô lập (`127.0.0.1:5433 / omninovel_db`).
   - Dọn sạch logic ad-hoc kiểm tra chuỗi `Camera_AI` trong `services/api/src/database/data-source.ts`.

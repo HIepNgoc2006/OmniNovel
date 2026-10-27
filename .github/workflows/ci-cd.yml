@@ -42,11 +42,11 @@ jobs:
       postgres:
         image: postgres:16-alpine
         env:
-          POSTGRES_DB: omninovel_db
+          POSTGRES_DB: omninovel_test
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres_password_secure
         ports:
-          - 5433:5432
+          - 55433:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -149,11 +149,12 @@ jobs:
       - name: Run Database Migrations
         working-directory: services/api
         env:
+          NODE_ENV: test
           DB_HOST: 127.0.0.1
-          DB_PORT: 5433
+          DB_PORT: 55433
           DB_USER: postgres
           DB_PASSWORD: postgres_password_secure
-          DB_NAME: omninovel_db
+          DB_NAME: omninovel_test
         run: npm run migration:run
 
       - name: Run Core API Integration & E2E Tests
@@ -162,10 +163,10 @@ jobs:
           PORT: 8000
           NODE_ENV: test
           DB_HOST: 127.0.0.1
-          DB_PORT: 5433
+          DB_PORT: 55433
           DB_USER: postgres
           DB_PASSWORD: postgres_password_secure
-          DB_NAME: omninovel_db
+          DB_NAME: omninovel_test
           REDIS_HOST: 127.0.0.1
           REDIS_PORT: 6379
           MINIO_ENDPOINT: 127.0.0.1

@@ -1,6 +1,6 @@
 # 🧪 Phase 7B.4: Comprehensive Test Suite, Crash Acceptance Matrix & Zero-Gamification Verification
 
-> **Trạng thái:** `[x] Đã Hoàn Thành & Nghiệm Thu Toàn Diện (CLOSED / FROZEN CLEAN - Hosted CI 7/7 Run #40541661660, Commit 526574b)`  
+> **Trạng thái:** `[/] Đang Hoàn Tất Hardening Nghiệm Thu Cuối Cùng (P1-A Dedicated E2E DB & P1-B Strict Exact-Set Topology)`  
 > **Mục tiêu:** Kiểm chứng toàn diện 11 kịch bản sự cố, bảo vệ tính toàn vẹn kinh tế ảo (Zero Gamification), ma trận phục hồi sau sự cố (Crash Matrix), vá bảo mật dependencies Trivy Docker API, và khóa cứng cổng kiểm soát không thoái lui (Zero Regression Gate) trên toàn bộ hệ thống Web, Mobile và Core API.
 
 ---
@@ -24,18 +24,28 @@
   - `CVE-2026-111497` (`brotli-libs`) và `CVE-2026-92392` (`curl`, `libcurl`) phát sinh trong Alpine packages của image bất biến `grafana/grafana:13.2.3`.
   - Đã cập nhật Sổ Quản trị Ngoại lệ Rủi ro (`deploy/security/trivy-exception-register.md`), đồng bộ scoped ignore files (`prometheus.trivyignore`, `grafana.trivyignore`) và kiểm chứng qua 12/12 kịch bản negative & integration tests của `validate-trivy-exceptions.py`. Toàn bộ 186/186 findings được xác nhận binding hợp lệ trên Hosted CI Run #40530990139 và Run #40541661660.
   - **Lịch review định kỳ vòng đời ngoại lệ rủi ro:** Đợt 1 vào `01/11/2026` và Đợt 2 vào `01/12/2026`.
-- [x] **P1 - Khóa Chặt Bảo Vệ Cách Ly Kiểm Thử DB (Fail-Closed Test Isolation Guard):**
-  - Xây dựng module bảo vệ độc lập `services/api/src/common/guards/test-isolation-guard.ts` với whitelist host nghiêm ngặt (`127.0.0.1`, `localhost`, `::1`, `postgres`, `omninovel-dev-postgres`) và danh sách đen cấm tuyệt đối các cloud/remote database hosts (`supabase.co`, `supabase.com`, `aws.com`, `neon.tech`, connection poolers) cũng như tên production DB (`omninovel_prod`, `omninovel_live`,...).
-  - Chuẩn hóa `services/api/test/setup-e2e.ts`: Loại bỏ hoàn toàn nhánh bypass `if (process.env.TEST_DATABASE_URL) process.env.DATABASE_URL = ...`. Mọi cấu hình kết nối bắt buộc phải đi qua `validateTestDatabaseTarget()` trước khi khởi tạo kết nối.
-  - Bộ 12/12 unit tests (`test-isolation-guard.spec.ts`) và 2/2 integration tests (`test-isolation-guard.integration-spec.ts`) kiểm chứng chặn fail-closed 100% trên Hosted CI Run #40541661660.
-- [x] **P1 - Khóa Cứng Ràng Buộc Topo VPS & Docker Compose (Topology Assertion Gate):**
-  - Xây dựng công cụ kiểm toán topo `deploy/validate-compose-topology.py` không phụ thuộc thư viện ngoài (zero-dependency).
-  - Kiểm tra tự động 4 bất biến topo:
-    1. Chuẩn hóa đúng 3 networks: `omninovel-edge`, `omninovel-internal` (bắt buộc `internal: true`), `omninovel-egress`.
-    2. Phân vùng network thành viên chính xác từng service (`nginx` edge-only, `api` 3 networks, `ai-worker` internal+egress, `redis` internal-only, `prometheus` internal-only, `grafana` internal-only).
-    3. Kiểm soát cổng phơi nhiễm: Chỉ `nginx` mở cổng public (80/443); backend nội bộ (`api`, `ai-worker`, `redis`) cấm mở cổng host; observability (`prometheus`, `grafana`) bắt buộc bind loopback `127.0.0.1`.
-    4. Cố định digest bất biến SHA256 cho Prometheus và Grafana.
-  - Tích hợp 7/7 negative & positive unit tests matrix (`--test`) và pipe trực tiếp `docker compose config --format json` vào validator trong CI workflow `.github/workflows/ci-cd.yml`. Toàn bộ 7/7 tests và 6 services / 3 networks passed trên Hosted CI Run #40541661660.
+- [x] **P1-A - Tách Biệt Hoàn Toàn PostgreSQL E2E Local & Khóa Chặt Allowlist Guard:**
+  - Tạo cấu hình Docker Compose E2E chuyên biệt: `deploy/docker-compose.test.yml` (Project: `omninovel-e2e`, Container: `omninovel-test-postgres`, Port: `127.0.0.1:55433:5432`, Database: `omninovel_test`, Volume: `postgres_test_data`).
+  - Hoàn toàn độc lập về vật lý với Development (`omninovel-dev-postgres`, port `5433`, db `omninovel_db`, volume `postgres_dev_data`).
+  - Nâng cấp `services/api/src/common/guards/test-isolation-guard.ts`:
+    - Chỉ cho phép các host: `127.0.0.1`, `localhost`, `::1`, `omninovel-test-postgres`.
+    - Chặn đứng các alias chung `postgres` và `omninovel-dev-postgres`.
+    - Loopback bắt buộc bind vào cổng test `55433`. Chặn cổng dev `5433` và các cổng khác.
+    - Database bắt buộc là `omninovel_test`. Chặn `omninovel_db`, `omninovel_prod`, `production` fail-closed.
+    - Kiểm tra và chặn xung đột cấu hình giữa `TEST_DATABASE_URL` và discrete `TEST_DB_*`.
+    - Chặn `MIGRATION_ENV_FILE` nếu trỏ tới dev hoặc production DB.
+    - Che giấu toàn bộ credentials/passwords khỏi error messages.
+    - Hàm `verifyTestDatabaseIdentity()` kiểm tra trực tiếp qua câu truy vấn `SELECT current_database();` và quản lý bảng marker `_omninovel_test_isolation_marker`.
+  - Chuẩn hóa `services/api/test/setup-e2e.ts` và `services/api/src/database/data-source.ts`: tự động thanh lọc `DATABASE_URL` môi trường ngoài, ép buộc biến MinIO nội bộ kiểm thử.
+  - Ma trận kiểm thử DB-01 đến DB-12 đạt 100% PASS.
+- [x] **P1-B - Khóa Cứng Ràng Buộc Topo VPS & Docker Compose (Strict Exact-Set Topology Gate):**
+  - Nâng cấp `deploy/validate-compose-topology.py` sang kiểm toán **Strict Exact-Set**:
+    1. *Exact Network Set:* Đúng chính xác tập `{"omninovel-edge", "omninovel-internal", "omninovel-egress"}` (so sánh tập hợp hai chiều: chặn thiếu và chặn thừa network thứ tư). `omninovel-internal` bắt buộc `internal: true`.
+    2. *Exact Service Set:* Đúng chính xác tập `{"nginx", "api", "ai-worker", "redis", "prometheus", "grafana"}` (chặn thiếu và chặn thừa service thứ bảy). Chặn đứng `network_mode: host`.
+    3. *Exact Network Membership:* `nginx` (edge), `api` (cả 3 networks), `ai-worker` (internal + egress), `redis` (internal-only), `prometheus` (internal-only), `grafana` (internal-only).
+    4. *Exact Published Ports:* Nginx đúng 2 mapping (80 và 443 TCP public); backend nội bộ (`api`, `ai-worker`, `redis`) cấm tuyệt đối mở host port (0 ports); Prometheus đúng 1 mapping (9090 loopback TCP `127.0.0.1`); Grafana đúng 1 mapping (3001 loopback TCP `127.0.0.1`). Chặn port thừa (8080), chặn UDP, chặn duplicate port.
+    5. *Exact Image Pinning:* So sánh chuỗi tham chiếu image chính xác, chặn repository giả mạo đính kèm digest.
+  - Ma trận kiểm thử TOP-01 đến TOP-17 đạt 100% PASS (17/17 scenarios).
 
 ---
 
@@ -90,14 +100,14 @@ File kiểm thử toàn diện: `services/api/test/guest-claim-lifecycle.e2e-spe
 ---
 
 ## 🏛️ 1.4. Cổng Kiểm Soát Không Thoái Lui Toàn Hệ Thống (Regression Gate)
-- [x] NestJS Core API: Unit tests (476/476 passed, 1 skipped) & E2E/Integration tests (277/277 passed).
+- [x] NestJS Core API: Unit tests (478 passed, 1 skipped) & E2E/Integration tests (16/16 guest claim e2e tests, 6/6 test-isolation integration tests, 5/5 translation-db integration tests).
 - [x] Web Client: Lint, Typecheck, Vitest (657/657 tests passed) & Playwright E2E (31/31 tests passed).
 - [x] Mobile Client: Flutter analyze 0 errors & 500/500 Flutter tests passed.
 - [x] AI Worker: Pytest suite (323/323 tests passed).
 - [x] Security Audit: TruffleHog + P1 Trivy Governance 12/12 scenarios passed.
-- [x] Docker Build & Trivy Image Scans: 5/5 Trivy image scans pass (Core API, AI Worker, Nginx, Prometheus, Grafana) trên Hosted CI Run #40541661660 (186/186 bindings verified).
-- [x] VPS Deployment & Topology Verification: 7/7 unit tests & 6-service 3-network topology assertion verified (Run #40541661660). *(Lưu ý: Job VPS deployment trên CI hiện đóng vai trò Topology Dry-Run Verification, phân biệt rõ ràng với Production Live VPS Deployment).*
-- [x] Hosted CI: 7/7 jobs SUCCESS trên Hosted CI Run #40541661660 (Commit `526574b`).
+- [x] Docker Build & Trivy Image Scans: 5/5 Trivy image scans pass (Core API, AI Worker, Nginx, Prometheus, Grafana) trên Hosted CI (186/186 bindings verified).
+- [x] VPS Deployment & Topology Verification: 17/17 unit tests & 6-service 3-network exact-set topology assertion verified. *(Lưu ý: Job VPS deployment trên CI hiện đóng vai trò Topology Dry-Run Verification, phân biệt rõ ràng với Production Live VPS Deployment).*
+- [ ] Hosted CI: 7/7 jobs SUCCESS (Chờ commit & push technical commit mới).
 
 ---
 
@@ -110,4 +120,4 @@ File kiểm thử toàn diện: `services/api/test/guest-claim-lifecycle.e2e-spe
 | **Bước 3** | Rà soát và hoàn thiện ma trận Crash Matrix trên Web & Mobile Client | `[x] Hoàn thành` |
 | **Bước 4** | Chạy kiểm thử toàn bộ hệ thống (Web 657 tests, Mobile 500 tests, AI Worker 323 tests, Core API) | `[x] Hoàn thành` |
 | **Bước 5** | Vá 3 CVEs Trivy Docker API, chuẩn hóa cách ly test DB, commit & push kích hoạt CI 7/7 | `[x] Hoàn thành (Hosted CI 7/7 Run #40530990139, Commit 4892dd2)` |
-| **Bước 6** | Hardening bảo vệ cách ly test DB & topo VPS assertions, kiểm chứng CI 7/7 và ký đóng FROZEN CLEAN Phase 7B.4 | `[x] Hoàn thành (FROZEN CLEAN / CLOSED - Hosted CI 7/7 Run #40541661660, Commit 526574b)` |
+| **Bước 6** | Tách riêng PostgreSQL E2E container/port/volume, siết strict exact-set topology gate, kích hoạt CI 7/7 và ký đóng FROZEN CLEAN | `[/] Đang làm` |

@@ -3,6 +3,7 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as fs from 'fs';
 import { buildPostgresConnectionOptions } from './database.config';
+import { validateEnvironmentConflicts } from '../common/guards/test-isolation-guard';
 
 // Quy tắc ưu tiên biến môi trường:
 // 1. OS / Docker / CI injected env (process.env) - mức ưu tiên cao nhất, tuyệt đối KHÔNG override.
@@ -25,6 +26,16 @@ if (process.env.MIGRATION_ENV_FILE) {
       dotenv.config({ path: envPath });
     }
   }
+}
+
+if (process.env.NODE_ENV === 'test') {
+  if (process.env.TEST_DATABASE_URL) {
+    process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
+  } else {
+    // Purge ambient non-test DATABASE_URL so discrete test env vars take effect
+    delete process.env.DATABASE_URL;
+  }
+  validateEnvironmentConflicts(process.env);
 }
 
 const pgOptions = buildPostgresConnectionOptions({

@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { buildPostgresConnectionOptions } from './database.config';
+import { validateTestDatabaseTarget } from '../common/guards/test-isolation-guard';
 import { User } from '../modules/users/entities/user.entity';
 import { UserProgression } from '../modules/users/entities/user-progression.entity';
 import { RankTheme } from '../modules/users/entities/rank-theme.entity';
@@ -45,6 +46,15 @@ import { GuestClaim } from '../modules/claims/entities/guest-claim.entity';
           database: config.get<string>('DB_NAME'),
           ssl: config.get<boolean | string>('DB_SSL'),
         });
+
+        if (config.get<string>('NODE_ENV') === 'test') {
+          validateTestDatabaseTarget({
+            host: pgOptions.host,
+            port: pgOptions.port,
+            database: pgOptions.database,
+            url: pgOptions.url,
+          });
+        }
 
         return {
           type: 'postgres',

@@ -1,0 +1,25 @@
+version: '3.8'
+name: omninovel-e2e
+
+services:
+  # Dedicated PostgreSQL 16 Test Database for Local E2E Isolation (Task P1-A)
+  test-postgres:
+    image: postgres:16-alpine
+    container_name: omninovel-test-postgres
+    environment:
+      POSTGRES_USER: ${TEST_DB_USER:-postgres}
+      POSTGRES_PASSWORD: ${TEST_DB_PASSWORD:-postgres_password_secure}
+      POSTGRES_DB: ${TEST_DB_NAME:-omninovel_test}
+    ports:
+      - "127.0.0.1:55433:5432"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${TEST_DB_USER:-postgres} -d ${TEST_DB_NAME:-omninovel_test}"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    restart: "no"
+
+volumes:
+  postgres_test_data:

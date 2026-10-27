@@ -13,6 +13,7 @@ import {
 import { CommitGuestClaimDto } from '../src/modules/claims/dto/commit-guest-claim.dto';
 import * as request from 'supertest';
 import * as cookieParser from 'cookie-parser';
+import { verifyTestDatabaseIdentity } from '../src/common/guards/test-isolation-guard';
 
 describe('Phase 7B.4: Guest Claim Comprehensive E2E Lifecycle & Crash Matrix (Task 7B.4)', () => {
   jest.setTimeout(60000);
@@ -51,6 +52,8 @@ describe('Phase 7B.4: Guest Claim Comprehensive E2E Lifecycle & Crash Matrix (Ta
   const validGuestProfileId = 'b8888888-8888-4888-8888-888888888888';
 
   beforeAll(async () => {
+    await verifyTestDatabaseIdentity();
+
     const moduleFixture: TestingModule = await Test.createTestingModule({
       imports: [AppModule],
     }).compile();

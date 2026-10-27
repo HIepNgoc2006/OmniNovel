@@ -1,14 +1,26 @@
 # 🧪 Phase 7B.4: Comprehensive Test Suite, Crash Acceptance Matrix & Zero-Gamification Verification
 
-> **Trạng thái:** `[/] Đang Khởi Tạo Thực Thi`  
-> **Mục tiêu:** Kiểm chứng toàn diện 11 kịch bản sự cố, bảo vệ tính toàn vẹn kinh tế ảo (Zero Gamification), ma trận phục hồi sau sự cố (Crash Matrix), và khóa cứng cổng kiểm soát không thoái lui (Zero Regression Gate) trên toàn bộ hệ thống Web, Mobile và Core API.
+> **Trạng thái:** `[/] Đang Khởi Tạo Thực Thi (P0/P1 Remediation hoàn tất, chờ Hosted CI)`  
+> **Mục tiêu:** Kiểm chứng toàn diện 11 kịch bản sự cố, bảo vệ tính toàn vẹn kinh tế ảo (Zero Gamification), ma trận phục hồi sau sự cố (Crash Matrix), vá bảo mật dependencies Trivy Docker API, và khóa cứng cổng kiểm soát không thoái lui (Zero Regression Gate) trên toàn bộ hệ thống Web, Mobile và Core API.
 
 ---
 
-## 🏛️ 1. Danh Mục Các Hạng Mục Kiểm Thử Cần Thực Hiện
+## 🏛️ 1. Danh Mục Các Hạng Mục Kiểm Thử & Remediation
+
+### 1.0. Trivy Security Remediation & Test Isolation (P0 & P1 Remediation)
+- [x] **P0 - Vá 3 CVEs trên Core API Docker Image (`omninovel-api`):**
+  - `body-parser`: Nâng cấp từ `1.20.4` lên `1.20.9` (khắc phục `CVE-2026-111181`).
+  - `multer`: Nâng cấp từ `2.0.2` lên `2.5.0` (khắc phục `CVE-2026-113872`).
+  - `zod`: Nâng cấp từ `3.25.76` lên `4.6.7` (khắc phục `CVE-2023-54404`).
+  - Đã cấu hình npm `overrides` trong root `package.json` và đồng bộ `package-lock.json`. Đã build Docker image cục bộ và quét Trivy xác nhận 0 lỗ hổng unsuppressed.
+- [x] **P1 - Chuẩn Hóa Cách Ly Môi Trường Kiểm Thử (Fail-Closed Test Rig):**
+  - Chuẩn hóa `services/api/test/setup-e2e.ts`: Ép buộc `NODE_ENV = 'test'`, cấm tuyệt đối kiểm thử kết nối tới Cloud/Production DB (Supabase poolers). Tự động liên kết container PostgreSQL kiểm thử cục bộ cô lập (`127.0.0.1:5433 / omninovel_db`).
+  - Dọn sạch logic ad-hoc kiểm tra chuỗi `Camera_AI` trong `services/api/src/database/data-source.ts`.
+
+---
 
 ### 1.1. Core API E2E & Integration Lifecycle (`services/api`)
-Tạo mới file kiểm thử toàn diện: `services/api/test/guest-claim-lifecycle.e2e-spec.ts`:
+File kiểm thử toàn diện: `services/api/test/guest-claim-lifecycle.e2e-spec.ts`:
 - [x] **Kịch bản 1 (Input Boundaries & DTO Validation):**
   - Chặn `pageIndex < 1` (1-based index invariant).
   - Chặn `readingMode` không thuộc `WEBTOON | PAGED | NOVEL`.
@@ -20,18 +32,18 @@ Tạo mới file kiểm thử toàn diện: `services/api/test/guest-claim-lifec
   - Đảm bảo truyện có tombstone bị chặn triệt để, không cho phép hồi sinh read states hoặc progress vào PostgreSQL.
 - [x] **Kịch bản 4 (Commit Idempotency First):**
   - Gọi commit lần 1 thành công -> Gọi commit lần 2 trả ngay 200 OK từ ledger `guest_claims`, không duplicate insert, không thay đổi số liệu, bất kể quá hạn TTL 15 phút.
-- [x] **Kịch bản 5 (Redis Loss Fallback & High Availability):**
-  - Giả lập Redis bị sập / mất kết nối -> Commit vẫn hoàn tất an toàn 100% nhờ hàng phòng ngự khóa hàng PostgreSQL row lock (`SELECT FOR UPDATE`).
+- [x] **Kịch bản 5 (Redis Loss Fallback Simulation):**
+  - Mô phỏng kịch bản Redis lock gặp lỗi/timeout -> Cơ chế fallback commit vẫn hoàn tất an toàn nhờ hàng phòng ngự khóa hàng PostgreSQL row lock (`SELECT FOR UPDATE`). *(Lưu ý ranh giới kỹ thuật: kiểm thử chứng minh fallback logic hoạt động đúng trong kịch bản lỗi được mô phỏng).*
 - [x] **Kịch bản 6 (TOCTOU Protection & Stale Fingerprint Detection):**
-  - Giả lập dữ liệu Cloud thay đổi giữa thời điểm `prepare` và `commit` -> Commit phát hiện fingerprint sai lệch và trả về `409 Conflict (CLAIM_STALE_REPREPARE)`.
+  - Dữ liệu Cloud thay đổi giữa thời điểm `prepare` và `commit` -> Commit phát hiện fingerprint sai lệch và trả về `409 Conflict (CLAIM_STALE_REPREPARE)`.
 - [x] **Kịch bản 7 (Security Ownership Enforcement):**
   - User B dùng token của mình gọi commit `claimId` do User A prepare -> Chặn đứng bằng `403 Forbidden`.
 - [x] **Kịch bản 8 (Expired Session Handshake):**
   - Gọi commit claim ở trạng thái `PREPARED` sau khi đã quá hạn 15 phút -> Chuyển trạng thái sang `EXPIRED` và trả về `410 Gone`.
 - [x] **Kịch bản 9 (Crash Recovery via Status Polling):**
-  - Endpoint `GET /status` trả đầy đủ trạng thái và kết quả finalization để client khôi phục sau sự cố crash mạng/app. User khác gọi status bị chặn `403 Forbidden`.
-- [x] **Kịch bản 10 (Zero-Gamification Verification - P0 Bắt Buộc):**
-  - Snapshot bảng thực tế `user_progression` trước và sau commit (`total_exp`, `omnicoin_balance`, `current_streak`, `max_streak`) -> Khẳng định $\Delta = 0$ trên 100% các chỉ số này.
+  - Endpoint `GET /status` trả đầy đủ trạng thái và `finalization_data` chứng minh API cung cấp đủ dữ liệu cho client đối soát và phục hồi. User khác gọi status bị chặn `403 Forbidden`.
+- [x] **Kịch bản 10 (Zero-Gamification Verification - Invariant Bắt Buộc):**
+  - Snapshot bảng thực tế `user_progression` trước và sau commit (`total_exp`, `omnicoin_balance`, `current_streak`, `max_streak`) -> Khẳng định $\Delta = 0$ trên toàn bộ các chỉ số progression được kiểm tra.
 - [x] **Kịch bản 11 (Two-Phase Deletion & Account Lifecycle Coherence):**
   - Day 0 Soft delete bảo tồn nguyên vẹn quyền tác giả và ledger (`guest_claims`, `reward_transactions`).
   - Reactivate Account phân xử đúng 3 nhánh.
@@ -63,7 +75,7 @@ Tạo mới file kiểm thử toàn diện: `services/api/test/guest-claim-lifec
 - [x] Mobile Client: Flutter analyze 0 errors & 500/500 Flutter tests pass 100%.
 - [x] AI Worker: Pytest suite (323/323 tests) pass 100%.
 - [x] Security Audit: TruffleHog + P1 Trivy Governance 12/12 scenarios pass 100%.
-- [ ] Hosted CI: 7/7 jobs SUCCESS (Chờ push kích hoạt CI Run).
+- [ ] Hosted CI: 7/7 jobs SUCCESS (Chờ commit & push kích hoạt run mới). *(Lưu ý: Job VPS deployment trên CI hiện đóng vai trò Topology Dry-Run Verification, phân biệt rõ ràng với Production Live VPS Deployment).*
 
 ---
 
@@ -75,5 +87,5 @@ Tạo mới file kiểm thử toàn diện: `services/api/test/guest-claim-lifec
 | **Bước 2** | Chạy kiểm thử cục bộ NestJS Test Suite & sửa lỗi phát sinh (Migration + E2E pass 16/16) | `[x] Hoàn thành` |
 | **Bước 3** | Rà soát và hoàn thiện ma trận Crash Matrix trên Web & Mobile Client | `[x] Hoàn thành` |
 | **Bước 4** | Chạy kiểm thử toàn bộ hệ thống (Web 657 tests, Mobile 500 tests, AI Worker 323 tests, Core API) | `[x] Hoàn thành` |
-| **Bước 5** | Commit & Push lên GitHub, kích hoạt Hosted CI Run xác thực 7/7 jobs | `[/] Đang làm` |
+| **Bước 5** | Vá 3 CVEs Trivy Docker API, chuẩn hóa cách ly test DB, commit & push kích hoạt CI 7/7 | `[/] Đang làm` |
 | **Bước 6** | Tổng hợp kết quả nghiệm thu và đóng hoàn toàn Phase 7B | `[ ] Chưa làm` |

@@ -11,23 +11,19 @@ import { buildPostgresConnectionOptions } from './database.config';
 if (process.env.MIGRATION_ENV_FILE) {
   const explicitPath = path.resolve(process.cwd(), process.env.MIGRATION_ENV_FILE);
   if (fs.existsSync(explicitPath)) {
-    dotenv.config({ path: explicitPath });
+    dotenv.config({ path: explicitPath, override: true });
   }
-}
+} else if (process.env.NODE_ENV !== 'test') {
+  const candidateEnvPaths = [
+    path.resolve(process.cwd(), '.env'),
+    path.resolve(process.cwd(), '../../.env'),
+    path.resolve(__dirname, '../../../.env'),
+  ];
 
-const candidateEnvPaths = [
-  path.resolve(process.cwd(), '.env'),
-  path.resolve(process.cwd(), '../../.env'),
-  path.resolve(__dirname, '../../../.env'),
-];
-
-if (process.env.DATABASE_URL && process.env.DATABASE_URL.includes('Camera_AI')) {
-  delete process.env.DATABASE_URL;
-}
-
-for (const envPath of candidateEnvPaths) {
-  if (fs.existsSync(envPath)) {
-    dotenv.config({ path: envPath, override: true });
+  for (const envPath of candidateEnvPaths) {
+    if (fs.existsSync(envPath)) {
+      dotenv.config({ path: envPath });
+    }
   }
 }
 

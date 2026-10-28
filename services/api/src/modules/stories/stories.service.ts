@@ -3,9 +3,12 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, In } from 'typeorm';
+import { SyncLogEmitter } from '../sync/services/sync-log-emitter.service';
+import { SyncDomain, SyncOperation } from '../sync/interfaces/sync.types';
 import { Story } from './entities/story.entity';
 import { StoryMember } from './entities/story-member.entity';
 import { StoryEdition } from './entities/story-edition.entity';
@@ -53,6 +56,7 @@ export class StoriesService {
     private chapterRepository: Repository<Chapter>,
     private redisService: RedisService,
     private dataSource: DataSource,
+    @Optional() private syncLogEmitter?: SyncLogEmitter,
   ) {}
 
   async create(userId: string, dto: CreateStoryDto) {
@@ -391,6 +395,11 @@ export class StoriesService {
     }
 
     return this.dataSource.transaction(async (manager) => {
+      // 1. Lock user_sync_state Level 1 (Khóa thứ tự nhất quán chống deadlock)
+      if (this.syncLogEmitter) {
+        await this.syncLogEmitter.lockAndAcquireUserSyncState(manager, userId);
+      }
+
       if (dto.isBookmarked) {
         // Idempotent insert
         const insertRes = await manager.query(
@@ -406,6 +415,16 @@ export class StoriesService {
             [dto.storyId],
           );
         }
+
+        if (this.syncLogEmitter) {
+          await this.syncLogEmitter.emit(manager, {
+            userId,
+            domain: SyncDomain.BOOKMARK,
+            entityId: dto.storyId,
+            operation: SyncOperation.UPSERT,
+            payload: { storyId: dto.storyId },
+          });
+        }
       } else {
         // Idempotent delete
         const deleteRes = await manager.query(
@@ -417,6 +436,16 @@ export class StoriesService {
             `UPDATE stories SET followers_count = GREATEST(followers_count - 1, 0) WHERE id = $1`,
             [dto.storyId],
           );
+        }
+
+        if (this.syncLogEmitter) {
+          await this.syncLogEmitter.emit(manager, {
+            userId,
+            domain: SyncDomain.BOOKMARK,
+            entityId: dto.storyId,
+            operation: SyncOperation.DELETE,
+            payload: { storyId: dto.storyId },
+          });
         }
       }
 
@@ -528,6 +557,11 @@ export class StoriesService {
     const completedAt = progressPercentage >= 80 ? new Date() : null;
 
     return this.dataSource.transaction(async (manager) => {
+      // 0. Lock user_sync_state Level 1 (Khóa thứ tự nhất quán chống deadlock)
+      if (this.syncLogEmitter) {
+        await this.syncLogEmitter.lockAndAcquireUserSyncState(manager, userId);
+      }
+
       // 1. Đảm bảo dòng counter tồn tại
       await manager.query(
         `INSERT INTO reading_history_epoch_counters (user_id, epoch, updated_at)
@@ -619,6 +653,40 @@ export class StoriesService {
           completedAt,
         ],
       );
+
+      if (this.syncLogEmitter) {
+        await this.syncLogEmitter.emit(manager, {
+          userId,
+          domain: SyncDomain.PROGRESS,
+          entityId: derivedStoryId,
+          operation: SyncOperation.UPSERT,
+          payload: {
+            storyId: derivedStoryId,
+            chapterId: dto.chapterId,
+            chapterVersionId: dto.chapterVersionId || null,
+            readingMode,
+            progressPercentage: Number(progressPercentage),
+            scrollPosition: Number(scrollPosition),
+            pageIndex: Number(pageIndex),
+            anchorBlockId: anchorBlockId || null,
+            textOffset: Number(textOffset),
+          },
+        });
+
+        await this.syncLogEmitter.emit(manager, {
+          userId,
+          domain: SyncDomain.HISTORY,
+          entityId: dto.chapterId,
+          operation: SyncOperation.UPSERT,
+          payload: {
+            storyId: derivedStoryId,
+            chapterId: dto.chapterId,
+            chapterVersionId: dto.chapterVersionId || null,
+            progressPercentage: Number(progressPercentage),
+            observedHistoryEpoch: currentEpoch,
+          },
+        });
+      }
 
       return {
         storyId: derivedStoryId,
@@ -733,6 +801,11 @@ export class StoriesService {
 
   async deleteStoryReadingHistory(userId: string, storyId: string) {
     return this.dataSource.transaction(async (manager) => {
+      // 0. Lock user_sync_state Level 1 (Khóa thứ tự nhất quán chống deadlock)
+      if (this.syncLogEmitter) {
+        await this.syncLogEmitter.lockAndAcquireUserSyncState(manager, userId);
+      }
+
       // 1. Khóa và tăng monotonic counter cho user
       const counterRes = await manager.query(
         `INSERT INTO reading_history_epoch_counters (user_id, epoch, updated_at)
@@ -771,11 +844,27 @@ export class StoriesService {
            deleted_at = NOW()`,
         [userId, storyId, newEpoch],
       );
+
+      // 5. Emit delta sang Sync Engine
+      if (this.syncLogEmitter) {
+        await this.syncLogEmitter.emit(manager, {
+          userId,
+          domain: SyncDomain.HISTORY,
+          entityId: storyId,
+          operation: SyncOperation.DELETE,
+          payload: { storyId, epoch: newEpoch },
+        });
+      }
     });
   }
 
   async clearAllReadingHistory(userId: string) {
     return this.dataSource.transaction(async (manager) => {
+      // 0. Lock user_sync_state Level 1 (Khóa thứ tự nhất quán chống deadlock)
+      if (this.syncLogEmitter) {
+        await this.syncLogEmitter.lockAndAcquireUserSyncState(manager, userId);
+      }
+
       // 1. Khóa và tăng monotonic counter cho user
       const counterRes = await manager.query(
         `INSERT INTO reading_history_epoch_counters (user_id, epoch, updated_at)
@@ -809,6 +898,17 @@ export class StoriesService {
            deleted_at = NOW()`,
         [userId, newEpoch],
       );
+
+      // 5. Emit delta sang Sync Engine
+      if (this.syncLogEmitter) {
+        await this.syncLogEmitter.emit(manager, {
+          userId,
+          domain: SyncDomain.HISTORY,
+          entityId: '00000000-0000-0000-0000-000000000000',
+          operation: SyncOperation.DELETE,
+          payload: { epoch: newEpoch },
+        });
+      }
     });
   }
 

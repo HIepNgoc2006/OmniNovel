@@ -16,6 +16,7 @@ import { ReadingHistoryTombstone } from './entities/reading-history-tombstone.en
 import { Volume } from '../chapters/entities/volume.entity';
 import { Chapter } from '../chapters/entities/chapter.entity';
 import { StoryMemberGuard } from '../../common/guards/story-member.guard';
+import { SyncModule } from '../sync/sync.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { StoryMemberGuard } from '../../common/guards/story-member.guard';
       Chapter,
     ]),
     JwtModule.register({}),
+    SyncModule,
   ],
   controllers: [StoriesController],
   providers: [StoriesService, StoryMemberGuard],

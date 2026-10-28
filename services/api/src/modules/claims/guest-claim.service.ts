@@ -7,6 +7,7 @@ import {
   HttpException,
   HttpStatus,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, QueryRunner } from 'typeorm';
@@ -14,6 +15,8 @@ import * as crypto from 'crypto';
 import { v4 as uuidv4 } from 'uuid';
 import { RedisService } from '../../redis/redis.service';
 import { GuestClaim, GuestClaimStatusEnum } from './entities/guest-claim.entity';
+import { SyncLogEmitter, SyncLogEmitParams } from '../sync/services/sync-log-emitter.service';
+import { SyncDomain, SyncOperation } from '../sync/interfaces/sync.types';
 import {
   PrepareGuestClaimDto,
   CanonicalReadingMode,
@@ -41,6 +44,7 @@ export class GuestClaimService {
     private readonly guestClaimRepo: Repository<GuestClaim>,
     private readonly dataSource: DataSource,
     private readonly redisService: RedisService,
+    @Optional() private readonly syncLogEmitter?: SyncLogEmitter,
   ) {}
 
   /**
@@ -647,6 +651,11 @@ export class GuestClaimService {
         `user_claim:${userId}`,
       ]);
 
+      // Lock user_sync_state Level 1 (Khóa thứ tự nhất quán chống deadlock với Sync Hub)
+      if (this.syncLogEmitter) {
+        await this.syncLogEmitter.lockAndAcquireUserSyncState(runner.manager, userId);
+      }
+
       // Ensure epoch counter row
       await runner.query(
         `INSERT INTO reading_history_epoch_counters (user_id, epoch, updated_at)
@@ -828,6 +837,50 @@ export class GuestClaimService {
           ],
         );
         summary.progressUpdated++;
+      }
+
+      // 4.3b Phát sinh bản ghi thay đổi sang Sync Engine (SYNC-09: Guest Claim Delta Emitter)
+      if (this.syncLogEmitter) {
+        const syncItems: Omit<SyncLogEmitParams, 'userId'>[] = [];
+        for (const b of storedPayload.bookmarks || []) {
+          syncItems.push({
+            domain: SyncDomain.BOOKMARK,
+            entityId: b.storyId,
+            operation: SyncOperation.UPSERT,
+            payload: { storyId: b.storyId },
+          });
+        }
+        for (const h of storedPayload.history || []) {
+          if (!isStoryTombstoned(h.storyId)) {
+            syncItems.push({
+              domain: SyncDomain.HISTORY,
+              entityId: h.chapterId,
+              operation: SyncOperation.UPSERT,
+              payload: {
+                storyId: h.storyId,
+                chapterId: h.chapterId,
+                progressPercentage: h.progressPercentage,
+                observedHistoryEpoch: 0,
+              },
+            });
+          }
+        }
+        for (const p of storedPayload.progress || []) {
+          if (!isStoryTombstoned(p.storyId)) {
+            const hasConflict = conflictStoryIds.has(p.storyId);
+            if (!hasConflict || dto.conflictDecisions?.[p.storyId] === ConflictResolution.USE_GUEST) {
+              syncItems.push({
+                domain: SyncDomain.PROGRESS,
+                entityId: p.storyId,
+                operation: SyncOperation.UPSERT,
+                payload: { ...p },
+              });
+            }
+          }
+        }
+        if (syncItems.length > 0) {
+          await this.syncLogEmitter.emitBatch(runner.manager, userId, syncItems);
+        }
       }
 
       // 4.4 Tạo Authoritative Finalization Snapshot (Scoped theo claim)

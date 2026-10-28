@@ -699,3 +699,4 @@ export interface OfflineBundleManifest {
 export * from './local-library.js';
 export * from './types/claim.types.js';
 export * from './dto/guest-claim.dto.js';
+export * from './types/sync.types.js';

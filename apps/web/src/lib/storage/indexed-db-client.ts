@@ -3,14 +3,85 @@ import {
   LocalReadingProgress,
   LocalReadingHistory,
   ConflictResolution,
+  SyncDomain,
+  SyncOperation,
 } from '@omninovel/shared';
 
 export const DB_NAME = 'omninovel_local_v2';
-export const DB_VERSION = 1;
+export const DB_VERSION = 3;
 
 export const STORE_BOOKMARKS = 'bookmarks';
 export const STORE_PROGRESS = 'progress';
 export const STORE_HISTORY = 'history';
+export const STORE_PREFERENCES = 'preferences';
+export const STORE_SYNC_META = 'sync_meta';
+export const STORE_PENDING_MUTATIONS = 'pending_mutations';
+export const STORE_QUARANTINED_MUTATIONS = 'quarantined_mutations';
+export const STORE_SNAPSHOT_STAGING = 'snapshot_staging_store';
+
+export const ALL_OBJECT_STORES = [
+  STORE_BOOKMARKS,
+  STORE_PROGRESS,
+  STORE_HISTORY,
+  STORE_PREFERENCES,
+  STORE_SYNC_META,
+  STORE_PENDING_MUTATIONS,
+  STORE_QUARANTINED_MUTATIONS,
+  STORE_SNAPSHOT_STAGING,
+] as const;
+
+export interface LocalPreference {
+  ownerScope: string;
+  key: string;
+  value: unknown;
+  updatedAt: string;
+}
+
+export interface LocalSyncMeta {
+  ownerScope: string;
+  lastSyncedServerRevision: string;
+  minActiveRevision: string;
+  lastSyncTimestamp: string;
+  effectiveHistoryEpochs: Record<string, number>;
+  syncState: 'IDLE' | 'PULLING' | 'PUSHING' | 'RECONCILING_410' | 'ERROR';
+  lastErrorMessage?: string | null;
+}
+
+export interface LocalPendingMutation {
+  ownerScope: string;
+  mutationId: string;
+  clientId: string;
+  domain: SyncDomain;
+  entityId: string;
+  operation: SyncOperation;
+  baseServerRevision: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
+  retryCount?: number;
+}
+
+export interface LocalQuarantinedMutation {
+  ownerScope: string;
+  mutationId: string;
+  clientId: string;
+  domain: SyncDomain;
+  entityId: string;
+  operation: SyncOperation;
+  baseServerRevision: string;
+  payload: Record<string, unknown>;
+  rejectionReason: string;
+  rejectedAt: string;
+  originalCreatedAt?: string;
+}
+
+export interface LocalSnapshotStagingItem {
+  ownerScope: string;
+  sessionId: string;
+  domain: SyncDomain;
+  entityKey: string;
+  payload: Record<string, unknown>;
+  stagedAt: string;
+}
 
 export class IndexedDbUnavailableError extends Error {
   constructor(message: string = 'IndexedDB is not available or disabled.') {
@@ -72,7 +143,7 @@ export class IndexedDbClient {
       try {
         const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-        request.onupgradeneeded = (event) => {
+        request.onupgradeneeded = () => {
           const db = request.result;
 
           // 1. Bookmarks Store: Composite key [ownerScope, storyId]
@@ -95,6 +166,50 @@ export class IndexedDbClient {
               keyPath: ['ownerScope', 'storyId', 'chapterId'],
             });
             historyStore.createIndex('by_owner_time', ['ownerScope', 'lastReadAt'], {
+              unique: false,
+            });
+          }
+
+          // 4. Preferences Store: Composite key [ownerScope, key] (Phase 7C.3)
+          if (!db.objectStoreNames.contains(STORE_PREFERENCES)) {
+            db.createObjectStore(STORE_PREFERENCES, {
+              keyPath: ['ownerScope', 'key'],
+            });
+          }
+
+          // 5. Sync Metadata Store: KeyPath ownerScope (Phase 7C.3)
+          if (!db.objectStoreNames.contains(STORE_SYNC_META)) {
+            db.createObjectStore(STORE_SYNC_META, {
+              keyPath: 'ownerScope',
+            });
+          }
+
+          // 6. Pending Mutations Queue: Composite key [ownerScope, mutationId] (Phase 7C.3)
+          if (!db.objectStoreNames.contains(STORE_PENDING_MUTATIONS)) {
+            const pendingStore = db.createObjectStore(STORE_PENDING_MUTATIONS, {
+              keyPath: ['ownerScope', 'mutationId'],
+            });
+            pendingStore.createIndex('by_scope_created', ['ownerScope', 'createdAt'], {
+              unique: false,
+            });
+          }
+
+          // 7. Quarantined Mutations Store: Composite key [ownerScope, mutationId] (Phase 7C.3)
+          if (!db.objectStoreNames.contains(STORE_QUARANTINED_MUTATIONS)) {
+            const quarantinedStore = db.createObjectStore(STORE_QUARANTINED_MUTATIONS, {
+              keyPath: ['ownerScope', 'mutationId'],
+            });
+            quarantinedStore.createIndex('by_scope_rejected', ['ownerScope', 'rejectedAt'], {
+              unique: false,
+            });
+          }
+
+          // 8. Snapshot Staging Store: Composite key [ownerScope, sessionId, domain, entityKey] (Phase 7C.3)
+          if (!db.objectStoreNames.contains(STORE_SNAPSHOT_STAGING)) {
+            const stagingStore = db.createObjectStore(STORE_SNAPSHOT_STAGING, {
+              keyPath: ['ownerScope', 'sessionId', 'domain', 'entityKey'],
+            });
+            stagingStore.createIndex('by_scope_session', ['ownerScope', 'sessionId'], {
               unique: false,
             });
           }
@@ -163,7 +278,7 @@ export class IndexedDbClient {
 
       tx.onerror = () => {
         const error = tx.error;
-        if (error && error.name === 'QuotaExceededError') {
+        if (error && (error.name === 'QuotaExceededError' || error.name === 'QuotaExceeded')) {
           reject(new QuotaExceededStorageError());
         } else {
           reject(error || new Error('Transaction failed.'));
@@ -172,7 +287,7 @@ export class IndexedDbClient {
 
       tx.onabort = () => {
         const error = tx.error;
-        if (error && error.name === 'QuotaExceededError') {
+        if (error && (error.name === 'QuotaExceededError' || error.name === 'QuotaExceeded')) {
           reject(new QuotaExceededStorageError());
         } else {
           reject(error || new Error('Transaction aborted.'));
@@ -184,7 +299,6 @@ export class IndexedDbClient {
       };
 
       try {
-        // 1. Fetch existing history for chapter to enforce monotonic progressPercentage
         const historyKey = [history.ownerScope, history.storyId, history.chapterId];
         const getRequest = historyStore.get(historyKey);
 
@@ -201,10 +315,7 @@ export class IndexedDbClient {
               progressPercentage: mergedPercentage,
             };
 
-            // 2. Put progress
             progressStore.put(progress);
-
-            // 3. Put history with preserved monotonic progress
             historyStore.put(finalHistory);
           } catch (err: any) {
             try {
@@ -233,6 +344,329 @@ export class IndexedDbClient {
         } else {
           reject(err);
         }
+      }
+    });
+  }
+
+  // ==================== ATOMIC LOCAL WRITE + PENDING ENQUEUE PRIMITIVES (Phase 7C.3) ====================
+
+  /**
+   * Atomic Primitive: Records reading session and enqueues progress mutation in the same IDB transaction.
+   * Guarantees rollback if either operation fails or quota is exceeded.
+   */
+  async recordReadingSessionWithMutation(
+    progress: LocalReadingProgress,
+    history: LocalReadingHistory,
+    mutation: LocalPendingMutation
+  ): Promise<void> {
+    assertValidScope(progress.ownerScope);
+    assertValidScope(history.ownerScope);
+    assertValidScope(mutation.ownerScope);
+
+    if (progress.ownerScope !== mutation.ownerScope || history.ownerScope !== mutation.ownerScope) {
+      throw new Error(`Scope mismatch: progress/history (${progress.ownerScope}) does not match mutation (${mutation.ownerScope})`);
+    }
+
+    const db = await this.getDatabase();
+
+    return new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([STORE_PROGRESS, STORE_HISTORY, STORE_PENDING_MUTATIONS], 'readwrite');
+      const progressStore = tx.objectStore(STORE_PROGRESS);
+      const historyStore = tx.objectStore(STORE_HISTORY);
+      const mutationStore = tx.objectStore(STORE_PENDING_MUTATIONS);
+
+      tx.onerror = () => {
+        const error = tx.error;
+        if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+          reject(new QuotaExceededStorageError());
+        } else {
+          reject(error || new Error('Transaction failed.'));
+        }
+      };
+
+      tx.onabort = () => {
+        const error = tx.error;
+        if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+          reject(new QuotaExceededStorageError());
+        } else {
+          reject(error || new Error('Transaction aborted.'));
+        }
+      };
+
+      tx.oncomplete = () => {
+        resolve();
+      };
+
+      try {
+        const historyKey = [history.ownerScope, history.storyId, history.chapterId];
+        const getRequest = historyStore.get(historyKey);
+
+        getRequest.onsuccess = () => {
+          try {
+            const existingHistory = getRequest.result as LocalReadingHistory | undefined;
+            const mergedPercentage = Math.max(
+              existingHistory?.progressPercentage || 0,
+              history.progressPercentage
+            );
+
+            const finalHistory: LocalReadingHistory = {
+              ...history,
+              progressPercentage: mergedPercentage,
+            };
+
+            progressStore.put(progress);
+            historyStore.put(finalHistory);
+            mutationStore.put(mutation);
+          } catch (err: any) {
+            try {
+              tx.abort();
+            } catch (_) {}
+            if (err && (err.name === 'QuotaExceededError' || err.code === 22)) {
+              reject(new QuotaExceededStorageError());
+            } else {
+              reject(err);
+            }
+          }
+        };
+
+        getRequest.onerror = () => {
+          try {
+            tx.abort();
+          } catch (_) {}
+          reject(getRequest.error || new Error('Failed to read existing history.'));
+        };
+      } catch (err: any) {
+        try {
+          tx.abort();
+        } catch (_) {}
+        if (err && (err.name === 'QuotaExceededError' || err.code === 22)) {
+          reject(new QuotaExceededStorageError());
+        } else {
+          reject(err);
+        }
+      }
+    });
+  }
+
+  /**
+   * Atomic Primitive: Persists bookmark and enqueues BOOKMARK UPSERT mutation in the same IDB transaction.
+   */
+  async putBookmarkWithMutation(
+    bookmark: LocalBookmark,
+    mutation: LocalPendingMutation
+  ): Promise<void> {
+    assertValidScope(bookmark.ownerScope);
+    assertValidScope(mutation.ownerScope);
+
+    if (bookmark.ownerScope !== mutation.ownerScope) {
+      throw new Error(`Scope mismatch: bookmark (${bookmark.ownerScope}) does not match mutation (${mutation.ownerScope})`);
+    }
+
+    const db = await this.getDatabase();
+
+    return new Promise<void>((resolve, reject) => {
+      try {
+        const tx = db.transaction([STORE_BOOKMARKS, STORE_PENDING_MUTATIONS], 'readwrite');
+        tx.objectStore(STORE_BOOKMARKS).put(bookmark);
+        tx.objectStore(STORE_PENDING_MUTATIONS).put(mutation);
+
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Transaction failed.'));
+          }
+        };
+        tx.onabort = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Transaction aborted.'));
+          }
+        };
+      } catch (err: any) {
+        if (err && (err.name === 'QuotaExceededError' || err.code === 22)) {
+          reject(new QuotaExceededStorageError());
+        } else {
+          reject(err);
+        }
+      }
+    });
+  }
+
+  /**
+   * Atomic Primitive: Deletes bookmark and enqueues BOOKMARK DELETE mutation in the same IDB transaction.
+   */
+  async deleteBookmarkWithMutation(
+    ownerScope: string,
+    storyId: string,
+    mutation: LocalPendingMutation
+  ): Promise<void> {
+    assertValidScope(ownerScope);
+    assertValidScope(mutation.ownerScope);
+
+    if (ownerScope !== mutation.ownerScope) {
+      throw new Error(`Scope mismatch: ownerScope (${ownerScope}) does not match mutation (${mutation.ownerScope})`);
+    }
+
+    const db = await this.getDatabase();
+
+    return new Promise<void>((resolve, reject) => {
+      try {
+        const tx = db.transaction([STORE_BOOKMARKS, STORE_PENDING_MUTATIONS], 'readwrite');
+        tx.objectStore(STORE_BOOKMARKS).delete([ownerScope, storyId]);
+        tx.objectStore(STORE_PENDING_MUTATIONS).put(mutation);
+
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted.'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * Atomic Primitive: Persists preference and enqueues PREFERENCE UPSERT mutation in the same IDB transaction.
+   */
+  async putPreferenceWithMutation(
+    preference: LocalPreference,
+    mutation: LocalPendingMutation
+  ): Promise<void> {
+    assertValidScope(preference.ownerScope);
+    assertValidScope(mutation.ownerScope);
+
+    if (preference.ownerScope !== mutation.ownerScope) {
+      throw new Error(`Scope mismatch: preference (${preference.ownerScope}) does not match mutation (${mutation.ownerScope})`);
+    }
+
+    const db = await this.getDatabase();
+
+    return new Promise<void>((resolve, reject) => {
+      try {
+        const tx = db.transaction([STORE_PREFERENCES, STORE_PENDING_MUTATIONS], 'readwrite');
+        tx.objectStore(STORE_PREFERENCES).put(preference);
+        tx.objectStore(STORE_PENDING_MUTATIONS).put(mutation);
+
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Transaction failed.'));
+          }
+        };
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted.'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * Atomic Primitive: Deletes single story history and enqueues HISTORY DELETE mutation in the same IDB transaction.
+   */
+  async deleteStoryHistoryWithMutation(
+    ownerScope: string,
+    storyId: string,
+    mutation: LocalPendingMutation
+  ): Promise<void> {
+    assertValidScope(ownerScope);
+    assertValidScope(mutation.ownerScope);
+
+    if (ownerScope !== mutation.ownerScope) {
+      throw new Error(`Scope mismatch: ownerScope (${ownerScope}) does not match mutation (${mutation.ownerScope})`);
+    }
+
+    const db = await this.getDatabase();
+
+    return new Promise<void>((resolve, reject) => {
+      try {
+        const tx = db.transaction([STORE_HISTORY, STORE_PROGRESS, STORE_PENDING_MUTATIONS], 'readwrite');
+
+        const histStore = tx.objectStore(STORE_HISTORY);
+        const range = IDBKeyRange.bound([ownerScope, storyId, ''], [ownerScope, storyId, '\uffff']);
+        const req = histStore.openCursor(range);
+
+        req.onsuccess = () => {
+          const cursor = req.result;
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+          }
+        };
+
+        const progStore = tx.objectStore(STORE_PROGRESS);
+        progStore.delete([ownerScope, storyId]);
+
+        const mutStore = tx.objectStore(STORE_PENDING_MUTATIONS);
+        mutStore.put(mutation);
+
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted.'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * Atomic Primitive: Clears all history for ownerScope and enqueues global HISTORY DELETE mutation in the same IDB transaction.
+   */
+  async clearAllHistoryWithMutation(
+    ownerScope: string,
+    mutation: LocalPendingMutation
+  ): Promise<void> {
+    assertValidScope(ownerScope);
+    assertValidScope(mutation.ownerScope);
+
+    if (ownerScope !== mutation.ownerScope) {
+      throw new Error(`Scope mismatch: ownerScope (${ownerScope}) does not match mutation (${mutation.ownerScope})`);
+    }
+
+    const db = await this.getDatabase();
+
+    return new Promise<void>((resolve, reject) => {
+      try {
+        const tx = db.transaction([STORE_HISTORY, STORE_PROGRESS, STORE_PENDING_MUTATIONS], 'readwrite');
+
+        const histStore = tx.objectStore(STORE_HISTORY);
+        const histRange = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+        const histReq = histStore.openCursor(histRange);
+
+        histReq.onsuccess = () => {
+          const cursor = histReq.result;
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+          }
+        };
+
+        const progStore = tx.objectStore(STORE_PROGRESS);
+        const progRange = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+        const progReq = progStore.openCursor(progRange);
+
+        progReq.onsuccess = () => {
+          const cursor = progReq.result;
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+          }
+        };
+
+        const mutStore = tx.objectStore(STORE_PENDING_MUTATIONS);
+        mutStore.put(mutation);
+
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted.'));
+      } catch (err) {
+        reject(err);
       }
     });
   }
@@ -301,7 +735,6 @@ export class IndexedDbClient {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_BOOKMARKS, 'readonly');
       const store = tx.objectStore(STORE_BOOKMARKS);
-      // KeyRange bound by ownerScope
       const range = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
       const req = store.openCursor(range);
       const results: LocalBookmark[] = [];
@@ -380,7 +813,6 @@ export class IndexedDbClient {
       const store = tx.objectStore(STORE_HISTORY);
       const index = store.index('by_owner_time');
       const range = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
-      // Read in reverse order (newest lastReadAt first)
       const req = index.openCursor(range, 'prev');
       const results: LocalReadingHistory[] = [];
 
@@ -406,8 +838,7 @@ export class IndexedDbClient {
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
       const tx = db.transaction([STORE_HISTORY, STORE_PROGRESS], 'readwrite');
-      
-      // 1. Delete all history records for (ownerScope, storyId)
+
       const histStore = tx.objectStore(STORE_HISTORY);
       const range = IDBKeyRange.bound([ownerScope, storyId, ''], [ownerScope, storyId, '\uffff']);
       const req = histStore.openCursor(range);
@@ -420,7 +851,6 @@ export class IndexedDbClient {
         }
       };
 
-      // 2. Also delete current reading progress for (ownerScope, storyId) to prevent resurrection
       const progStore = tx.objectStore(STORE_PROGRESS);
       progStore.delete([ownerScope, storyId]);
 
@@ -435,7 +865,6 @@ export class IndexedDbClient {
     return new Promise((resolve, reject) => {
       const tx = db.transaction([STORE_HISTORY, STORE_PROGRESS], 'readwrite');
 
-      // 1. Delete all history records for ownerScope
       const histStore = tx.objectStore(STORE_HISTORY);
       const histRange = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
       const histReq = histStore.openCursor(histRange);
@@ -448,7 +877,6 @@ export class IndexedDbClient {
         }
       };
 
-      // 2. Delete all progress records for ownerScope
       const progStore = tx.objectStore(STORE_PROGRESS);
       const progRange = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
       const progReq = progStore.openCursor(progRange);
@@ -492,6 +920,274 @@ export class IndexedDbClient {
       req.onerror = () => reject(req.error);
     });
   }
+
+  // ==================== PREFERENCES SCOPE-BOUND OPERATIONS (Phase 7C.3) ====================
+
+  async getPreference(ownerScope: string, key: string): Promise<LocalPreference | null> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_PREFERENCES, 'readonly');
+      const req = tx.objectStore(STORE_PREFERENCES).get([ownerScope, key]);
+      req.onsuccess = () => resolve((req.result as LocalPreference) || null);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async putPreference(preference: LocalPreference): Promise<void> {
+    assertValidScope(preference.ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_PREFERENCES, 'readwrite');
+        tx.objectStore(STORE_PREFERENCES).put(preference);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async getAllPreferences(ownerScope: string): Promise<LocalPreference[]> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_PREFERENCES, 'readonly');
+      const store = tx.objectStore(STORE_PREFERENCES);
+      const range = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+      const req = store.openCursor(range);
+      const results: LocalPreference[] = [];
+
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (cursor) {
+          const item = cursor.value as LocalPreference;
+          if (item.ownerScope === ownerScope) {
+            results.push(item);
+          }
+          cursor.continue();
+        } else {
+          resolve(results);
+        }
+      };
+
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  // ==================== SYNC METADATA SCOPE-BOUND OPERATIONS (Phase 7C.3) ====================
+
+  async getSyncMeta(ownerScope: string): Promise<LocalSyncMeta | null> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_SYNC_META, 'readonly');
+      const req = tx.objectStore(STORE_SYNC_META).get(ownerScope);
+      req.onsuccess = () => resolve((req.result as LocalSyncMeta) || null);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async putSyncMeta(meta: LocalSyncMeta): Promise<void> {
+    assertValidScope(meta.ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_SYNC_META, 'readwrite');
+        tx.objectStore(STORE_SYNC_META).put(meta);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  // ==================== PENDING MUTATIONS QUEUE OPERATIONS (Phase 7C.3) ====================
+
+  async getPendingMutations(ownerScope: string, limit: number = 100): Promise<LocalPendingMutation[]> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_PENDING_MUTATIONS, 'readonly');
+      const store = tx.objectStore(STORE_PENDING_MUTATIONS);
+      const index = store.index('by_scope_created');
+      const range = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+      const req = index.openCursor(range, 'next'); // chronological
+      const results: LocalPendingMutation[] = [];
+
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (cursor && results.length < limit) {
+          const item = cursor.value as LocalPendingMutation;
+          if (item.ownerScope === ownerScope) {
+            results.push(item);
+          }
+          cursor.continue();
+        } else {
+          resolve(results);
+        }
+      };
+
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async deletePendingMutation(ownerScope: string, mutationId: string): Promise<void> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_PENDING_MUTATIONS, 'readwrite');
+      tx.objectStore(STORE_PENDING_MUTATIONS).delete([ownerScope, mutationId]);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async deletePendingMutationsBatch(ownerScope: string, mutationIds: string[]): Promise<void> {
+    assertValidScope(ownerScope);
+    if (mutationIds.length === 0) return;
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_PENDING_MUTATIONS, 'readwrite');
+      const store = tx.objectStore(STORE_PENDING_MUTATIONS);
+      for (const id of mutationIds) {
+        store.delete([ownerScope, id]);
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  // ==================== QUARANTINED MUTATIONS OPERATIONS (Phase 7C.3) ====================
+
+  async quarantineMutation(quarantined: LocalQuarantinedMutation): Promise<void> {
+    assertValidScope(quarantined.ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction([STORE_PENDING_MUTATIONS, STORE_QUARANTINED_MUTATIONS], 'readwrite');
+        tx.objectStore(STORE_PENDING_MUTATIONS).delete([quarantined.ownerScope, quarantined.mutationId]);
+        tx.objectStore(STORE_QUARANTINED_MUTATIONS).put(quarantined);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async getQuarantinedMutations(ownerScope: string): Promise<LocalQuarantinedMutation[]> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_QUARANTINED_MUTATIONS, 'readonly');
+      const store = tx.objectStore(STORE_QUARANTINED_MUTATIONS);
+      const index = store.index('by_scope_rejected');
+      const range = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+      const req = index.openCursor(range, 'prev');
+      const results: LocalQuarantinedMutation[] = [];
+
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (cursor) {
+          const item = cursor.value as LocalQuarantinedMutation;
+          if (item.ownerScope === ownerScope) {
+            results.push(item);
+          }
+          cursor.continue();
+        } else {
+          resolve(results);
+        }
+      };
+
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  // ==================== SNAPSHOT STAGING STORE OPERATIONS (Phase 7C.3) ====================
+
+  async stageSnapshotItems(items: LocalSnapshotStagingItem[]): Promise<void> {
+    if (items.length === 0) return;
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_SNAPSHOT_STAGING, 'readwrite');
+        const store = tx.objectStore(STORE_SNAPSHOT_STAGING);
+        for (const item of items) {
+          assertValidScope(item.ownerScope);
+          store.put(item);
+        }
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async clearSnapshotStaging(ownerScope: string, sessionId?: string): Promise<void> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_SNAPSHOT_STAGING, 'readwrite');
+      const store = tx.objectStore(STORE_SNAPSHOT_STAGING);
+
+      if (sessionId) {
+        const index = store.index('by_scope_session');
+        const range = IDBKeyRange.only([ownerScope, sessionId]);
+        const req = index.openCursor(range);
+        req.onsuccess = () => {
+          const cursor = req.result;
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+          }
+        };
+      } else {
+        const range = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+        const req = store.openCursor(range);
+        req.onsuccess = () => {
+          const cursor = req.result;
+          if (cursor) {
+            cursor.delete();
+            cursor.continue();
+          }
+        };
+      }
+
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async getSnapshotStagingItems(ownerScope: string, sessionId: string): Promise<LocalSnapshotStagingItem[]> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_SNAPSHOT_STAGING, 'readonly');
+      const store = tx.objectStore(STORE_SNAPSHOT_STAGING);
+      const index = store.index('by_scope_session');
+      const range = IDBKeyRange.only([ownerScope, sessionId]);
+      const req = index.openCursor(range);
+      const results: LocalSnapshotStagingItem[] = [];
+
+      req.onsuccess = () => {
+        const cursor = req.result;
+        if (cursor) {
+          results.push(cursor.value as LocalSnapshotStagingItem);
+          cursor.continue();
+        } else {
+          resolve(results);
+        }
+      };
+
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  // ==================== SCOPE PURGE & REBIND (Phase 7A/7B/7C) ====================
 
   async hasGuestData(guestScope: string): Promise<boolean> {
     assertValidScope(guestScope);
@@ -598,22 +1294,18 @@ export class IndexedDbClient {
             const item = cursor.value as LocalReadingProgress;
             if (item.ownerScope === fromScope) {
               const decision = conflictDecisions?.[item.storyId];
+
               if (decision === ConflictResolution.KEEP_CLOUD) {
-                // Invariant P0: User chose KEEP_CLOUD. Cloud/Account progress authoritative.
-                // Do NOT overwrite existing account progress nor copy guest progress over cloud.
                 cursor.continue();
                 return;
               }
 
               if (decision === ConflictResolution.USE_GUEST) {
-                // Invariant P0: User chose USE_GUEST. Overwrite target account progress.
                 pStore.put({ ...item, ownerScope: toScope });
                 cursor.continue();
                 return;
               }
 
-              // Default / No conflict decision specified:
-              // Only put into toScope if account does not already have an existing progress entry.
               const targetKey = [toScope, item.storyId];
               const checkReq = pStore.get(targetKey);
               checkReq.onsuccess = () => {
@@ -658,7 +1350,6 @@ export class IndexedDbClient {
         };
 
         tx.oncomplete = async () => {
-          // 4. Purge source fromScope cleanly
           try {
             await this.purgeScope(fromScope);
             resolve();
@@ -679,9 +1370,34 @@ export class IndexedDbClient {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction([STORE_BOOKMARKS, STORE_PROGRESS, STORE_HISTORY], 'readwrite');
+      const storesToPurge = [
+        STORE_BOOKMARKS,
+        STORE_PROGRESS,
+        STORE_HISTORY,
+        STORE_PREFERENCES,
+        STORE_SYNC_META,
+        STORE_PENDING_MUTATIONS,
+        STORE_QUARANTINED_MUTATIONS,
+        STORE_SNAPSHOT_STAGING,
+      ];
 
-      for (const storeName of [STORE_BOOKMARKS, STORE_PROGRESS, STORE_HISTORY]) {
+      const tx = db.transaction(storesToPurge, 'readwrite');
+
+      // 1. Delete sync_meta for ownerScope (keyPath is ownerScope scalar)
+      tx.objectStore(STORE_SYNC_META).delete(ownerScope);
+
+      // 2. Delete composite stores prefixed by ownerScope
+      const compositeStores = [
+        STORE_BOOKMARKS,
+        STORE_PROGRESS,
+        STORE_HISTORY,
+        STORE_PREFERENCES,
+        STORE_PENDING_MUTATIONS,
+        STORE_QUARANTINED_MUTATIONS,
+        STORE_SNAPSHOT_STAGING,
+      ];
+
+      for (const storeName of compositeStores) {
         const store = tx.objectStore(storeName);
         const range = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
         const req = store.openCursor(range);

@@ -119,8 +119,8 @@ apps/web/src/lib/
 
 ## 5. Tiến Độ Triển Khai Chi Tiết (Step-by-Step Execution Plan)
 
-- [ ] **Bước 1:** Khởi tạo canonical types trong `packages/shared/src/types/sync.types.ts` và export qua `packages/shared`. Viết conformance test.
-- [ ] **Bước 2:** Nâng cấp `apps/web/src/lib/storage/indexed-db-client.ts` lên `DB_VERSION = 3`, thêm các object stores mới, cung cấp atomic write + enqueue primitives và viết suite kiểm thử migration & rollback.
+- [x] **Bước 1:** Khởi tạo canonical types trong `packages/shared/src/types/sync.types.ts` và export qua `packages/shared`. Viết conformance test (8/8 PASS).
+- [x] **Bước 2:** Nâng cấp `apps/web/src/lib/storage/indexed-db-client.ts` lên `DB_VERSION = 3`, thêm 5 object stores mới, cung cấp atomic write + enqueue primitives và viết suite kiểm thử migration & rollback (12/12 PASS, 677/677 web tests PASS, Next.js build clean).
 - [ ] **Bước 3:** Cài đặt `apps/web/src/lib/sync/tab-leader-election.ts` quản lý bầu chọn Leader đa tab qua Web Locks API (`navigator.locks`) & BroadcastChannel.
 - [ ] **Bước 4:** Cài đặt `apps/web/src/lib/sync/mutation-queue.ts` quản lý hàng đợi, chống rebase bừa bãi và cách ly quarantined mutations.
 - [ ] **Bước 5:** Cài đặt `apps/web/src/lib/sync/delta-pull-reconciler.ts` kéo changes, paginated checkpoint (`nextRevision` khi `hasMore=true`, `currentServerRevision` khi `hasMore=false`) và áp dụng checkpoint nguyên tử.

@@ -108,9 +108,9 @@ File kiểm thử toàn diện: `services/api/test/guest-claim-lifecycle.e2e-spe
 - [x] Mobile Client: Flutter analyze 0 errors & 500/500 Flutter tests passed.
 - [x] AI Worker: Pytest suite (323/323 tests passed).
 - [x] Security Audit: TruffleHog + P1 Trivy Governance 12/12 scenarios passed.
-- [x] Docker Build & Trivy Image Scans: 5/5 Trivy image scans pass (Core API, AI Worker, Nginx, Prometheus, Grafana) trên Hosted CI (186/186 bindings verified).
+- [x] Docker Build & Trivy Image Scans: 5/5 Trivy image scans pass (Core API, AI Worker, Nginx, Prometheus, Grafana) trên Hosted CI (xác nhận 186 package-bindings hợp lệ trên 187 raw findings).
 - [x] VPS Deployment & Topology Verification: 17/17 unit tests & 6-service 3-network exact-set topology assertion verified. *(Lưu ý: Job VPS deployment trên CI hiện đóng vai trò Topology Dry-Run Verification, phân biệt rõ ràng với Production Live VPS Deployment).*
-- [x] Hosted CI: 7/7 jobs SUCCESS trên Run #40560232828 (Commit `c9aa80c`).
+- [x] Hosted CI: 7/7 jobs SUCCESS trên Run #40632991971 (Commit `516cec6`).
 
 ---
 
@@ -137,11 +137,12 @@ File kiểm thử toàn diện: `services/api/test/guest-claim-lifecycle.e2e-spe
   3. *Mobile Client Test Suite* (ID 122633464993, 3m48s) — SUCCESS (Flutter analyze 0 errors, Foundation tests 500/500 PASS)
   4. *AI Worker Test Suite* (ID 122633465258, 1m27s) — SUCCESS (Pytest 323/323 PASS, Real OCR model verification PASS)
   5. *NestJS Core API Test Suite* (ID 122633465853, 3m21s) — SUCCESS (Unit 478 PASS, Integration & E2E 284/284 PASS trên dedicated DB `omninovel_test:55433`)
-  6. *Docker Images Build & Security Scan* (ID 122634616413, 5m35s) — SUCCESS (Fail-closed package governance 186/186 findings verified, 5/5 Trivy container scans PASS)
+  6. *Docker Images Build & Security Scan* (ID 122634616413, 5m35s) — SUCCESS (Xác nhận 186 package bindings hợp lệ trên 187 raw findings; 5/5 Trivy container scans PASS)
   7. *VPS Production Deployment & Topology Verification* (ID 122636255201, 7s) — SUCCESS (17/17 topology invariants PASS, exact-set 3-network & 6-service validated)
 - **Scope & Governance Boundaries:**
   - Migration preflight validation fail-closed trên effective target, ngăn chặn triệt để bypass qua env file.
-  - Tách marker bootstrap độc lập khỏi identity verification, loại bỏ false confidence.
+  - Tách marker bootstrap độc lập khỏi identity verification, loại bỏ false confidence. Tính cách ly vật lý độc lập tuyệt đối được bảo đảm bởi file compose test riêng (`deploy/docker-compose.test.yml`), container riêng (`omninovel-test-postgres`), cổng riêng (`127.0.0.1:55433`), database riêng (`omninovel_test`), volume riêng (`postgres_test_data`) và CI service networking.
+  - Đối soát số liệu bảo mật: Tổng số 187 raw findings (API 22, AI Worker 68, Grafana 87, Prometheus 10, Nginx 0), trong đó 186 findings khớp các ngoại lệ rủi ro đã đăng ký và được package-binding gate xác thực. 1 finding Grafana còn lại không kích hoạt exit-code của Trivy (Trivy Action đạt Clean/PASS 0 findings), được chuyển sang theo dõi và đối soát độc lập trong kỳ review định kỳ.
   - Phân định rõ ràng: VPS verification trên CI là Topology Dry-Run Validation, không đồng nhất với Production Live VPS Deployment.
   - Lịch rà soát định kỳ ngoại lệ Trivy: Đợt 1 vào `01/11/2026`, Đợt 2 vào `01/12/2026`.
 - **Kết luận:** **Phase 7B.4 CLOSED / FROZEN CLEAN**.

@@ -1,7 +1,7 @@
 # 🏛️ OmniNovel Architecture Gate: Phase 7C.0 — Unified Multi-Device Sync Engine
-> **Document Status:** FINAL ARCHITECTURAL SIGN-OFF CANDIDATE — ARCHITECTURE REVIEW GATE  
+> **Document Status:** ARCHITECTURAL SPECIFICATION & REVIEW GATE ACCEPTED — CLOSED / PASS  
 > **Milestone:** Phase 7C — Task 7C.0  
-> **Review Outcome:** READY FOR FINAL ACCEPTANCE & SIGN-OFF (Effective History Epoch Locked, Repeatable Read Snapshot Isolation Enforced, JCS RFC 8785 Strict Input Validation Standardized)  
+> **Review Outcome:** ARCHITECTURE GATE OFFICIALLY ACCEPTED & CLOSED (Effective History Epoch Locked, Repeatable Read Snapshot Isolation Enforced, JCS RFC 8785 & I-JSON Strict Fail-Closed Input Validation Standardized)  
 > **Target Subsystems:** `services/api`, `packages/shared`, `apps/web`, `apps/mobile`  
 > **Date:** 2026-10-28  
 > **Author:** OmniNovel Engineering Core
@@ -53,10 +53,15 @@ OmniNovel cung cấp nền tảng đọc truyện đa phương thức (Webtoon, 
 
 ## 3. Đặc Tả Chi Tiết Các Điểm Cải Tiến Cốt Lõi (Final Technical Refinements)
 
-### 3.1. [P0 Fix] Thuật Toán Serializer Canonical JSON Đệ Quy Chuẩn Mực & Giới Hạn Đầu Vào (JCS RFC 8785)
+### 3.1. [P0 Fix] Thuật Toán Serializer Canonical JSON Đệ Quy Chuẩn Mực & Giới Hạn Đầu Vào (JCS RFC 8785 & RFC 7493 I-JSON)
 
-#### Phân tích lỗi thực thi trước đây:
-Khi truyền `replacer` là một mảng `Object.keys(...)` vào `JSON.stringify`, JavaScript coi đó là whitelist và lọc bỏ toàn bộ các key lồng nhau bên trong `payload`. Do đó, hai payload khác nhau như `{ chapterId: 'X', progressPercentage: 70 }` và `{ chapterId: 'Y', progressPercentage: 95 }` đều bị biến thành `"payload": {}`, sinh ra cùng SHA-256 hash và phá vỡ hoàn toàn tính khả trùng P2!
+#### Phân tích lỗi thực thi trước đây & Các rủi ro Fail-Closed:
+1. **Lọc bỏ thuộc tính lồng nhau (Key Stripping):** Khi truyền `replacer` là một mảng `Object.keys(...)` vào `JSON.stringify`, JavaScript coi đó là whitelist cấp 1 và lọc bỏ toàn bộ các key lồng nhau bên trong `payload`. Do đó, hai payload khác nhau như `{ chapterId: 'X', progressPercentage: 70 }` và `{ chapterId: 'Y', progressPercentage: 95 }` đều bị biến thành `"payload": {}`, sinh ra cùng SHA-256 hash và phá vỡ hoàn toàn tính khả trùng P2!
+2. **Bỏ qua thuộc tính `undefined` (Undetected Undefined):** Nếu hàm kiểm tra cho qua `undefined`, serializer tiêu chuẩn sẽ âm thầm bỏ qua key đó, khiến `{ x: 70 }` và `{ x: 70, y: undefined }` sinh ra cùng canonical output `{"x":70}`, tạo lỗ hổng va chạm hash.
+3. **Đối tượng không thuộc chuẩn JSON (Date, Map, Set, Class instances):** `new Date(...)` bị `JSON.stringify` chuyển thành chuỗi ISO hoặc `{}` tùy ngữ cảnh đối tượng; `Map`/`Set` bị chuyển thành `{}` rỗng, có thể trùng hash với object rỗng thực tế `{}`.
+4. **Mảng thưa (Sparse Arrays):** Mảng có lỗ hổng như `[1, , 3]` hoặc `new Array(3)` có thể sinh JSON không hợp lệ hoặc sai lệch chỉ mục.
+5. **Surrogate pairs cô lập (Lone Surrogates):** Chuỗi chứa surrogate UTF-16 lẻ đứng đơn độc (cả trên key lẫn value) vi phạm chuẩn I-JSON và có thể bị Unicode serializer làm hỏng hoặc phân mảnh.
+6. **Âm thầm thay thế payload bị thiếu:** Dùng fallback `mutation.payload ?? {}` sẽ biến payload bị thiếu/undefined thành `{}` rỗng, che giấu lỗi client thay vì fail-closed.
 
 #### Thuật Toán Serializer Đệ Quy Chuẩn Mực Kèm Kiểm Tra Miền Dữ Liệu I-JSON:
 Hệ thống sử dụng hàm serialize đệ quy độc lập, sắp xếp khóa theo thứ tự từ điển UTF-16 ở mọi cấp độ đối tượng lồng nhau, tuân thủ tiêu chuẩn RFC 8785 (JSON Canonicalization Scheme) và fail-closed lập tức nếu gặp giá trị ngoài miền I-JSON hợp lệ:
@@ -65,11 +70,38 @@ Hệ thống sử dụng hàm serialize đệ quy độc lập, sắp xếp khó
 import { createHash } from 'crypto';
 
 /**
- * Kiểm tra tính hợp lệ của dữ liệu theo chuẩn RFC 8785 (I-JSON)
- * Fail-closed trước khi hashing nếu gặp giá trị không an toàn.
+ * Kiểm tra xem chuỗi có chứa lone surrogate (surrogate pair bị cô lập) hay không.
+ * Quét toàn bộ UTF-16 code units: code trong dải [0xD800, 0xDBFF] (High surrogate)
+ * bắt buộc phải đi liền với [0xDC00, 0xDFFF] (Low surrogate).
  */
-function validateIJsonDomain(value: unknown, path = 'root'): void {
-  if (value === null || value === undefined) return;
+function hasLoneSurrogate(str: string): boolean {
+  for (let i = 0; i < str.length; i++) {
+    const code = str.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      if (i + 1 >= str.length) return true;
+      const next = str.charCodeAt(i + 1);
+      if (next < 0xdc00 || next > 0xdfff) return true;
+      i++; // Bỏ qua low surrogate đã ghép cặp hợp lệ
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      return true; // Low surrogate đứng đơn lẻ
+    }
+  }
+  return false;
+}
+
+/**
+ * Kiểm tra tính hợp lệ của dữ liệu theo chuẩn RFC 8785 (JCS) và RFC 7493 (I-JSON).
+ * Fail-closed triệt để trước khi hashing: từ chối undefined, lone surrogates,
+ * Date, Map, Set, class instances, cyclic references, sparse arrays, NaN, Infinity, native bigint.
+ */
+function validateIJsonDomain(value: unknown, path = 'root', seen = new WeakSet()): void {
+  if (value === undefined) {
+    throw new Error(`[JCS] 'undefined' is not valid JSON data at ${path}`);
+  }
+  
+  if (value === null || typeof value === 'boolean') {
+    return;
+  }
   
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) {
@@ -82,45 +114,79 @@ function validateIJsonDomain(value: unknown, path = 'root'): void {
     throw new Error(`[JCS] Native bigint not allowed at ${path}; must be serialized as decimal string`);
   }
   
-  if (typeof value === 'function' || typeof value === 'symbol') {
-    throw new Error(`[JCS] Unsupported data type ${typeof value} at ${path}`);
-  }
-  
   if (typeof value === 'string') {
-    // Kiểm tra surrogate pairs cô lập (lone surrogates)
-    if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value)) {
+    if (hasLoneSurrogate(value)) {
       throw new Error(`[JCS] Invalid lone surrogate in UTF-16 string at ${path}`);
     }
     return;
   }
   
+  if (typeof value === 'function' || typeof value === 'symbol') {
+    throw new Error(`[JCS] Unsupported data type ${typeof value} at ${path}`);
+  }
+  
   if (Array.isArray(value)) {
-    value.forEach((item, index) => validateIJsonDomain(item, `${path}[${index}]`));
+    if (seen.has(value)) {
+      throw new Error(`[JCS] Cyclic reference detected at ${path}`);
+    }
+    seen.add(value);
+    for (let i = 0; i < value.length; i++) {
+      if (!(i in value) || value[i] === undefined) {
+        throw new Error(`[JCS] Sparse array or undefined element not allowed at ${path}[${i}]`);
+      }
+      validateIJsonDomain(value[i], `${path}[${i}]`, seen);
+    }
     return;
   }
   
   if (typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    for (const key of Object.keys(obj)) {
-      validateIJsonDomain(obj[key], `${path}.${key}`);
+    if (seen.has(value)) {
+      throw new Error(`[JCS] Cyclic reference detected at ${path}`);
     }
+    // Chỉ chấp nhận plain JSON objects (từ chối Date, Map, Set, RegExp, custom classes)
+    const proto = Object.getPrototypeOf(value);
+    if (proto !== Object.prototype && proto !== null) {
+      const typeName = Object.prototype.toString.call(value).slice(8, -1);
+      throw new Error(`[JCS] Unsupported object type '${typeName}' at ${path}; only plain JSON objects are allowed`);
+    }
+    seen.add(value);
+    
+    const obj = value as Record<string, unknown>;
+    const keys = Object.keys(obj);
+    for (const key of keys) {
+      // Kiểm tra lone surrogate trên object key
+      if (hasLoneSurrogate(key)) {
+        throw new Error(`[JCS] Invalid lone surrogate in object key at ${path}."${key}"`);
+      }
+      const propVal = obj[key];
+      if (propVal === undefined) {
+        throw new Error(`[JCS] Undefined property value not allowed at ${path}.${key}`);
+      }
+      validateIJsonDomain(propVal, `${path}.${key}`, seen);
+    }
+    return;
   }
+  
+  throw new Error(`[JCS] Unsupported data type at ${path}`);
 }
 
 /**
  * Serializer chuẩn JCS (RFC 8785):
  * Sắp xếp toàn bộ keys theo thứ tự từ điển UTF-16 đệ quy,
- * bảo toàn 100% các thuộc tính con bên trong nested objects và arrays.
+ * chuẩn hóa số âm 0 (-0 -> 0), bảo toàn 100% các thuộc tính con bên trong nested objects và arrays.
  */
 export function canonicalJsonStringify(value: unknown): string {
   validateIJsonDomain(value);
 
   if (value === null || typeof value !== 'object') {
+    if (typeof value === 'number' && Object.is(value, -0)) {
+      return '0';
+    }
     return JSON.stringify(value);
   }
   
   if (Array.isArray(value)) {
-    return '[' + value.map((item) => canonicalJsonStringify(item) ?? 'null').join(',') + ']';
+    return '[' + value.map((item) => canonicalJsonStringify(item)).join(',') + ']';
   }
   
   const obj = value as Record<string, unknown>;
@@ -128,19 +194,30 @@ export function canonicalJsonStringify(value: unknown): string {
   const entries: string[] = [];
   
   for (const key of sortedKeys) {
-    const val = obj[key];
-    if (val !== undefined && typeof val !== 'function' && typeof val !== 'symbol') {
-      entries.push(JSON.stringify(key) + ':' + canonicalJsonStringify(val));
-    }
+    entries.push(JSON.stringify(key) + ':' + canonicalJsonStringify(obj[key]));
   }
   
   return '{' + entries.join(',') + '}';
 }
 
 /**
- * Tính toán Full Mutation Canonical Hash bao phủ toàn bộ nội dung bất biến
+ * Tính toán Full Mutation Canonical Hash bao phủ toàn bộ nội dung bất biến.
+ * Payload bắt buộc phải là một đối tượng JSON hợp lệ (không chấp nhận thiếu hoặc rỗng ngầm định).
  */
 export function computeCanonicalMutationHash(mutation: ClientMutationDto): string {
+  if (
+    !mutation.payload ||
+    typeof mutation.payload !== 'object' ||
+    Array.isArray(mutation.payload) ||
+    (Object.getPrototypeOf(mutation.payload) !== Object.prototype && Object.getPrototypeOf(mutation.payload) !== null)
+  ) {
+    throw new Error(
+      `[JCS] Mutation payload must be a valid non-null plain JSON object; received ${
+        mutation.payload === null ? 'null' : typeof mutation.payload
+      }`,
+    );
+  }
+
   const canonicalObject = {
     baseServerRevision: String(mutation.baseServerRevision),
     clientId: mutation.clientId,
@@ -148,7 +225,7 @@ export function computeCanonicalMutationHash(mutation: ClientMutationDto): strin
     entityId: mutation.entityId,
     mutationId: mutation.mutationId,
     operation: mutation.operation,
-    payload: mutation.payload ?? {},
+    payload: mutation.payload,
   };
   
   return createHash('sha256')
@@ -157,12 +234,35 @@ export function computeCanonicalMutationHash(mutation: ClientMutationDto): strin
 }
 ```
 
-#### Negative Test Scenarios:
-1. **Khác biệt nested payload (SYNC-04 & SYNC-20):**
+#### Bộ Kiểm Thử JCS Conformance & Strict Domain Validation Suite:
+1. **Xác Định Trật Tự Khóa (RFC 8785 UTF-16 Code Unit Order):**
+   * Object với keys bất kỳ: `{ b: 2, a: 1, c: { z: 26, y: 25 } }` ➔ serialize thành duy nhất: `{"a":1,"b":2,"c":{"y":25,"z":26}}`.
+   * So sánh thứ tự chuỗi UTF-16 code units (đúng chuẩn JavaScript `Array.prototype.sort()`).
+2. **Khác Biệt Nested Payload (SYNC-04 Idempotency Clash):**
    * Mutation A: `payload: { chapterId: 'chap-1', progressPercentage: 70 }` ➔ `hashA`.
    * Mutation B: `payload: { chapterId: 'chap-2', progressPercentage: 95 }` ➔ `hashB`.
    * `hashA !== hashB`. Server đối chiếu với `receipt.payload_hash` ban đầu, lập tức phát hiện sai lệch nội dung và từ chối với HTTP `409 Conflict` (`IDEMPOTENCY_KEY_PAYLOAD_MISMATCH`).
-2. **Giá trị ngoài chuẩn I-JSON:** Gửi `NaN` hoặc `Infinity` trong payload ➔ Server fail-closed với lỗi HTTP `400 Bad Request` (`INVALID_MUTATION_DATA_TYPE`).
+3. **Từ Chối Triệt Để 'undefined' (Fail-Closed at Object & Array):**
+   * `{ x: 70, y: undefined }` ➔ ném lỗi `[JCS] Undefined property value not allowed at root.y`. Ngăn chặn nguy cơ sinh cùng hash với `{ x: 70 }`.
+   * `[1, undefined, 3]` ➔ ném lỗi `[JCS] Sparse array or undefined element not allowed at root[1]`.
+4. **Từ Chối Sparse Arrays (Mảng có phần tử rỗng / Lỗ hổng):**
+   * `[1, , 3]` hoặc `new Array(3)` ➔ ném lỗi `[JCS] Sparse array or undefined element not allowed`.
+5. **Từ Chối Đối Tượng Không Thuộc Chuẩn Plain JSON Object:**
+   * `new Date()` (`{ x: new Date() }`) ➔ ném lỗi `[JCS] Unsupported object type 'Date'; only plain JSON objects are allowed`. Ngăn chặn việc Date bị serialize thành `{}` gây va chạm hash với object rỗng thực tế `{ x: {} }`.
+   * `Map`, `Set`, `RegExp`, Error hoặc Class instances ➔ ném lỗi `[JCS] Unsupported object type`.
+6. **Kiểm Tra Unicode & Từ Chối Lone Surrogates Trên Cả Keys và Values:**
+   * String value chứa lone surrogate: `{ text: '\uD800' }` ➔ ném lỗi `[JCS] Invalid lone surrogate in UTF-16 string`.
+   * Object key chứa lone surrogate: `{ ['\uD800']: 'val' }` ➔ ném lỗi `[JCS] Invalid lone surrogate in object key`.
+   * Surrogate pairs hợp lệ (Emoji `😀`, CJK supplementary code points) ➔ được chấp nhận và serialize bình thường.
+7. **Chuẩn Hóa Số Học (RFC 8785 Section 3.2.2.3):**
+   * `-0` chuyển đổi thành `0`.
+   * `NaN`, `Infinity`, `-Infinity` ➔ ném lỗi `[JCS] Invalid non-finite number`.
+   * Native `bigint` ➔ ném lỗi `[JCS] Native bigint not allowed; must be serialized as decimal string`.
+8. **Bắt Buộc Payload Hợp Lệ (Strict Payload Requirement):**
+   * Mutation thiếu payload (`payload: undefined` hoặc không khai báo thuộc tính) ➔ ném lỗi fail-closed, tuyệt đối không âm thầm biến thành `{}`.
+   * `payload: null` hoặc `payload: []` hoặc payload kiểu nguyên thủy ➔ ném lỗi fail-closed.
+9. **Phát Hiện Cấu Trúc Tham Chiếu Vòng (Cyclic References):**
+   * Object hoặc Array chứa vòng lặp (`a.self = a`) ➔ ném lỗi `[JCS] Cyclic reference detected`.
 
 ---
 
@@ -501,15 +601,15 @@ export interface SyncSnapshotResponseDto {
 | **SYNC-17** | Retry rejected mutation trả đúng kết quả từ chối | Client retry mutation bị `REJECTED_TOMBSTONE`. | Server tra cứu `sync_mutation_receipts` và trả về `status: 'REJECTED_TOMBSTONE'`, không biến thành `DEDUPLICATED`. |
 | **SYNC-18** | Hai request cùng idempotency key bay tới đồng thời | Hai request cùng key đến trong cùng một mili-giây. | Transaction row lock / unique constraint xử lý nguyên tử: 1 request ghi receipt, request thứ hai đọc receipt; chỉ tạo 1 kết quả duy nhất. |
 | **SYNC-19** | Rebase mutation cũ bằng cách đổi baseServerRevision giữ nguyên ID | Client cố tình gửi lại `mutationId` đã stale nhưng sửa `baseServerRevision`. | Thay đổi baseServerRevision làm đổi canonical hash ➔ Server chặn HTTP `409 Conflict`. Bắt buộc sinh fresh `mutationId`. |
-| **SYNC-20** | JCS Conformance & Strict Domain Validation | Thử nghiệm serializer với nested payloads và các giá trị biên ngoài miền I-JSON (`NaN`, `Infinity`, native `bigint`). | Serializer bảo toàn 100% nested keys; fail-closed với HTTP `400 Bad Request` khi gặp giá trị không an toàn. |
+| **SYNC-20** | JCS Conformance & Strict Domain Validation | Thử nghiệm serializer với nested payloads và toàn bộ các giá trị biên ngoài miền I-JSON (`undefined`, lone surrogates ở cả key và value, non-plain objects `Date`/`Map`/`Set`, sparse arrays, cyclic structures, `NaN`, `Infinity`, native `bigint`, missing/null payload). | Serializer bảo toàn 100% nested keys theo thứ tự UTF-16 code units; fail-closed với HTTP `400 Bad Request` khi gặp giá trị không an toàn; từ chối payload thiếu hoặc không phải plain JSON object. |
 
 ---
 
 ## 7. Phân Chia Thứ Tự Triển Khai Thống Nhất (Phase 7C Task Roadmap)
 
-* **Phase 7C.0: Architecture & Protocol Review Gate** `[/] ARCHITECTURE REVIEW`
-  * Khóa 5 bất biến kỹ thuật, giải quyết triệt để các phát hiện P0/P1, ban hành hợp đồng mạng DTO và 20 kịch bản nghiệm thu.
-* **Phase 7C.1: Database Schema & Core Entities (`services/api`)** `[ ] Chưa làm`
+* **Phase 7C.0: Architecture & Protocol Review Gate** `[x] CLOSED / PASS`
+  * Khóa 5 bất biến kỹ thuật, giải quyết triệt để các phát hiện P0/P1, chuẩn hóa fail-closed validator I-JSON & JCS Canonical Serializer, ban hành hợp đồng mạng DTO và 20 kịch bản nghiệm thu. Chính thức nghiệm thu đóng gate kiến trúc.
+* **Phase 7C.1: Database Schema & Core Entities (`services/api`)** `[/] Đang làm (Sẵn sàng triển khai)`
   * Tạo các bảng CSDL: `user_sync_state`, `sync_change_log`, `sync_tombstones`, `sync_mutation_receipts`.
   * TypeORM Entities kèm 64-bit Decimal String Transformer và JCS RFC 8785 canonical hash helper.
 * **Phase 7C.2: Core API Sync Hub & Delta Protocol (`services/api`)** `[ ] Chưa làm`

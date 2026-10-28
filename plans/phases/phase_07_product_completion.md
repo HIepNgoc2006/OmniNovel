@@ -107,8 +107,10 @@ graph TD
 
 ---
 
-### Phase 7C — Unified Multi-Device Sync Engine `[ ] Chưa làm`
+### Phase 7C — Unified Multi-Device Sync Engine `[/] Đang làm`
 **Mục tiêu:** Đồng bộ trạng thái tức thì giữa Web và Mobile dựa trên Server Revisions, không phụ thuộc đồng hồ thiết bị.
+- [x] **7C.0. Architecture & Protocol Review Gate (`plans/phase_07c_architecture_gate.md`)**
+  - [x] Khóa 5 bất biến cốt lõi: Monotonic Server Ordering, Client Idempotency, Domain-Specific Conflict Resolution, Device Topology, Tombstone Retention & Anti-Resurrection.
 - [ ] **7C.1. Cơ Sở Dữ Liệu Đồng Bộ (`services/api`)**
   - [ ] Tạo bảng `sync_change_log` có đánh số tuần tự `revision` và khóa duy nhất `(user_id, client_id, mutation_id)`.
   - [ ] Bảng `user_sync_state` quản lý `current_sync_revision`.

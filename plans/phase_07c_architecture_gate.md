@@ -1,7 +1,7 @@
 # 🏛️ OmniNovel Architecture Gate: Phase 7C.0 — Unified Multi-Device Sync Engine
-> **Document Status:** FINAL IMPLEMENTATION-SAFETY AMENDMENT — ARCHITECTURE REVIEW GATE  
+> **Document Status:** FINAL ARCHITECTURAL SIGN-OFF CANDIDATE — ARCHITECTURE REVIEW GATE  
 > **Milestone:** Phase 7C — Task 7C.0  
-> **Review Outcome:** CONDITIONAL PASS ➔ READY FOR FINAL SIGN-OFF (JCS Recursive Canonical Serializer, Optimistic Snapshot Restart, History Epoch Tracking, and Fresh Mutation ID Invariants Formally Locked)  
+> **Review Outcome:** READY FOR FINAL ACCEPTANCE & SIGN-OFF (Effective History Epoch Locked, Repeatable Read Snapshot Isolation Enforced, JCS RFC 8785 Strict Input Validation Standardized)  
 > **Target Subsystems:** `services/api`, `packages/shared`, `apps/web`, `apps/mobile`  
 > **Date:** 2026-10-28  
 > **Author:** OmniNovel Engineering Core
@@ -44,25 +44,68 @@ OmniNovel cung cấp nền tảng đọc truyện đa phương thức (Webtoon, 
 | # | Trụ cột (Pillar) | Bất biến kỹ thuật & Quy tắc bắt buộc | Cơ chế bảo vệ & Chuẩn hóa (Hardening) |
 |---|---|---|---|
 | **P1** | **Monotonic Server Ordering & Wire Precision** | Server là trọng tài duy nhất cho trật tự thời gian logic. Mọi biến đổi được gán `revision BIGINT` tăng đơn điệu. Tuyệt đối **không tin tưởng đồng hồ client (Zero Wall-Clock Dependency)**. Trên đường truyền mạng, revision **phải được biểu diễn dạng Decimal String** (`string`) để bảo toàn độ chính xác 64-bit của JavaScript (`> 2^53 - 1`). Phân xử xung đột tiến độ giữa các phiên bản chương (`chapterVersionId`) dựa trên **Server Revision & Semantic Compatibility**, cấm dùng client timestamp. | Cột `BIGINT` trong PostgreSQL; cấp phát qua `FOR UPDATE` trên `user_sync_state`. TypeScript DTO sử dụng `string` cho mọi trường revision. So sánh quan hệ nhân quả qua `baseServerRevision` và `assignedRevision`. |
-| **P2** | **Strict Idempotency with Durable Receipts** | Mọi mutation được định danh duy nhất bởi `(user_id, client_id, mutation_id)`. Mọi kết quả xử lý (bao gồm `APPLIED`, `DEDUPLICATED`, `REJECTED_TOMBSTONE`, `CONFLICT_MERGED`, `REJECTED_STALE`) phải được ghi nhận bền vững vào `sync_mutation_receipts` kèm **Full Mutation Canonical Hash** (SHA-256 tính trên serializer đệ quy chuẩn JCS RFC 8785, cấm dùng array replacer). Biên nhận là bất biến: client không thể tái sử dụng `mutationId` với `baseServerRevision` mới. | Bảng riêng `sync_mutation_receipts` trong cùng transaction boundary. Serializer đệ quy bảo toàn toàn bộ nested keys. Retry cùng mutation trả lại đúng trạng thái ban đầu (`REJECTED_TOMBSTONE` giữ nguyên mã từ chối, không đổi thành `DEDUPLICATED`); retry khác canonical hash trả HTTP `409 Conflict`. |
-| **P3** | **Domain-Specific Convergence & Contract Parity** | Hòa trộn dữ liệu theo đúng ngữ nghĩa miền. Tái sử dụng hợp đồng Phase 7B: `ReadingMode` chuẩn là `'WEBTOON' \| 'PAGED' \| 'NOVEL'` (cấm dùng `MANGA_PAGED`). `PROGRESS` mang đầy đủ 7-tuple. Tiến độ đọc mang tính đơn điệu tăng (Monotonic Forward), cấm so sánh `pageIndex` mù quáng giữa hai `chapterVersionId` khác layout. Lịch sử đọc được bảo vệ chặt chẽ bởi **`observedHistoryEpoch`** đối chiếu với Phase 7B `reading_history_epoch_counters` và `reading_history_tombstones`. | Tái sử dụng DTO từ Phase 7B. Rule: Version layout mismatch fallback an toàn; `forceRewind: true` mới được phép lùi chương. Lịch sử đọc cũ mang epoch đã bị xóa bị từ chối triệt để, không phục sinh. |
+| **P2** | **Strict Idempotency with Durable Receipts** | Mọi mutation được định danh duy nhất bởi `(user_id, client_id, mutation_id)`. Mọi kết quả xử lý (bao gồm `APPLIED`, `DEDUPLICATED`, `REJECTED_TOMBSTONE`, `CONFLICT_MERGED`, `REJECTED_STALE`) phải được ghi nhận bền vững vào `sync_mutation_receipts` kèm **Full Mutation Canonical Hash** (SHA-256 tính trên serializer đệ quy chuẩn JCS RFC 8785 kèm I-JSON strict domain validation, cấm dùng array replacer). Biên nhận là bất biến: client không thể tái sử dụng `mutationId` với `baseServerRevision` mới. | Bảng riêng `sync_mutation_receipts` trong cùng transaction boundary. Serializer đệ quy bảo toàn toàn bộ nested keys; fail-closed khi gặp NaN, Infinity, native BigInt. Retry cùng mutation trả lại đúng trạng thái ban đầu (`REJECTED_TOMBSTONE` giữ nguyên mã từ chối, không đổi thành `DEDUPLICATED`); retry khác canonical hash trả HTTP `409 Conflict`. |
+| **P3** | **Domain-Specific Convergence & Contract Parity** | Hòa trộn dữ liệu theo đúng ngữ nghĩa miền. Tái sử dụng hợp đồng Phase 7B: `ReadingMode` chuẩn là `'WEBTOON' \| 'PAGED' \| 'NOVEL'` (cấm dùng `MANGA_PAGED`). `PROGRESS` mang đầy đủ 7-tuple. Tiến độ đọc mang tính đơn điệu tăng (Monotonic Forward), cấm so sánh `pageIndex` mù quáng giữa hai `chapterVersionId` khác layout. Lịch sử đọc được bảo vệ chặt chẽ bởi **`observedHistoryEpoch`** (bắt buộc) tuân thủ quy tắc **Strict Equality với `effectiveEpoch = MAX(storyTombstoneEpoch ?? 0, globalSentinelEpoch ?? 0)`** của Phase 7B. | Tái sử dụng DTO từ Phase 7B. Rule: Version layout mismatch fallback an toàn; `forceRewind: true` mới được phép lùi chương. Lịch sử đọc mang epoch lệch với effective epoch bị từ chối triệt để, không phục sinh. |
 | **P4** | **Device Identity & Topology** | Tách bạch 3 định danh: `userId` (SSoT tài khoản) ↔ `sessionId` (`sid` JWT claim) ↔ `clientId` (UUIDv4 bản sao lưu trữ cục bộ). Đa tab Web phối hợp qua `BroadcastChannel` hoặc `navigator.locks` để bầu 1 Leader thực hiện sync, ngăn ngừa bão request. | Sinh `clientId` duy nhất 1 lần khi tạo cơ sở dữ liệu client. Cấm đồng nhất hóa `clientId` giữa các tab độc lập nếu không có leader gate. |
-| **P5** | **Tombstones, Anti-Resurrection & Safe Full Resync** | Lệnh xóa sinh Tombstone có `revision`. Khi client nhận `410 SYNC_REVISION_EXPIRED` (offline quá hạn), **tuyệt đối KHÔNG tự động rebase pending mutations** sang revision mới. Phân trang Snapshot sử dụng chiến lược **Optimistic Snapshot Restart (409 SNAPSHOT_INVALIDATED)** kết hợp **Snapshot Staging Store** cục bộ để loại bỏ hoàn toàn nguy cơ Torn Read. Watermark `min_active_revision` luôn không-null, tăng đơn điệu. | Cửa sổ lưu giữ 90 ngày. Thuật toán Safe Reconcile xử lý 410. Khóa liên kết với `reading_history_tombstones`. Optimistic consistency check trên từng trang snapshot. |
+| **P5** | **Tombstones, Anti-Resurrection & Safe Full Resync** | Lệnh xóa sinh Tombstone có `revision`. Khi client nhận `410 SYNC_REVISION_EXPIRED` (offline quá hạn), **tuyệt đối KHÔNG tự động rebase pending mutations** sang revision mới. Phân trang Snapshot được thực thi độc quyền trong transaction **`REPEATABLE READ READ ONLY`** kết hợp chiến lược **Optimistic Snapshot Restart (409 SNAPSHOT_INVALIDATED)** và **Snapshot Staging Store** cục bộ để loại bỏ hoàn toàn nguy cơ Torn Read. Watermark `min_active_revision` luôn không-null, tăng đơn điệu. | Cửa sổ lưu giữ 90 ngày. Thuật toán Safe Reconcile xử lý 410. Khóa liên kết với `reading_history_tombstones`. Mức cô lập REPEATABLE READ READ ONLY trên từng trang snapshot. |
 
 ---
 
-## 3. Đặc Tả Chi Tiết Các Điểm Cải Tiến Cốt Lõi (Implementation-Safety Amendments)
+## 3. Đặc Tả Chi Tiết Các Điểm Cải Tiến Cốt Lõi (Final Technical Refinements)
 
-### 3.1. [P0 Fix] Thuật Toán Serializer Canonical JSON Đệ Quy Chuẩn Mực (JCS RFC 8785)
+### 3.1. [P0 Fix] Thuật Toán Serializer Canonical JSON Đệ Quy Chuẩn Mực & Giới Hạn Đầu Vào (JCS RFC 8785)
 
 #### Phân tích lỗi thực thi trước đây:
-Trong JavaScript, khi gọi `JSON.stringify(obj, replacerArray)`, tham số thứ hai dạng mảng đóng vai trò là một **whitelist lọc thuộc tính**. Nếu truyền `Object.keys(canonicalObject).sort()` (chỉ chứa các key ở cấp gốc: `['baseServerRevision', 'clientId', 'domain', 'entityId', 'mutationId', 'operation', 'payload']`), bộ serializer của JavaScript sẽ **loại bỏ toàn bộ các key con bên trong `payload`** (như `chapterId`, `progressPercentage`). Do đó, hai payload khác nhau như `{ chapterId: 'X', progressPercentage: 70 }` và `{ chapterId: 'Y', progressPercentage: 95 }` đều bị biến thành `"payload": {}`, tạo ra cùng một SHA-256 hash và phá vỡ hoàn toàn tính khả trùng P2!
+Khi truyền `replacer` là một mảng `Object.keys(...)` vào `JSON.stringify`, JavaScript coi đó là whitelist và lọc bỏ toàn bộ các key lồng nhau bên trong `payload`. Do đó, hai payload khác nhau như `{ chapterId: 'X', progressPercentage: 70 }` và `{ chapterId: 'Y', progressPercentage: 95 }` đều bị biến thành `"payload": {}`, sinh ra cùng SHA-256 hash và phá vỡ hoàn toàn tính khả trùng P2!
 
-#### Thuật Toán Serializer Đệ Quy Chuẩn Mực (Canonical JSON Serializer):
-Hệ thống sử dụng hàm serialize đệ quy độc lập, sắp xếp khóa theo thứ tự từ điển UTF-16 ở mọi cấp độ đối tượng lồng nhau, tuân thủ tiêu chuẩn RFC 8785 (JSON Canonicalization Scheme):
+#### Thuật Toán Serializer Đệ Quy Chuẩn Mực Kèm Kiểm Tra Miền Dữ Liệu I-JSON:
+Hệ thống sử dụng hàm serialize đệ quy độc lập, sắp xếp khóa theo thứ tự từ điển UTF-16 ở mọi cấp độ đối tượng lồng nhau, tuân thủ tiêu chuẩn RFC 8785 (JSON Canonicalization Scheme) và fail-closed lập tức nếu gặp giá trị ngoài miền I-JSON hợp lệ:
 
 ```typescript
 import { createHash } from 'crypto';
+
+/**
+ * Kiểm tra tính hợp lệ của dữ liệu theo chuẩn RFC 8785 (I-JSON)
+ * Fail-closed trước khi hashing nếu gặp giá trị không an toàn.
+ */
+function validateIJsonDomain(value: unknown, path = 'root'): void {
+  if (value === null || value === undefined) return;
+  
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      throw new Error(`[JCS] Invalid non-finite number at ${path}: ${value}`);
+    }
+    return;
+  }
+  
+  if (typeof value === 'bigint') {
+    throw new Error(`[JCS] Native bigint not allowed at ${path}; must be serialized as decimal string`);
+  }
+  
+  if (typeof value === 'function' || typeof value === 'symbol') {
+    throw new Error(`[JCS] Unsupported data type ${typeof value} at ${path}`);
+  }
+  
+  if (typeof value === 'string') {
+    // Kiểm tra surrogate pairs cô lập (lone surrogates)
+    if (/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(value)) {
+      throw new Error(`[JCS] Invalid lone surrogate in UTF-16 string at ${path}`);
+    }
+    return;
+  }
+  
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => validateIJsonDomain(item, `${path}[${index}]`));
+    return;
+  }
+  
+  if (typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    for (const key of Object.keys(obj)) {
+      validateIJsonDomain(obj[key], `${path}.${key}`);
+    }
+  }
+}
 
 /**
  * Serializer chuẩn JCS (RFC 8785):
@@ -70,6 +113,8 @@ import { createHash } from 'crypto';
  * bảo toàn 100% các thuộc tính con bên trong nested objects và arrays.
  */
 export function canonicalJsonStringify(value: unknown): string {
+  validateIJsonDomain(value);
+
   if (value === null || typeof value !== 'object') {
     return JSON.stringify(value);
   }
@@ -84,7 +129,6 @@ export function canonicalJsonStringify(value: unknown): string {
   
   for (const key of sortedKeys) {
     const val = obj[key];
-    // Bỏ qua undefined, functions, symbols theo chuẩn JSON
     if (val !== undefined && typeof val !== 'function' && typeof val !== 'symbol') {
       entries.push(JSON.stringify(key) + ':' + canonicalJsonStringify(val));
     }
@@ -113,62 +157,57 @@ export function computeCanonicalMutationHash(mutation: ClientMutationDto): strin
 }
 ```
 
-#### Negative Test Scenario:
-* Cùng `(user_id, client_id, mutation_id)`:
-  * Mutation A: `payload: { chapterId: 'chap-1', progressPercentage: 70 }` ➔ `hashA`.
-  * Mutation B: `payload: { chapterId: 'chap-2', progressPercentage: 95 }` ➔ `hashB`.
-  * `hashA !== hashB`. Server đối chiếu với `receipt.payload_hash` ban đầu, lập tức phát hiện sai lệch nội dung và từ chối với HTTP `409 Conflict` (`IDEMPOTENCY_KEY_PAYLOAD_MISMATCH`).
+#### Negative Test Scenarios:
+1. **Khác biệt nested payload (SYNC-04 & SYNC-20):**
+   * Mutation A: `payload: { chapterId: 'chap-1', progressPercentage: 70 }` ➔ `hashA`.
+   * Mutation B: `payload: { chapterId: 'chap-2', progressPercentage: 95 }` ➔ `hashB`.
+   * `hashA !== hashB`. Server đối chiếu với `receipt.payload_hash` ban đầu, lập tức phát hiện sai lệch nội dung và từ chối với HTTP `409 Conflict` (`IDEMPOTENCY_KEY_PAYLOAD_MISMATCH`).
+2. **Giá trị ngoài chuẩn I-JSON:** Gửi `NaN` hoặc `Infinity` trong payload ➔ Server fail-closed với lỗi HTTP `400 Bad Request` (`INVALID_MUTATION_DATA_TYPE`).
 
 ---
 
-### 3.2. [P0 Fix] Chiến Lược Phân Trang Snapshot Nhất Quán (Optimistic Snapshot Restart Strategy)
+### 3.2. [P0 Fix] Giao Thức Phân Trang Snapshot Nhất Quán (Optimistic Restart with REPEATABLE READ READ ONLY Isolation)
 
-#### Đánh giá hai giải pháp kiến trúc:
-1. *Materialized Snapshot Storage:* Lưu toàn bộ snapshot ra bảng/file tạm thời với TTL 10 phút. Nhược điểm: Tăng chi phí I/O, phình to storage khi có nhiều thiết bị, và yêu cầu dọn dẹp phức tạp.
-2. *Optimistic Snapshot Restart (Lựa chọn chính thức của OmniNovel):* Không cần tạo storage phụ. Server kiểm tra tính nhất quán revision trên từng request trang. Nếu `current_sync_revision` thay đổi giữa các trang, server trả về `409 SNAPSHOT_INVALIDATED`, buộc client hủy bỏ staging và tải lại từ đầu.
+#### Đánh giá giải pháp:
+Chọn phương án **Optimistic Snapshot Restart** kết hợp mức cô lập giao dịch **`REPEATABLE READ READ ONLY`** trong PostgreSQL. Phương án này bảo đảm 100% tính nhất quán point-in-time mà không cần lưu trữ bảng phụ hay ảnh chụp tốn kém bộ nhớ.
 
-#### Quy Trình Giao Thức Optimistic Snapshot Restart:
+#### Quy Trình Giao Thức & Mức Cô Lập Giao Dịch:
 ```text
 Client (Web / Mobile)                           Core API Server (PostgreSQL)
        │                                                      │
-       │── 1. GET /sync/snapshot?limit=200 ──────────────────>│ Read current_sync_rev = 100
-       │                                                      │ Query Page 1 at rev 100
+       │── 1. GET /sync/snapshot?limit=200 ──────────────────>│ BEGIN TRANSACTION ISOLATION LEVEL
+       │                                                      │ REPEATABLE READ READ ONLY;
+       │                                                      │ Read current_sync_rev = 100 (Pinned)
+       │                                                      │ Query Page 1 entities at rev 100
+       │                                                      │ COMMIT (Consistent MVCC Snapshot)
        │<─ 2. Response: rev: "100", nextCursor(rev: 100) ─────│
        │ (Ghi Page 1 vào local snapshot_staging_store)        │
-       │                                                      │ [Device khác commit rev 101]
-       │── 3. GET /sync/snapshot?cursor=nextCursor ──────────>│ Read current_sync_rev = 101
+       │                                                      │ [Thiết bị khác commit rev 101]
+       │── 3. GET /sync/snapshot?cursor=nextCursor ──────────>│ BEGIN TRANSACTION ISOLATION LEVEL
+       │                                                      │ REPEATABLE READ READ ONLY;
+       │                                                      │ Read current_sync_rev = 101
        │                                                      │ Check: 101 !== cursor.rev (100)
+       │                                                      │ ROLLBACK;
        │<─ 4. HTTP 409 SNAPSHOT_INVALIDATED ──────────────────│ Torn snapshot prevented!
        │                                                      │
        │ (Wipe snapshot_staging_store)                        │
-       │── 5. GET /sync/snapshot?limit=200 (Restart Page 1) ─>│ Read current_sync_rev = 101 ...
+       │── 5. GET /sync/snapshot?limit=200 (Restart Page 1) ─>│ BEGIN REPEATABLE READ READ ONLY ...
 ```
 
-#### Chi Tiết Triển Khai:
-1. **Trang 1 (`GET /api/v1/sync/snapshot?limit=200`):**
-   * Server đọc `user_sync_state.current_sync_revision` trong transaction. Giả sử là $R_{pinned}$.
-   * Server truy vấn trang 1 các thực thể hiện có.
-   * Nếu còn dữ liệu (`hasMore: true`), sinh `nextCursor` có chữ ký HMAC:
-     `nextCursor = sign({ snapshotRevision: String(R_pinned), domain, offsetId, watermark })`.
-   * Trả về `{ snapshotRevision: String(R_pinned), minActiveRevision, hasMore, nextCursor, data }`.
-2. **Trang 2+ (`GET /api/v1/sync/snapshot?cursor=:nextCursor`):**
-   * Server giải mã và xác thực chữ ký cursor, trích xuất $R_{pinned}$.
-   * Server truy vấn `user_sync_state.current_sync_revision` hiện hành.
-   * **Optimistic Consistency Guard:**
-     * Nếu `current_sync_revision !== BigInt(cursor.snapshotRevision)`:
-       ➔ Có biến đổi mới cam kết trong quá trình phân trang!
-       ➔ Trả về HTTP `409 Conflict`:
-       ```json
-       {
-         "statusCode": 409,
-         "errorCode": "SNAPSHOT_INVALIDATED",
-         "message": "Snapshot invalidated due to concurrent modification on server. Client must restart snapshot from page 1.",
-         "pinnedRevision": "100",
-         "currentServerRevision": "101"
-       }
-       ```
-     * Nếu `current_sync_revision === BigInt(cursor.snapshotRevision)`:
-       ➔ Trạng thái CSDL không đổi. Trả về trang dữ liệu kế tiếp an toàn.
+#### Quy Tắc Kỹ Thuật Bắt Buộc:
+1. **Mức Cô Lập Giao Dịch Cho Từng Request Trang Snapshot:**
+   * Mọi request lấy dữ liệu trang snapshot (`GET /api/v1/sync/snapshot`) **bắt buộc phải thực thi trong một transaction PostgreSQL độc lập với mức cô lập `REPEATABLE READ READ ONLY`**:
+     ```sql
+     BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
+     ```
+   * Trong cùng transaction này:
+     * Đọc `current_sync_revision` từ bảng `user_sync_state`.
+     * Đối với Trang 2+: Kiểm tra xem `current_sync_revision === BigInt(cursor.snapshotRevision)`. Nếu không khớp, `ROLLBACK` và trả về ngay HTTP `409 Conflict` (`SNAPSHOT_INVALIDATED`).
+     * Truy vấn dữ liệu thực thể của trang đó. Nhờ mức cô lập `REPEATABLE READ`, toàn bộ các câu `SELECT` bên trong transaction quan sát cùng một MVCC snapshot duy nhất, không bị ảnh hưởng bởi các commit đồng thời.
+   * **Tuyệt đối không thực hiện bất kỳ lệnh ghi dữ liệu hoặc side-effects nào** bên trong transaction đọc snapshot.
+   * `COMMIT` transaction sau khi hoàn tất đọc dữ liệu.
+2. **Tính Nguyên Tử Khi Ghi Thư Viện (Atomic Library Mutations):**
+   * Mọi thay đổi thư viện thuộc phạm vi sync (qua Sync Hub hoặc qua các API hiện có tích hợp `SyncLogEmitter`) bắt buộc phải cập nhật `current_sync_revision` **nguyên tử trong cùng một transaction** với các thao tác ghi dữ liệu nghiệp vụ (`bookmarks`, `reading_progress`, `chapter_read_states`).
 3. **Cơ Chế Khách Cục Bộ (Snapshot Staging Store):**
    * Client Web và Mobile tạo bảng tạm `snapshot_staging_store`.
    * Các trang được nạp vào staging. Nếu nhận `409 SNAPSHOT_INVALIDATED`, client **xóa sạch staging và tự động restart Trang 1**.
@@ -182,31 +221,51 @@ Client (Web / Mobile)                           Core API Server (PostgreSQL)
 
 ---
 
-### 3.3. [P1 Fix] Khóa Lỗ Hổng HISTORY Epoch & Quy Định Bất Biến Của Mutation ID
+### 3.3. [P0 Fix] Khóa Lỗ Hổng HISTORY Epoch (Tương Thích Tuyệt Đối Với Phase 7B)
 
-#### 1. Khóa Chặt HISTORY Epoch (Chống Phục Sinh Khi Truyện Được Đọc Lại):
-* **Tình huống biên:** Người dùng xóa lịch sử đọc truyện A trên Web (epoch của truyện A tăng lên). Sau đó người dùng đọc lại 1 chương của truyện A trên Web (truyện A xuất hiện trở lại trong Snapshot với epoch mới). Nếu Mobile ngoại tuyến gửi lại các chương cũ của truyện A với lý do "truyện A đã có trong Snapshot", các chương đã bị xóa sẽ bị phục sinh!
-* **Giải pháp:**
-  * Thêm trường `observedHistoryEpoch?: number` vào contract mutation của miền `HISTORY`:
-    ```typescript
-    export interface HistoryMutationPayload {
-      storyId: string;
-      chapterId: string;
-      chapterVersionId?: string | null;
-      progressPercentage: number;
-      observedHistoryEpoch?: number; // Epoch lịch sử đọc client quan sát khi tạo mutation
-    }
-    ```
-  * Khi Server nhận mutation `HISTORY`:
-    * Tra cứu `reading_history_tombstones` cho `(user_id, story_id)` (gọi epoch là $E_{tomb}$) và `reading_history_epoch_counters` cho `user_id` (gọi epoch là $E_{user}$).
-    * Nếu $E_{tomb} \ge \text{mutation.observedHistoryEpoch}$ hoặc $E_{user} > \text{mutation.observedHistoryEpoch}$:
-      ➔ Mutation được sinh ra trước thời điểm xóa lịch sử!
-      ➔ Server từ chối ngay lập tức: `status: 'REJECTED_TOMBSTONE'`, ghi receipt bền vững, không cho phép phục sinh.
-  * Trong thuật toán Triage sau 410 Full Resync:
-    * Snapshot trả về `storyHistoryEpoch` của từng truyện.
-    * Client kiểm tra: nếu `pending.observedHistoryEpoch < snapshot.storyHistoryEpoch` ➔ Bắt buộc hủy bỏ hoặc đưa vào `quarantined_mutations` (`STALE_HISTORY_EPOCH_DISCARDED`).
+#### Phân tích & Chuẩn Hóa Điều Kiện Kiểm Tra Epoch:
+* **Nguyên nhân lỗi trước đây:** Điều kiện cũ `E_tomb >= observedHistoryEpoch` sử dụng dấu `>=` khiến một thao tác đọc mới hợp lệ (được người dùng đọc sau khi xóa lịch sử, mang đúng epoch hiện hành của tombstone) cũng bị từ chối oan uổng!
+* **Quy chuẩn Phase 7B (`stories.service.ts`):** 
+  Phase 7B xác định `effectiveEpoch` bằng cách lấy giá trị lớn nhất giữa tombstone của truyện cụ thể và global sentinel tombstone (`00000000-0000-0000-0000-000000000000`). Sau đó thực hiện **Strict Equality Check**: `writeEpoch === effectiveEpoch`.
 
-#### 2. Quy Định Bất Biến Của Mutation ID Sau Reconcile / Rejection:
+#### Thuật Toán Phân Xử HISTORY Epoch Chuẩn Xác Của Sync Engine:
+1. **Trường bắt buộc trong Contract:** `observedHistoryEpoch: number` là **trường số nguyên bắt buộc** trong `HistoryMutationPayload` (không được để optional khi ghi nhận thao tác).
+2. **Quy tắc kiểm tra tại Server (Áp dụng trong Batch Mutation Transaction):**
+   ```typescript
+   // 1. Tra cứu tombstone cụ thể của truyện và global sentinel
+   const tombstoneRows = await manager.query(
+     `SELECT COALESCE(MAX(epoch), 0) AS "effectiveEpoch"
+      FROM reading_history_tombstones
+      WHERE user_id = $1 AND story_id IN ($2, '00000000-0000-0000-0000-000000000000'::uuid)`,
+     [userId, mutation.payload.storyId],
+   );
+   const effectiveEpoch = Number(tombstoneRows[0]?.effectiveEpoch ?? 0);
+
+   // 2. Strict Equality Check theo đúng chuẩn Phase 7B
+   const observedEpoch = mutation.payload.observedHistoryEpoch;
+   if (
+     observedEpoch === undefined ||
+     !Number.isInteger(observedEpoch) ||
+     observedEpoch !== effectiveEpoch
+   ) {
+     return {
+       status: 'REJECTED_TOMBSTONE',
+       reason: 'STALE_HISTORY_EPOCH',
+       observedEpoch,
+       effectiveEpoch,
+     };
+   }
+   ```
+3. **Ý nghĩa phân xử:**
+   * Nếu người dùng xóa lịch sử truyện A ➔ CSDL ghi nhận tombstone với `epoch = 5` (effectiveEpoch = 5).
+   * Người dùng đọc lại truyện A trên thiết bị mới hoặc sau đó ➔ client quan sát `effectiveEpoch = 5`, gửi mutation đọc với `observedHistoryEpoch = 5` ➔ **HỢP LỆ (5 === 5) ➔ APPLIED**.
+   * Thiết bị Mobile cũ offline từ trước khi xóa lịch sử (lúc đó epoch = 4), gửi lại lịch sử đọc cũ mang `observedHistoryEpoch = 4` ➔ **BỊ TỪ CHỐI (4 !== 5) ➔ REJECTED_TOMBSTONE**.
+   * Triệt tiêu hoàn toàn nguy cơ phục sinh lịch sử đọc cũ, đồng thời **không bao giờ chặn nhầm các thao tác đọc mới hợp lệ**!
+
+---
+
+### 3.4. [P1 Fix] Quy Định Bất Biến Của Mutation ID Sau Reconcile / Rejection
+
 * Bản ghi trong `sync_mutation_receipts` có khóa `(user_id, client_id, mutation_id)` là **bất biến vĩnh viễn (Immutable)**.
 * Nếu client cố tình gửi lại `mutationId` cũ với `baseServerRevision` mới (hoặc payload sửa đổi), hàm `computeCanonicalMutationHash` sẽ sinh hash khác với `receipt.payload_hash` trong CSDL ➔ Server sẽ từ chối với HTTP `409 Conflict` (`IDEMPOTENCY_KEY_PAYLOAD_MISMATCH`).
 * **Quy tắc bắt buộc:**
@@ -216,7 +275,7 @@ Client (Web / Mobile)                           Core API Server (PostgreSQL)
 
 ---
 
-### 3.4. [P1 Fix] Thuật Toán GC Watermark Monotonic & Non-Null
+### 3.5. [P1 Fix] Thuật Toán GC Watermark Monotonic & Non-Null
 
 Thuật toán dọn dẹp định kỳ chạy trong một transaction duy nhất:
 ```text
@@ -332,7 +391,7 @@ export interface HistoryMutationPayload {
   chapterId: string;
   chapterVersionId?: string | null;
   progressPercentage: number;
-  observedHistoryEpoch?: number; // Khóa chống phục sinh sau khi xóa lịch sử
+  observedHistoryEpoch: number; // BẮT BUỘC: Strict Equality với effectiveEpoch của Phase 7B
 }
 
 export interface ClientMutationDto {
@@ -410,7 +469,7 @@ export interface SyncSnapshotResponseDto {
       maxProgressPercentage: number; 
       completedAt: string | null; 
       lastReadAt: string;
-      storyHistoryEpoch?: number;
+      storyHistoryEpoch: number; // Effective epoch hiện hành của truyện
     }>;
     preferences: Array<{ key: string; value: any; updatedAt: string }>;
   };
@@ -435,14 +494,14 @@ export interface SyncSnapshotResponseDto {
 | **SYNC-10** | Client gửi revision vượt server hoặc hết hạn GC | Client gửi `baseServerRevision` lớn hơn server revision hiện tại hoặc nhỏ hơn `minActiveRevision`. | Fail-closed lập tức (`400 Bad Request` hoặc `410 Gone`); không cho phép dữ liệu vô căn cứ ghi vào hệ thống. |
 | **SYNC-11** | Revision 64-bit vượt giới hạn safe integer của JS | Giả lập `revision = 9007199254740995` (`> 2^53 - 1`). | DTO dạng decimal string giữ nguyên vẹn 100% giá trị số; không bị JavaScript làm tròn số (truncation error). |
 | **SYNC-12** | Không kích hoạt Gamification khi Sync Replay | Thực hiện sync hàng loạt 100 chương lịch sử và tiến độ đọc. | Không phát thưởng điểm kinh nghiệm (EXP), OmniCoin, hay Streak ($\Delta = 0$). |
-| **SYNC-13** | History cũ sau khi xóa và đọc lại trên Web | Web xóa lịch sử truyện A (epoch tăng), sau đó đọc lại chương 1 trên Web. Mobile offline gửi lại chương 2 đọc ở epoch cũ. | Server kiểm tra `observedHistoryEpoch < currentEpoch` ➔ **REJECTED_TOMBSTONE; không phục sinh lịch sử cũ**. |
+| **SYNC-13** | Strict Equality trên Effective History Epoch | Người dùng xóa lịch sử truyện A (effectiveEpoch = 5). Thao tác đọc mới trên Web mang `observedHistoryEpoch = 5` được chấp nhận. Mobile offline gửi mutation đọc cũ mang `observedHistoryEpoch = 4`. | Mutation đọc cũ mang epoch 4 bị từ chối ngay (`4 !== 5` ➔ `REJECTED_TOMBSTONE`); thao tác đọc mới mang epoch 5 được chấp nhận; **không chặn nhầm thao tác đọc mới**. |
 | **SYNC-14** | Change log trống sau GC vẫn giữ watermark hợp lệ | Người dùng không có thao tác nào trong 95 ngày. Cronjob GC chạy. | Watermark `min_active_revision` tiến lên `current_sync_revision`, **không bị NULL**; client cũ kết nối nhận đúng `410 Gone`. |
-| **SYNC-15** | Mutation đến giữa hai trang snapshot | Client kéo Trang 1 snapshot. Thiết bị khác commit mutation. Client gửi request Trang 2. | Server phát hiện revision thay đổi, trả về HTTP `409 SNAPSHOT_INVALIDATED`; client wipe staging và restart Trang 1 an toàn. |
+| **SYNC-15** | Repeatable Read Isolation & Optimistic Restart | Client kéo Trang 1 snapshot trong transaction `REPEATABLE READ READ ONLY`. Thiết bị khác commit mutation làm tăng revision. Client kéo Trang 2. | Server phát hiện revision thay đổi, trả về HTTP `409 SNAPSHOT_INVALIDATED`; client wipe staging và restart Trang 1 an toàn. Mọi câu SELECT trong từng trang đều quan sát MVCC snapshot nhất quán. |
 | **SYNC-16** | Cùng mutation ID, payload giống nhưng domain/op khác | Client gửi mutation ID cũ với payload giống nhưng đổi từ `BOOKMARK` sang `PROGRESS` hoặc `UPSERT` sang `DELETE`. | Canonical hash kiểm tra toàn diện phát hiện sai lệch thuộc tính ➔ Chặn đứng với HTTP `409 Conflict`. |
 | **SYNC-17** | Retry rejected mutation trả đúng kết quả từ chối | Client retry mutation bị `REJECTED_TOMBSTONE`. | Server tra cứu `sync_mutation_receipts` và trả về `status: 'REJECTED_TOMBSTONE'`, không biến thành `DEDUPLICATED`. |
 | **SYNC-18** | Hai request cùng idempotency key bay tới đồng thời | Hai request cùng key đến trong cùng một mili-giây. | Transaction row lock / unique constraint xử lý nguyên tử: 1 request ghi receipt, request thứ hai đọc receipt; chỉ tạo 1 kết quả duy nhất. |
 | **SYNC-19** | Rebase mutation cũ bằng cách đổi baseServerRevision giữ nguyên ID | Client cố tình gửi lại `mutationId` đã stale nhưng sửa `baseServerRevision`. | Thay đổi baseServerRevision làm đổi canonical hash ➔ Server chặn HTTP `409 Conflict`. Bắt buộc sinh fresh `mutationId`. |
-| **SYNC-20** | Negative Test: JCS Serializer không bỏ sót nested properties | Chạy thử nghiệm serializer với hai nested payload khác nhau. | Đảm bảo kết quả serialize giữ trọn vẹn mọi key con; không bao giờ bị biến thành `{ "payload": {} }`. |
+| **SYNC-20** | JCS Conformance & Strict Domain Validation | Thử nghiệm serializer với nested payloads và các giá trị biên ngoài miền I-JSON (`NaN`, `Infinity`, native `bigint`). | Serializer bảo toàn 100% nested keys; fail-closed với HTTP `400 Bad Request` khi gặp giá trị không an toàn. |
 
 ---
 
@@ -454,8 +513,8 @@ export interface SyncSnapshotResponseDto {
   * Tạo các bảng CSDL: `user_sync_state`, `sync_change_log`, `sync_tombstones`, `sync_mutation_receipts`.
   * TypeORM Entities kèm 64-bit Decimal String Transformer và JCS RFC 8785 canonical hash helper.
 * **Phase 7C.2: Core API Sync Hub & Delta Protocol (`services/api`)** `[ ] Chưa làm`
-  * Cài đặt các endpoints: `GET /sync/changes`, `GET /sync/snapshot` (kèm Optimistic Restart 409 Guard), `POST /sync/mutations/batch`.
-  * Bộ giải quyết xung đột (Domain Conflict Resolver) và bảo vệ Tombstone Anti-Resurrection (Bookmark & History Epoch).
+  * Cài đặt các endpoints: `GET /sync/changes`, `GET /sync/snapshot` (kèm Repeatable Read Isolation & Optimistic Restart 409 Guard), `POST /sync/mutations/batch`.
+  * Bộ giải quyết xung đột (Domain Conflict Resolver) và bảo vệ Tombstone Anti-Resurrection với Strict Equality Effective History Epoch Check.
   * Tích hợp `SyncLogEmitter` vào Guest Claim Commit và các API ghi thư viện hiện có.
 * **Phase 7C.3: Web Client Sync Reconciler (`apps/web`)** `[ ] Chưa làm`
   * Nâng cấp IndexedDB Schema (thêm `sync_meta`, `quarantined_mutations`, `snapshot_staging_store`).

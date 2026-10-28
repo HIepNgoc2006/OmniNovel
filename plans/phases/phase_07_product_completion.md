@@ -109,11 +109,11 @@ graph TD
 
 ### Phase 7C — Unified Multi-Device Sync Engine `[/] Đang làm`
 **Mục tiêu:** Đồng bộ trạng thái tức thì giữa Web và Mobile dựa trên Server Revisions, không phụ thuộc đồng hồ thiết bị.
-- [/] **7C.0. Architecture & Protocol Review Gate (`plans/phase_07c_architecture_gate.md`)**
-  - [/] Khóa 5 bất biến cốt lõi, bổ sung final implementation-safety amendments: JCS RFC 8785 Recursive Canonical Serializer, Optimistic Snapshot Restart (409 Guard), History Epoch Tracking, Fresh Mutation ID Rules, và 20 kịch bản nghiệm thu SYNC-01..SYNC-20.
-- [ ] **7C.1. Database Schema & Core Entities (`services/api`)**
-  - [ ] Tạo các bảng CSDL: `user_sync_state`, `sync_change_log`, `sync_tombstones`, `sync_mutation_receipts`.
-  - [ ] TypeORM Entities kèm 64-bit Decimal String Transformer và SHA-256 payload hash helper.
+- [x] **7C.0. Architecture & Protocol Review Gate (`plans/phase_07c_architecture_gate.md`)** — *CLOSED / PASS* 🏛️
+  - [x] Khóa 5 bất biến cốt lõi, bổ sung final implementation-safety amendments: JCS RFC 8785 Recursive Canonical Serializer & Fail-Closed Domain Validator, Optimistic Snapshot Restart (409 Guard), Repeatable Read Isolation, History Epoch Tracking, Fresh Mutation ID Rules, và 20 kịch bản nghiệm thu SYNC-01..SYNC-20.
+- [/] **7C.1. Database Schema & Core Entities (`services/api`)** — *Đang làm (Authorized to Implement)*
+  - [/] Tạo các bảng CSDL: `user_sync_state`, `sync_change_log`, `sync_tombstones`, `sync_mutation_receipts`.
+  - [/] TypeORM Entities kèm 64-bit Decimal String Transformer và JCS RFC 8785 Canonical Hash Helper.
 - [ ] **7C.2. Core API Sync Hub & Delta Protocol (`services/api`)**
   - [ ] Cài đặt các endpoints: `GET /sync/changes`, `GET /sync/snapshot`, `POST /sync/mutations/batch`.
   - [ ] Bộ giải quyết xung đột (Domain Conflict Resolver) và bảo vệ Tombstone Anti-Resurrection.

@@ -110,7 +110,7 @@ graph TD
 ### Phase 7C — Unified Multi-Device Sync Engine `[/] Đang làm`
 **Mục tiêu:** Đồng bộ trạng thái tức thì giữa Web và Mobile dựa trên Server Revisions, không phụ thuộc đồng hồ thiết bị.
 - [/] **7C.0. Architecture & Protocol Review Gate (`plans/phase_07c_architecture_gate.md`)**
-  - [/] Khóa 5 bất biến cốt lõi, bổ sung P0/P1 final amendments: History Anti-Resurrection qua epoch/tombstone, Non-null Monotonic GC Watermark, Snapshot Revision Pinning & Staging Store, Full Mutation SHA-256 Canonical Hash, Revision-based Progress Resolution, và 18 kịch bản nghiệm thu SYNC-01..SYNC-18.
+  - [/] Khóa 5 bất biến cốt lõi, bổ sung final implementation-safety amendments: JCS RFC 8785 Recursive Canonical Serializer, Optimistic Snapshot Restart (409 Guard), History Epoch Tracking, Fresh Mutation ID Rules, và 20 kịch bản nghiệm thu SYNC-01..SYNC-20.
 - [ ] **7C.1. Database Schema & Core Entities (`services/api`)**
   - [ ] Tạo các bảng CSDL: `user_sync_state`, `sync_change_log`, `sync_tombstones`, `sync_mutation_receipts`.
   - [ ] TypeORM Entities kèm 64-bit Decimal String Transformer và SHA-256 payload hash helper.
@@ -127,7 +127,7 @@ graph TD
   - [ ] Cài đặt `SyncWorker` chạy nền với Exponential Backoff & Connectivity Gate.
   - [ ] Cài đặt Safe 410 Full Resync Triage Reconciler.
 - [ ] **7C.5. Comprehensive Cross-Platform Sync Verification Matrix**
-  - [ ] Kiểm thử toàn diện 18 kịch bản nghiệm thu `SYNC-01` đến `SYNC-18` trên cả Web, Mobile và Backend.
+  - [ ] Kiểm thử toàn diện 20 kịch bản nghiệm thu `SYNC-01` đến `SYNC-20` trên cả Web, Mobile và Backend.
 
 ---
 

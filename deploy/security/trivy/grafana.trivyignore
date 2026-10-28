@@ -1,6 +1,6 @@
 # OmniNovel Scoped Trivy Ignore: grafana
 # Target Image: grafana
-# Count: 15 CVEs
+# Count: 16 CVEs
 # Standard: Fail-Closed Gate with Governed Exception Policy (SEC-REG-6.4.4A)
 
 CVE-2026-100349
@@ -10,6 +10,7 @@ CVE-2026-100353
 CVE-2026-100354
 CVE-2026-111497
 CVE-2026-111943
+CVE-2026-116587
 CVE-2026-21728
 CVE-2026-28377
 CVE-2026-78667

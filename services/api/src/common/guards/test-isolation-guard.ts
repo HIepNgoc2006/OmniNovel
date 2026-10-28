@@ -270,13 +270,13 @@ export function validateEnvironmentConflicts(env: Record<string, string | undefi
   }
 }
 
-export async function verifyTestDatabaseIdentity(options?: {
+export async function bootstrapTestDatabaseMarker(options?: {
   host?: string;
   port?: number | string;
   user?: string;
   password?: string;
   database?: string;
-}): Promise<{ database: string; markerVerified: boolean }> {
+}): Promise<{ database: string; markerCreated: boolean }> {
   const host = options?.host || process.env.DB_HOST || process.env.TEST_DB_HOST || '127.0.0.1';
   const port = Number(options?.port || process.env.DB_PORT || process.env.TEST_DB_PORT || EXPECTED_LOOPBACK_TEST_PORT);
   const user = options?.user || process.env.DB_USER || process.env.TEST_DB_USER || 'postgres';
@@ -307,7 +307,7 @@ export async function verifyTestDatabaseIdentity(options?: {
       );
     }
 
-    // 3. Check or create identity marker table
+    // 3. Create identity marker table and insert record
     await client.query(`
       CREATE TABLE IF NOT EXISTS _omninovel_test_isolation_marker (
         id serial primary key,
@@ -320,6 +320,83 @@ export async function verifyTestDatabaseIdentity(options?: {
       VALUES ('omninovel-e2e-isolation-verified')
       ON CONFLICT (marker) DO UPDATE SET verified_at = now();
     `);
+
+    return { database: actualDb, markerCreated: true };
+  } catch (err: any) {
+    if (err.message?.includes('FATAL_TEST_ISOLATION_BREACH')) {
+      throw err;
+    }
+    throw new Error(
+      `FATAL_TEST_ISOLATION_BREACH: Failed to bootstrap test isolation marker at ${host}:${port}/${database}. Error: ${err.message}`
+    );
+  } finally {
+    try {
+      await client.end();
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export async function verifyTestDatabaseIdentity(options?: {
+  host?: string;
+  port?: number | string;
+  user?: string;
+  password?: string;
+  database?: string;
+  requireMarker?: boolean;
+}): Promise<{ database: string; markerVerified: boolean }> {
+  const host = options?.host || process.env.DB_HOST || process.env.TEST_DB_HOST || '127.0.0.1';
+  const port = Number(options?.port || process.env.DB_PORT || process.env.TEST_DB_PORT || EXPECTED_LOOPBACK_TEST_PORT);
+  const user = options?.user || process.env.DB_USER || process.env.TEST_DB_USER || 'postgres';
+  const password = options?.password || process.env.DB_PASSWORD || process.env.TEST_DB_PASSWORD || 'postgres_password_secure';
+  const database = options?.database || process.env.DB_NAME || process.env.TEST_DB_NAME || 'omninovel_test';
+  const requireMarker = options?.requireMarker !== false;
+
+  // 1. Static validation check
+  validateTestDatabaseTarget({ host, port, database });
+
+  // 2. Connect and query current_database()
+  const client = new Client({
+    host,
+    port,
+    user,
+    password,
+    database,
+    connectionTimeoutMillis: 3000,
+  });
+
+  try {
+    await client.connect();
+    const res = await client.query('SELECT current_database();');
+    const actualDb = res.rows[0]?.current_database;
+
+    if (actualDb !== 'omninovel_test') {
+      throw new Error(
+        `FATAL_TEST_ISOLATION_BREACH: Connected database identity '${actualDb}' does not match expected test database 'omninovel_test'. Execution aborted to protect non-test database.`
+      );
+    }
+
+    // 3. Strict verification of pre-existing isolation marker (Fail-Closed, DO NOT auto-create)
+    if (requireMarker) {
+      try {
+        const markerRes = await client.query(
+          `SELECT marker FROM _omninovel_test_isolation_marker WHERE marker = 'omninovel-e2e-isolation-verified';`
+        );
+        if (!markerRes.rows || markerRes.rows.length === 0) {
+          throw new Error(
+            `FATAL_TEST_ISOLATION_BREACH: Test isolation marker row missing in '_omninovel_test_isolation_marker'. Database has not been bootstrapped as a dedicated test database.`
+          );
+        }
+      } catch (markerErr: any) {
+        if (markerErr.message?.includes('FATAL_TEST_ISOLATION_BREACH')) {
+          throw markerErr;
+        }
+        throw new Error(
+          `FATAL_TEST_ISOLATION_BREACH: Test isolation marker table '_omninovel_test_isolation_marker' does not exist in '${actualDb}'. Dedicated test database must be bootstrapped via bootstrapTestDatabaseMarker() before running tests.`
+        );
+      }
+    }
 
     return { database: actualDb, markerVerified: true };
   } catch (err: any) {

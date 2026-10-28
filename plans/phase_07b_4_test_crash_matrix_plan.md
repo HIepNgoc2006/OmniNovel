@@ -33,11 +33,14 @@
     - Loopback bắt buộc bind vào cổng test `55433`. Chặn cổng dev `5433` và các cổng khác.
     - Database bắt buộc là `omninovel_test`. Chặn `omninovel_db`, `omninovel_prod`, `production` fail-closed.
     - Kiểm tra và chặn xung đột cấu hình giữa `TEST_DATABASE_URL` và discrete `TEST_DB_*`.
-    - Chặn `MIGRATION_ENV_FILE` nếu trỏ tới dev hoặc production DB.
+    - Chặn `MIGRATION_ENV_FILE` nếu trỏ tới dev hoặc production DB, và cấm tuyệt đối việc override `NODE_ENV` rời khỏi `'test'`.
     - Che giấu toàn bộ credentials/passwords khỏi error messages.
-    - Hàm `verifyTestDatabaseIdentity()` kiểm tra trực tiếp qua câu truy vấn `SELECT current_database();` và quản lý bảng marker `_omninovel_test_isolation_marker`.
-  - Chuẩn hóa `services/api/test/setup-e2e.ts` và `services/api/src/database/data-source.ts`: tự động thanh lọc `DATABASE_URL` môi trường ngoài, ép buộc biến MinIO nội bộ kiểm thử.
-  - Ma trận kiểm thử DB-01 đến DB-12 đạt 100% PASS.
+    - Tách biệt rành mạch giữa `bootstrapTestDatabaseMarker()` (tạo bảng marker và bản ghi xác nhận) và `verifyTestDatabaseIdentity()` (kiểm tra `current_database()` và bắt buộc marker bảng `_omninovel_test_isolation_marker` phải tồn tại từ trước, không tự ý auto-create).
+  - Chuẩn hóa `services/api/test/setup-e2e.ts`, `services/api/test/global-setup-e2e.ts` và `services/api/src/database/data-source.ts`:
+    - Tự động thanh lọc `DATABASE_URL` môi trường ngoài, ép buộc biến MinIO nội bộ kiểm thử.
+    - Trong `data-source.ts`, thẩm định bắt buộc `validateTestDatabaseTarget()` trên cấu hình kết nối hiệu lực trước khi khởi tạo `new DataSource()`.
+    - Tích hợp `globalSetup` trong `jest-e2e.json` để bootstrap marker độc lập trước khi chạy bất kỳ test suite nào.
+  - Ma trận kiểm thử DB-01 đến DB-15 đạt 100% PASS (bao gồm củng cố DB-10 không swallow lỗi, DB-11 mô phỏng sai lệch identity trực tiếp, DB-13 chặn missing marker fail-closed, DB-14 kiểm chứng bootstrap + verify, DB-15 chặn migration dev target).
 - [x] **P1-B - Khóa Cứng Ràng Buộc Topo VPS & Docker Compose (Strict Exact-Set Topology Gate):**
   - Nâng cấp `deploy/validate-compose-topology.py` sang kiểm toán **Strict Exact-Set**:
     1. *Exact Network Set:* Đúng chính xác tập `{"omninovel-edge", "omninovel-internal", "omninovel-egress"}` (so sánh tập hợp hai chiều: chặn thiếu và chặn thừa network thứ tư). `omninovel-internal` bắt buộc `internal: true`.
@@ -121,6 +124,7 @@ File kiểm thử toàn diện: `services/api/test/guest-claim-lifecycle.e2e-spe
 | **Bước 4** | Chạy kiểm thử toàn bộ hệ thống (Web 657 tests, Mobile 500 tests, AI Worker 323 tests, Core API) | `[x] Hoàn thành` |
 | **Bước 5** | Vá 3 CVEs Trivy Docker API, chuẩn hóa cách ly test DB, commit & push kích hoạt CI 7/7 | `[x] Hoàn thành (Hosted CI 7/7 Run #40530990139, Commit 4892dd2)` |
 | **Bước 6** | Tách riêng PostgreSQL E2E container/port/volume, siết strict exact-set topology gate, kích hoạt CI 7/7 và ký đóng FROZEN CLEAN | `[x] Hoàn thành (Hosted CI 7/7 Run #40560232828, Commit c9aa80c)` |
+| **Bước 7** | Vá migration preflight fail-closed trên effective target, tách marker bootstrap & củng cố negative tests DB-10 đến DB-15 | `[x] Hoàn thành` |
 
 ---
 

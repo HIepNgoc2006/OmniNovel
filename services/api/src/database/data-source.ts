@@ -3,16 +3,28 @@ import * as dotenv from 'dotenv';
 import * as path from 'path';
 import * as fs from 'fs';
 import { buildPostgresConnectionOptions } from './database.config';
-import { validateEnvironmentConflicts } from '../common/guards/test-isolation-guard';
+import {
+  validateEnvironmentConflicts,
+  validateTestDatabaseTarget,
+} from '../common/guards/test-isolation-guard';
 
 // Quy tắc ưu tiên biến môi trường:
 // 1. OS / Docker / CI injected env (process.env) - mức ưu tiên cao nhất, tuyệt đối KHÔNG override.
 // 2. Explicit env file (nếu MIGRATION_ENV_FILE được chỉ định rõ ràng).
 // 3. Local env fallback (.env ở các đường dẫn thông thường, chỉ điền các giá trị còn thiếu).
+const initialNodeEnv = process.env.NODE_ENV;
+
 if (process.env.MIGRATION_ENV_FILE) {
   const explicitPath = path.resolve(process.cwd(), process.env.MIGRATION_ENV_FILE);
   if (fs.existsSync(explicitPath)) {
     dotenv.config({ path: explicitPath, override: true });
+  }
+  // Invariant: MIGRATION_ENV_FILE is NEVER allowed to override NODE_ENV away from 'test' to bypass isolation guard
+  if (initialNodeEnv === 'test' && process.env.NODE_ENV !== 'test') {
+    process.env.NODE_ENV = 'test';
+    throw new Error(
+      `FATAL_TEST_ISOLATION_BREACH: MIGRATION_ENV_FILE attempted to override NODE_ENV away from 'test' to '${process.env.NODE_ENV}'. Test mode cannot be bypassed.`,
+    );
   }
 } else if (process.env.NODE_ENV !== 'test') {
   const candidateEnvPaths = [
@@ -47,6 +59,16 @@ const pgOptions = buildPostgresConnectionOptions({
   database: process.env.DB_NAME,
   ssl: process.env.DB_SSL,
 });
+
+// Fail-closed verification on effective connection target before creating DataSource
+if (process.env.NODE_ENV === 'test') {
+  validateTestDatabaseTarget({
+    url: pgOptions.url,
+    host: pgOptions.host,
+    port: pgOptions.port,
+    database: pgOptions.database,
+  });
+}
 
 export const AppDataSource = new DataSource({
   type: 'postgres',

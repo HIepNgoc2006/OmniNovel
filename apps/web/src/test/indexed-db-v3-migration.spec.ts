@@ -16,6 +16,8 @@ import {
   LocalQuarantinedMutation,
   LocalSnapshotStagingItem,
   LocalPreference,
+  IndexedDbUnavailableError,
+  QuotaExceededStorageError,
 } from '../lib/storage/indexed-db-client';
 import {
   SyncDomain,
@@ -161,6 +163,78 @@ describe('Task 7C.3 — Step 2: IndexedDB v3 Migration, Schema & Atomic Primitiv
       expect(history.length).toBe(1);
       expect(history[0].chapterId).toBe('chap-1050');
     });
+
+    it('seamlessly migrates from v2 to v3 while preserving existing stores', async () => {
+      // Step A: Manually create a v2 database with bookstores + progress + history + preferences
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, 2);
+        req.onupgradeneeded = () => {
+          const v2Db = req.result;
+          v2Db.createObjectStore(STORE_BOOKMARKS, { keyPath: ['ownerScope', 'storyId'] });
+          v2Db.createObjectStore(STORE_PROGRESS, { keyPath: ['ownerScope', 'storyId'] });
+          const histStore = v2Db.createObjectStore(STORE_HISTORY, { keyPath: ['ownerScope', 'storyId', 'chapterId'] });
+          histStore.createIndex('by_owner_time', ['ownerScope', 'lastReadAt'], { unique: false });
+          v2Db.createObjectStore(STORE_PREFERENCES, { keyPath: ['ownerScope', 'key'] });
+        };
+        req.onsuccess = () => {
+          const v2Db = req.result;
+          const seedTx = v2Db.transaction([STORE_BOOKMARKS, STORE_PREFERENCES], 'readwrite');
+          seedTx.objectStore(STORE_BOOKMARKS).put({
+            ownerScope: 'account:usr-v2',
+            storyId: 'story-v2',
+            title: 'Story V2',
+            createdAt: '2026-10-15T00:00:00.000Z',
+          });
+          seedTx.objectStore(STORE_PREFERENCES).put({
+            ownerScope: 'account:usr-v2',
+            key: 'theme',
+            value: 'dark',
+            updatedAt: '2026-10-15T00:00:00.000Z',
+          });
+          seedTx.oncomplete = () => {
+            v2Db.close();
+            resolve();
+          };
+          seedTx.onerror = () => reject(seedTx.error);
+        };
+        req.onerror = () => reject(req.error);
+      });
+
+      // Step B: Open through IndexedDbClient, upgrading from v2 to v3
+      const db = await dbClient.getDatabase();
+      expect(db.version).toBe(3);
+
+      // Verify all 8 stores exist
+      expect(db.objectStoreNames.contains(STORE_SYNC_META)).toBe(true);
+      expect(db.objectStoreNames.contains(STORE_PENDING_MUTATIONS)).toBe(true);
+      expect(db.objectStoreNames.contains(STORE_QUARANTINED_MUTATIONS)).toBe(true);
+      expect(db.objectStoreNames.contains(STORE_SNAPSHOT_STAGING)).toBe(true);
+
+      // Verify v2 data is intact
+      const bm = await dbClient.getBookmark('account:usr-v2', 'story-v2');
+      expect(bm?.title).toBe('Story V2');
+      const pref = await dbClient.getPreference('account:usr-v2', 'theme');
+      expect(pref?.value).toBe('dark');
+    });
+
+    it('rejects with IndexedDbUnavailableError when database upgrade triggers onblocked', async () => {
+      // Test onblocked error handling directly
+      const client = new IndexedDbClient();
+      const openSpy = vi.spyOn(indexedDB, 'open').mockImplementationOnce((() => {
+        const fakeReq = {} as any;
+        setTimeout(() => {
+          if (fakeReq.onblocked) {
+            fakeReq.onblocked({} as any);
+          }
+        }, 10);
+        return fakeReq;
+      }) as any);
+
+      await expect(client.getDatabase()).rejects.toThrow(
+        /IndexedDB open blocked by another open connection/
+      );
+      openSpy.mockRestore();
+    });
   });
 
   describe('3. Atomic Write + Enqueue Primitives', () => {
@@ -260,6 +334,300 @@ describe('Task 7C.3 — Step 2: IndexedDB v3 Migration, Schema & Atomic Primitiv
       await expect(
         dbClient.recordReadingSessionWithMutation(progress, history, mismatchedMutation)
       ).rejects.toThrow(/Scope mismatch/);
+    });
+
+    it('rejects atomic write with domain, operation, or entityId mismatch before opening transaction', async () => {
+      const scope = 'account:usr-align-1';
+      const progress: LocalReadingProgress = {
+        ownerScope: scope,
+        storyId: 'story-align',
+        chapterId: 'chap-1',
+        readingMode: ReadingMode.WEBTOON,
+        pageIndex: 1,
+        scrollPosition: 0,
+        progressPercentage: 10,
+        updatedAt: '2026-10-28T22:00:00.000Z',
+        deviceTimestamp: 1730152800000,
+      };
+      const history: LocalReadingHistory = {
+        ownerScope: scope,
+        storyId: 'story-align',
+        chapterId: 'chap-1',
+        storyTitle: 'Align',
+        chapterNumber: 1,
+        progressPercentage: 10,
+        lastReadAt: '2026-10-28T22:00:00.000Z',
+      };
+
+      // 1. Wrong domain in reading session mutation
+      await expect(
+        dbClient.recordReadingSessionWithMutation(progress, history, {
+          ownerScope: scope,
+          mutationId: 'm1',
+          clientId: 'c1',
+          domain: SyncDomain.BOOKMARK, // Wrong domain!
+          entityId: 'story-align',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '0',
+          payload: {},
+          createdAt: '2026-10-28T22:00:00.000Z',
+        })
+      ).rejects.toThrow(/Domain mismatch/);
+
+      // 2. Wrong operation in reading session mutation
+      await expect(
+        dbClient.recordReadingSessionWithMutation(progress, history, {
+          ownerScope: scope,
+          mutationId: 'm2',
+          clientId: 'c1',
+          domain: SyncDomain.PROGRESS,
+          entityId: 'story-align',
+          operation: SyncOperation.DELETE, // Wrong operation!
+          baseServerRevision: '0',
+          payload: {},
+          createdAt: '2026-10-28T22:00:00.000Z',
+        })
+      ).rejects.toThrow(/Operation mismatch/);
+
+      // 3. Mismatched entityId in reading session mutation
+      await expect(
+        dbClient.recordReadingSessionWithMutation(progress, history, {
+          ownerScope: scope,
+          mutationId: 'm3',
+          clientId: 'c1',
+          domain: SyncDomain.PROGRESS,
+          entityId: 'story-DIFFERENT', // Mismatched entityId!
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '0',
+          payload: {},
+          createdAt: '2026-10-28T22:00:00.000Z',
+        })
+      ).rejects.toThrow(/EntityId mismatch/);
+
+      // 4. Bookmark UPSERT mismatches
+      const bookmark: LocalBookmark = {
+        ownerScope: scope,
+        storyId: 'story-bm-align',
+        title: 'BM Align',
+        createdAt: '2026-10-28T22:00:00.000Z',
+      };
+      await expect(
+        dbClient.putBookmarkWithMutation(bookmark, {
+          ownerScope: scope,
+          mutationId: 'm4',
+          clientId: 'c1',
+          domain: SyncDomain.BOOKMARK,
+          entityId: 'story-OTHER',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '0',
+          payload: {},
+          createdAt: '2026-10-28T22:00:00.000Z',
+        })
+      ).rejects.toThrow(/EntityId mismatch/);
+
+      await expect(
+        dbClient.putBookmarkWithMutation(bookmark, {
+          ownerScope: scope,
+          mutationId: 'm5',
+          clientId: 'c1',
+          domain: SyncDomain.PREFERENCE, // Wrong domain!
+          entityId: 'story-bm-align',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '0',
+          payload: {},
+          createdAt: '2026-10-28T22:00:00.000Z',
+        })
+      ).rejects.toThrow(/Domain mismatch/);
+    });
+
+    it('rolls back progress and history completely when duplicate mutationId triggers ConstraintError on add()', async () => {
+      const scope = 'account:usr-rollback-1';
+      const initialProgress: LocalReadingProgress = {
+        ownerScope: scope,
+        storyId: 'story-dup-test',
+        chapterId: 'chap-1',
+        readingMode: ReadingMode.WEBTOON,
+        pageIndex: 1,
+        scrollPosition: 0,
+        progressPercentage: 20,
+        updatedAt: '2026-10-28T21:00:00.000Z',
+        deviceTimestamp: 1730150000000,
+      };
+      const initialHistory: LocalReadingHistory = {
+        ownerScope: scope,
+        storyId: 'story-dup-test',
+        chapterId: 'chap-1',
+        storyTitle: 'Dup Test',
+        chapterNumber: 1,
+        progressPercentage: 20,
+        lastReadAt: '2026-10-28T21:00:00.000Z',
+      };
+      const initialMutation: LocalPendingMutation = {
+        ownerScope: scope,
+        mutationId: 'mut-immutable-id-1',
+        clientId: 'c1',
+        domain: SyncDomain.PROGRESS,
+        entityId: 'story-dup-test',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '5',
+        payload: { progressPercentage: 20 },
+        createdAt: '2026-10-28T21:00:00.000Z',
+      };
+
+      // Step 1: Save initial session successfully
+      await dbClient.recordReadingSessionWithMutation(initialProgress, initialHistory, initialMutation);
+
+      expect((await dbClient.getProgress(scope, 'story-dup-test'))?.progressPercentage).toBe(20);
+      expect((await dbClient.getHistory(scope))[0]?.progressPercentage).toBe(20);
+
+      // Step 2: Attempt to record updated progress (85%) using the SAME mutationId
+      const conflictingProgress: LocalReadingProgress = {
+        ...initialProgress,
+        progressPercentage: 85,
+        updatedAt: '2026-10-28T22:00:00.000Z',
+      };
+      const conflictingHistory: LocalReadingHistory = {
+        ...initialHistory,
+        progressPercentage: 85,
+        lastReadAt: '2026-10-28T22:00:00.000Z',
+      };
+      const duplicateMutation: LocalPendingMutation = {
+        ownerScope: scope,
+        mutationId: 'mut-immutable-id-1', // DUPLICATE KEY!
+        clientId: 'c1',
+        domain: SyncDomain.PROGRESS,
+        entityId: 'story-dup-test',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '10',
+        payload: { progressPercentage: 85 },
+        createdAt: '2026-10-28T22:00:00.000Z',
+      };
+
+      // Must reject due to ConstraintError
+      await expect(
+        dbClient.recordReadingSessionWithMutation(conflictingProgress, conflictingHistory, duplicateMutation)
+      ).rejects.toThrow();
+
+      // Step 3: VERIFY TRANSACTION ROLLBACK — Local progress and history remain UNMODIFIED at 20%
+      const savedProgress = await dbClient.getProgress(scope, 'story-dup-test');
+      expect(savedProgress?.progressPercentage).toBe(20); // NOT 85!
+
+      const savedHistory = await dbClient.getHistory(scope);
+      expect(savedHistory[0]?.progressPercentage).toBe(20); // NOT 85!
+
+      // Step 4: VERIFY MUTATION IMMUTABILITY — Original mutation was NOT overwritten
+      const mutations = await dbClient.getPendingMutations(scope);
+      expect(mutations.length).toBe(1);
+      expect(mutations[0].payload.progressPercentage).toBe(20);
+      expect(mutations[0].baseServerRevision).toBe('5');
+    });
+
+    it('rolls back bookmark insertion when duplicate mutationId triggers ConstraintError on add()', async () => {
+      const scope = 'account:usr-bm-rb';
+
+      // Pre-enqueue mutation
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scope,
+        mutationId: 'mut-bm-dup-key',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'story-bm-rb-existing',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '1',
+        payload: {},
+        createdAt: '2026-10-28T21:00:00.000Z',
+      });
+
+      // Attempt to save new bookmark using the duplicate mutationId
+      const newBookmark: LocalBookmark = {
+        ownerScope: scope,
+        storyId: 'story-bm-new',
+        title: 'New Bookmark',
+        createdAt: '2026-10-28T22:00:00.000Z',
+      };
+      const duplicateMutation: LocalPendingMutation = {
+        ownerScope: scope,
+        mutationId: 'mut-bm-dup-key', // DUPLICATE KEY
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'story-bm-new',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '2',
+        payload: { storyId: 'story-bm-new' },
+        createdAt: '2026-10-28T22:00:00.000Z',
+      };
+
+      await expect(
+        dbClient.putBookmarkWithMutation(newBookmark, duplicateMutation)
+      ).rejects.toThrow();
+
+      // Verify rollback: newBookmark was NOT committed
+      const bm = await dbClient.getBookmark(scope, 'story-bm-new');
+      expect(bm).toBeNull();
+    });
+
+    it('rolls back all staged local writes when simulated QuotaExceededError occurs during pending enqueue', async () => {
+      const scope = 'account:usr-quota-rb';
+      const progress: LocalReadingProgress = {
+        ownerScope: scope,
+        storyId: 'story-quota',
+        chapterId: 'chap-1',
+        readingMode: ReadingMode.WEBTOON,
+        pageIndex: 1,
+        scrollPosition: 0,
+        progressPercentage: 15,
+        updatedAt: '2026-10-28T22:00:00.000Z',
+        deviceTimestamp: 1730152800000,
+      };
+      const history: LocalReadingHistory = {
+        ownerScope: scope,
+        storyId: 'story-quota',
+        chapterId: 'chap-1',
+        storyTitle: 'Quota Story',
+        chapterNumber: 1,
+        progressPercentage: 15,
+        lastReadAt: '2026-10-28T22:00:00.000Z',
+      };
+      const mutation: LocalPendingMutation = {
+        ownerScope: scope,
+        mutationId: 'mut-quota-1',
+        clientId: 'c1',
+        domain: SyncDomain.PROGRESS,
+        entityId: 'story-quota',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '1',
+        payload: {},
+        createdAt: '2026-10-28T22:00:00.000Z',
+      };
+
+      // Mock IDBObjectStore.prototype.add to throw QuotaExceededError for STORE_PENDING_MUTATIONS
+      const origAdd = IDBObjectStore.prototype.add;
+      const addSpy = vi.spyOn(IDBObjectStore.prototype, 'add').mockImplementation(function (
+        this: IDBObjectStore,
+        ...args: any[]
+      ) {
+        if (this.name === STORE_PENDING_MUTATIONS) {
+          const quotaErr = new DOMException('Storage quota exceeded during enqueue', 'QuotaExceededError');
+          throw quotaErr;
+        }
+        return origAdd.apply(this, args as any);
+      });
+
+      await expect(
+        dbClient.recordReadingSessionWithMutation(progress, history, mutation)
+      ).rejects.toThrow(QuotaExceededStorageError);
+
+      addSpy.mockRestore();
+
+      // Verify complete rollback: neither progress nor history were committed
+      const savedProgress = await dbClient.getProgress(scope, 'story-quota');
+      expect(savedProgress).toBeNull();
+
+      const savedHistory = await dbClient.getHistory(scope);
+      expect(savedHistory.length).toBe(0);
+
+      const pending = await dbClient.getPendingMutations(scope);
+      expect(pending.length).toBe(0);
     });
 
     it('atomically saves bookmark AND enqueues BOOKMARK UPSERT mutation', async () => {

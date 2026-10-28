@@ -353,6 +353,7 @@ export class IndexedDbClient {
   /**
    * Atomic Primitive: Records reading session and enqueues progress mutation in the same IDB transaction.
    * Guarantees rollback if either operation fails or quota is exceeded.
+   * Enforces mutation immutability via add() — duplicate mutationId triggers ConstraintError and aborts transaction.
    */
   async recordReadingSessionWithMutation(
     progress: LocalReadingProgress,
@@ -365,6 +366,18 @@ export class IndexedDbClient {
 
     if (progress.ownerScope !== mutation.ownerScope || history.ownerScope !== mutation.ownerScope) {
       throw new Error(`Scope mismatch: progress/history (${progress.ownerScope}) does not match mutation (${mutation.ownerScope})`);
+    }
+
+    if (mutation.domain !== SyncDomain.PROGRESS && mutation.domain !== SyncDomain.HISTORY) {
+      throw new Error(`Domain mismatch: mutation domain must be PROGRESS or HISTORY, got ${mutation.domain}`);
+    }
+
+    if (mutation.operation !== SyncOperation.UPSERT) {
+      throw new Error(`Operation mismatch: reading session mutation must be UPSERT, got ${mutation.operation}`);
+    }
+
+    if (mutation.entityId !== progress.storyId) {
+      throw new Error(`EntityId mismatch: expected "${progress.storyId}", got "${mutation.entityId}"`);
     }
 
     const db = await this.getDatabase();
@@ -416,7 +429,7 @@ export class IndexedDbClient {
 
             progressStore.put(progress);
             historyStore.put(finalHistory);
-            mutationStore.put(mutation);
+            mutationStore.add(mutation);
           } catch (err: any) {
             try {
               tx.abort();
@@ -450,6 +463,7 @@ export class IndexedDbClient {
 
   /**
    * Atomic Primitive: Persists bookmark and enqueues BOOKMARK UPSERT mutation in the same IDB transaction.
+   * Enforces mutation immutability via add() — duplicate mutationId triggers ConstraintError and aborts transaction.
    */
   async putBookmarkWithMutation(
     bookmark: LocalBookmark,
@@ -462,13 +476,25 @@ export class IndexedDbClient {
       throw new Error(`Scope mismatch: bookmark (${bookmark.ownerScope}) does not match mutation (${mutation.ownerScope})`);
     }
 
+    if (mutation.domain !== SyncDomain.BOOKMARK) {
+      throw new Error(`Domain mismatch: expected BOOKMARK, got ${mutation.domain}`);
+    }
+
+    if (mutation.operation !== SyncOperation.UPSERT) {
+      throw new Error(`Operation mismatch: expected UPSERT, got ${mutation.operation}`);
+    }
+
+    if (mutation.entityId !== bookmark.storyId) {
+      throw new Error(`EntityId mismatch: expected "${bookmark.storyId}", got "${mutation.entityId}"`);
+    }
+
     const db = await this.getDatabase();
 
     return new Promise<void>((resolve, reject) => {
       try {
         const tx = db.transaction([STORE_BOOKMARKS, STORE_PENDING_MUTATIONS], 'readwrite');
         tx.objectStore(STORE_BOOKMARKS).put(bookmark);
-        tx.objectStore(STORE_PENDING_MUTATIONS).put(mutation);
+        tx.objectStore(STORE_PENDING_MUTATIONS).add(mutation);
 
         tx.oncomplete = () => resolve();
         tx.onerror = () => {
@@ -499,6 +525,7 @@ export class IndexedDbClient {
 
   /**
    * Atomic Primitive: Deletes bookmark and enqueues BOOKMARK DELETE mutation in the same IDB transaction.
+   * Enforces mutation immutability via add().
    */
   async deleteBookmarkWithMutation(
     ownerScope: string,
@@ -512,25 +539,56 @@ export class IndexedDbClient {
       throw new Error(`Scope mismatch: ownerScope (${ownerScope}) does not match mutation (${mutation.ownerScope})`);
     }
 
+    if (mutation.domain !== SyncDomain.BOOKMARK) {
+      throw new Error(`Domain mismatch: expected BOOKMARK, got ${mutation.domain}`);
+    }
+
+    if (mutation.operation !== SyncOperation.DELETE) {
+      throw new Error(`Operation mismatch: expected DELETE, got ${mutation.operation}`);
+    }
+
+    if (mutation.entityId !== storyId) {
+      throw new Error(`EntityId mismatch: expected "${storyId}", got "${mutation.entityId}"`);
+    }
+
     const db = await this.getDatabase();
 
     return new Promise<void>((resolve, reject) => {
       try {
         const tx = db.transaction([STORE_BOOKMARKS, STORE_PENDING_MUTATIONS], 'readwrite');
         tx.objectStore(STORE_BOOKMARKS).delete([ownerScope, storyId]);
-        tx.objectStore(STORE_PENDING_MUTATIONS).put(mutation);
+        tx.objectStore(STORE_PENDING_MUTATIONS).add(mutation);
 
         tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-        tx.onabort = () => reject(tx.error || new Error('Transaction aborted.'));
-      } catch (err) {
-        reject(err);
+        tx.onerror = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Transaction failed.'));
+          }
+        };
+        tx.onabort = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Transaction aborted.'));
+          }
+        };
+      } catch (err: any) {
+        if (err && (err.name === 'QuotaExceededError' || err.code === 22)) {
+          reject(new QuotaExceededStorageError());
+        } else {
+          reject(err);
+        }
       }
     });
   }
 
   /**
    * Atomic Primitive: Persists preference and enqueues PREFERENCE UPSERT mutation in the same IDB transaction.
+   * Enforces mutation immutability via add().
    */
   async putPreferenceWithMutation(
     preference: LocalPreference,
@@ -543,13 +601,25 @@ export class IndexedDbClient {
       throw new Error(`Scope mismatch: preference (${preference.ownerScope}) does not match mutation (${mutation.ownerScope})`);
     }
 
+    if (mutation.domain !== SyncDomain.PREFERENCE) {
+      throw new Error(`Domain mismatch: expected PREFERENCE, got ${mutation.domain}`);
+    }
+
+    if (mutation.operation !== SyncOperation.UPSERT) {
+      throw new Error(`Operation mismatch: expected UPSERT, got ${mutation.operation}`);
+    }
+
+    if (mutation.entityId !== preference.key) {
+      throw new Error(`EntityId mismatch: expected "${preference.key}", got "${mutation.entityId}"`);
+    }
+
     const db = await this.getDatabase();
 
     return new Promise<void>((resolve, reject) => {
       try {
         const tx = db.transaction([STORE_PREFERENCES, STORE_PENDING_MUTATIONS], 'readwrite');
         tx.objectStore(STORE_PREFERENCES).put(preference);
-        tx.objectStore(STORE_PENDING_MUTATIONS).put(mutation);
+        tx.objectStore(STORE_PENDING_MUTATIONS).add(mutation);
 
         tx.oncomplete = () => resolve();
         tx.onerror = () => {
@@ -560,15 +630,27 @@ export class IndexedDbClient {
             reject(error || new Error('Transaction failed.'));
           }
         };
-        tx.onabort = () => reject(tx.error || new Error('Transaction aborted.'));
-      } catch (err) {
-        reject(err);
+        tx.onabort = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Transaction aborted.'));
+          }
+        };
+      } catch (err: any) {
+        if (err && (err.name === 'QuotaExceededError' || err.code === 22)) {
+          reject(new QuotaExceededStorageError());
+        } else {
+          reject(err);
+        }
       }
     });
   }
 
   /**
    * Atomic Primitive: Deletes single story history and enqueues HISTORY DELETE mutation in the same IDB transaction.
+   * Enforces mutation immutability via add().
    */
   async deleteStoryHistoryWithMutation(
     ownerScope: string,
@@ -580,6 +662,18 @@ export class IndexedDbClient {
 
     if (ownerScope !== mutation.ownerScope) {
       throw new Error(`Scope mismatch: ownerScope (${ownerScope}) does not match mutation (${mutation.ownerScope})`);
+    }
+
+    if (mutation.domain !== SyncDomain.HISTORY) {
+      throw new Error(`Domain mismatch: expected HISTORY, got ${mutation.domain}`);
+    }
+
+    if (mutation.operation !== SyncOperation.DELETE) {
+      throw new Error(`Operation mismatch: expected DELETE, got ${mutation.operation}`);
+    }
+
+    if (mutation.entityId !== storyId) {
+      throw new Error(`EntityId mismatch: expected "${storyId}", got "${mutation.entityId}"`);
     }
 
     const db = await this.getDatabase();
@@ -604,19 +698,38 @@ export class IndexedDbClient {
         progStore.delete([ownerScope, storyId]);
 
         const mutStore = tx.objectStore(STORE_PENDING_MUTATIONS);
-        mutStore.put(mutation);
+        mutStore.add(mutation);
 
         tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-        tx.onabort = () => reject(tx.error || new Error('Transaction aborted.'));
-      } catch (err) {
-        reject(err);
+        tx.onerror = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Transaction failed.'));
+          }
+        };
+        tx.onabort = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Transaction aborted.'));
+          }
+        };
+      } catch (err: any) {
+        if (err && (err.name === 'QuotaExceededError' || err.code === 22)) {
+          reject(new QuotaExceededStorageError());
+        } else {
+          reject(err);
+        }
       }
     });
   }
 
   /**
    * Atomic Primitive: Clears all history for ownerScope and enqueues global HISTORY DELETE mutation in the same IDB transaction.
+   * Enforces mutation immutability via add().
    */
   async clearAllHistoryWithMutation(
     ownerScope: string,
@@ -627,6 +740,18 @@ export class IndexedDbClient {
 
     if (ownerScope !== mutation.ownerScope) {
       throw new Error(`Scope mismatch: ownerScope (${ownerScope}) does not match mutation (${mutation.ownerScope})`);
+    }
+
+    if (mutation.domain !== SyncDomain.HISTORY) {
+      throw new Error(`Domain mismatch: expected HISTORY, got ${mutation.domain}`);
+    }
+
+    if (mutation.operation !== SyncOperation.DELETE) {
+      throw new Error(`Operation mismatch: expected DELETE, got ${mutation.operation}`);
+    }
+
+    if (mutation.entityId !== '*' && mutation.entityId !== 'all') {
+      throw new Error(`EntityId mismatch for clearAllHistory: expected "*" or "all", got "${mutation.entityId}"`);
     }
 
     const db = await this.getDatabase();
@@ -660,13 +785,31 @@ export class IndexedDbClient {
         };
 
         const mutStore = tx.objectStore(STORE_PENDING_MUTATIONS);
-        mutStore.put(mutation);
+        mutStore.add(mutation);
 
         tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-        tx.onabort = () => reject(tx.error || new Error('Transaction aborted.'));
-      } catch (err) {
-        reject(err);
+        tx.onerror = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Transaction failed.'));
+          }
+        };
+        tx.onabort = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Transaction aborted.'));
+          }
+        };
+      } catch (err: any) {
+        if (err && (err.name === 'QuotaExceededError' || err.code === 22)) {
+          reject(new QuotaExceededStorageError());
+        } else {
+          reject(err);
+        }
       }
     });
   }
@@ -1005,6 +1148,44 @@ export class IndexedDbClient {
   }
 
   // ==================== PENDING MUTATIONS QUEUE OPERATIONS (Phase 7C.3) ====================
+
+  /**
+   * Enqueues a new pending mutation using add() to enforce immutability.
+   * Duplicate [ownerScope, mutationId] triggers ConstraintError and aborts transaction.
+   */
+  async enqueuePendingMutation(mutation: LocalPendingMutation): Promise<void> {
+    assertValidScope(mutation.ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_PENDING_MUTATIONS, 'readwrite');
+        tx.objectStore(STORE_PENDING_MUTATIONS).add(mutation);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Failed to enqueue pending mutation.'));
+          }
+        };
+        tx.onabort = () => {
+          const error = tx.error;
+          if (error && (error.name === 'QuotaExceededError' || error.code === 22)) {
+            reject(new QuotaExceededStorageError());
+          } else {
+            reject(error || new Error('Enqueue pending mutation transaction aborted.'));
+          }
+        };
+      } catch (err: any) {
+        if (err && (err.name === 'QuotaExceededError' || err.code === 22)) {
+          reject(new QuotaExceededStorageError());
+        } else {
+          reject(err);
+        }
+      }
+    });
+  }
 
   async getPendingMutations(ownerScope: string, limit: number = 100): Promise<LocalPendingMutation[]> {
     assertValidScope(ownerScope);

@@ -43,9 +43,10 @@ export class SyncLogEmitter {
       [userId],
     );
 
+    const firstRow = Array.isArray(rows) && Array.isArray(rows[0]) ? rows[0][0] : rows?.[0];
     return {
-      currentSyncRevision: BigInt(rows[0].current_sync_revision),
-      minActiveRevision: BigInt(rows[0].min_active_revision),
+      currentSyncRevision: BigInt(firstRow?.current_sync_revision ?? firstRow?.currentSyncRevision ?? 0),
+      minActiveRevision: BigInt(firstRow?.min_active_revision ?? firstRow?.minActiveRevision ?? 0),
     };
   }
 
@@ -90,7 +91,8 @@ export class SyncLogEmitter {
         [userId],
       );
 
-      finalRevision = BigInt(updateRes[0].current_sync_revision);
+      const updateRow = Array.isArray(updateRes) && Array.isArray(updateRes[0]) ? updateRes[0][0] : updateRes?.[0];
+      finalRevision = BigInt(updateRow?.current_sync_revision ?? updateRow?.currentSyncRevision ?? 0);
       const revisionStr = finalRevision.toString();
       const clientId = item.clientId || 'server-core-api';
       const mutationId = item.mutationId || uuidv4();

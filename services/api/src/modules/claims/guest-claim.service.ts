@@ -7,7 +7,6 @@ import {
   HttpException,
   HttpStatus,
   Logger,
-  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, QueryRunner } from 'typeorm';
@@ -44,7 +43,7 @@ export class GuestClaimService {
     private readonly guestClaimRepo: Repository<GuestClaim>,
     private readonly dataSource: DataSource,
     private readonly redisService: RedisService,
-    @Optional() private readonly syncLogEmitter?: SyncLogEmitter,
+    private readonly syncLogEmitter: SyncLogEmitter,
   ) {}
 
   /**

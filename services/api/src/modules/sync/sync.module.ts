@@ -5,6 +5,7 @@ import { UserSyncState } from './entities/user-sync-state.entity';
 import { SyncChangeLog } from './entities/sync-change-log.entity';
 import { SyncTombstone } from './entities/sync-tombstone.entity';
 import { SyncMutationReceipt } from './entities/sync-mutation-receipt.entity';
+import { UserPreference } from './entities/user-preference.entity';
 import {
   BookmarkConflictResolver,
   ConflictResolverDispatcher,
@@ -24,6 +25,7 @@ import { SyncController } from './sync.controller';
       SyncChangeLog,
       SyncTombstone,
       SyncMutationReceipt,
+      UserPreference,
     ]),
     ConfigModule,
   ],

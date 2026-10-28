@@ -12,9 +12,19 @@ import {
   ValidationArguments,
   ValidatorConstraint,
   ValidatorConstraintInterface,
+  validateSync,
 } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
 import { SyncDomain, SyncOperation } from '../interfaces/sync.types';
 import { IsValidBigIntRevision } from '../validators/bigint-revision.validator';
+import {
+  BookmarkMutationPayloadDto,
+  ProgressMutationPayloadDto,
+  HistoryMutationPayloadDto,
+  PreferenceMutationPayloadDto,
+} from './mutation-payloads.dto';
+
+const UUID_ANY_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 @ValidatorConstraint({ name: 'IsPlainJsonObject', async: false })
 export class IsPlainJsonObjectConstraint
@@ -30,6 +40,123 @@ export class IsPlainJsonObjectConstraint
 
   defaultMessage(args: ValidationArguments): string {
     return `${args.property} must be a valid non-null plain JSON object`;
+  }
+}
+
+@ValidatorConstraint({ name: 'IsValidMutationPayloadAndEntity', async: false })
+export class IsValidMutationPayloadAndEntityConstraint
+  implements ValidatorConstraintInterface
+{
+  private failureReason = '';
+
+  validate(payload: Record<string, unknown>, args: ValidationArguments): boolean {
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      this.failureReason = 'payload must be a valid non-null plain JSON object';
+      return false;
+    }
+
+    const dto = args.object as ClientMutationDto;
+    if (!dto.domain || !dto.operation) {
+      return true;
+    }
+
+    const { domain, operation, entityId } = dto;
+
+    if (domain === SyncDomain.BOOKMARK) {
+      if (!UUID_ANY_REGEX.test(entityId)) {
+        this.failureReason = `BOOKMARK entityId must be a valid UUID; received '${entityId}'`;
+        return false;
+      }
+      if (operation === SyncOperation.UPSERT) {
+        const instance = plainToInstance(BookmarkMutationPayloadDto, payload || {});
+        const errors = validateSync(instance);
+        if (errors.length > 0) {
+          this.failureReason = `Invalid BOOKMARK payload: ${errors.map((e) => Object.values(e.constraints || {}).join(', ')).join('; ')}`;
+          return false;
+        }
+        if (instance.storyId !== entityId) {
+          this.failureReason = `BOOKMARK entityId ('${entityId}') does not match payload.storyId ('${instance.storyId}')`;
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (domain === SyncDomain.PROGRESS) {
+      if (!UUID_ANY_REGEX.test(entityId) && !entityId.includes(':')) {
+        this.failureReason = `PROGRESS entityId must be a valid UUID or storyId:chapterId; received '${entityId}'`;
+        return false;
+      }
+      if (operation === SyncOperation.UPSERT) {
+        const instance = plainToInstance(ProgressMutationPayloadDto, payload || {});
+        const errors = validateSync(instance);
+        if (errors.length > 0) {
+          this.failureReason = `Invalid PROGRESS payload: ${errors.map((e) => Object.values(e.constraints || {}).join(', ')).join('; ')}`;
+          return false;
+        }
+        const expectedStoryId = entityId.includes(':') ? entityId.split(':')[0] : entityId;
+        if (instance.storyId !== expectedStoryId) {
+          this.failureReason = `PROGRESS entityId ('${entityId}') does not match payload.storyId ('${instance.storyId}')`;
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (domain === SyncDomain.HISTORY) {
+      if (operation === SyncOperation.UPSERT) {
+        const instance = plainToInstance(HistoryMutationPayloadDto, payload || {});
+        const errors = validateSync(instance);
+        if (errors.length > 0) {
+          this.failureReason = `Invalid HISTORY payload: ${errors.map((e) => Object.values(e.constraints || {}).join(', ')).join('; ')}`;
+          return false;
+        }
+        if (entityId !== instance.storyId && entityId !== instance.chapterId) {
+          this.failureReason = `HISTORY entityId ('${entityId}') does not match payload.storyId or payload.chapterId`;
+          return false;
+        }
+      } else if (operation === SyncOperation.DELETE) {
+        if (
+          entityId !== '00000000-0000-0000-0000-000000000000' &&
+          entityId !== 'all' &&
+          !UUID_ANY_REGEX.test(entityId)
+        ) {
+          this.failureReason = `HISTORY DELETE entityId must be a valid UUID, global sentinel, or 'all'; received '${entityId}'`;
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (domain === SyncDomain.PREFERENCE) {
+      if (!entityId || entityId.trim().length === 0) {
+        this.failureReason = 'PREFERENCE entityId cannot be empty';
+        return false;
+      }
+      if (operation === SyncOperation.UPSERT) {
+        const instance = plainToInstance(PreferenceMutationPayloadDto, payload || {});
+        const errors = validateSync(instance);
+        if (errors.length > 0) {
+          this.failureReason = `Invalid PREFERENCE payload: ${errors.map((e) => Object.values(e.constraints || {}).join(', ')).join('; ')}`;
+          return false;
+        }
+        if (instance.key !== entityId) {
+          this.failureReason = `PREFERENCE entityId ('${entityId}') does not match payload.key ('${instance.key}')`;
+          return false;
+        }
+      }
+      return true;
+    }
+
+    if (domain === SyncDomain.FOLLOW) {
+      return true;
+    }
+
+    return true;
+  }
+
+  defaultMessage(args: ValidationArguments): string {
+    return this.failureReason || `${args.property} failed domain payload validation`;
   }
 }
 
@@ -79,10 +206,11 @@ export class ClientMutationDto {
   baseServerRevision: string;
 
   /**
-   * Raw payload of the mutation. Must be a plain JSON object.
+   * Raw payload of the mutation. Must be a plain JSON object and match domain schema and entityId.
    */
   @IsDefined({ message: 'payload is required' })
   @Validate(IsPlainJsonObjectConstraint)
+  @Validate(IsValidMutationPayloadAndEntityConstraint)
   payload: Record<string, unknown>;
 
   /**

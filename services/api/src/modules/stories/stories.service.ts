@@ -3,7 +3,6 @@ import {
   NotFoundException,
   ForbiddenException,
   BadRequestException,
-  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository, DataSource, In } from 'typeorm';
@@ -56,7 +55,7 @@ export class StoriesService {
     private chapterRepository: Repository<Chapter>,
     private redisService: RedisService,
     private dataSource: DataSource,
-    @Optional() private syncLogEmitter?: SyncLogEmitter,
+    private readonly syncLogEmitter: SyncLogEmitter,
   ) {}
 
   async create(userId: string, dto: CreateStoryDto) {

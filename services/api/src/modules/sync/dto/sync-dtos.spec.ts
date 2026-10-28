@@ -275,5 +275,61 @@ describe('Sync DTO Validations', () => {
       });
       expect((await validate(negativeEpoch)).length).toBeGreaterThan(0);
     });
+
+    it('P1-02: should reject ClientMutationDto when entityId does not match domain payload or format', async () => {
+      // 1. BOOKMARK entityId mismatch
+      const bookmarkMismatch = plainToInstance(ClientMutationDto, {
+        clientId: '11111111-1111-4111-8111-111111111111',
+        mutationId: '22222222-2222-4222-8222-222222222222',
+        domain: SyncDomain.BOOKMARK,
+        entityId: '33333333-3333-4333-8333-333333333333',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '10',
+        payload: {
+          storyId: '44444444-4444-4444-8444-444444444444', // Different from entityId!
+        },
+      });
+      const bookmarkErrors = await validate(bookmarkMismatch);
+      expect(bookmarkErrors.length).toBeGreaterThan(0);
+      expect(JSON.stringify(bookmarkErrors)).toContain('does not match payload.storyId');
+
+      // 2. PROGRESS payload invalid (pageIndex < 1)
+      const progressInvalid = plainToInstance(ClientMutationDto, {
+        clientId: '11111111-1111-4111-8111-111111111111',
+        mutationId: '22222222-2222-4222-8222-222222222222',
+        domain: SyncDomain.PROGRESS,
+        entityId: '33333333-3333-4333-8333-333333333333',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '10',
+        payload: {
+          storyId: '33333333-3333-4333-8333-333333333333',
+          chapterId: '44444444-4444-4444-8444-444444444444',
+          readingMode: 'PAGED',
+          pageIndex: 0, // Invalid!
+          scrollPosition: 0,
+          progressPercentage: 50,
+        },
+      });
+      const progressErrors = await validate(progressInvalid);
+      expect(progressErrors.length).toBeGreaterThan(0);
+      expect(JSON.stringify(progressErrors)).toContain('Invalid PROGRESS payload');
+
+      // 3. PREFERENCE entityId mismatch
+      const prefMismatch = plainToInstance(ClientMutationDto, {
+        clientId: '11111111-1111-4111-8111-111111111111',
+        mutationId: '22222222-2222-4222-8222-222222222222',
+        domain: SyncDomain.PREFERENCE,
+        entityId: 'theme',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '10',
+        payload: {
+          key: 'font_family', // Mismatched!
+          value: 'sans',
+        },
+      });
+      const prefErrors = await validate(prefMismatch);
+      expect(prefErrors.length).toBeGreaterThan(0);
+      expect(JSON.stringify(prefErrors)).toContain('does not match payload.key');
+    });
   });
 });

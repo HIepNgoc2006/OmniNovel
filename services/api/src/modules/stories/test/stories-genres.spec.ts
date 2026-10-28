@@ -12,6 +12,7 @@ import { ChapterReadState } from '../entities/chapter-read-state.entity';
 import { Volume } from '../../chapters/entities/volume.entity';
 import { Chapter } from '../../chapters/entities/chapter.entity';
 import { RedisService } from '../../../redis/redis.service';
+import { SyncLogEmitter } from '../../sync/services/sync-log-emitter.service';
 
 describe('StoriesService.getGenres (#199)', () => {
   let service: StoriesService;
@@ -43,6 +44,14 @@ describe('StoriesService.getGenres (#199)', () => {
         { provide: getRepositoryToken(Chapter), useValue: {} },
         { provide: RedisService, useValue: {} },
         { provide: DataSource, useValue: dataSourceMock },
+        {
+          provide: SyncLogEmitter,
+          useValue: {
+            lockAndAcquireUserSyncState: jest.fn().mockResolvedValue({ currentSyncRevision: 0n, minActiveRevision: 0n }),
+            emit: jest.fn().mockResolvedValue('1'),
+            emitBatch: jest.fn().mockResolvedValue('1'),
+          },
+        },
       ],
     }).compile();
 

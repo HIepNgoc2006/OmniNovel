@@ -20,6 +20,7 @@ import {
   CommitGuestClaimDto,
   ConflictResolution,
 } from '../dto/commit-guest-claim.dto';
+import { SyncLogEmitter } from '../../sync/services/sync-log-emitter.service';
 
 describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
   let service: GuestClaimService;
@@ -68,6 +69,12 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
       releaseLock: jest.fn().mockResolvedValue(true),
     };
 
+    const syncLogEmitterMock = {
+      lockAndAcquireUserSyncState: jest.fn().mockResolvedValue({ currentSyncRevision: 0n, minActiveRevision: 0n }),
+      emit: jest.fn().mockResolvedValue('1'),
+      emitBatch: jest.fn().mockResolvedValue('1'),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         GuestClaimService,
@@ -77,6 +84,7 @@ describe('GuestClaimService (Task 7B.1 Backend Claim Engine)', () => {
         },
         { provide: DataSource, useValue: dataSourceMock },
         { provide: RedisService, useValue: redisServiceMock },
+        { provide: SyncLogEmitter, useValue: syncLogEmitterMock },
       ],
     }).compile();
 

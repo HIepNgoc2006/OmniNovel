@@ -18,6 +18,7 @@ import { MetricsModule } from './modules/metrics/metrics.module';
 import { MetricsMiddleware } from './modules/metrics/metrics.middleware';
 import { GuestClaimModule } from './modules/claims/guest-claim.module';
 import { AccountModule } from './modules/account/account.module';
+import { SyncModule } from './modules/sync/sync.module';
 
 @Module({
   imports: [
@@ -50,6 +51,7 @@ import { AccountModule } from './modules/account/account.module';
     TranslationModule,
     MetricsModule,
     GuestClaimModule,
+    SyncModule,
   ],
 })
 export class AppModule implements NestModule {

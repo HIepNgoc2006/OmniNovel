@@ -30,6 +30,10 @@ import { TranslationGlossary } from '../modules/translation/entities/translation
 import { TranslationJob } from '../modules/translation/entities/translation-job.entity';
 import { TranslationSegment } from '../modules/translation/entities/translation-segment.entity';
 import { GuestClaim } from '../modules/claims/entities/guest-claim.entity';
+import { UserSyncState } from '../modules/sync/entities/user-sync-state.entity';
+import { SyncChangeLog } from '../modules/sync/entities/sync-change-log.entity';
+import { SyncTombstone } from '../modules/sync/entities/sync-tombstone.entity';
+import { SyncMutationReceipt } from '../modules/sync/entities/sync-mutation-receipt.entity';
 
 @Module({
   imports: [
@@ -60,36 +64,43 @@ import { GuestClaim } from '../modules/claims/entities/guest-claim.entity';
           type: 'postgres',
           ...pgOptions,
           synchronize: false, // Bắt buộc false theo ADR-011
-        entities: [
-          User,
-          UserProgression,
-          RankTheme,
-          RankLevel,
-          Story,
-          StoryMember,
-          StoryEdition,
-          Genre,
-          Creator,
-          Bookmark,
-          ReadingProgress,
-          ChapterReadState,
-          Volume,
-          Chapter,
-          ChapterVersion,
-          MediaAsset,
-          ChapterArtifact,
-          UploadSession,
-          RewardTransaction,
-          DailyCheckin,
-          LevelReward,
-          UserClaimedLevelReward,
-          TranslationProject,
-          TranslationGlossary,
-          TranslationJob,
-          TranslationSegment,
-          GuestClaim,
-        ],
-        logging: config.get<string>('NODE_ENV') === 'development' ? ['error', 'warn'] : false,
+          entities: [
+            User,
+            UserProgression,
+            RankTheme,
+            RankLevel,
+            Story,
+            StoryMember,
+            StoryEdition,
+            Genre,
+            Creator,
+            Bookmark,
+            ReadingProgress,
+            ChapterReadState,
+            Volume,
+            Chapter,
+            ChapterVersion,
+            MediaAsset,
+            ChapterArtifact,
+            UploadSession,
+            RewardTransaction,
+            DailyCheckin,
+            LevelReward,
+            UserClaimedLevelReward,
+            TranslationProject,
+            TranslationGlossary,
+            TranslationJob,
+            TranslationSegment,
+            GuestClaim,
+            UserSyncState,
+            SyncChangeLog,
+            SyncTombstone,
+            SyncMutationReceipt,
+          ],
+          logging:
+            config.get<string>('NODE_ENV') === 'development'
+              ? ['error', 'warn']
+              : false,
         };
       },
     }),

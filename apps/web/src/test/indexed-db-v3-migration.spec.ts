@@ -698,7 +698,7 @@ describe('Task 7C.3 — Step 2: IndexedDB v3 Migration, Schema & Atomic Primitiv
       const scope = 'account:usr-sync-3';
       const pref: LocalPreference = {
         ownerScope: scope,
-        key: 'readerTheme',
+        key: 'reader_theme',
         value: { theme: 'sepia', fontSize: 18 },
         updatedAt: '2026-10-28T22:20:00.000Z',
       };
@@ -708,16 +708,16 @@ describe('Task 7C.3 — Step 2: IndexedDB v3 Migration, Schema & Atomic Primitiv
         mutationId: 'mut-pref-1',
         clientId: 'client-web-1',
         domain: SyncDomain.PREFERENCE,
-        entityId: 'readerTheme',
+        entityId: 'reader_theme',
         operation: SyncOperation.UPSERT,
         baseServerRevision: '110',
-        payload: { key: 'readerTheme', value: { theme: 'sepia', fontSize: 18 } },
+        payload: { key: 'reader_theme', value: { theme: 'sepia', fontSize: 18 } },
         createdAt: '2026-10-28T22:20:00.000Z',
       };
 
       await dbClient.putPreferenceWithMutation(pref, mutation);
 
-      const savedPref = await dbClient.getPreference(scope, 'readerTheme');
+      const savedPref = await dbClient.getPreference(scope, 'reader_theme');
       expect(savedPref?.value).toEqual({ theme: 'sepia', fontSize: 18 });
 
       const pending = await dbClient.getPendingMutations(scope);

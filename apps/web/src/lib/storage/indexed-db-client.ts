@@ -750,8 +750,8 @@ export class IndexedDbClient {
       throw new Error(`Operation mismatch: expected DELETE, got ${mutation.operation}`);
     }
 
-    if (mutation.entityId !== '*' && mutation.entityId !== 'all') {
-      throw new Error(`EntityId mismatch for clearAllHistory: expected "*" or "all", got "${mutation.entityId}"`);
+    if (mutation.entityId !== 'all' && mutation.entityId !== '00000000-0000-0000-0000-000000000000') {
+      throw new Error(`EntityId mismatch for clearAllHistory: expected "all" or sentinel UUID "00000000-0000-0000-0000-000000000000", got "${mutation.entityId}"`);
     }
 
     const db = await this.getDatabase();

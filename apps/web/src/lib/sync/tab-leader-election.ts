@@ -52,6 +52,10 @@ export class TabLeaderElection {
         ? navigator.locks
         : undefined);
 
+    if (!this.lockManager) {
+      this.currentRole = 'DISCONNECTED';
+    }
+
     this.initBroadcastChannel();
     this.attachUnloadListeners();
   }
@@ -219,8 +223,15 @@ export class TabLeaderElection {
     const lockName = this.getLockName(currentTargetScope);
 
     if (!this.lockManager) {
-      // In SSR or environments without Web Locks API, act as standalone isolated leader
-      this.promoteToLeader(currentTargetScope);
+      // Invariant: Web Locks API is the sole authority for leadership.
+      // If unavailable, fail-closed: remain DISCONNECTED, issue no leader signal, prohibit network sync.
+      console.warn(
+        `[TabLeaderElection] Web Locks API is unavailable in this environment. Multi-tab synchronization is disabled (fail-closed). Scope: ${currentTargetScope}`
+      );
+      this.currentRole = 'DISCONNECTED';
+      if (this.onRoleChange) {
+        this.onRoleChange('DISCONNECTED', null);
+      }
       return;
     }
 
@@ -235,22 +246,51 @@ export class TabLeaderElection {
           return;
         }
 
-        // True Web Lock acquired!
-        this.promoteToLeader(currentTargetScope);
-
-        // Keep the lock held until releaseLockResolve is called (stepDown, scope change, destroy)
-        await new Promise<void>((resolve) => {
-          this.lockReleaseResolve = resolve;
+        // 1. Establish the release promise and resolver BEFORE calling promoteToLeader.
+        // This guarantees that if promoteToLeader (or synchronous callback onRoleChange)
+        // invokes stepDown(), destroy(), or setActiveScope(), the resolver is already present
+        // to immediately release the Web Lock without deadlocking or leaking.
+        let releaseResolve!: () => void;
+        const releasePromise = new Promise<void>((resolve) => {
+          releaseResolve = resolve;
         });
+        this.lockReleaseResolve = releaseResolve;
 
-        // Demote back to follower when lock is released (only if scope hasn't changed)
-        if (this.ownerScope === currentTargetScope) {
-          this.demoteToFollower('Lock promise resolved');
+        try {
+          // 2. True Web Lock acquired!
+          this.promoteToLeader(currentTargetScope);
+
+          // 3. Invariant Check: If onRoleChange synchronously triggered stepDown(), destroy(),
+          // or setActiveScope(), terminateLeadership() was already executed during callback.
+          // In that case, role is no longer LEADER, or election is inactive/destroyed,
+          // or scope has changed. Exit callback immediately to release lock to waiting tabs!
+          if (
+            this.isDestroyed ||
+            !this.isElectionLoopActive ||
+            this.ownerScope !== currentTargetScope ||
+            this.currentRole !== 'LEADER'
+          ) {
+            return;
+          }
+
+          // 4. Keep the lock held until lockReleaseResolve is called (stepDown, scope change, destroy)
+          await releasePromise;
+        } finally {
+          this.lockReleaseResolve = null;
+
+          // Demote back to follower when lock is released (only if still active in scope and still leader)
+          if (
+            this.ownerScope === currentTargetScope &&
+            !this.isDestroyed &&
+            this.currentRole === 'LEADER'
+          ) {
+            this.demoteToFollower('Lock promise resolved');
+          }
         }
       });
     } catch (err) {
       // If lock acquisition aborted or failed, ensure follower status (only if scope hasn't changed)
-      if (this.ownerScope === currentTargetScope) {
+      if (this.ownerScope === currentTargetScope && !this.isDestroyed) {
         this.demoteToFollower(err instanceof Error ? err.message : String(err));
       }
     }

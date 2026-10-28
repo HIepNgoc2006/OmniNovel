@@ -332,23 +332,184 @@ describe('Task 7C.3 — Step 3: Tab Leader Election (Web Locks API & Scope Parti
     });
   });
 
-  describe('6. Standalone Fallback without Web Locks API', () => {
-    it('operates as standalone leader in environments where Web Locks API is unavailable', async () => {
-      // Pass undefined lockManager to simulate older environment or SSR
+  describe('6. Fail-closed without Web Locks API (P0-02 Invariant)', () => {
+    it('remains DISCONNECTED and never promotes to LEADER when Web Locks API is unavailable', async () => {
+      let latestRole: TabRole | null = null;
+      let latestSignal: AbortSignal | null = null;
+
+      // Pass undefined lockManager to simulate environments without Web Locks API (SSR or older browsers)
       const fallbackTab = new TabLeaderElection({
         ownerScope: 'account:usr-fallback',
         tabId: 'tab-fallback',
         lockManager: undefined,
+        onRoleChange: (role, signal) => {
+          latestRole = role;
+          latestSignal = signal;
+        },
       });
 
+      // Initial state must be DISCONNECTED
+      expect(fallbackTab.getState().isLeader).toBe(false);
+      expect(fallbackTab.getState().role).toBe('DISCONNECTED');
+      expect(fallbackTab.getLeaderSignal()).toBeNull();
+
+      // Attempt start()
       fallbackTab.start();
+      await new Promise((r) => setTimeout(r, 20));
 
-      expect(fallbackTab.getState().isLeader).toBe(true);
-      expect(fallbackTab.getState().role).toBe('LEADER');
-      expect(fallbackTab.getLeaderSignal()?.aborted).toBe(false);
+      // Invariant: Web Locks API is the EXCLUSIVE authority. Without it, tab must NOT become LEADER.
+      expect(fallbackTab.getState().isLeader).toBe(false);
+      expect(fallbackTab.getState().role).toBe('DISCONNECTED');
+      expect(fallbackTab.getLeaderSignal()).toBeNull();
+      expect(latestSignal).toBeNull();
+      expect(latestRole).toBe('DISCONNECTED');
 
+      // Unload / destroy keeps it DISCONNECTED
       fallbackTab.destroy();
       expect(fallbackTab.getState().isLeader).toBe(false);
+      expect(fallbackTab.getState().role).toBe('DISCONNECTED');
+    });
+  });
+
+  describe('7. Synchronous Lifecycle Operations inside onRoleChange (P0-03 Regression Tests)', () => {
+    it('immediately releases Web Lock when stepDown() is invoked synchronously inside onRoleChange', async () => {
+      const scope = 'account:usr-sync-stepdown';
+      const tab1RoleEvents: TabRole[] = [];
+      let tab2BecameLeader = false;
+
+      let tab1Ref!: TabLeaderElection;
+      tab1Ref = new TabLeaderElection({
+        ownerScope: scope,
+        tabId: 'tab-sync-1',
+        lockManager,
+        onRoleChange: (role) => {
+          tab1RoleEvents.push(role);
+          if (role === 'LEADER') {
+            // Synchronous stepDown inside callback!
+            tab1Ref.stepDown();
+          }
+        },
+      });
+
+      const tab2 = new TabLeaderElection({
+        ownerScope: scope,
+        tabId: 'tab-sync-2',
+        lockManager,
+        onRoleChange: (role) => {
+          if (role === 'LEADER') {
+            tab2BecameLeader = true;
+          }
+        },
+      });
+
+      // Start tab1 first, then tab2
+      tab1Ref.start();
+      tab2.start();
+
+      // Yield to let lock acquisition, synchronous stepDown, and failover run
+      await new Promise((r) => setTimeout(r, 40));
+
+      // Tab 1 should have transitioned LEADER -> FOLLOWER synchronously without deadlocking
+      expect(tab1RoleEvents).toEqual(['LEADER', 'FOLLOWER']);
+      expect(tab1Ref.getState().isLeader).toBe(false);
+
+      // Crucial: Tab 2 MUST have successfully acquired the lock because Tab 1 did NOT deadlock or hold the lock!
+      expect(tab2BecameLeader).toBe(true);
+      expect(tab2.getState().isLeader).toBe(true);
+      expect(tab2.getState().role).toBe('LEADER');
+
+      tab1Ref.destroy();
+      tab2.destroy();
+    });
+
+    it('immediately releases Web Lock when destroy() is invoked synchronously inside onRoleChange', async () => {
+      const scope = 'account:usr-sync-destroy';
+      let tab2BecameLeader = false;
+
+      let tab1Ref!: TabLeaderElection;
+      tab1Ref = new TabLeaderElection({
+        ownerScope: scope,
+        tabId: 'tab-destroy-1',
+        lockManager,
+        onRoleChange: (role) => {
+          if (role === 'LEADER') {
+            // Synchronous destroy inside callback!
+            tab1Ref.destroy();
+          }
+        },
+      });
+
+      const tab2 = new TabLeaderElection({
+        ownerScope: scope,
+        tabId: 'tab-destroy-2',
+        lockManager,
+        onRoleChange: (role) => {
+          if (role === 'LEADER') {
+            tab2BecameLeader = true;
+          }
+        },
+      });
+
+      tab1Ref.start();
+      tab2.start();
+
+      await new Promise((r) => setTimeout(r, 40));
+
+      expect(tab1Ref.getState().isLeader).toBe(false);
+      expect(tab1Ref.getState().role).toBe('DISCONNECTED');
+
+      // Crucial: Tab 2 MUST acquire leadership without waiting indefinitely
+      expect(tab2BecameLeader).toBe(true);
+      expect(tab2.getState().isLeader).toBe(true);
+
+      tab1Ref.destroy();
+      tab2.destroy();
+    });
+
+    it('immediately releases old scope Web Lock and acquires new scope when setActiveScope() is invoked synchronously inside onRoleChange', async () => {
+      const scopeA = 'account:usr-scope-A';
+      const scopeB = 'account:usr-scope-B';
+      let tab2BecameLeaderScopeA = false;
+
+      let tab1Ref!: TabLeaderElection;
+      tab1Ref = new TabLeaderElection({
+        ownerScope: scopeA,
+        tabId: 'tab-scope-1',
+        lockManager,
+        onRoleChange: (role) => {
+          if (role === 'LEADER' && tab1Ref.getState().ownerScope === scopeA) {
+            // Synchronously switch scope upon becoming leader for scopeA
+            tab1Ref.setActiveScope(scopeB);
+          }
+        },
+      });
+
+      const tab2ScopeA = new TabLeaderElection({
+        ownerScope: scopeA,
+        tabId: 'tab-scopeA-2',
+        lockManager,
+        onRoleChange: (role) => {
+          if (role === 'LEADER') {
+            tab2BecameLeaderScopeA = true;
+          }
+        },
+      });
+
+      tab1Ref.start();
+      tab2ScopeA.start();
+
+      await new Promise((r) => setTimeout(r, 60));
+
+      // Tab 2 must have acquired lock for scope A because Tab 1 released it immediately!
+      expect(tab2BecameLeaderScopeA).toBe(true);
+      expect(tab2ScopeA.getState().isLeader).toBe(true);
+
+      // Tab 1 must now be leader for scope B!
+      expect(tab1Ref.getState().ownerScope).toBe(scopeB);
+      expect(tab1Ref.getState().isLeader).toBe(true);
+
+      tab1Ref.destroy();
+      tab2ScopeA.destroy();
     });
   });
 });

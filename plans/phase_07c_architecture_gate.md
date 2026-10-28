@@ -612,14 +612,16 @@ export interface SyncSnapshotResponseDto {
 * **Phase 7C.1: Database Schema & Core Entities (`services/api`)** `[x] CLOSED / PASS (FROZEN CLEAN)`
   * Tạo các bảng CSDL: `user_sync_state`, `sync_change_log`, `sync_tombstones`, `sync_mutation_receipts` (Migration 0021, DDL cascade delete, check & unique constraints, indexes).
   * TypeORM Entities kèm 64-bit Decimal String Transformer hai chiều, JCS RFC 8785 Canonical Serializer & I-JSON Fail-Closed Validator, 49 unit tests, 6 integration tests, Hosted CI Run #40651915840 Green 7/7, Commit `82221b1`.
-* **Phase 7C.2: Core API Sync Hub & Delta Protocol (`services/api`)** `[/] Đang làm (Sẵn sàng triển khai)`
+* **Phase 7C.2: Core API Sync Hub & Delta Protocol (`services/api`)** `[x] CLOSED / PASS (FROZEN CLEAN)`
   * Cài đặt các endpoints: `GET /sync/changes`, `GET /sync/snapshot` (kèm Repeatable Read Isolation & Optimistic Restart 409 Guard), `POST /sync/mutations/batch`.
   * Bộ giải quyết xung đột (Domain Conflict Resolver) và bảo vệ Tombstone Anti-Resurrection với Strict Equality Effective History Epoch Check.
   * Tích hợp `SyncLogEmitter` vào Guest Claim Commit và các API ghi thư viện hiện có.
-* **Phase 7C.3: Web Client Sync Reconciler (`apps/web`)** `[ ] Chưa làm`
-  * Nâng cấp IndexedDB Schema (thêm `sync_meta`, `quarantined_mutations`, `snapshot_staging_store`).
+  * Nghiệm thu chính thức tại baseline `4e9c4dbfb96a6b7957090d8a306485333014c550` (Hosted CI Run #40701295336: 7/7 Jobs Green, Core API Unit 601 PASS, Integration/E2E 303 PASS, Sync Hub PostgreSQL 13/13 PASS).
+* **Phase 7C.3: Web Client Sync Reconciler (`apps/web`)** `[/] Đang Triển Khai (AUTHORIZED)`
+  * Nâng cấp IndexedDB Schema (thêm `sync_meta`, `pending_mutations`, `quarantined_mutations`, `snapshot_staging_store`).
   * Điều phối đa tab qua `BroadcastChannel` bầu chọn Tab Leader thực hiện sync.
   * Cài đặt Safe 410 Full Resync Triage Reconciler (chống phục sinh bookmark & history epoch).
+  * Tuân thủ triệt để: không tự động rebase stale mutation, không làm sống lại tombstone, không ghi checkpoint trước khi local apply thành công.
 * **Phase 7C.4: Mobile Client Sync Reconciler (`apps/mobile`)** `[ ] Chưa làm`
   * Nâng cấp SQLite Schema (bảng `pending_sync_mutations`, `sync_metadata`, `snapshot_staging`).
   * Cài đặt `SyncWorker` chạy nền với Exponential Backoff & Connectivity Gate.

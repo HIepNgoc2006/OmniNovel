@@ -609,10 +609,10 @@ export interface SyncSnapshotResponseDto {
 
 * **Phase 7C.0: Architecture & Protocol Review Gate** `[x] CLOSED / PASS`
   * Khóa 5 bất biến kỹ thuật, giải quyết triệt để các phát hiện P0/P1, chuẩn hóa fail-closed validator I-JSON & JCS Canonical Serializer, ban hành hợp đồng mạng DTO và 20 kịch bản nghiệm thu. Chính thức nghiệm thu đóng gate kiến trúc.
-* **Phase 7C.1: Database Schema & Core Entities (`services/api`)** `[/] Đang làm (Sẵn sàng triển khai)`
-  * Tạo các bảng CSDL: `user_sync_state`, `sync_change_log`, `sync_tombstones`, `sync_mutation_receipts`.
-  * TypeORM Entities kèm 64-bit Decimal String Transformer và JCS RFC 8785 canonical hash helper.
-* **Phase 7C.2: Core API Sync Hub & Delta Protocol (`services/api`)** `[ ] Chưa làm`
+* **Phase 7C.1: Database Schema & Core Entities (`services/api`)** `[x] CLOSED / PASS (FROZEN CLEAN)`
+  * Tạo các bảng CSDL: `user_sync_state`, `sync_change_log`, `sync_tombstones`, `sync_mutation_receipts` (Migration 0021, DDL cascade delete, check & unique constraints, indexes).
+  * TypeORM Entities kèm 64-bit Decimal String Transformer hai chiều, JCS RFC 8785 Canonical Serializer & I-JSON Fail-Closed Validator, 49 unit tests, 6 integration tests, Hosted CI Run #40651915840 Green 7/7, Commit `82221b1`.
+* **Phase 7C.2: Core API Sync Hub & Delta Protocol (`services/api`)** `[/] Đang làm (Sẵn sàng triển khai)`
   * Cài đặt các endpoints: `GET /sync/changes`, `GET /sync/snapshot` (kèm Repeatable Read Isolation & Optimistic Restart 409 Guard), `POST /sync/mutations/batch`.
   * Bộ giải quyết xung đột (Domain Conflict Resolver) và bảo vệ Tombstone Anti-Resurrection với Strict Equality Effective History Epoch Check.
   * Tích hợp `SyncLogEmitter` vào Guest Claim Commit và các API ghi thư viện hiện có.

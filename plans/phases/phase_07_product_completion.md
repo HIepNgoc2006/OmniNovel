@@ -111,10 +111,10 @@ graph TD
 **Mục tiêu:** Đồng bộ trạng thái tức thì giữa Web và Mobile dựa trên Server Revisions, không phụ thuộc đồng hồ thiết bị.
 - [x] **7C.0. Architecture & Protocol Review Gate (`plans/phase_07c_architecture_gate.md`)** — *CLOSED / PASS* 🏛️
   - [x] Khóa 5 bất biến cốt lõi, bổ sung final implementation-safety amendments: JCS RFC 8785 Recursive Canonical Serializer & Fail-Closed Domain Validator, Optimistic Snapshot Restart (409 Guard), Repeatable Read Isolation, History Epoch Tracking, Fresh Mutation ID Rules, và 20 kịch bản nghiệm thu SYNC-01..SYNC-20.
-- [/] **7C.1. Database Schema & Core Entities (`services/api`)** — *Đang làm (Authorized to Implement)*
-  - [/] Tạo các bảng CSDL: `user_sync_state`, `sync_change_log`, `sync_tombstones`, `sync_mutation_receipts`.
-  - [/] TypeORM Entities kèm 64-bit Decimal String Transformer và JCS RFC 8785 Canonical Hash Helper.
-- [ ] **7C.2. Core API Sync Hub & Delta Protocol (`services/api`)**
+- [x] **7C.1. Database Schema & Core Entities (`services/api`)** — *FROZEN CLEAN & OFFICIALLY ACCEPTED (Hosted CI Run #40651915840 Green 7/7, Commit `82221b1`)* ✅
+  - [x] Tạo các bảng CSDL: `user_sync_state`, `sync_change_log`, `sync_tombstones`, `sync_mutation_receipts` (Migration 0021, DDL cascade delete, check & unique constraints, indexes).
+  - [x] TypeORM Entities kèm 64-bit Decimal String Transformer hai chiều, JCS RFC 8785 Canonical Serializer & I-JSON Fail-Closed Validator, 49 unit tests, 6 integration tests.
+- [/] **7C.2. Core API Sync Hub & Delta Protocol (`services/api`)** — *Đang làm (Authorized to Implement)*
   - [ ] Cài đặt các endpoints: `GET /sync/changes`, `GET /sync/snapshot`, `POST /sync/mutations/batch`.
   - [ ] Bộ giải quyết xung đột (Domain Conflict Resolver) và bảo vệ Tombstone Anti-Resurrection.
   - [ ] Tích hợp `SyncLogEmitter` vào Guest Claim Commit và các API ghi thư viện hiện có.

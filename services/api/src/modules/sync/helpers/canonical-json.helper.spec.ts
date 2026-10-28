@@ -274,6 +274,68 @@ describe('JCS RFC 8785 & I-JSON Canonical Serializer Helper (Unit Tests)', () =>
         /Mutation payload must be a valid non-null plain JSON object/,
       );
     });
+
+    describe('Strict baseServerRevision Decimal String Enforcement (P1-A)', () => {
+      it('should reject number types (preventing JS unsafe number truncation)', () => {
+        const numRev = { ...validBase, baseServerRevision: 100 as any };
+        expect(() => computeCanonicalMutationHash(numRev)).toThrow(
+          /baseServerRevision must be an unsigned decimal string; received number/,
+        );
+
+        const unsafeNumRev = {
+          ...validBase,
+          baseServerRevision: 9007199254740993 as any,
+        };
+        expect(() => computeCanonicalMutationHash(unsafeNumRev)).toThrow(
+          /baseServerRevision must be an unsigned decimal string; received number/,
+        );
+      });
+
+      it('should reject negative revision strings', () => {
+        const negRev = { ...validBase, baseServerRevision: '-1' };
+        expect(() => computeCanonicalMutationHash(negRev)).toThrow(
+          /must be an unsigned non-negative decimal string/,
+        );
+      });
+
+      it('should reject float or malformed decimal strings', () => {
+        expect(() =>
+          computeCanonicalMutationHash({
+            ...validBase,
+            baseServerRevision: '12.34',
+          }),
+        ).toThrow(/must be an unsigned non-negative decimal string/);
+
+        expect(() =>
+          computeCanonicalMutationHash({
+            ...validBase,
+            baseServerRevision: 'abc',
+          }),
+        ).toThrow(/must be an unsigned non-negative decimal string/);
+
+        expect(() =>
+          computeCanonicalMutationHash({
+            ...validBase,
+            baseServerRevision: '',
+          }),
+        ).toThrow(/must be an unsigned non-negative decimal string/);
+      });
+
+      it('should accept valid non-negative decimal strings and 64-bit integers', () => {
+        const hash0 = computeCanonicalMutationHash({
+          ...validBase,
+          baseServerRevision: '0',
+        });
+        expect(hash0.length).toBe(64);
+
+        const hashLarge = computeCanonicalMutationHash({
+          ...validBase,
+          baseServerRevision: '9007199254740995',
+        });
+        expect(hashLarge.length).toBe(64);
+        expect(hash0).not.toBe(hashLarge);
+      });
+    });
   });
 
   describe('Fail-Closed: Cyclic Reference Detection (Criterion 9)', () => {

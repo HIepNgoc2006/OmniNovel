@@ -81,5 +81,33 @@ describe('BigIntDecimalString ValueTransformer (Unit Tests)', () => {
     it('should convert raw bigint from database driver to string', () => {
       expect(bigintDecimalStringTransformer.from(BigInt(100))).toBe('100');
     });
+
+    it('should reject non-integer numbers from database driver fail-closed', () => {
+      expect(() => bigintDecimalStringTransformer.from(10.5)).toThrow(
+        /Cannot deserialize non-integer number from BIGINT/,
+      );
+      expect(() => bigintDecimalStringTransformer.from(NaN)).toThrow(
+        /Cannot deserialize non-integer number from BIGINT/,
+      );
+      expect(() => bigintDecimalStringTransformer.from(Infinity)).toThrow(
+        /Cannot deserialize non-integer number from BIGINT/,
+      );
+    });
+
+    it('should reject numbers exceeding MAX_SAFE_INTEGER in from() to guard against precision loss (P1-B)', () => {
+      const unsafeNum = Number.MAX_SAFE_INTEGER + 10;
+      expect(() => bigintDecimalStringTransformer.from(unsafeNum)).toThrow(
+        /Deserialized number .* exceeds safe integer range; precision may have been compromised/,
+      );
+    });
+
+    it('should reject invalid decimal strings from database driver fail-closed', () => {
+      expect(() => bigintDecimalStringTransformer.from('abc')).toThrow(
+        /Invalid decimal string representation from BIGINT column/,
+      );
+      expect(() => bigintDecimalStringTransformer.from('12.34')).toThrow(
+        /Invalid decimal string representation from BIGINT column/,
+      );
+    });
   });
 });

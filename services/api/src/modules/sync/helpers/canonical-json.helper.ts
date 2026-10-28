@@ -6,7 +6,7 @@ export interface ClientMutationDto {
   domain: string;
   entityId: string;
   operation: string;
-  baseServerRevision: string | number | bigint;
+  baseServerRevision: string; // Bắt buộc Decimal String thuần
   payload: Record<string, unknown>;
   clientCreatedAt?: string;
 }
@@ -188,8 +188,21 @@ export function computeCanonicalMutationHash(
     );
   }
 
+  if (typeof mutation?.baseServerRevision !== 'string') {
+    throw new Error(
+      `[JCS] baseServerRevision must be an unsigned decimal string; received ${typeof mutation?.baseServerRevision}`,
+    );
+  }
+
+  const trimmedRev = mutation.baseServerRevision.trim();
+  if (!/^\d+$/.test(trimmedRev)) {
+    throw new Error(
+      `[JCS] Invalid baseServerRevision format: '${mutation.baseServerRevision}'; must be an unsigned non-negative decimal string`,
+    );
+  }
+
   const canonicalObject = {
-    baseServerRevision: String(mutation.baseServerRevision),
+    baseServerRevision: trimmedRev,
     clientId: mutation.clientId,
     domain: mutation.domain,
     entityId: mutation.entityId,

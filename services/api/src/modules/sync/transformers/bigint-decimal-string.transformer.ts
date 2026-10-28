@@ -45,6 +45,30 @@ export const bigintDecimalStringTransformer: ValueTransformer = {
     if (value === null || value === undefined) {
       return null;
     }
-    return String(value).trim();
+
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value) || !Number.isInteger(value)) {
+        throw new Error(
+          `[BigIntTransformer] Cannot deserialize non-integer number from BIGINT: ${value}`,
+        );
+      }
+      if (
+        value > Number.MAX_SAFE_INTEGER ||
+        value < Number.MIN_SAFE_INTEGER
+      ) {
+        throw new Error(
+          `[BigIntTransformer] Deserialized number ${value} exceeds safe integer range; precision may have been compromised`,
+        );
+      }
+    }
+
+    const str = String(value).trim();
+    if (!/^-?\d+$/.test(str)) {
+      throw new Error(
+        `[BigIntTransformer] Invalid decimal string representation from BIGINT column: '${str}'`,
+      );
+    }
+
+    return str;
   },
 };

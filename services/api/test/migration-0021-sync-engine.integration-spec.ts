@@ -228,7 +228,42 @@ describe('Migration 0021: CreateSyncEngineTables (Integration - Phase 7C.1)', ()
     }
   });
 
-  it('MIG-04: should support 64-bit BIGINTs (> 2^53 - 1) via TypeORM Entities without precision loss', async () => {
+  it('MIG-04: should enforce composite primary key (user_id, client_id, mutation_id) on sync_mutation_receipts fail-closed', async () => {
+    const queryRunner = dataSource.createQueryRunner();
+    try {
+      const uRes = await queryRunner.query(
+        `INSERT INTO users (username, email, password_hash, role, is_active)
+         VALUES ('sync_pk_user_${Date.now()}', 'sync_pk_${Date.now()}@example.com', 'hash', 'READER', true)
+         RETURNING id`,
+      );
+      const testUserId = uRes[0].id;
+
+      const clientId = 'client-idemp-1';
+      const mutationId = '00000000-0000-0000-0000-000000000099';
+
+      // 1. First receipt insert
+      await queryRunner.query(
+        `INSERT INTO sync_mutation_receipts (user_id, client_id, mutation_id, payload_hash, status, assigned_revision)
+         VALUES ($1, $2, $3, 'hash123', 'APPLIED', 1)`,
+        [testUserId, clientId, mutationId],
+      );
+
+      // 2. Duplicate receipt with same (user_id, client_id, mutation_id) MUST fail primary key constraint
+      await expect(
+        queryRunner.query(
+          `INSERT INTO sync_mutation_receipts (user_id, client_id, mutation_id, payload_hash, status, assigned_revision)
+           VALUES ($1, $2, $3, 'hash456', 'DEDUPLICATED', 1)`,
+          [testUserId, clientId, mutationId],
+        ),
+      ).rejects.toThrow(/sync_mutation_receipts_pkey/);
+
+      await queryRunner.query(`DELETE FROM users WHERE id = $1`, [testUserId]);
+    } finally {
+      await queryRunner.release();
+    }
+  });
+
+  it('MIG-05: should support 64-bit BIGINTs (> 2^53 - 1) via TypeORM Entities without precision loss', async () => {
     const userRepo = dataSource.getRepository(User);
     const syncStateRepo = dataSource.getRepository(UserSyncState);
     const changeLogRepo = dataSource.getRepository(SyncChangeLog);
@@ -340,7 +375,7 @@ describe('Migration 0021: CreateSyncEngineTables (Integration - Phase 7C.1)', ()
     }
   });
 
-  it('MIG-05: should cleanly revert via down() and re-apply via up()', async () => {
+  it('MIG-06: should cleanly revert via down() and re-apply via up()', async () => {
     const queryRunner = dataSource.createQueryRunner();
     try {
       // 1. Revert down()

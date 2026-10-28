@@ -529,6 +529,46 @@ describe('Task 7C.2a: Core Sync Hub Integrity & Concurrency Remediation (Integra
       expect(retryAheadRes.results[0].status).toBe('REJECTED_STALE');
       expect(retryAheadRes.results[0].reason).toBe('BASE_REVISION_AHEAD_OF_SERVER');
     });
+
+    it('should return DEDUPLICATED with original assigned revision on retry after GC compaction (minActiveRevision > baseServerRevision)', async () => {
+      const userId = await createTestUser();
+      const story = await createTestStory(userId);
+      const clientId = uuidv4();
+      const mutationId = uuidv4();
+
+      // 1. Initial valid mutation with baseServerRevision = 0
+      const mut = {
+        clientId,
+        mutationId,
+        domain: SyncDomain.BOOKMARK,
+        entityId: story.storyId,
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '0',
+        payload: { storyId: story.storyId },
+      };
+      const initialRes = await syncService.pushMutations(userId, {
+        mutations: [mut],
+      });
+      expect(initialRes.results[0].status).toBe('APPLIED');
+      const assignedRevision = initialRes.results[0].assignedRevision;
+      expect(assignedRevision).toBe('1');
+
+      // 2. Simulate server revisions advancing and Log Compaction / GC advancing min_active_revision to 10
+      await dataSource.query(
+        `UPDATE user_sync_state SET current_sync_revision = 15, min_active_revision = 10 WHERE user_id = $1`,
+        [userId],
+      );
+
+      // 3. Client retries identical mutation (baseServerRevision is still 0 < minActiveRevision 10)
+      const retryRes = await syncService.pushMutations(userId, {
+        mutations: [mut],
+      });
+
+      // Receipt lookup MUST take precedence over minActiveRevision check:
+      // Returns DEDUPLICATED with original assigned revision, NOT REJECTED_STALE
+      expect(retryRes.results[0].status).toBe('DEDUPLICATED');
+      expect(retryRes.results[0].assignedRevision).toBe(assignedRevision);
+    });
   });
 
   describe('P0-05: Effective History Epoch in Snapshot', () => {
@@ -640,6 +680,209 @@ describe('Task 7C.2a: Core Sync Hub Integrity & Concurrency Remediation (Integra
     });
   });
 
+  describe('P0-07: Anti-Resurrection Guard & Legitimate New Read Preservation', () => {
+    it('should reject stale PROGRESS UPSERT with REJECTED_TOMBSTONE after single-story HISTORY DELETE and prevent resurrection', async () => {
+      const userId = await createTestUser();
+      const story = await createTestStory(userId);
+      const clientId = uuidv4();
+
+      // 1. Delete history for single story (assigned revision 1)
+      const delRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.HISTORY,
+            entityId: story.storyId,
+            operation: SyncOperation.DELETE,
+            baseServerRevision: '0',
+            payload: { storyId: story.storyId, observedHistoryEpoch: 0 },
+          },
+        ],
+      });
+      expect(delRes.results[0].status).toBe('APPLIED');
+      expect(delRes.results[0].assignedRevision).toBe('1');
+
+      // 2. Offline client tries to push PROGRESS UPSERT generated prior to deletion (baseServerRevision: '0' < tombstoneRevision: '1')
+      const staleMutId = uuidv4();
+      const staleProgressRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: staleMutId,
+            domain: SyncDomain.PROGRESS,
+            entityId: story.storyId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '0',
+            payload: {
+              storyId: story.storyId,
+              chapterId: story.chapterId,
+              readingMode: 'PAGED',
+              pageIndex: 5,
+              scrollPosition: 0,
+              progressPercentage: 50,
+            },
+          },
+        ],
+      });
+
+      // Anti-Resurrection Guard: Rejected with REJECTED_TOMBSTONE
+      expect(staleProgressRes.results[0].status).toBe('REJECTED_TOMBSTONE');
+      expect(staleProgressRes.results[0].reason).toBe('TOMBSTONE_CONFLICT');
+
+      // Invariant: Server reading_progress and chapter_read_states MUST NOT be resurrected
+      const progRows = await dataSource.query(
+        `SELECT * FROM reading_progress WHERE user_id = $1 AND story_id = $2`,
+        [userId, story.storyId],
+      );
+      expect(progRows).toHaveLength(0);
+
+      const readRows = await dataSource.query(
+        `SELECT * FROM chapter_read_states WHERE user_id = $1 AND chapter_id = $2`,
+        [userId, story.chapterId],
+      );
+      expect(readRows).toHaveLength(0);
+
+      // Invariant: Current revision remains 1 (no revision allocated for rejected mutation)
+      const state = await dataSource.query(
+        `SELECT current_sync_revision FROM user_sync_state WHERE user_id = $1`,
+        [userId],
+      );
+      expect(state[0].current_sync_revision.toString()).toBe('1');
+    });
+
+    it('should reject stale PROGRESS UPSERT with REJECTED_TOMBSTONE after global sentinel HISTORY DELETE', async () => {
+      const userId = await createTestUser();
+      const story = await createTestStory(userId);
+      const clientId = uuidv4();
+
+      // 1. Clear all history via global sentinel DELETE
+      const clearRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.HISTORY,
+            entityId: '00000000-0000-0000-0000-000000000000',
+            operation: SyncOperation.DELETE,
+            baseServerRevision: '0',
+            payload: {
+              storyId: '00000000-0000-0000-0000-000000000000',
+              observedHistoryEpoch: 0,
+            },
+          },
+        ],
+      });
+      expect(clearRes.results[0].status).toBe('APPLIED');
+      expect(clearRes.results[0].assignedRevision).toBe('1');
+
+      // 2. Stale client pushes PROGRESS UPSERT with baseServerRevision: '0'
+      const staleRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.PROGRESS,
+            entityId: story.storyId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '0',
+            payload: {
+              storyId: story.storyId,
+              chapterId: story.chapterId,
+              readingMode: 'PAGED',
+              pageIndex: 3,
+              scrollPosition: 0,
+              progressPercentage: 30,
+            },
+          },
+        ],
+      });
+
+      expect(staleRes.results[0].status).toBe('REJECTED_TOMBSTONE');
+      expect(staleRes.results[0].reason).toBe('TOMBSTONE_CONFLICT');
+
+      // Invariant: Neither reading_progress nor chapter_read_states are resurrected
+      const progRows = await dataSource.query(
+        `SELECT * FROM reading_progress WHERE user_id = $1`,
+        [userId],
+      );
+      expect(progRows).toHaveLength(0);
+
+      const readRows = await dataSource.query(
+        `SELECT * FROM chapter_read_states WHERE user_id = $1`,
+        [userId],
+      );
+      expect(readRows).toHaveLength(0);
+    });
+
+    it('should accept legitimate fresh PROGRESS UPSERT (baseServerRevision >= tombstoneRevision) after HISTORY DELETE', async () => {
+      const userId = await createTestUser();
+      const story = await createTestStory(userId);
+      const clientId = uuidv4();
+
+      // 1. Delete history for story at revision 1
+      const delRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.HISTORY,
+            entityId: story.storyId,
+            operation: SyncOperation.DELETE,
+            baseServerRevision: '0',
+            payload: { storyId: story.storyId, observedHistoryEpoch: 0 },
+          },
+        ],
+      });
+      expect(delRes.results[0].status).toBe('APPLIED');
+      expect(delRes.results[0].assignedRevision).toBe('1');
+
+      // 2. Client syncs and observes revision 1; user now reads Chapter 1 again!
+      // New mutation generated with baseServerRevision = '1' (>= tombstoneRevision 1)
+      const freshMutId = uuidv4();
+      const freshRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: freshMutId,
+            domain: SyncDomain.PROGRESS,
+            entityId: story.storyId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '1',
+            payload: {
+              storyId: story.storyId,
+              chapterId: story.chapterId,
+              readingMode: 'WEBTOON',
+              pageIndex: 1,
+              scrollPosition: 800,
+              progressPercentage: 60,
+            },
+          },
+        ],
+      });
+
+      // Legitimate read MUST be applied
+      expect(freshRes.results[0].status).toBe('APPLIED');
+      expect(freshRes.results[0].assignedRevision).toBe('2');
+
+      // Verify reading_progress is successfully created
+      const progRows = await dataSource.query(
+        `SELECT progress_percentage FROM reading_progress WHERE user_id = $1 AND story_id = $2`,
+        [userId, story.storyId],
+      );
+      expect(progRows).toHaveLength(1);
+      expect(Number(progRows[0].progress_percentage)).toBe(60);
+
+      // Verify chapter_read_states is mirrored
+      const readRows = await dataSource.query(
+        `SELECT max_progress_percentage FROM chapter_read_states WHERE user_id = $1 AND chapter_id = $2`,
+        [userId, story.chapterId],
+      );
+      expect(readRows).toHaveLength(1);
+      expect(Number(readRows[0].max_progress_percentage)).toBe(60);
+    });
+  });
+
   describe('P1-01: Reject getChanges when after is ahead of currentServerRevision', () => {
     it('should throw HTTP 400 Bad Request with code SYNC_REVISION_AHEAD', async () => {
       const userId = await createTestUser();
@@ -654,14 +897,15 @@ describe('Task 7C.2a: Core Sync Hub Integrity & Concurrency Remediation (Integra
       const userId = await createTestUser();
       const story1 = await createTestStory(userId);
       const story2 = await createTestStory(userId);
+      const story3 = await createTestStory(userId);
 
       const clientId1 = uuidv4();
       const clientId2 = uuidv4();
 
       // Run 3 concurrent operations on the same user:
-      // - Task A: push Bookmark mutation
-      // - Task B: push Progress mutation
-      // - Task C: clear all reading history via StoriesService
+      // - Task A: push Bookmark mutation on story1
+      // - Task B: push Progress mutation on story2
+      // - Task C: delete reading history for story3 via StoriesService
       const taskA = syncService.pushMutations(userId, {
         mutations: [
           {
@@ -697,37 +941,90 @@ describe('Task 7C.2a: Core Sync Hub Integrity & Concurrency Remediation (Integra
         ],
       });
 
-      const taskC = storiesService.clearAllReadingHistory(userId);
+      const taskC = storiesService.deleteStoryReadingHistory(userId, story3.storyId);
 
-      // Execute all 3 concurrently
-      const results = await Promise.allSettled([taskA, taskB, taskC]);
+      // Execute all 3 concurrently with deterministic resolution
+      const [resA, resB] = await Promise.all([taskA, taskB, taskC]);
 
-      // All tasks must either fulfill or cleanly reject without postgres deadlock exception (40P01)
-      for (const res of results) {
-        if (res.status === 'rejected') {
-          const errMsg = res.reason?.message || '';
-          expect(errMsg).not.toContain('deadlock detected');
-        }
-      }
+      expect(resA.results[0].status).toBe('APPLIED');
+      expect(resB.results[0].status).toBe('APPLIED');
 
-      // Check user_sync_state
+      // Check user_sync_state: exactly 3 revisions allocated
       const state = await dataSource.query(
         `SELECT current_sync_revision FROM user_sync_state WHERE user_id = $1`,
         [userId],
       );
       expect(state).toHaveLength(1);
       const finalRev = BigInt(state[0].current_sync_revision);
-      expect(finalRev).toBeGreaterThanOrEqual(1n);
+      expect(finalRev).toBe(3n);
 
-      // Check sync_change_log revisions: must be sequential without holes
+      // Check sync_change_log revisions: strictly sequential [1, 2, 3] without holes
       const changes = await dataSource.query(
         `SELECT revision FROM sync_change_log WHERE user_id = $1 ORDER BY revision ASC`,
         [userId],
       );
-      expect(changes.length).toBeGreaterThanOrEqual(1);
+      expect(changes.length).toBe(3);
       for (let i = 0; i < changes.length; i++) {
         expect(BigInt(changes[i].revision)).toBe(BigInt(i + 1));
       }
+    });
+  });
+
+  describe('SYNC-18: Concurrent Same-Idempotency-Key Execution', () => {
+    it('should handle two identical concurrent mutations in parallel with exactly one APPLIED, one DEDUPLICATED, and zero deadlocks', async () => {
+      const userId = await createTestUser();
+      const story = await createTestStory(userId);
+      const clientId = uuidv4();
+      const sharedMutationId = uuidv4();
+
+      const mutation = {
+        clientId,
+        mutationId: sharedMutationId,
+        domain: SyncDomain.BOOKMARK,
+        entityId: story.storyId,
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '0',
+        payload: { storyId: story.storyId },
+      };
+
+      // Launch both requests concurrently
+      const [res1, res2] = await Promise.all([
+        syncService.pushMutations(userId, { mutations: [mutation] }),
+        syncService.pushMutations(userId, { mutations: [mutation] }),
+      ]);
+
+      const statuses = [res1.results[0].status, res2.results[0].status].sort();
+      expect(statuses).toEqual(['APPLIED', 'DEDUPLICATED']);
+
+      const assignedRevs = [
+        res1.results[0].assignedRevision,
+        res2.results[0].assignedRevision,
+      ];
+      expect(assignedRevs[0]).toBe(assignedRevs[1]);
+      expect(assignedRevs[0]).toBe('1');
+
+      // Invariant: Exactly one log entry was created
+      const logs = await dataSource.query(
+        `SELECT revision FROM sync_change_log WHERE user_id = $1`,
+        [userId],
+      );
+      expect(logs).toHaveLength(1);
+
+      // Invariant: Exactly one durable receipt exists
+      const receipts = await dataSource.query(
+        `SELECT status, assigned_revision FROM sync_mutation_receipts WHERE user_id = $1 AND mutation_id = $2`,
+        [userId, sharedMutationId],
+      );
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0].status).toBe('APPLIED');
+      expect(receipts[0].assigned_revision.toString()).toBe('1');
+
+      // Current revision is 1
+      const state = await dataSource.query(
+        `SELECT current_sync_revision FROM user_sync_state WHERE user_id = $1`,
+        [userId],
+      );
+      expect(state[0].current_sync_revision.toString()).toBe('1');
     });
   });
 });

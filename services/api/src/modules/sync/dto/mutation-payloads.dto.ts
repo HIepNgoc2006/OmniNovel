@@ -63,6 +63,11 @@ export class ProgressMutationPayloadDto {
   @IsOptional()
   @IsBoolean({ message: 'forceRewind must be a boolean' })
   forceRewind?: boolean;
+
+  @IsOptional()
+  @IsInt({ message: 'observedHistoryEpoch must be an integer' })
+  @Min(0, { message: 'observedHistoryEpoch cannot be negative' })
+  observedHistoryEpoch?: number;
 }
 
 export class HistoryMutationPayloadDto {

@@ -22,16 +22,16 @@ export class BookmarkConflictResolver implements IConflictResolver {
     }
 
     // Operation is UPSERT
-    // Anti-Resurrection Guard: Check if a tombstone exists with deleted_at_revision >= baseServerRevision
+    // Anti-Resurrection Guard: Check if a tombstone exists with deleted_at_revision > baseServerRevision
     if (tombstoneRevision !== null && tombstoneRevision !== undefined) {
       const tombstoneRev = BigInt(tombstoneRevision);
       const baseRev = BigInt(mutation.baseServerRevision);
 
-      if (tombstoneRev >= baseRev) {
+      if (tombstoneRev > baseRev) {
         return {
           status: 'REJECTED_TOMBSTONE',
           reason: 'TOMBSTONE_CONFLICT',
-          message: `Bookmark was deleted at revision ${tombstoneRevision}, which is >= client base revision ${mutation.baseServerRevision}`,
+          message: `Bookmark was deleted at revision ${tombstoneRevision}, which is > client base revision ${mutation.baseServerRevision}`,
           metadata: {
             tombstoneRevision,
             baseServerRevision: mutation.baseServerRevision,

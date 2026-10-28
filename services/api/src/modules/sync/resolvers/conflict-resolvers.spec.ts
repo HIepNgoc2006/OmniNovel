@@ -315,6 +315,105 @@ describe('Sync Conflict Resolvers (Step 2)', () => {
       expect(result.status).toBe('APPLIED');
       expect(result.message).toContain('forceRewind');
     });
+
+    it('should reject UPSERT with REJECTED_TOMBSTONE when tombstone revision > baseServerRevision (Anti-Resurrection P0-07)', () => {
+      const mutation = createMockMutation({
+        domain: SyncDomain.PROGRESS,
+        baseServerRevision: '100',
+        payload: {
+          storyId: 'story-1',
+          chapterId: 'chap-1',
+          progressPercentage: 50,
+        },
+      });
+
+      // Tombstone occurred at revision 105 (newer than client base 100)
+      const result = resolver.resolve({
+        userId: USER_ID,
+        mutation,
+        canonicalHash: 'hash',
+        serverRevision: '110',
+        minActiveRevision: '50',
+        tombstoneRevision: '105',
+      });
+
+      expect(result.status).toBe('REJECTED_TOMBSTONE');
+      expect(result.reason).toBe('TOMBSTONE_CONFLICT');
+      expect(result.message).toContain('deleted by a history clear operation');
+    });
+
+    it('should accept UPSERT when client base revision >= tombstone revision (Legitimate New Read after deletion)', () => {
+      const mutation = createMockMutation({
+        domain: SyncDomain.PROGRESS,
+        baseServerRevision: '105',
+        payload: {
+          storyId: 'story-1',
+          chapterId: 'chap-1',
+          progressPercentage: 50,
+        },
+      });
+
+      // Tombstone was at rev 105, and client base is 105 (client observed the deletion and is reading again)
+      const result = resolver.resolve({
+        userId: USER_ID,
+        mutation,
+        canonicalHash: 'hash',
+        serverRevision: '110',
+        minActiveRevision: '50',
+        tombstoneRevision: '105',
+      });
+
+      expect(result.status).toBe('APPLIED');
+    });
+
+    it('should reject UPSERT with REJECTED_TOMBSTONE when observedHistoryEpoch < effectiveHistoryEpoch (P0-07)', () => {
+      const mutation = createMockMutation({
+        domain: SyncDomain.PROGRESS,
+        baseServerRevision: '100',
+        payload: {
+          storyId: 'story-1',
+          chapterId: 'chap-1',
+          progressPercentage: 50,
+          observedHistoryEpoch: 0,
+        },
+      });
+
+      const result = resolver.resolve({
+        userId: USER_ID,
+        mutation,
+        canonicalHash: 'hash',
+        serverRevision: '110',
+        minActiveRevision: '50',
+        effectiveHistoryEpoch: 2,
+      });
+
+      expect(result.status).toBe('REJECTED_TOMBSTONE');
+      expect(result.reason).toBe('STALE_HISTORY_EPOCH');
+    });
+
+    it('should accept UPSERT when observedHistoryEpoch >= effectiveHistoryEpoch', () => {
+      const mutation = createMockMutation({
+        domain: SyncDomain.PROGRESS,
+        baseServerRevision: '100',
+        payload: {
+          storyId: 'story-1',
+          chapterId: 'chap-1',
+          progressPercentage: 50,
+          observedHistoryEpoch: 2,
+        },
+      });
+
+      const result = resolver.resolve({
+        userId: USER_ID,
+        mutation,
+        canonicalHash: 'hash',
+        serverRevision: '110',
+        minActiveRevision: '50',
+        effectiveHistoryEpoch: 2,
+      });
+
+      expect(result.status).toBe('APPLIED');
+    });
   });
 
   describe('HistoryConflictResolver', () => {

@@ -11,7 +11,12 @@ export class ProgressConflictResolver implements IConflictResolver {
   readonly domain = SyncDomain.PROGRESS;
 
   resolve(context: ConflictResolverContext): ConflictResolutionResult {
-    const { mutation, existingRecord } = context;
+    const {
+      mutation,
+      existingRecord,
+      tombstoneRevision,
+      effectiveHistoryEpoch = 0,
+    } = context;
 
     if (mutation.operation === SyncOperation.DELETE) {
       return {
@@ -22,6 +27,47 @@ export class ProgressConflictResolver implements IConflictResolver {
     }
 
     const payload = mutation.payload as Record<string, any>;
+
+    // 1. Anti-Resurrection Guard: Kiểm tra nếu có tombstone (PROGRESS hoặc HISTORY clear)
+    // với deleted_at_revision > baseServerRevision (P0-07)
+    if (tombstoneRevision !== null && tombstoneRevision !== undefined) {
+      const tombstoneRev = BigInt(tombstoneRevision);
+      const baseRev = BigInt(mutation.baseServerRevision);
+
+      if (baseRev < tombstoneRev) {
+        return {
+          status: 'REJECTED_TOMBSTONE',
+          reason: 'TOMBSTONE_CONFLICT',
+          message: `Reading progress was deleted by a history clear operation at revision ${tombstoneRevision} which is > client base revision ${mutation.baseServerRevision}`,
+          metadata: {
+            tombstoneRevision,
+            baseServerRevision: mutation.baseServerRevision,
+          },
+          assignedRevision: null,
+        };
+      }
+    }
+
+    // 2. Anti-Resurrection Guard: Kiểm tra epoch nếu client gửi kèm observedHistoryEpoch (P0-07)
+    if (
+      payload?.observedHistoryEpoch !== undefined &&
+      payload?.observedHistoryEpoch !== null
+    ) {
+      const observedEpoch = Number(payload.observedHistoryEpoch);
+      if (observedEpoch < effectiveHistoryEpoch) {
+        return {
+          status: 'REJECTED_TOMBSTONE',
+          reason: 'STALE_HISTORY_EPOCH',
+          message: `Reading progress epoch (${observedEpoch}) is older than effective history epoch (${effectiveHistoryEpoch})`,
+          metadata: {
+            observedEpoch,
+            effectiveEpoch: effectiveHistoryEpoch,
+          },
+          assignedRevision: null,
+        };
+      }
+    }
+
     const incomingPercentage = Number(payload.progressPercentage ?? 0);
     const forceRewind = Boolean(payload.forceRewind);
 

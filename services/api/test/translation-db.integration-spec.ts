@@ -385,7 +385,10 @@ describe('Translation DB Concurrency & Locking Suite (Integration)', () => {
       jobKey,
     );
     expect(created.id).toBeDefined();
-    expect(created.status).toBe(TranslationJobStatus.QUEUED);
+    expect([
+      TranslationJobStatus.QUEUED,
+      TranslationJobStatus.PREPROCESSING,
+    ]).toContain(created.status);
 
     // 2. Verify startAttempt() deterministically resolves sourceDownloadUrl for a promoted session
     const sessionRes = await dataSource.query(

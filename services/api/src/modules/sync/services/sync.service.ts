@@ -702,14 +702,41 @@ export class SyncService {
 
         // 2.4 Lấy dữ liệu phân xử xung đột từ CSDL
         let tombstoneRevision: string | null = null;
-        const tombstoneRows = await runner.query(
-          `SELECT deleted_at_revision
-           FROM sync_tombstones
-           WHERE user_id = $1 AND domain = $2 AND entity_id = $3`,
-          [userId, mutation.domain, mutation.entityId],
-        );
-        if (tombstoneRows.length > 0) {
-          tombstoneRevision = tombstoneRows[0].deleted_at_revision.toString();
+        if (mutation.domain === SyncDomain.PROGRESS) {
+          const storyIdForTombstone =
+            (mutation.payload as any)?.storyId ||
+            (mutation.entityId.includes(':')
+              ? mutation.entityId.split(':')[0]
+              : mutation.entityId);
+
+          const tombstoneRows = await runner.query(
+            `SELECT MAX(deleted_at_revision) AS "maxDeletedAtRevision"
+             FROM sync_tombstones
+             WHERE user_id = $1
+               AND (
+                 (domain = 'PROGRESS' AND entity_id IN ($2, $3))
+                 OR (domain = 'HISTORY' AND entity_id IN ($2, '00000000-0000-0000-0000-000000000000', 'all'))
+               )`,
+            [userId, storyIdForTombstone, mutation.entityId],
+          );
+          if (
+            tombstoneRows.length > 0 &&
+            tombstoneRows[0].maxDeletedAtRevision !== null &&
+            tombstoneRows[0].maxDeletedAtRevision !== undefined
+          ) {
+            tombstoneRevision =
+              tombstoneRows[0].maxDeletedAtRevision.toString();
+          }
+        } else {
+          const tombstoneRows = await runner.query(
+            `SELECT deleted_at_revision
+             FROM sync_tombstones
+             WHERE user_id = $1 AND domain = $2 AND entity_id = $3`,
+            [userId, mutation.domain, mutation.entityId],
+          );
+          if (tombstoneRows.length > 0) {
+            tombstoneRevision = tombstoneRows[0].deleted_at_revision.toString();
+          }
         }
 
         // Tra cứu effective history epoch cho domain HISTORY hoặc PROGRESS (P0-05)
@@ -1024,6 +1051,11 @@ export class SyncService {
 
         // Cập nhật sync_tombstones nếu là thao tác DELETE
         if (mutation.operation === SyncOperation.DELETE) {
+          const tombstoneEntityId =
+            mutation.domain === SyncDomain.HISTORY && mutation.entityId === 'all'
+              ? '00000000-0000-0000-0000-000000000000'
+              : mutation.entityId;
+
           await runner.query(
             `INSERT INTO sync_tombstones (
                user_id, domain, entity_id, deleted_at_revision, created_at
@@ -1033,8 +1065,22 @@ export class SyncService {
              ON CONFLICT (user_id, domain, entity_id) DO UPDATE SET
                deleted_at_revision = EXCLUDED.deleted_at_revision,
                created_at = NOW()`,
-            [userId, mutation.domain, mutation.entityId, assignedRevStr],
+            [userId, mutation.domain, tombstoneEntityId, assignedRevStr],
           );
+
+          if (mutation.domain === SyncDomain.HISTORY && mutation.entityId === 'all') {
+            await runner.query(
+              `INSERT INTO sync_tombstones (
+                 user_id, domain, entity_id, deleted_at_revision, created_at
+               ) VALUES (
+                 $1, $2, 'all', $3, NOW()
+               )
+               ON CONFLICT (user_id, domain, entity_id) DO UPDATE SET
+                 deleted_at_revision = EXCLUDED.deleted_at_revision,
+                 created_at = NOW()`,
+              [userId, mutation.domain, assignedRevStr],
+            );
+          }
         }
 
         // Lưu bền vững receipt vào sync_mutation_receipts

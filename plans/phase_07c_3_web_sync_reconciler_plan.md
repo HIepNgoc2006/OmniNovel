@@ -1,6 +1,6 @@
 # 📋 Kế Hoạch Triển Khai Task 7C.3 — Web Client Sync Reconciler (`apps/web`)
 
-> **Trạng thái:** `[/] Đang Triển Khai (AUTHORIZED)`  
+> **Trạng thái:** `[/] Đang Triển Khai (APPROVED WITH AMENDMENTS)`  
 > **Cơ sở pháp lý / Baseline nghiệm thu:** Task 7C.2 FROZEN CLEAN tại baseline `4e9c4dbfb96a6b7957090d8a306485333014c550` (Hosted CI Run #40701295336).  
 > **Phạm vi:** Trực thuộc **Phase 7C: Unified Multi-Device Sync Engine**. Triển khai bộ đồng bộ Client-Side trên ứng dụng Web Next.js 16 / React 19.
 
@@ -10,14 +10,52 @@
 
 Task 7C.3 triển khai trọn vẹn tầng Client-side Sync Engine trên Web (`apps/web`), đồng bộ hai chiều (Bi-directional Sync) với Core API Sync Hub thông qua giao thức Delta Revisions và Safe Snapshot Triage.
 
-### 5 Bất Biến Bắt Buộc:
-1. **Không tự động Rebase Mutation Stale:** Khi Server từ chối mutation với `REJECTED_STALE` hoặc phát hiện xung đột không giải quyết được, Web Client **tuyệt đối không tự ý ghi đè/rebase** mutation lên baseServerRevision mới. Mutation bị lỗi sẽ bị đưa vào `quarantined_mutations` và thông báo cho người dùng hoặc đợi chỉ thị rõ ràng.
-2. **Bảo Vệ Chống Phục Sinh (Anti-Tombstone Resurrection):** Không cho phép bất kỳ mutation cục bộ nào làm sống lại bản ghi đã bị Server đánh dấu xóa (Tombstone). Cập nhật local replica lập tức xóa bản ghi nếu nhận `REJECTED_TOMBSTONE` hoặc gặp Delta `DELETE`.
-3. **Tính Nguyên Tử Của Checkpoint (Checkpoint Atomicity):** Checkpoint revision (`lastSyncedServerRevision`) chỉ được phép tăng lên **SAU KHI** toàn bộ các thay đổi trong batch delta hoặc snapshot đã được ghi thành công (committed) vào IndexedDB trong cùng một transaction/bước nguyên tử. Tuyệt đối không ghi checkpoint trước khi local apply thành công.
-4. **Phân Định Rõ Ràng Ngữ Nghĩa Epoch:**
-   - Miền **HISTORY**: Áp dụng kiểm tra đẳng thức nghiêm ngặt (`mutation.storyHistoryEpoch === server.storyHistoryEpoch`).
-   - Miền **PROGRESS**: Áp dụng kiểm tra bảo vệ causal epoch với quan hệ `< effectiveHistoryEpoch` (cho phép tiến trình đọc mới nếu client đã quan sát revision xóa lịch sử).
-5. **Cách Ly Đa Tab & Leader Election:** Chỉ một tab duy nhất (Tab Leader) được quyền thực thi kết nối mạng kéo/đẩy sync với Core API thông qua bầu chọn `BroadcastChannel` với cơ chế Heartbeat & Lease Timeout. Các tab khác hoạt động ở chế độ Follower và nhận thông báo cập nhật qua bus nội bộ.
+### 9 Bất Biến Kỹ Thuật Bắt Buộc:
+
+1. **Quy Tắc Checkpoint Phân Trang Của Delta Pull (P0):**
+   - Khi `hasMore === true`: CHỈ được cập nhật checkpoint lên `nextRevision` **SAU KHI** đã áp dụng thành công toàn bộ các delta của trang đó vào IndexedDB.
+   - Khi `hasMore === false`: được cập nhật checkpoint lên `currentServerRevision` **SAU KHI** local transaction đã commit.
+   - Nếu transaction gặp lỗi hoặc quota exceeded: checkpoint tuyệt đối **KHÔNG ĐƯỢC THAY ĐỔI**.
+   - Mọi server revision và client cursor phải được lưu trữ dưới dạng **Decimal String** (PostgreSQL 64-bit BIGINT), so sánh bằng `BigInt(...)`, tuyệt đối không ép kiểu sang JavaScript `number` gây mất độ chính xác.
+
+2. **Cách Ly Tuyệt Đối Theo Account Scope (`ownerScope`) (P0):**
+   - Toàn bộ stores (`sync_meta`, `pending_mutations`, `quarantined_mutations`, `snapshot_staging_store`, `preferences`) đều phải phân vùng chặt chẽ theo `ownerScope` (`guest:<id>` và `account:<id>`).
+   - Cấm dùng khóa đơn lẻ `mutationId` làm keyPath toàn cục. Khóa phải luôn là composite key `['ownerScope', 'mutationId']`.
+   - Ngăn chặn triệt để rò rỉ chéo khi logout, switch account, Guest Claim hoặc trạng thái `TRANSITIONING` vô tình đẩy mutation của tài khoản khác lên server.
+
+3. **Cấm Tự Động Replay Pending Mutations Sau HTTP 410 (P0):**
+   - Khi server trả về `HTTP 410 Gone (SYNC_REVISION_EXPIRED)`, toàn bộ delta lịch sử giữa checkpoint cũ và snapshot đã bị GC xóa bỏ.
+   - Việc một bản ghi không có trong snapshot **không chứng minh** rằng mutation `UPSERT` cũ được phép tạo lại bản ghi đó.
+   - Chỉ những mutation có bằng chứng nhân quả (causal proof) và epoch hợp lệ mới được tiếp tục xử lý.
+   - Các mutation không đủ bằng chứng nhân quả bắt buộc phải đưa vào `quarantined_mutations`, giữ nguyên `mutationId`, `payload` và `baseServerRevision` gốc. **Cấm tự động sửa `baseServerRevision`, cấm âm thầm phát sinh mutation ID mới.**
+   - Đối với `HTTP 409 Conflict (SNAPSHOT_INVALIDATED)`: Hủy bỏ toàn bộ staging thuộc session cũ và khởi động lại quá trình tải snapshot từ trang 1. Tuyệt đối không swap snapshot chưa hoàn chỉnh.
+
+4. **Bảo Vệ Chống Phục Sinh (Anti-Tombstone Resurrection):**
+   - Không cho phép bất kỳ mutation cục bộ nào làm sống lại bản ghi đã bị Server đánh dấu xóa (Tombstone).
+   - Khi nhận `REJECTED_TOMBSTONE` từ Server hoặc gặp delta `DELETE`, local replica lập tức xóa bản ghi tương ứng khỏi local store.
+
+5. **Phân Định Rõ Ràng Ngữ Nghĩa Epoch:**
+   - Miền **HISTORY**: Áp dụng kiểm tra đẳng thức nghiêm ngặt (`mutation.observedHistoryEpoch === server.storyHistoryEpoch`).
+   - Miền **PROGRESS**: Áp dụng kiểm tra causal epoch guard với quan hệ `< effectiveHistoryEpoch` (cho phép tiến trình đọc mới nếu client đã quan sát revision xóa lịch sử).
+
+6. **Web Locks API Là Cơ Chế Độc Quyền Duy Nhất Cho Tab Leader:**
+   - Web Locks API (`navigator.locks`) là cơ chế mutual exclusion duy nhất chứng minh quyền Tab Leader, được khóa theo `ownerScope` (`omninovel_sync_lock:${ownerScope}`).
+   - Khi một tab giữ lock, nó trở thành Tab Leader duy nhất được phép chạy push/pull workers. Lock tự động giải phóng khi tab đóng, reload hoặc crash.
+   - `BroadcastChannel` chỉ đóng vai trò là bus truyền thông tin sự kiện giữa các tab (thông báo leader mới, báo trạng thái sync, kích hoạt re-render UI), **không phải cơ chế chứng minh quyền Leader**.
+
+7. **Tính Nguyên Tử Khi Ghi Local Mutation + Pending Queue (Atomic Primitive):**
+   - Ghi dữ liệu người dùng cục bộ (`bookmarks`, `progress`, `history`, `preferences`) VÀ đưa vào hàng đợi `pending_mutations` phải được thực thi trong **CÙNG MỘT** IndexedDB transaction.
+   - Tuyệt đối không để xảy ra kịch bản ghi local thành công nhưng enqueue thất bại khiến thay đổi bị kẹt cục bộ vĩnh viễn không đồng bộ lên Cloud.
+
+8. **Xử Lý Authoritative Delta Sau `CONFLICT_MERGED`:**
+   - Server response của `POST /sync/mutations/batch` không có trường `resolvedPayload`.
+   - Khi nhận kết quả `status === 'CONFLICT_MERGED'`, Web Client không được giả định có payload hợp nhất trong response mà phải kích hoạt pull authoritative delta từ Server để cập nhật replica.
+
+9. **Bảo Toàn Schema Hiện Hữu & Local Persistence Miền PREFERENCE:**
+   - Nâng cấp trên cùng CSDL `omninovel_local_v2` lên `DB_VERSION = 3` bằng `onupgradeneeded`.
+   - Giữ nguyên 100% dữ liệu, keyPath, indexes và hành vi của 3 store cũ (`bookmarks`, `progress`, `history`).
+   - Bổ sung store `preferences` phân vùng theo `ownerScope` để lưu trữ dữ liệu domain `PREFERENCE` (không được bỏ qua delta hoặc snapshot của domain này).
+   - Khóa mapping: `chapterReadStates` từ API snapshot ánh xạ vào store `history` trong IndexedDB (với `maxProgressPercentage` -> `progressPercentage`).
 
 ---
 
@@ -26,115 +64,66 @@ Task 7C.3 triển khai trọn vẹn tầng Client-side Sync Engine trên Web (`a
 ```
 packages/shared/src/
 ├── types/
-│   └── sync.types.ts                 <-- [Mới] Canonical Shared Sync Contracts (DTOs, Enums, Payloads)
+│   └── sync.types.ts                 <-- [Bước 1 - MỚI] Canonical Shared Sync Contracts (phản ánh 100% Backend DTOs)
 apps/web/src/lib/
 ├── storage/
-│   ├── indexed-db-client.ts          <-- [Nâng cấp] DB_VERSION 3, bổ sung 4 object stores
-│   └── sync-storage.ts               <-- [Mới] Data Access Layer cho Sync stores trong IndexedDB
+│   ├── indexed-db-client.ts          <-- [Bước 2 - NÂNG CẤP] DB_VERSION 3, bổ sung 5 object stores & migration logic
+│   └── sync-storage.ts               <-- [Bước 2 - MỚI] DAL & Atomic Transaction Primitives cho Sync stores
 └── sync/
-    ├── web-sync.types.ts             <-- [Mới] Client-specific sync interfaces & state machine
-    ├── tab-leader-election.ts        <-- [Mới] Điều phối đa tab qua BroadcastChannel & Web Locks API
-    ├── mutation-queue.ts             <-- [Mới] Quản lý pending mutations, deduplication & quarantine
-    ├── delta-pull-reconciler.ts      <-- [Mới] Kéo /sync/changes và apply nguyên tử vào local stores
-    ├── snapshot-reconciler.ts        <-- [Mới] Xử lý Safe 410 Gone Full Resync với Snapshot Staging
-    ├── web-sync-coordinator.ts       <-- [Mới] Facade điều phối toàn bộ chu trình sync (Online/Offline/Periodic)
-    └── index.ts                      <-- [Mới] Public exports cho UI & Hooks
+    ├── web-sync.types.ts             <-- [Bước 3 - MỚI] Client-specific sync interfaces & state machine
+    ├── tab-leader-election.ts        <-- [Bước 3 - MỚI] Web Locks API + BroadcastChannel coordinator
+    ├── mutation-queue.ts             <-- [Bước 4 - MỚI] Pending mutation queue, atomic enqueue & quarantine
+    ├── delta-pull-reconciler.ts      <-- [Bước 5 - MỚI] Kéo /sync/changes, paginated checkpoint & atomic apply
+    ├── snapshot-reconciler.ts        <-- [Bước 6 - MỚI] Safe 410 Full Resync, Snapshot Staging & 409 restart
+    ├── web-sync-coordinator.ts       <-- [Bước 7 - MỚI] Facade điều phối toàn bộ chu trình sync (Online/Offline)
+    └── index.ts                      <-- [Bước 7 - MỚI] Public exports cho UI & Hooks
 ```
 
 ---
 
-## 3. Thiết Kế Chi Tiết Từng Module
+## 3. Thiết Kế Chi Tiết Schema IndexedDB v3 (Bước 2)
 
-### 3.1. Nâng Cấp Schema IndexedDB (v1/v2 -> v3)
-- **Object Stores Mới:**
-  1. `sync_meta`: Key-value store lưu trữ trạng thái đồng bộ:
-     - `lastSyncedServerRevision`: Revision cao nhất đã apply cục bộ an toàn.
-     - `minActiveRevision`: Ngưỡng GC server thông báo gần nhất.
-     - `lastSyncTimestamp`: Thời điểm sync thành công gần nhất.
-     - `effectiveHistoryEpochs`: Map `{ [storyId: string]: number }` lưu epoch lịch sử của từng truyện.
-     - `syncState`: `'IDLE' | 'PULLING' | 'PUSHING' | 'RECONCILING_410' | 'ERROR'`.
-  2. `pending_mutations`: Lưu các mutation do hành động đọc/bookmark cục bộ phát sinh khi offline hoặc chờ gửi:
-     - KeyPath: `mutationId` (UUIDv4)
-     - Indexes: `by_createdAt`, `by_domain_entity` (`[domain, entityId]`)
-  3. `quarantined_mutations`: Lưu các mutation bị server từ chối (`REJECTED_STALE`, xung đột logic):
-     - KeyPath: `mutationId`
-     - Metadata: `rejectionReason`, `rejectedAt`, `originalPayload`
-  4. `snapshot_staging_store`: Lưu tạm các trang snapshot khi xử lý 410 Gone Full Resync:
-     - Giúp việc tải snapshot nhiều trang (paginated) không làm ô nhiễm DB chính trước khi hoàn tất toàn bộ dữ liệu.
+### Bảng Danh Mục Object Stores (`DB_NAME = 'omninovel_local_v2'`, `DB_VERSION = 3`):
 
-### 3.2. Điều Phối Đa Tab (Tab Leader Election)
-- Sử dụng `navigator.locks` (Web Locks API) kết hợp `BroadcastChannel('omninovel_sync_channel')`:
-  - Web Locks API cung cấp cơ chế loại trừ tương hỗ (Mutual Exclusion) tự nhiên của trình duyệt, tự động giải phóng lock khi tab bị đóng hoặc crash đột ngột.
-  - BroadcastChannel phát tín hiệu:
-    - `LEADER_CLAIMED`: Báo hiệu tab nào đang là Leader.
-    - `SYNC_STATE_CHANGED`: Báo cho các tab follower biết trạng thái sync để cập nhật UI (spinners, last sync time).
-    - `LOCAL_DATA_MUTATED`: Thông báo khi Tab Leader vừa apply delta vào IndexedDB để các tab khác re-render React Query cache.
-    - `FORCE_SYNC_REQUESTED`: Follower yêu cầu Leader kích hoạt chu trình sync ngay lập tức.
-
-### 3.3. Hàng Đợi Mutation (Mutation Queue & Push Worker)
-- Khi người dùng đọc truyện / thêm bookmark:
-  1. Ghi cục bộ vào store tương ứng (`bookmarks`, `progress`, `history`).
-  2. Đồng thời ghi một `ClientMutation` vào store `pending_mutations` với `baseServerRevision = lastSyncedServerRevision`.
-  3. Tab Leader đọc batch (tối đa 50 mutations), gửi `POST /api/v1/sync/mutations/batch`.
-  4. Khi nhận kết quả từ Server:
-     - `APPLIED` / `DEDUPLICATED`: Xóa mutation khỏi `pending_mutations`.
-     - `CONFLICT_MERGED`: Xóa khỏi `pending_mutations`, áp dụng dữ liệu hợp nhất vào local store.
-     - `REJECTED_TOMBSTONE`: Xóa khỏi `pending_mutations`, xóa ngay bản ghi tương ứng khỏi local store để chống phục sinh.
-     - `REJECTED_STALE`: Chuyển mutation sang `quarantined_mutations`. **Tuyệt đối không tự ý rebase.**
-
-### 3.4. Bộ Kéo Delta (Delta Pull Reconciler)
-- Gửi `GET /api/v1/sync/changes?after=${lastSyncedServerRevision}`:
-  - Nếu Server trả về `changes`:
-    - Mở một IDBTransaction `readwrite` trên tất cả các stores liên quan (`bookmarks`, `progress`, `history`, `sync_meta`).
-    - Lần lượt áp dụng các thay đổi:
-      - `BOOKMARK` `UPSERT` / `DELETE`
-      - `PROGRESS` `UPSERT`: áp dụng Monotonic rule (chỉ cập nhật nếu tiến độ mới hơn và thỏa mãn guard epoch).
-      - `HISTORY` `UPSERT` / `DELETE` (nếu `DELETE`: cập nhật `effectiveHistoryEpochs`).
-    - **Cập nhật Checkpoint:** Ghi `lastSyncedServerRevision = batch.currentServerRevision` vào `sync_meta` **BÊN TRONG** chính transaction này.
-    - Transaction `oncomplete` -> Phát tín hiệu qua BroadcastChannel cho các tab follower.
-
-### 3.5. Xử Lý Phục Hồi Toàn Diện (Safe 410 Gone Full Resync Reconciler)
-- Khi Server trả về HTTP `410 Gone` (client checkpoint nhỏ hơn `minActiveRevision` do GC dọn dẹp):
-  1. **Chuyển trạng thái:** Đặt cờ `syncState = 'RECONCILING_410'`, chặn tạm thời các thao tác push mới.
-  2. **Stage Snapshot:** Tải từng trang của snapshot qua `GET /api/v1/sync/snapshot` và nạp vào `snapshot_staging_store`.
-  3. **Atomic Swap & Triage:**
-     - Mở transaction trên toàn bộ các stores.
-     - Quét `pending_mutations`: Giữ lại các mutation hợp lệ (chưa bị ghi đè trong snapshot), cô lập các mutation xung đột vào `quarantined_mutations`.
-     - Thay thế dữ liệu local bằng dữ liệu từ snapshot staging.
-     - Áp dụng các pending mutations còn hợp lệ lên trên snapshot mới.
-     - Cập nhật `lastSyncedServerRevision = snapshotRevision`.
-     - Xóa sạch `snapshot_staging_store`.
-     - Đặt lại `syncState = 'IDLE'`.
+| Store Name | KeyPath | Indexes | Mục Đích |
+| :--- | :--- | :--- | :--- |
+| `bookmarks` *(Hiện hữu)* | `['ownerScope', 'storyId']` | — | Lưu bookmark truyện cục bộ (giữ nguyên). |
+| `progress` *(Hiện hữu)* | `['ownerScope', 'storyId']` | — | Lưu vị trí đọc gần nhất của truyện (giữ nguyên). |
+| `history` *(Hiện hữu)* | `['ownerScope', 'storyId', 'chapterId']` | `by_owner_time: ['ownerScope', 'lastReadAt']` | Lưu lịch sử đọc từng chương (giữ nguyên). |
+| `preferences` *(Mới)* | `['ownerScope', 'key']` | — | Lưu cài đặt & tùy biến người dùng theo account scope. |
+| `sync_meta` *(Mới)* | `ownerScope` | — | Lưu checkpoint (`lastSyncedServerRevision`), `minActiveRevision`, `effectiveHistoryEpochs`, `syncState`. |
+| `pending_mutations` *(Mới)* | `['ownerScope', 'mutationId']` | `by_scope_created: ['ownerScope', 'createdAt']` | Hàng đợi mutation cần đẩy lên server. |
+| `quarantined_mutations` *(Mới)* | `['ownerScope', 'mutationId']` | `by_scope_rejected: ['ownerScope', 'rejectedAt']` | Mutation bị server từ chối / stale, chờ triage. |
+| `snapshot_staging_store` *(Mới)* | `['ownerScope', 'sessionId', 'domain', 'entityKey']` | `by_scope_session: ['ownerScope', 'sessionId']` | Lưu tạm snapshot nhiều trang khi xử lý HTTP 410. |
 
 ---
 
 ## 4. Kế Hoạch Kiểm Thử Tự Động (Test Matrix & Verification)
 
-1. **Unit Tests (Vitest in `apps/web`):**
-   - Nâng cấp schema IndexedDB v1/v2 -> v3 (giữ nguyên dữ liệu cũ, khởi tạo các store mới).
-   - Enqueue, dequeue, batching, quarantine của `MutationQueue`.
-   - Bầu chọn Tab Leader qua BroadcastChannel & Web Locks API (giả lập nhiều context/tab).
-   - Delta Pull Reconciler: Áp dụng UPSERT/DELETE, tombstone guard, cập nhật checkpoint nguyên tử.
-   - Snapshot Reconciler: Xử lý 410 Gone, staging nhiều trang, atomic swap, triage pending mutations.
-2. **Integration & Concurrency Tests:**
-   - Đa tab mô phỏng: 1 Leader + 2 Followers cùng đọc và đồng bộ.
-   - Offline -> Online transitions: Tích lũy mutation khi mất mạng, tự động flush khi có mạng.
-   - Kịch bản Anti-Resurrection: Client offline có bookmark cũ, Server đã xóa -> Khi online lại, client tự xóa local, không làm sống lại bookmark.
-   - Kịch bản Safe 410 Gone: Checkpoint cũ bị GC -> Nhận 410 -> Kéo Snapshot -> Staging -> Swap thành công.
+1. **Shared Contracts Conformance Tests (`packages/shared/src/test/sync-contracts.spec.ts`):**
+   - Khớp 100% các enums: `SyncDomain`, `SyncOperation`, `MutationExecutionStatus` (có `DOMAIN_NOT_SUPPORTED`).
+   - Tái sử dụng `ReadingMode` chuẩn từ package `shared`.
+   - Khớp các interface: `ClientMutationDto` (optional `clientCreatedAt`), `MutationResultItemDto` (`assignedRevision: string | null`), `SyncChangesResponseDto` (`nextRevision: string | null`), `SyncSnapshotResponseDto`.
+2. **IndexedDB v3 Migration & Primitive Tests (`apps/web/src/test/indexed-db-v3-migration.spec.ts`):**
+   - Nâng cấp từ v1 lên v3: bảo toàn 100% dữ liệu cũ trong `bookmarks`, `progress`, `history`.
+   - Nâng cấp từ database mới hoàn toàn (fresh DB) lên v3.
+   - Thao tác nguyên tử: ghi `recordReadingSessionWithMutation` hoặc `saveBookmarkWithMutation` đảm bảo ghi cả local store và `pending_mutations` trong cùng 1 transaction; rollback hoàn toàn nếu một trong hai thất bại hoặc quota exceeded.
+   - Đảm bảo cách ly đa scope: ghi scope `account:user-1` không nhìn thấy / không ảnh hưởng tới scope `guest:device-1`.
+   - Kiểm tra error handling: quota exceeded, database blocked / version change.
 3. **Build & Hosted CI:**
    - `npm run test` (Vitest) toàn bộ Web suite pass 100%.
-   - `npm run build` (Next.js 16) pass không lỗi kiểu TypeScript.
+   - `npm run build` (Next.js 16) pass không có lỗi TypeScript.
    - Hosted CI 7/7 Jobs Green.
 
 ---
 
 ## 5. Tiến Độ Triển Khai Chi Tiết (Step-by-Step Execution Plan)
 
-- [ ] **Bước 1:** Khởi tạo canonical types trong `packages/shared/src/types/sync.types.ts` và export qua `packages/shared`.
-- [ ] **Bước 2:** Nâng cấp `apps/web/src/lib/storage/indexed-db-client.ts` lên `DB_VERSION = 3`, thêm các object stores mới và viết unit test migration.
-- [ ] **Bước 3:** Cài đặt `apps/web/src/lib/sync/tab-leader-election.ts` quản lý bầu chọn Leader đa tab.
+- [ ] **Bước 1:** Khởi tạo canonical types trong `packages/shared/src/types/sync.types.ts` và export qua `packages/shared`. Viết conformance test.
+- [ ] **Bước 2:** Nâng cấp `apps/web/src/lib/storage/indexed-db-client.ts` lên `DB_VERSION = 3`, thêm các object stores mới, cung cấp atomic write + enqueue primitives và viết suite kiểm thử migration & rollback.
+- [ ] **Bước 3:** Cài đặt `apps/web/src/lib/sync/tab-leader-election.ts` quản lý bầu chọn Leader đa tab qua Web Locks API (`navigator.locks`) & BroadcastChannel.
 - [ ] **Bước 4:** Cài đặt `apps/web/src/lib/sync/mutation-queue.ts` quản lý hàng đợi, chống rebase bừa bãi và cách ly quarantined mutations.
-- [ ] **Bước 5:** Cài đặt `apps/web/src/lib/sync/delta-pull-reconciler.ts` kéo changes và áp dụng checkpoint nguyên tử.
-- [ ] **Bước 6:** Cài đặt `apps/web/src/lib/sync/snapshot-reconciler.ts` xử lý Safe 410 Gone Full Resync với staging.
+- [ ] **Bước 5:** Cài đặt `apps/web/src/lib/sync/delta-pull-reconciler.ts` kéo changes, paginated checkpoint (`nextRevision` khi `hasMore=true`, `currentServerRevision` khi `hasMore=false`) và áp dụng checkpoint nguyên tử.
+- [ ] **Bước 6:** Cài đặt `apps/web/src/lib/sync/snapshot-reconciler.ts` xử lý Safe 410 Gone Full Resync với staging, hủy bỏ staging khi gặp 409 snapshot invalidation.
 - [ ] **Bước 7:** Tích hợp `apps/web/src/lib/sync/web-sync-coordinator.ts` và gắn kết với Auth/Identity/Reader hooks.
 - [ ] **Bước 8:** Chạy kiểm thử toàn diện (Vitest, Next.js build), xác minh các kịch bản nghiệm thu và đẩy Git đồng bộ.

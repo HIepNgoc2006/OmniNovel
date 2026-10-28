@@ -109,18 +109,25 @@ graph TD
 
 ### Phase 7C — Unified Multi-Device Sync Engine `[/] Đang làm`
 **Mục tiêu:** Đồng bộ trạng thái tức thì giữa Web và Mobile dựa trên Server Revisions, không phụ thuộc đồng hồ thiết bị.
-- [x] **7C.0. Architecture & Protocol Review Gate (`plans/phase_07c_architecture_gate.md`)**
-  - [x] Khóa 5 bất biến cốt lõi: Monotonic Server Ordering, Client Idempotency, Domain-Specific Conflict Resolution, Device Topology, Tombstone Retention & Anti-Resurrection.
-- [ ] **7C.1. Cơ Sở Dữ Liệu Đồng Bộ (`services/api`)**
-  - [ ] Tạo bảng `sync_change_log` có đánh số tuần tự `revision` và khóa duy nhất `(user_id, client_id, mutation_id)`.
-  - [ ] Bảng `user_sync_state` quản lý `current_sync_revision`.
-  - [ ] Bảng `sync_tombstones` lưu vết thực thể đã xóa kèm revision để triệt tiêu lỗi hồi sinh dữ liệu cũ (Anti-Resurrection).
-- [ ] **7C.2. Sync Hub Endpoints**
-  - [ ] `GET /api/v1/sync/changes?after=:revision`: Kéo delta các thay đổi mới phát sinh.
-  - [ ] `POST /api/v1/sync/mutations/batch`: Nhận danh sách các mutation ngoại tuyến và áp dụng tuần tự.
-- [ ] **7C.3. Client Background Reconcilers**
-  - [ ] Web: IndexedDB `pending_mutations` + Service Worker Background Sync / BroadcastChannel.
-  - [ ] Mobile: SQLite `pending_sync_mutations` + SyncWorker chạy nền với thuật toán Exponential Backoff.
+- [/] **7C.0. Architecture & Protocol Review Gate (`plans/phase_07c_architecture_gate.md`)**
+  - [/] Khóa 5 bất biến cốt lõi, bổ sung P0/P1 amendments (Tombstone safe full resync triage, durable idempotency receipts `sync_mutation_receipts`, canonical `ReadingMode`, 64-bit Decimal String wire format, legacy sync log emitter, và 12 kịch bản nghiệm thu SYNC-01..SYNC-12).
+- [ ] **7C.1. Database Schema & Core Entities (`services/api`)**
+  - [ ] Tạo các bảng CSDL: `user_sync_state`, `sync_change_log`, `sync_tombstones`, `sync_mutation_receipts`.
+  - [ ] TypeORM Entities kèm 64-bit Decimal String Transformer và SHA-256 payload hash helper.
+- [ ] **7C.2. Core API Sync Hub & Delta Protocol (`services/api`)**
+  - [ ] Cài đặt các endpoints: `GET /sync/changes`, `GET /sync/snapshot`, `POST /sync/mutations/batch`.
+  - [ ] Bộ giải quyết xung đột (Domain Conflict Resolver) và bảo vệ Tombstone Anti-Resurrection.
+  - [ ] Tích hợp `SyncLogEmitter` vào Guest Claim Commit và các API ghi thư viện hiện có.
+- [ ] **7C.3. Web Client Sync Reconciler (`apps/web`)**
+  - [ ] Nâng cấp IndexedDB Schema (thêm `sync_meta`, `quarantined_mutations`).
+  - [ ] Điều phối đa tab qua `BroadcastChannel` bầu chọn Tab Leader thực hiện sync.
+  - [ ] Cài đặt Safe 410 Full Resync Triage Reconciler (không phục sinh dữ liệu cũ).
+- [ ] **7C.4. Mobile Client Sync Reconciler (`apps/mobile`)**
+  - [ ] Nâng cấp SQLite Schema (bảng `pending_sync_mutations`, `sync_metadata`).
+  - [ ] Cài đặt `SyncWorker` chạy nền với Exponential Backoff & Connectivity Gate.
+  - [ ] Cài đặt Safe 410 Full Resync Triage Reconciler.
+- [ ] **7C.5. Comprehensive Cross-Platform Sync Verification Matrix**
+  - [ ] Kiểm thử toàn diện 12 kịch bản nghiệm thu `SYNC-01` đến `SYNC-12` trên cả Web, Mobile và Backend.
 
 ---
 

@@ -194,15 +194,23 @@ export function computeCanonicalMutationHash(
     );
   }
 
-  const trimmedRev = mutation.baseServerRevision.trim();
-  if (!/^\d+$/.test(trimmedRev)) {
+  // Strict validation: no leading/trailing whitespace, digits only
+  if (!/^\d+$/.test(mutation.baseServerRevision)) {
     throw new Error(
-      `[JCS] Invalid baseServerRevision format: '${mutation.baseServerRevision}'; must be an unsigned non-negative decimal string`,
+      `[JCS] Invalid baseServerRevision format: '${mutation.baseServerRevision}'; must be an unsigned non-negative decimal string with no whitespace`,
+    );
+  }
+
+  const MAX_POSTGRES_BIGINT = 9223372036854775807n;
+  const revBigInt = BigInt(mutation.baseServerRevision);
+  if (revBigInt > MAX_POSTGRES_BIGINT) {
+    throw new Error(
+      `[JCS] baseServerRevision exceeds PostgreSQL BIGINT max (9223372036854775807); received '${mutation.baseServerRevision}'`,
     );
   }
 
   const canonicalObject = {
-    baseServerRevision: trimmedRev,
+    baseServerRevision: mutation.baseServerRevision,
     clientId: mutation.clientId,
     domain: mutation.domain,
     entityId: mutation.entityId,

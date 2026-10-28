@@ -4,6 +4,14 @@ import { UserSyncState } from './entities/user-sync-state.entity';
 import { SyncChangeLog } from './entities/sync-change-log.entity';
 import { SyncTombstone } from './entities/sync-tombstone.entity';
 import { SyncMutationReceipt } from './entities/sync-mutation-receipt.entity';
+import {
+  BookmarkConflictResolver,
+  ConflictResolverDispatcher,
+  FollowConflictResolver,
+  HistoryConflictResolver,
+  PreferenceConflictResolver,
+  ProgressConflictResolver,
+} from './resolvers';
 
 @Module({
   imports: [
@@ -14,6 +22,22 @@ import { SyncMutationReceipt } from './entities/sync-mutation-receipt.entity';
       SyncMutationReceipt,
     ]),
   ],
-  exports: [TypeOrmModule],
+  providers: [
+    BookmarkConflictResolver,
+    ProgressConflictResolver,
+    HistoryConflictResolver,
+    PreferenceConflictResolver,
+    FollowConflictResolver,
+    ConflictResolverDispatcher,
+  ],
+  exports: [
+    TypeOrmModule,
+    BookmarkConflictResolver,
+    ProgressConflictResolver,
+    HistoryConflictResolver,
+    PreferenceConflictResolver,
+    FollowConflictResolver,
+    ConflictResolverDispatcher,
+  ],
 })
 export class SyncModule {}

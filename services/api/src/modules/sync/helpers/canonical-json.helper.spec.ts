@@ -298,7 +298,7 @@ describe('JCS RFC 8785 & I-JSON Canonical Serializer Helper (Unit Tests)', () =>
         );
       });
 
-      it('should reject float or malformed decimal strings', () => {
+      it('should reject float or malformed decimal strings and whitespace', () => {
         expect(() =>
           computeCanonicalMutationHash({
             ...validBase,
@@ -319,9 +319,47 @@ describe('JCS RFC 8785 & I-JSON Canonical Serializer Helper (Unit Tests)', () =>
             baseServerRevision: '',
           }),
         ).toThrow(/must be an unsigned non-negative decimal string/);
+
+        // Fail-closed whitespace checks (no leading/trailing whitespace allowed)
+        expect(() =>
+          computeCanonicalMutationHash({
+            ...validBase,
+            baseServerRevision: ' 100 ',
+          }),
+        ).toThrow(/must be an unsigned non-negative decimal string/);
+
+        expect(() =>
+          computeCanonicalMutationHash({
+            ...validBase,
+            baseServerRevision: '100 ',
+          }),
+        ).toThrow(/must be an unsigned non-negative decimal string/);
+
+        expect(() =>
+          computeCanonicalMutationHash({
+            ...validBase,
+            baseServerRevision: ' 100',
+          }),
+        ).toThrow(/must be an unsigned non-negative decimal string/);
       });
 
-      it('should accept valid non-negative decimal strings and 64-bit integers', () => {
+      it('should reject revisions exceeding PostgreSQL BIGINT max (9223372036854775807)', () => {
+        expect(() =>
+          computeCanonicalMutationHash({
+            ...validBase,
+            baseServerRevision: '9223372036854775808',
+          }),
+        ).toThrow(/exceeds PostgreSQL BIGINT max/);
+
+        expect(() =>
+          computeCanonicalMutationHash({
+            ...validBase,
+            baseServerRevision: '999999999999999999999999',
+          }),
+        ).toThrow(/exceeds PostgreSQL BIGINT max/);
+      });
+
+      it('should accept valid non-negative decimal strings within PostgreSQL BIGINT bounds (including > 2^53 - 1)', () => {
         const hash0 = computeCanonicalMutationHash({
           ...validBase,
           baseServerRevision: '0',
@@ -330,10 +368,17 @@ describe('JCS RFC 8785 & I-JSON Canonical Serializer Helper (Unit Tests)', () =>
 
         const hashLarge = computeCanonicalMutationHash({
           ...validBase,
-          baseServerRevision: '9007199254740995',
+          baseServerRevision: '9007199254740995', // > 2^53 - 1 (JS safe integer)
         });
         expect(hashLarge.length).toBe(64);
         expect(hash0).not.toBe(hashLarge);
+
+        const hashMaxBigInt = computeCanonicalMutationHash({
+          ...validBase,
+          baseServerRevision: '9223372036854775807', // 2^63 - 1 (PostgreSQL signed BIGINT max)
+        });
+        expect(hashMaxBigInt.length).toBe(64);
+        expect(hashMaxBigInt).not.toBe(hashLarge);
       });
     });
   });

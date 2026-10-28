@@ -124,23 +124,24 @@ File kiểm thử toàn diện: `services/api/test/guest-claim-lifecycle.e2e-spe
 | **Bước 4** | Chạy kiểm thử toàn bộ hệ thống (Web 657 tests, Mobile 500 tests, AI Worker 323 tests, Core API) | `[x] Hoàn thành` |
 | **Bước 5** | Vá 3 CVEs Trivy Docker API, chuẩn hóa cách ly test DB, commit & push kích hoạt CI 7/7 | `[x] Hoàn thành (Hosted CI 7/7 Run #40530990139, Commit 4892dd2)` |
 | **Bước 6** | Tách riêng PostgreSQL E2E container/port/volume, siết strict exact-set topology gate, kích hoạt CI 7/7 và ký đóng FROZEN CLEAN | `[x] Hoàn thành (Hosted CI 7/7 Run #40560232828, Commit c9aa80c)` |
-| **Bước 7** | Vá migration preflight fail-closed trên effective target, tách marker bootstrap & củng cố negative tests DB-10 đến DB-15 | `[x] Hoàn thành` |
+| **Bước 7** | Vá migration preflight fail-closed trên effective target, tách marker bootstrap & củng cố negative tests DB-10 đến DB-15 | `[x] Hoàn thành (Hosted CI 7/7 Run #40632991971, Commit 516cec6)` |
 
 ---
 
 ## 🏛️ 3. Nghiệm Thu & Khóa Baseline Kỹ Thuật (Final Frozen Sign-off)
 
-- **Technical Baseline Commit:** `c9aa80c231206fdc1acea681114c8e17aef0a4db`
-- **Hosted GitHub Actions CI Run:** [Run #40560232828](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/40560232828) (7/7 jobs SUCCESS)
-  1. *Security Audit & Secret Scanning* (ID 122386945766, 28s) — SUCCESS (TruffleHog OSS + Trivy Exception Lifecycle 12/12 tests PASS)
-  2. *Web Client Test Suite* (ID 122386945786, 12m19s) — SUCCESS (Lint, Typecheck, Vitest 657/657 PASS, Playwright 31/31 PASS)
-  3. *Mobile Client Test Suite* (ID 122386945939, 3m49s) — SUCCESS (Flutter analyze 0 errors, Foundation tests 500/500 PASS)
-  4. *AI Worker Test Suite* (ID 122386945283, 1m22s) — SUCCESS (Pytest 323/323 PASS, Real OCR model verification PASS)
-  5. *NestJS Core API Test Suite* (ID 122386945589, 3m10s) — SUCCESS (Unit 478 PASS, Integration & E2E 281/281 PASS trên dedicated DB `omninovel_test:55433`)
-  6. *Docker Images Build & Security Scan* (ID 122393717848, 5m39s) — SUCCESS (Fail-closed package governance 186/186 findings verified, 5/5 Trivy container scans PASS)
-  7. *VPS Production Deployment & Topology Verification* (ID 122396786703, 8s) — SUCCESS (17/17 topology invariants PASS, exact-set 3-network & 6-service validated)
+- **Technical Baseline Commit:** `516cec65bbfdc068a83d47bf14e591ea7d0840f0`
+- **Hosted GitHub Actions CI Run:** [Run #40632991971](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/40632991971) (7/7 jobs SUCCESS)
+  1. *Security Audit & Secret Scanning* (ID 122633465358, 21s) — SUCCESS (TruffleHog OSS + Trivy Exception Lifecycle 12/12 tests PASS)
+  2. *Web Client Test Suite* (ID 122633465340, 2m36s) — SUCCESS (Lint, Typecheck, Vitest 657/657 PASS, Playwright 31/31 PASS)
+  3. *Mobile Client Test Suite* (ID 122633464993, 3m48s) — SUCCESS (Flutter analyze 0 errors, Foundation tests 500/500 PASS)
+  4. *AI Worker Test Suite* (ID 122633465258, 1m27s) — SUCCESS (Pytest 323/323 PASS, Real OCR model verification PASS)
+  5. *NestJS Core API Test Suite* (ID 122633465853, 3m21s) — SUCCESS (Unit 478 PASS, Integration & E2E 284/284 PASS trên dedicated DB `omninovel_test:55433`)
+  6. *Docker Images Build & Security Scan* (ID 122634616413, 5m35s) — SUCCESS (Fail-closed package governance 186/186 findings verified, 5/5 Trivy container scans PASS)
+  7. *VPS Production Deployment & Topology Verification* (ID 122636255201, 7s) — SUCCESS (17/17 topology invariants PASS, exact-set 3-network & 6-service validated)
 - **Scope & Governance Boundaries:**
-  - Hardening hoàn tất đúng phạm vi: tách biệt local PostgreSQL E2E và siết strict exact-set topology gate.
+  - Migration preflight validation fail-closed trên effective target, ngăn chặn triệt để bypass qua env file.
+  - Tách marker bootstrap độc lập khỏi identity verification, loại bỏ false confidence.
   - Phân định rõ ràng: VPS verification trên CI là Topology Dry-Run Validation, không đồng nhất với Production Live VPS Deployment.
   - Lịch rà soát định kỳ ngoại lệ Trivy: Đợt 1 vào `01/11/2026`, Đợt 2 vào `01/12/2026`.
 - **Kết luận:** **Phase 7B.4 CLOSED / FROZEN CLEAN**.

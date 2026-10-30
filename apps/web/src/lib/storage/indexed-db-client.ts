@@ -96,6 +96,24 @@ export interface LocalQuarantinedMutation {
   originalCreatedAt?: string;
 }
 
+export type TransientFailureOutcome = 'RETRY_SCHEDULED' | 'QUARANTINED' | 'NOT_FOUND';
+
+export interface TransientFailureResult {
+  outcome: TransientFailureOutcome;
+  retryCount?: number;
+  nextRetryAt?: number;
+  quarantinedMutation?: LocalQuarantinedMutation;
+}
+
+export interface RecordTransientFailureOptions {
+  maxRetries: number;
+  initialBackoffMs: number;
+  maxBackoffMs: number;
+  backoffFactor: number;
+  failureReason: string;
+  checkAdmission?: () => void;
+}
+
 export interface LocalSnapshotStagingItem {
   ownerScope: string;
   sessionId: string;
@@ -1208,9 +1226,15 @@ export class IndexedDbClient {
    * Enqueues a new pending mutation using add() to enforce immutability.
    * Duplicate [ownerScope, mutationId] triggers ConstraintError and aborts transaction.
    */
-  async enqueuePendingMutation(mutation: LocalPendingMutation): Promise<void> {
+  async enqueuePendingMutation(
+    mutation: LocalPendingMutation,
+    options?: { checkAdmission?: () => void }
+  ): Promise<void> {
     assertValidScope(mutation.ownerScope);
     const db = await this.getDatabase();
+    if (options?.checkAdmission) {
+      options.checkAdmission();
+    }
     return new Promise((resolve, reject) => {
       try {
         const tx = db.transaction(STORE_PENDING_MUTATIONS, 'readwrite');
@@ -1335,6 +1359,95 @@ export class IndexedDbClient {
   }
 
   /**
+   * Atomic Primitive (Step 4a): Coordinates retry increment, exponential backoff calculation,
+   * and quarantine transition in a single IndexedDB readwrite transaction across pending and quarantined stores.
+   * Eliminates read-then-write race conditions and lost updates under concurrent failure handling.
+   * Returns a TransientFailureResult with outcome 'RETRY_SCHEDULED' | 'QUARANTINED' | 'NOT_FOUND'.
+   */
+  async recordTransientFailureAtomic(
+    ownerScope: string,
+    mutationId: string,
+    options: RecordTransientFailureOptions
+  ): Promise<TransientFailureResult> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+
+    if (options.checkAdmission) {
+      options.checkAdmission();
+    }
+
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction([STORE_PENDING_MUTATIONS, STORE_QUARANTINED_MUTATIONS], 'readwrite');
+        const pStore = tx.objectStore(STORE_PENDING_MUTATIONS);
+        const qStore = tx.objectStore(STORE_QUARANTINED_MUTATIONS);
+
+        const req = pStore.get([ownerScope, mutationId]);
+        let result: TransientFailureResult = { outcome: 'NOT_FOUND' };
+
+        req.onsuccess = () => {
+          const item = req.result as LocalPendingMutation | undefined;
+          if (!item) {
+            result = { outcome: 'NOT_FOUND' };
+            return;
+          }
+
+          const newRetryCount = (item.retryCount || 0) + 1;
+
+          if (newRetryCount >= options.maxRetries) {
+            // Reached maxRetries: atomically quarantine in the same transaction
+            pStore.delete([ownerScope, mutationId]);
+
+            const quarantined: LocalQuarantinedMutation = {
+              ownerScope: item.ownerScope,
+              mutationId: item.mutationId,
+              clientId: item.clientId,
+              domain: item.domain,
+              entityId: item.entityId,
+              operation: item.operation,
+              baseServerRevision: item.baseServerRevision,
+              payload: item.payload,
+              rejectionReason: `EXCEEDED_MAX_RETRIES: ${options.failureReason}`,
+              rejectionStatus: 'EXCEEDED_MAX_RETRIES',
+              rejectedAt: new Date().toISOString(),
+              triageStatus: 'PENDING',
+              originalCreatedAt: item.createdAt,
+            };
+
+            qStore.put(quarantined);
+            result = {
+              outcome: 'QUARANTINED',
+              retryCount: newRetryCount,
+              quarantinedMutation: quarantined,
+            };
+          } else {
+            // Below maxRetries: calculate exponential backoff and update in the same transaction
+            const delay = Math.min(
+              options.maxBackoffMs,
+              options.initialBackoffMs * Math.pow(options.backoffFactor, newRetryCount - 1)
+            );
+            item.retryCount = newRetryCount;
+            item.nextRetryAt = Date.now() + delay;
+
+            pStore.put(item);
+            result = {
+              outcome: 'RETRY_SCHEDULED',
+              retryCount: newRetryCount,
+              nextRetryAt: item.nextRetryAt,
+            };
+          }
+        };
+
+        tx.oncomplete = () => resolve(result);
+        tx.onerror = () => reject(tx.error || new Error('Transaction error in recordTransientFailureAtomic.'));
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted in recordTransientFailureAtomic.'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
    * Atomic Primitive: Increments retryCount and sets nextRetryAt in a SINGLE readwrite transaction.
    * Eliminates read-then-write race conditions under concurrent network failure handling.
    * Returns the updated retryCount and nextRetryAt, or null if mutation was not found.
@@ -1347,25 +1460,30 @@ export class IndexedDbClient {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_PENDING_MUTATIONS, 'readwrite');
-      const store = tx.objectStore(STORE_PENDING_MUTATIONS);
-      const req = store.get([ownerScope, mutationId]);
-      let result: { retryCount: number; nextRetryAt: number } | null = null;
+      try {
+        const tx = db.transaction(STORE_PENDING_MUTATIONS, 'readwrite');
+        const store = tx.objectStore(STORE_PENDING_MUTATIONS);
+        const req = store.get([ownerScope, mutationId]);
+        let result: { retryCount: number; nextRetryAt: number } | null = null;
 
-      req.onsuccess = () => {
-        const item = req.result as LocalPendingMutation | undefined;
-        if (!item) {
-          resolve(null);
-          return;
-        }
-        item.retryCount = (item.retryCount || 0) + 1;
-        item.nextRetryAt = Date.now() + delayMs;
-        store.put(item);
-        result = { retryCount: item.retryCount, nextRetryAt: item.nextRetryAt };
-      };
+        req.onsuccess = () => {
+          const item = req.result as LocalPendingMutation | undefined;
+          if (!item) {
+            result = null;
+            return;
+          }
+          item.retryCount = (item.retryCount || 0) + 1;
+          item.nextRetryAt = Date.now() + delayMs;
+          store.put(item);
+          result = { retryCount: item.retryCount, nextRetryAt: item.nextRetryAt };
+        };
 
-      tx.oncomplete = () => resolve(result);
-      tx.onerror = () => reject(tx.error);
+        tx.oncomplete = () => resolve(result);
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted in incrementPendingMutationRetryAtomic.'));
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 
@@ -1377,10 +1495,14 @@ export class IndexedDbClient {
     ownerScope: string,
     mutationId: string,
     reason: string,
-    status: QuarantineRejectionStatus = 'MANUAL'
+    status: QuarantineRejectionStatus = 'MANUAL',
+    options?: { checkAdmission?: () => void }
   ): Promise<LocalQuarantinedMutation | null> {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
+    if (options?.checkAdmission) {
+      options.checkAdmission();
+    }
     return new Promise((resolve, reject) => {
       try {
         const tx = db.transaction([STORE_PENDING_MUTATIONS, STORE_QUARANTINED_MUTATIONS], 'readwrite');
@@ -1391,7 +1513,7 @@ export class IndexedDbClient {
         req.onsuccess = () => {
           const target = req.result as LocalPendingMutation | undefined;
           if (!target) {
-            resolve(null);
+            tx.oncomplete = () => resolve(null);
             return;
           }
           pStore.delete([ownerScope, mutationId]);
@@ -1414,6 +1536,7 @@ export class IndexedDbClient {
           tx.oncomplete = () => resolve(quarantined);
         };
         tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted in quarantinePendingMutationByKey.'));
       } catch (err) {
         reject(err);
       }
@@ -1522,16 +1645,20 @@ export class IndexedDbClient {
    * Strictly preserves exact mutationId, payload, and baseServerRevision.
    *
    * Invariant Enforcement (P0-05):
-   * - REJECTED_TOMBSTONE mutations are strictly PERMANENT and CANNOT be requeued.
-   * - REJECTED_STALE or HTTP_410 mutations require explicit approved causal triage proof.
+   * - REJECTED_TOMBSTONE mutations are strictly PERMANENT and CANNOT be requeued (anti-resurrection).
+   * - REJECTED_STALE or HTTP_410 mutations are locked until Step 6 Causal Triage Engine is implemented.
    */
   async requeueQuarantinedMutation(
     ownerScope: string,
     mutationId: string,
-    triageProof?: CausalTriageProof
+    triageProof?: CausalTriageProof,
+    options?: { checkAdmission?: () => void }
   ): Promise<void> {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
+    if (options?.checkAdmission) {
+      options.checkAdmission();
+    }
     return new Promise((resolve, reject) => {
       try {
         const tx = db.transaction([STORE_QUARANTINED_MUTATIONS, STORE_PENDING_MUTATIONS], 'readwrite');
@@ -1582,6 +1709,7 @@ export class IndexedDbClient {
 
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted in requeueQuarantinedMutation.'));
       } catch (err) {
         reject(err);
       }

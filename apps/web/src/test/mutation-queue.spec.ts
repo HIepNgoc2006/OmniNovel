@@ -1146,4 +1146,335 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       expect(updated?.nextRetryAt).toBe(res?.nextRetryAt);
     });
   });
+
+  describe('13. Step 4a: Deterministic Concurrency & Async Authority Regression Matrix (RT-01 to RT-13)', () => {
+    it('RT-01: concurrently increments retryCount without lost updates or duplicate records', async () => {
+      const mut = createDummyMutation({ mutationId: 'mut-rt01', retryCount: 0 });
+      await dbClient.enqueuePendingMutation(mut);
+
+      // Execute 2 concurrent failure operations
+      const p1 = dbClient.recordTransientFailureAtomic(scopeA, 'mut-rt01', {
+        maxRetries: 5,
+        initialBackoffMs: 1000,
+        maxBackoffMs: 30000,
+        backoffFactor: 2,
+        failureReason: 'Error 1',
+      });
+      const p2 = dbClient.recordTransientFailureAtomic(scopeA, 'mut-rt01', {
+        maxRetries: 5,
+        initialBackoffMs: 1000,
+        maxBackoffMs: 30000,
+        backoffFactor: 2,
+        failureReason: 'Error 2',
+      });
+
+      const [res1, res2] = await Promise.all([p1, p2]);
+
+      expect(res1.outcome).toBe('RETRY_SCHEDULED');
+      expect(res2.outcome).toBe('RETRY_SCHEDULED');
+
+      // The final state in DB must have retryCount = 2 (neither update lost)
+      const stored = await dbClient.getPendingMutation(scopeA, 'mut-rt01');
+      expect(stored).not.toBeNull();
+      expect(stored?.retryCount).toBe(2);
+
+      // Quarantine store must NOT contain it
+      const quarantined = await dbClient.getQuarantinedMutation(scopeA, 'mut-rt01');
+      expect(quarantined).toBeNull();
+
+      // Test with 3 operations: concurrently trigger 3 more failures
+      const p3 = dbClient.recordTransientFailureAtomic(scopeA, 'mut-rt01', {
+        maxRetries: 10,
+        initialBackoffMs: 1000,
+        maxBackoffMs: 30000,
+        backoffFactor: 2,
+        failureReason: 'Error 3',
+      });
+      const p4 = dbClient.recordTransientFailureAtomic(scopeA, 'mut-rt01', {
+        maxRetries: 10,
+        initialBackoffMs: 1000,
+        maxBackoffMs: 30000,
+        backoffFactor: 2,
+        failureReason: 'Error 4',
+      });
+      const p5 = dbClient.recordTransientFailureAtomic(scopeA, 'mut-rt01', {
+        maxRetries: 10,
+        initialBackoffMs: 1000,
+        maxBackoffMs: 30000,
+        backoffFactor: 2,
+        failureReason: 'Error 5',
+      });
+
+      await Promise.all([p3, p4, p5]);
+      const storedAfter3 = await dbClient.getPendingMutation(scopeA, 'mut-rt01');
+      expect(storedAfter3?.retryCount).toBe(5); // 2 + 3 = 5
+    });
+
+    it('RT-02: concurrently handles retry reaching maxRetries with exactly one quarantine commit and no duplicate callback', async () => {
+      let quarantineCallbackCount = 0;
+      const queue = createTestQueue({
+        ownerScope: scopeA,
+        maxRetries: 2,
+        initialBackoffMs: 100,
+        onMutationQuarantined: () => {
+          quarantineCallbackCount++;
+        },
+      });
+
+      const mut = createDummyMutation({ mutationId: 'mut-rt02', retryCount: 0 });
+      await queue.enqueue(mut);
+
+      const batch1 = await queue.preparePushBatch();
+      expect(batch1.mutations).toHaveLength(1);
+
+      // Simulate 2 concurrent failure operations for this mutation
+      const p1 = (queue as any).handleTransientFailure(scopeA, queue.getScopeGeneration(), mut, new Error('Fail A'));
+      const p2 = (queue as any).handleTransientFailure(scopeA, queue.getScopeGeneration(), mut, new Error('Fail B'));
+
+      await Promise.all([p1, p2]);
+
+      // Exactly 1 quarantine callback fired
+      expect(quarantineCallbackCount).toBe(1);
+
+      // Pending record is gone
+      const pending = await dbClient.getPendingMutation(scopeA, 'mut-rt02');
+      expect(pending).toBeNull();
+
+      // Quarantined record exists with preserved metadata
+      const quarantined = await dbClient.getQuarantinedMutation(scopeA, 'mut-rt02');
+      expect(quarantined).not.toBeNull();
+      expect(quarantined?.rejectionStatus).toBe('EXCEEDED_MAX_RETRIES');
+      expect(quarantined?.baseServerRevision).toBe(mut.baseServerRevision);
+      expect(quarantined?.payload).toEqual(mut.payload);
+    });
+
+    it('RT-03: handles missing mutation with NOT_FOUND without phantom recreation or quarantine', async () => {
+      const res = await dbClient.recordTransientFailureAtomic(scopeA, 'mut-non-existent', {
+        maxRetries: 3,
+        initialBackoffMs: 1000,
+        maxBackoffMs: 30000,
+        backoffFactor: 2,
+        failureReason: 'Missing',
+      });
+
+      expect(res.outcome).toBe('NOT_FOUND');
+
+      // No record in pending or quarantine
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-non-existent')).toBeNull();
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-non-existent')).toBeNull();
+    });
+
+    it('RT-04: rolls back cleanly without partial update or false success callback if transaction fails', async () => {
+      let callbackFired = false;
+      const queue = createTestQueue({
+        ownerScope: scopeA,
+        onMutationQuarantined: () => {
+          callbackFired = true;
+        },
+      });
+
+      const mut = createDummyMutation({ mutationId: 'mut-rt04', retryCount: 0 });
+      await queue.enqueue(mut);
+
+      // Spy on recordTransientFailureAtomic to throw error
+      vi.spyOn(dbClient, 'recordTransientFailureAtomic').mockRejectedValueOnce(
+        new Error('Simulated disk I/O transaction failure')
+      );
+
+      await expect(
+        (queue as any).handleTransientFailure(scopeA, queue.getScopeGeneration(), mut, new Error('Net drop'))
+      ).rejects.toThrow('Simulated disk I/O transaction failure');
+
+      expect(callbackFired).toBe(false);
+
+      // Record in pending remains unchanged at retryCount = 0
+      const stored = await dbClient.getPendingMutation(scopeA, 'mut-rt04');
+      expect(stored).not.toBeNull();
+      expect(stored?.retryCount).toBe(0);
+    });
+
+    it('RT-05: blocks write transaction admission if scope switches during async database access', async () => {
+      const provider = createStaticIdentityProvider(scopeA);
+      const queue = createTestQueue({ ownerScope: scopeA, identityStateProvider: provider });
+
+      // Hook dbClient.getDatabase to switch scope during the async await
+      const originalGetDb = dbClient.getDatabase.bind(dbClient);
+      vi.spyOn(dbClient, 'getDatabase').mockImplementationOnce(async () => {
+        const db = await originalGetDb();
+        // User switches account while getDatabase() was awaiting!
+        provider.setScope(scopeB);
+        queue.setActiveScope(scopeB);
+        return db;
+      });
+
+      const mutA = createDummyMutation({ ownerScope: scopeA, mutationId: 'mut-rt05' });
+
+      // Enqueue must fail admission check and NOT open write transaction
+      await expect(queue.enqueue(mutA)).rejects.toThrow(ScopeMismatchError);
+
+      // Scope B must NOT have received mutation A
+      expect(await dbClient.getPendingMutation(scopeB, 'mut-rt05')).toBeNull();
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt05')).toBeNull();
+    });
+
+    it('RT-06: ensures A -> B -> A prevents late release from clearing generation 2 in-flight lock', async () => {
+      const provider = createStaticIdentityProvider(scopeA);
+      const queue = createTestQueue({ ownerScope: scopeA, identityStateProvider: provider });
+
+      const mutA = createDummyMutation({ ownerScope: scopeA, mutationId: 'mut-shared-id' });
+      await queue.enqueue(mutA);
+
+      // 1. Prepare batch at scope A (generation 0)
+      const batchA_gen0 = await queue.preparePushBatch();
+      expect(batchA_gen0.scopeGeneration).toBe(0);
+
+      // 2. Switch A -> B -> A
+      provider.setScope(scopeB);
+      queue.setActiveScope(scopeB);
+      expect(queue.getScopeGeneration()).toBe(1);
+
+      provider.setScope(scopeA);
+      queue.setActiveScope(scopeA);
+      expect(queue.getScopeGeneration()).toBe(2);
+
+      // 3. Prepare batch at scope A in generation 2: mut-shared-id is now in-flight for generation 2!
+      const batchA_gen2 = await queue.preparePushBatch();
+      expect(batchA_gen2.mutations).toHaveLength(1);
+      expect(batchA_gen2.scopeGeneration).toBe(2);
+
+      // 4. Late release arrives from generation 0!
+      queue.releaseInFlight(batchA_gen0);
+
+      // 5. CRITICAL INVARIANT: The in-flight lock for generation 2 MUST NOT be cleared by gen 0 release!
+      // A concurrent preparePushBatch in gen 2 must return empty!
+      const concurrentBatch = await queue.preparePushBatch();
+      expect(concurrentBatch.mutations).toHaveLength(0);
+
+      // 6. Only release from generation 2 actually clears the lock
+      queue.releaseInFlight(batchA_gen2);
+      const afterGen2Release = await queue.preparePushBatch();
+      expect(afterGen2Release.mutations).toHaveLength(1);
+    });
+
+    it('RT-07: fails closed when authority is revoked (canMutateUserState=false) without scope change', async () => {
+      let canMutate = true;
+      const provider: IdentityStateProvider = {
+        getActiveScope: () => scopeA,
+        isTransitioning: () => false,
+        canMutateUserState: () => canMutate,
+      };
+
+      const queue = createTestQueue({ ownerScope: scopeA, identityStateProvider: provider });
+      const mut = createDummyMutation({ mutationId: 'mut-rt07' });
+      await queue.enqueue(mut);
+
+      // Revoke authority without changing scope
+      canMutate = false;
+
+      // All operations fail closed
+      await expect(queue.preparePushBatch()).rejects.toThrow(ScopeTransitioningError);
+      await expect(queue.getPendingMutations()).rejects.toThrow(ScopeTransitioningError);
+      await expect(queue.quarantine('mut-rt07', 'Fail')).rejects.toThrow(ScopeTransitioningError);
+      await expect(queue.enqueue(createDummyMutation({ mutationId: 'mut-rt07-b' }))).rejects.toThrow(
+        ScopeTransitioningError
+      );
+    });
+
+    it('RT-08: aborts requeue transaction if identity transitions during quarantined read', async () => {
+      let isTransitioning = false;
+      const provider: IdentityStateProvider = {
+        getActiveScope: () => scopeA,
+        isTransitioning: () => isTransitioning,
+        canMutateUserState: () => !isTransitioning,
+      };
+
+      const queue = createTestQueue({ ownerScope: scopeA, identityStateProvider: provider });
+      const mut = createDummyMutation({ mutationId: 'mut-rt08' });
+      await queue.enqueue(mut);
+      await queue.quarantine('mut-rt08', 'Audit');
+
+      // Hook dbClient.getQuarantinedMutation to trigger transition during the await
+      const originalGetQ = dbClient.getQuarantinedMutation.bind(dbClient);
+      vi.spyOn(dbClient, 'getQuarantinedMutation').mockImplementationOnce(async (scope, id) => {
+        const res = await originalGetQ(scope, id);
+        // Identity starts transitioning while read resolves!
+        isTransitioning = true;
+        return res;
+      });
+
+      await expect(queue.requeue('mut-rt08')).rejects.toThrow(ScopeTransitioningError);
+
+      // Verify mutation is still in quarantine, NOT moved to pending
+      const q = await dbClient.getQuarantinedMutation(scopeA, 'mut-rt08');
+      expect(q).not.toBeNull();
+      const p = await dbClient.getPendingMutation(scopeA, 'mut-rt08');
+      expect(p).toBeNull();
+    });
+
+    it('RT-09: preserves mutation identity and decimal revision exceeding Number.MAX_SAFE_INTEGER across retries', async () => {
+      const queue = createTestQueue({
+        ownerScope: scopeA,
+        maxRetries: 5,
+        initialBackoffMs: 10,
+        backoffFactor: 2,
+      });
+
+      const hugeRevision = '9007199254740993999999'; // Exceeds Number.MAX_SAFE_INTEGER
+      const originalPayload = { storyId: 'story-huge', extra: { nested: true } };
+
+      const mut = createDummyMutation({
+        mutationId: 'mut-rt09-huge',
+        baseServerRevision: hugeRevision,
+        payload: originalPayload,
+        clientId: 'client-special-99',
+        entityId: 'story-huge',
+      });
+      await queue.enqueue(mut);
+
+      const batch = await queue.preparePushBatch();
+      await queue.handleNetworkFailure(batch, new Error('Failure 1'));
+
+      const stored1 = await dbClient.getPendingMutation(scopeA, 'mut-rt09-huge');
+      expect(stored1?.baseServerRevision).toBe(hugeRevision);
+      expect(stored1?.payload).toEqual(originalPayload);
+      expect(stored1?.clientId).toBe('client-special-99');
+      expect(stored1?.entityId).toBe('story-huge');
+      expect(stored1?.retryCount).toBe(1);
+
+      // Retry again
+      const batch2 = await queue.preparePushBatch({ now: Date.now() + 5000 });
+      await queue.handleNetworkFailure(batch2, new Error('Failure 2'));
+
+      const stored2 = await dbClient.getPendingMutation(scopeA, 'mut-rt09-huge');
+      expect(stored2?.baseServerRevision).toBe(hugeRevision);
+      expect(stored2?.retryCount).toBe(2);
+    });
+
+    it('RT-13: late failure after mutation was terminally removed does not resurrect record or emit fake quarantine', async () => {
+      let fakeQuarantineFired = false;
+      const queue = createTestQueue({
+        ownerScope: scopeA,
+        maxRetries: 1, // immediate quarantine on failure
+        onMutationQuarantined: () => {
+          fakeQuarantineFired = true;
+        },
+      });
+
+      const mut = createDummyMutation({ mutationId: 'mut-rt13' });
+      await queue.enqueue(mut);
+
+      const batch = await queue.preparePushBatch();
+
+      // Mutation is terminally removed (e.g. by APPLIED server response)
+      await dbClient.deletePendingMutation(scopeA, 'mut-rt13');
+
+      // Now a late network failure arrives for the same batch
+      await queue.handleNetworkFailure(batch, new Error('Late timeout arrived after terminal receipt'));
+
+      // Invariant: record is NOT resurrected in pending or quarantine, and no fake quarantine callback
+      expect(fakeQuarantineFired).toBe(false);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt13')).toBeNull();
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-rt13')).toBeNull();
+    });
+  });
 });

@@ -2009,7 +2009,9 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       const batchX = await queue.preparePushBatch();
       expect(batchX.mutations).toHaveLength(1);
 
-      // Hook recordTransientFailureAtomic with a controlled barrier
+      // Hook recordTransientFailureAtomic with a deterministic two-way barrier
+      let enteredBarrier: () => void = () => {};
+      const enteredPromise = new Promise<void>((r) => { enteredBarrier = r; });
       let barrierRelease: () => void = () => {};
       const barrierPromise = new Promise<void>((resolve) => {
         barrierRelease = resolve;
@@ -2020,7 +2022,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       vi.spyOn(dbClient, 'recordTransientFailureAtomic').mockImplementation(async (scope, mutationId, opts) => {
         callCount++;
         if (callCount === 1) {
-          // Pause first callback at async boundary
+          // Signal test that handler 1 has reached the controlled async boundary
+          enteredBarrier();
           await barrierPromise;
         }
         return originalRecord(scope, mutationId, opts);
@@ -2029,8 +2032,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       // Start first callback (will pause inside recordTransientFailureAtomic)
       const p1 = queue.handleNetworkFailure(batchX, new Error('Timeout 1'));
 
-      // Yield event loop to ensure p1 enters processing and hits the barrier
-      await new Promise((r) => setTimeout(r, 10));
+      // Deterministically wait for p1 to enter processing and reach the barrier
+      await enteredPromise;
 
       // Start second concurrent callback for the SAME batch
       const p2 = queue.handleNetworkFailure(batchX, new Error('Timeout 2'));
@@ -2061,6 +2064,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       expect(batchX.mutations).toHaveLength(1);
 
       let deleteCallCount = 0;
+      let enteredBarrier: () => void = () => {};
+      const enteredPromise = new Promise<void>((r) => { enteredBarrier = r; });
       let barrierRelease: () => void = () => {};
       const barrierPromise = new Promise<void>((resolve) => {
         barrierRelease = resolve;
@@ -2070,6 +2075,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       vi.spyOn(dbClient, 'deletePendingMutation').mockImplementation(async (scope, id, opts) => {
         deleteCallCount++;
         if (deleteCallCount === 1) {
+          enteredBarrier();
           await barrierPromise;
         }
         return originalDelete(scope, id, opts);
@@ -2081,7 +2087,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
         results: [{ mutationId: 'mut-rt28', status: 'APPLIED', assignedRevision: '10' }],
       });
 
-      await new Promise((r) => setTimeout(r, 10));
+      // Deterministically wait for p1 to enter the async boundary
+      await enteredPromise;
 
       // Start concurrent callback 2
       const p2 = queue.processServerBatchResults({
@@ -2110,10 +2117,13 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
         await queueA.enqueue(mutA);
         const batchA = await queueA.preparePushBatch();
 
+        let enteredBarrierA: () => void = () => {};
+        const enteredPromiseA = new Promise<void>((r) => { enteredBarrierA = r; });
         let barrierReleaseA: () => void = () => {};
         const barrierA = new Promise<void>((r) => { barrierReleaseA = r; });
         const origDel = dbClient.deletePendingMutation.bind(dbClient);
         vi.spyOn(dbClient, 'deletePendingMutation').mockImplementationOnce(async (s, id, o) => {
+          enteredBarrierA();
           await barrierA;
           return origDel(s, id, o);
         });
@@ -2123,7 +2133,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
           results: [{ mutationId: 'mut-rt29-a', status: 'APPLIED', assignedRevision: '100' }],
         });
 
-        await new Promise((r) => setTimeout(r, 10));
+        // Deterministically wait for pReceipt to claim PROCESSING and hit the barrier
+        await enteredPromiseA;
 
         const pFailure = queueA.handleNetworkFailure(batchA, new Error('Simulated network timeout'));
 
@@ -2142,17 +2153,21 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
         await queueB.enqueue(mutB);
         const batchB = await queueB.preparePushBatch();
 
+        let enteredBarrierB: () => void = () => {};
+        const enteredPromiseB = new Promise<void>((r) => { enteredBarrierB = r; });
         let barrierReleaseB: () => void = () => {};
         const barrierB = new Promise<void>((r) => { barrierReleaseB = r; });
         const origRecord = dbClient.recordTransientFailureAtomic.bind(dbClient);
         vi.spyOn(dbClient, 'recordTransientFailureAtomic').mockImplementationOnce(async (s, id, o) => {
+          enteredBarrierB();
           await barrierB;
           return origRecord(s, id, o);
         });
 
         const pFailure = queueB.handleNetworkFailure(batchB, new Error('Timeout first'));
 
-        await new Promise((r) => setTimeout(r, 10));
+        // Deterministically wait for pFailure to claim PROCESSING and hit the barrier
+        await enteredPromiseB;
 
         const pReceipt = queueB.processServerBatchResults({
           batch: batchB,
@@ -2219,6 +2234,52 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       const lifecycle = queue.getBatchLifecycle(batch.batchId);
       expect(lifecycle?.state).toBe('FAILED');
       expect(lifecycle?.error?.message).toContain('Disk I/O error on mutation B');
+
+      // 5. Recovery Path A: Resume on the same batch once I/O error resolves
+      vi.restoreAllMocks(); // I/O error resolved
+      const resumeSummary = await queue.processServerBatchResults({
+        batch,
+        results: [
+          { mutationId: 'mut-rt30-a', status: 'APPLIED', assignedRevision: '1' },
+          { mutationId: 'mut-rt30-b', status: 'APPLIED', assignedRevision: '2' },
+          { mutationId: 'mut-rt30-c', status: 'APPLIED', assignedRevision: '3' },
+        ],
+      });
+      // A was already committed and released, so it is skipped (appliedCount = 2 for B and C)
+      expect(resumeSummary.appliedCount).toBe(2);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt30-b')).toBeNull();
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt30-c')).toBeNull();
+      expect(queue.getBatchLifecycle(batch.batchId)?.state).toBe('SETTLED');
+
+      // 6. Recovery Path B: Recover failed batch via recoverFailedBatch to let new batch pick up
+      const mutD = createDummyMutation({ mutationId: 'mut-rt30-d' });
+      const mutE = createDummyMutation({ mutationId: 'mut-rt30-e' });
+      await queue.enqueue(mutD);
+      await queue.enqueue(mutE);
+
+      const batch2 = await queue.preparePushBatch();
+      expect(batch2.mutations).toHaveLength(2);
+
+      // Simulate partial failure on batch 2
+      vi.spyOn(dbClient, 'deletePendingMutation').mockImplementationOnce(async () => {
+        throw new Error('Transient write error on batch 2');
+      });
+
+      await expect(
+        queue.processServerBatchResults({
+          batch: batch2,
+          results: [{ mutationId: 'mut-rt30-d', status: 'APPLIED', assignedRevision: '4' }],
+        })
+      ).rejects.toThrow('Transient write error on batch 2');
+
+      // Explicit recovery call releases uncommitted mutations for new batches
+      queue.recoverFailedBatch(batch2);
+
+      const batch3 = await queue.preparePushBatch();
+      expect(batch3.mutations).toHaveLength(2);
+      const pickedIds3 = batch3.mutations.map((m) => m.mutationId);
+      expect(pickedIds3).toContain('mut-rt30-d');
+      expect(pickedIds3).toContain('mut-rt30-e');
     });
 
     it('RT-31: failed claim cleanup records FAILED state and does not leave batch stuck in PROCESSING', async () => {
@@ -2250,13 +2311,16 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       expect(await dbClient.getPendingMutation(scopeA, 'mut-rt31')).not.toBeNull();
     });
 
-    it('RT-32: authoritative delta pull callback failure wraps error in AuthoritativePullTriggerError and preserves committed deletions', async () => {
-      let deltaPullFired = false;
+    it('RT-32: authoritative delta pull callback failure wraps error in AuthoritativePullTriggerError and preserves committed deletions, with guaranteed recovery', async () => {
+      let deltaPullAttempts = 0;
+      let shouldFailDeltaPull = true;
       const queue = createTestQueue({
         ownerScope: scopeA,
         onAuthoritativeDeltaPullRequired: async () => {
-          deltaPullFired = true;
-          throw new Error('Delta pull network error');
+          deltaPullAttempts++;
+          if (shouldFailDeltaPull) {
+            throw new Error('Delta pull network error');
+          }
         },
       });
 
@@ -2266,7 +2330,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       const batch = await queue.preparePushBatch();
       expect(batch.mutations).toHaveLength(1);
 
-      // Processing CONFLICT_MERGED
+      // Attempt 1: Processing CONFLICT_MERGED -> local delete commits, but callback throws
       await expect(
         queue.processServerBatchResults({
           batch,
@@ -2274,15 +2338,56 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
         })
       ).rejects.toThrow(AuthoritativePullTriggerError);
 
-      expect(deltaPullFired).toBe(true);
+      expect(deltaPullAttempts).toBe(1);
 
-      // Invariants:
+      // Invariants for Attempt 1:
       // 1. Pending mutation deletion was committed and is NOT rolled back
       expect(await dbClient.getPendingMutation(scopeA, 'mut-rt32')).toBeNull();
 
-      // 2. Batch lifecycle is FAILED
-      const lifecycle = queue.getBatchLifecycle(batch.batchId);
-      expect(lifecycle?.state).toBe('FAILED');
+      // 2. Batch lifecycle is FAILED and reconciliation is marked as pending
+      const lifecycleAfterFail = queue.getBatchLifecycle(batch.batchId);
+      expect(lifecycleAfterFail?.state).toBe('FAILED');
+      expect(queue.hasPendingReconciliation(batch.batchId)).toBe(true);
+
+      // Attempt 2 (Recovery): Caller retries batch processing after connection restores
+      shouldFailDeltaPull = false;
+      const summaryRecovery = await queue.processServerBatchResults({
+        batch,
+        results: [{ mutationId: 'mut-rt32', status: 'CONFLICT_MERGED', assignedRevision: null }],
+      });
+
+      // Invariants for Attempt 2:
+      // 1. Callback WAS invoked again (deltaPullAttempts incremented to 2)
+      expect(deltaPullAttempts).toBe(2);
+
+      // 2. Already deleted mutation is NOT replayed or re-deleted
+      expect(summaryRecovery.conflictMergedCount).toBe(0);
+
+      // 3. Batch lifecycle is now successfully SETTLED
+      const lifecycleAfterRecovery = queue.getBatchLifecycle(batch.batchId);
+      expect(lifecycleAfterRecovery?.state).toBe('SETTLED');
+      expect(queue.hasPendingReconciliation(batch.batchId)).toBe(false);
+
+      // Attempt 3: Also verify explicit retryBatchReconciliation method
+      const mut2 = createDummyMutation({ mutationId: 'mut-rt32-explicit' });
+      await queue.enqueue(mut2);
+      const batch2 = await queue.preparePushBatch();
+      shouldFailDeltaPull = true;
+
+      await expect(
+        queue.processServerBatchResults({
+          batch: batch2,
+          results: [{ mutationId: 'mut-rt32-explicit', status: 'CONFLICT_MERGED', assignedRevision: null }],
+        })
+      ).rejects.toThrow(AuthoritativePullTriggerError);
+
+      expect(queue.hasPendingReconciliation(batch2.batchId)).toBe(true);
+
+      // Explicit recovery call
+      shouldFailDeltaPull = false;
+      await queue.retryBatchReconciliation(batch2);
+      expect(queue.getBatchLifecycle(batch2.batchId)?.state).toBe('SETTLED');
+      expect(queue.hasPendingReconciliation(batch2.batchId)).toBe(false);
     });
 
     it('RT-33: distinguishes pre-callback authority cancellation from runtime callback failure', async () => {
@@ -2391,6 +2496,65 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       // 2. Evicted batch 1 cannot resurrect or retry mut1
       expect(await dbClient.getPendingMutation(scopeA, 'mut-rt34-1')).toBeNull();
       expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-rt34-1')).toBeNull();
+    });
+
+    it('RT-35: releaseInFlight called while batch is PROCESSING safely protects state: unstarted mutations are skipped and in-flight writes fail admission check', async () => {
+      const queue = createTestQueue({ ownerScope: scopeA });
+      const mut1 = createDummyMutation({ mutationId: 'mut-rt35-1' });
+      const mut2 = createDummyMutation({ mutationId: 'mut-rt35-2' });
+      await queue.enqueue(mut1);
+      await queue.enqueue(mut2);
+
+      const batch = await queue.preparePushBatch();
+      expect(batch.mutations).toHaveLength(2);
+
+      // Part A: mut1 commits, then releaseInFlight happens before mut2 starts.
+      // Invariant: mut2 is cleanly skipped by ownership guard (not mutated in DB).
+      const origDelete = dbClient.deletePendingMutation.bind(dbClient);
+      vi.spyOn(dbClient, 'deletePendingMutation').mockImplementation(async (scope, id, opts) => {
+        if (id === 'mut-rt35-1') {
+          const res = await origDelete(scope, id, opts);
+          queue.releaseInFlight(batch); // Release while processing
+          return res;
+        }
+        return origDelete(scope, id, opts);
+      });
+
+      const summary = await queue.processServerBatchResults({
+        batch,
+        results: [
+          { mutationId: 'mut-rt35-1', status: 'APPLIED', assignedRevision: '1' },
+          { mutationId: 'mut-rt35-2', status: 'APPLIED', assignedRevision: '2' },
+        ],
+      });
+
+      // mut1 was committed, mut2 was skipped
+      expect(summary.appliedCount).toBe(1);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt35-1')).toBeNull();
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt35-2')).not.toBeNull();
+
+      // Part B: Mutation already inside DAL call awaiting database when releaseInFlight happens
+      // Invariant: checkAdmission throws StaleBatchRejectedError and prevents write transaction.
+      const mut3 = createDummyMutation({ mutationId: 'mut-rt35-3' });
+      await queue.enqueue(mut3);
+      const batch2 = await queue.preparePushBatch();
+
+      const origGetDb = dbClient.getDatabase.bind(dbClient);
+      vi.spyOn(dbClient, 'getDatabase').mockImplementationOnce(async () => {
+        const db = await origGetDb();
+        // Release batch2 while getDatabase is awaiting!
+        queue.releaseInFlight(batch2);
+        return db;
+      });
+
+      await expect(
+        queue.processServerBatchResults({
+          batch: batch2,
+          results: [{ mutationId: 'mut-rt35-3', status: 'APPLIED', assignedRevision: '3' }],
+        })
+      ).rejects.toThrow(StaleBatchRejectedError);
+
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt35-3')).not.toBeNull();
     });
   });
 });

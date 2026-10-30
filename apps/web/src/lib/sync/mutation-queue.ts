@@ -66,6 +66,8 @@ export interface BatchLifecycleRecord {
   claimedAt?: number;
   completedAt?: number;
   error?: Error;
+  reconciliationRequired?: boolean;
+  reconciliationSettled?: boolean;
 }
 
 export type ClaimResult =
@@ -209,6 +211,12 @@ export class MutationQueue {
   private readonly settledBatchQueue: string[] = [];
   private readonly maxSettledBatches: number;
 
+  /**
+   * Tracks batches that have completed terminal mutation writes for CONFLICT_MERGED
+   * but their authoritative delta pull trigger has not yet completed successfully.
+   */
+  private readonly pendingReconciliationBatches: Set<string> = new Set();
+
   constructor(options: MutationQueueOptions) {
     assertValidScope(options.ownerScope);
     if (!options.identityStateProvider) {
@@ -261,6 +269,7 @@ export class MutationQueue {
 
     // Synchronously claim PROCESSING before any await
     this.batchLifecycle.set(batch.batchId, {
+      ...record,
       state: 'PROCESSING',
       intent,
       claimedAt: Date.now(),
@@ -298,6 +307,15 @@ export class MutationQueue {
     } else {
       this.batchLifecycle.set(batchId, { state: 'FAILED', error });
     }
+  }
+
+  /**
+   * Recovers a failed batch by releasing all its uncommitted in-flight mutations,
+   * allowing subsequent preparePushBatch() calls to pick them up into a new batch.
+   * Committed mutations remain permanently committed and are never replayed.
+   */
+  recoverFailedBatch(batch: PreparedPushBatch): void {
+    this.releaseInFlight(batch);
   }
 
   private isBatchOwner(
@@ -352,6 +370,7 @@ export class MutationQueue {
     this.batchLifecycle.clear();
     this.settledBatches.clear();
     this.settledBatchQueue.length = 0;
+    this.pendingReconciliationBatches.clear();
     this.ownerScope = newScope;
   }
 
@@ -556,6 +575,59 @@ export class MutationQueue {
     return this.batchLifecycle.get(batchId);
   }
 
+  hasPendingReconciliation(batchId: string): boolean {
+    return this.pendingReconciliationBatches.has(batchId);
+  }
+
+  /**
+   * Explicitly retries authoritative reconciliation for a failed batch
+   * without re-processing already committed terminal mutations.
+   */
+  async retryBatchReconciliation(batch: PreparedPushBatch): Promise<void> {
+    const { ownerScope: batchOwnerScope, scopeGeneration: batchScopeGeneration } = batch;
+    if (batchOwnerScope !== this.ownerScope || batchScopeGeneration !== this.scopeGeneration) {
+      throw new StaleBatchRejectedError(
+        `Cannot retry reconciliation for stale batch: scope "${batchOwnerScope}" (gen ${batchScopeGeneration}), active "${this.ownerScope}" (gen ${this.scopeGeneration}).`
+      );
+    }
+
+    const claim = this.tryClaimBatchProcessing(batch, 'RECEIPT');
+    if (!claim.success) {
+      return;
+    }
+
+    try {
+      this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+      if (!this.onAuthoritativeDeltaPullRequired) {
+        this.pendingReconciliationBatches.delete(batch.batchId);
+        this.markBatchSettled(batch.batchId);
+        return;
+      }
+
+      await this.onAuthoritativeDeltaPullRequired(batchOwnerScope);
+      this.pendingReconciliationBatches.delete(batch.batchId);
+      const record = this.batchLifecycle.get(batch.batchId);
+      if (record) {
+        record.reconciliationRequired = false;
+        record.reconciliationSettled = true;
+      }
+      this.markBatchSettled(batch.batchId);
+    } catch (err) {
+      this.pendingReconciliationBatches.add(batch.batchId);
+      const record = this.batchLifecycle.get(batch.batchId);
+      if (record) {
+        record.reconciliationRequired = true;
+        record.reconciliationSettled = false;
+      }
+      this.markBatchFailed(batch.batchId, err as Error);
+      throw new AuthoritativePullTriggerError(
+        `Failed to retry authoritative delta pull for scope "${batchOwnerScope}": ${(err as Error)?.message || err}`,
+        batchOwnerScope,
+        err
+      );
+    }
+  }
+
   // ==================== SERVER RECEIPT & RESPONSE PROCESSING ====================
 
   /**
@@ -636,7 +708,11 @@ export class MutationQueue {
         resultMap.set(r.mutationId, r);
       }
 
-      let deltaPullNeeded = false;
+      const existingRecord = this.batchLifecycle.get(batch.batchId);
+      let deltaPullNeeded = Boolean(
+        (existingRecord?.reconciliationRequired && !existingRecord?.reconciliationSettled) ||
+        this.pendingReconciliationBatches.has(batch.batchId)
+      );
 
       for (const mutation of batchMutations) {
         // Asynchronous Boundary Guard: Re-verify scope, generation, and authority before EACH operation
@@ -834,7 +910,7 @@ export class MutationQueue {
         }
       }
 
-      // P1-04: Authoritative Delta Pull Trigger & Error Semantics
+      // P1-04 & Blocker P0: Authoritative Delta Pull Trigger & Recovery Semantics
       if (deltaPullNeeded && this.onAuthoritativeDeltaPullRequired) {
         let isAuthorityValid = false;
         try {
@@ -848,7 +924,19 @@ export class MutationQueue {
         if (isAuthorityValid) {
           try {
             await this.onAuthoritativeDeltaPullRequired(batchOwnerScope);
+            this.pendingReconciliationBatches.delete(batch.batchId);
+            const record = this.batchLifecycle.get(batch.batchId);
+            if (record) {
+              record.reconciliationRequired = false;
+              record.reconciliationSettled = true;
+            }
           } catch (callbackErr) {
+            this.pendingReconciliationBatches.add(batch.batchId);
+            const record = this.batchLifecycle.get(batch.batchId);
+            if (record) {
+              record.reconciliationRequired = true;
+              record.reconciliationSettled = false;
+            }
             throw new AuthoritativePullTriggerError(
               `Failed to trigger authoritative delta pull for scope "${batchOwnerScope}": ${(callbackErr as Error)?.message || callbackErr}`,
               batchOwnerScope,

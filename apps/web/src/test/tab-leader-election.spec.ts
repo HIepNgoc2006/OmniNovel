@@ -512,4 +512,98 @@ describe('Task 7C.3 — Step 3: Tab Leader Election (Web Locks API & Scope Parti
       tab2ScopeA.destroy();
     });
   });
+
+  describe('8. Web Lock Acquisition Failures and Callback Exceptions (Hardening Regression Tests)', () => {
+    it('ensures tab remains FOLLOWER without phantom leader signal when lockManager.request() rejects', async () => {
+      const rejectingLockManager: LockManager = {
+        async request() {
+          throw new Error('Lock acquisition failed: simulated lock error');
+        },
+        async query() {
+          return { held: [], pending: [] };
+        },
+      };
+
+      let observedRole: TabRole | null = null;
+      let observedSignal: AbortSignal | null = null;
+
+      const failingTab = new TabLeaderElection({
+        ownerScope: 'account:usr-rejecting-lock',
+        tabId: 'tab-reject',
+        lockManager: rejectingLockManager,
+        onRoleChange: (role, signal) => {
+          observedRole = role;
+          observedSignal = signal;
+        },
+      });
+
+      expect(failingTab.getState().isLeader).toBe(false);
+      expect(failingTab.getState().role).toBe('FOLLOWER');
+
+      failingTab.start();
+      await new Promise((r) => setTimeout(r, 40));
+
+      // Invariant: Failed lock request must never promote tab or leave phantom signal
+      expect(failingTab.getState().isLeader).toBe(false);
+      expect(failingTab.getState().role).toBe('FOLLOWER');
+      expect(failingTab.getLeaderSignal()).toBeNull();
+      expect(observedSignal).toBeNull();
+      expect(observedRole).toBe('FOLLOWER');
+
+      failingTab.destroy();
+    });
+
+    it('ensures tab demotes immediately and aborts leader signal when lock callback throws an unhandled exception', async () => {
+      const throwingLockManager: LockManager = {
+        async request<T>(
+          name: string,
+          optionsOrCallback: LockOptions | LockGrantedCallback<T>,
+          callback?: LockGrantedCallback<T>
+        ): Promise<T> {
+          const cb = typeof optionsOrCallback === 'function' ? optionsOrCallback : callback!;
+          // Call the callback which will invoke promoteToLeader
+          return await cb({ name, mode: 'exclusive' } as any);
+        },
+        async query() {
+          return { held: [], pending: [] };
+        },
+      };
+
+      let capturedSignalDuringLeader: AbortSignal | null = null;
+      let roleChangeLog: TabRole[] = [];
+
+      const tab = new TabLeaderElection({
+        ownerScope: 'account:usr-callback-exception',
+        tabId: 'tab-exception',
+        lockManager: throwingLockManager,
+        onRoleChange: (role, signal) => {
+          roleChangeLog.push(role);
+          if (role === 'LEADER') {
+            capturedSignalDuringLeader = signal;
+            // Throw synchronous exception during leader setup
+            throw new Error('Crash inside onRoleChange callback');
+          }
+        },
+      });
+
+      tab.start();
+      await new Promise((r) => setTimeout(r, 40));
+
+      // After the crash inside callback:
+      // Tab must be demoted back to FOLLOWER
+      expect(tab.getState().isLeader).toBe(false);
+      expect(tab.getState().role).toBe('FOLLOWER');
+      expect(tab.getLeaderSignal()).toBeNull();
+
+      // The leader signal captured before the crash must now be aborted
+      expect(capturedSignalDuringLeader).not.toBeNull();
+      expect(capturedSignalDuringLeader!.aborted).toBe(true);
+
+      // Verify role transitions: LEADER -> FOLLOWER
+      expect(roleChangeLog).toContain('LEADER');
+      expect(roleChangeLog[roleChangeLog.length - 1]).toBe('FOLLOWER');
+
+      tab.destroy();
+    });
+  });
 });

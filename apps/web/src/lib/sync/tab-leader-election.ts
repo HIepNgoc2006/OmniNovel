@@ -47,10 +47,11 @@ export class TabLeaderElection {
 
     // Use passed lockManager, or default to navigator.locks in browser environments
     this.lockManager =
-      options.lockManager ||
-      (typeof navigator !== 'undefined' && 'locks' in navigator
-        ? navigator.locks
-        : undefined);
+      'lockManager' in options
+        ? (options.lockManager || undefined)
+        : (typeof navigator !== 'undefined' && 'locks' in navigator
+            ? navigator.locks
+            : undefined);
 
     if (!this.lockManager) {
       this.currentRole = 'DISCONNECTED';

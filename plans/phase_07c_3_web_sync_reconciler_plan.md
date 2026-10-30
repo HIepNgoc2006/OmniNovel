@@ -39,7 +39,7 @@ Task 7C.3 triển khai trọn vẹn tầng Client-side Sync Engine trên Web (`a
    - Miền **PROGRESS**: Áp dụng kiểm tra causal epoch guard với quan hệ `< effectiveHistoryEpoch` (cho phép tiến trình đọc mới nếu client đã quan sát revision xóa lịch sử).
 
 6. **Web Locks API Là Cơ Chế Độc Quyền Duy Nhất Cho Tab Leader:**
-   - Web Locks API (`navigator.locks`) là cơ chế mutual exclusion duy nhất chứng minh quyền Tab Leader, được khóa theo `ownerScope` (`omninovel_sync_lock:${ownerScope}`).
+   - Web Locks API (`navigator.locks`) là cơ chế mutual exclusion duy nhất chứng minh quyền Tab Leader, được khóa theo `ownerScope` (`omninovel_sync_leader:${ownerScope}`).
    - Khi một tab giữ lock, nó trở thành Tab Leader duy nhất được phép chạy push/pull workers. Lock tự động giải phóng khi tab đóng, reload hoặc crash.
    - `BroadcastChannel` chỉ đóng vai trò là bus truyền thông tin sự kiện giữa các tab (thông báo leader mới, báo trạng thái sync, kích hoạt re-render UI), **không phải cơ chế chứng minh quyền Leader**.
 
@@ -122,7 +122,7 @@ apps/web/src/lib/
 - [x] **Bước 1:** Khởi tạo canonical types trong `packages/shared/src/types/sync.types.ts` và export qua `packages/shared`. Viết conformance test (8/8 PASS).
 - [x] **Bước 2:** Nâng cấp `apps/web/src/lib/storage/indexed-db-client.ts` lên `DB_VERSION = 3`, thêm 5 object stores mới, cung cấp atomic write + enqueue primitives. Remediated P0-01 (add() mutation immutability, entity/domain/op alignment) và P1-01 (rollback suite: duplicate mutation ConstraintError rollback, QuotaExceededError rollback, v2->v3 migration, onblocked handling — 18/18 PASS); đồng bộ sentinel `all` / UUID `00000000-0000-0000-0000-000000000000` và allowlist `reader_theme` — **ACCEPTED LOCAL** ✅.
 - [x] **Bước 3:** Cài đặt `apps/web/src/lib/sync/web-sync.types.ts` và `apps/web/src/lib/sync/tab-leader-election.ts` quản lý bầu chọn Leader đa tab qua Web Locks API (`navigator.locks`) & BroadcastChannel. Đã khắc phục triệt để P0-02 (Fail-closed khi thiếu Web Locks API, role DISCONNECTED, cấm sync) và P0-03 (Loại bỏ race condition nhả lock bằng pre-allocated release promise, try/finally và regression tests đồng bộ cho stepDown, destroy, setActiveScope trong onRoleChange — 11/11 PASS, 694/694 web tests PASS) — **REMEDIATED & VERIFIED** ✅.
-- [ ] **Bước 4:** Cài đặt `apps/web/src/lib/sync/mutation-queue.ts` quản lý hàng đợi, chống rebase bừa bãi và cách ly quarantined mutations (AUTHORIZED WITH CONDITIONS).
+- [x] **Bước 4:** Cài đặt `apps/web/src/lib/sync/mutation-queue.ts` quản lý hàng đợi, chống rebase bừa bãi và cách ly quarantined mutations. Đảm bảo 6 bất biến nghiêm ngặt: mutation identity preservation, scope isolation & transitioning guard, server rejection handling (REJECTED_TOMBSTONE replica eviction ngăn resurrection, REJECTED_STALE quarantine, CONFLICT_MERGED delta pull trigger, DOMAIN_NOT_SUPPORTED), atomic transaction, exponential backoff retry safety, và worker authority; kèm 19 regression tests (19/19 PASS, toàn bộ web suite 715/715 PASS, Next.js build SUCCESS) — **COMPLETED LOCAL** ✅.
 - [ ] **Bước 5:** Cài đặt `apps/web/src/lib/sync/delta-pull-reconciler.ts` kéo changes, paginated checkpoint (`nextRevision` khi `hasMore=true`, `currentServerRevision` khi `hasMore=false`) và áp dụng checkpoint nguyên tử.
 - [ ] **Bước 6:** Cài đặt `apps/web/src/lib/sync/snapshot-reconciler.ts` xử lý Safe 410 Gone Full Resync với staging, hủy bỏ staging khi gặp 409 snapshot invalidation.
 - [ ] **Bước 7:** Tích hợp `apps/web/src/lib/sync/web-sync-coordinator.ts` và gắn kết với Auth/Identity/Reader hooks.

@@ -1477,4 +1477,445 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-rt13')).toBeNull();
     });
   });
+
+  describe('14. Step 4a.1: Batch Ownership, Stale Release & Receipt Authority Hardening (RT-14 to RT-23)', () => {
+    it('RT-14: stale processServerBatchResults does not release or mutate new batch after A -> B -> A', async () => {
+      const provider = createStaticIdentityProvider(scopeA);
+      const queue = createTestQueue({ ownerScope: scopeA, identityStateProvider: provider });
+
+      const mut = createDummyMutation({ ownerScope: scopeA, mutationId: 'mut-rt14' });
+      await queue.enqueue(mut);
+
+      // Gen 0: Batch X
+      const batchX = await queue.preparePushBatch();
+      expect(batchX.scopeGeneration).toBe(0);
+
+      // Switch A -> B -> A: Generation is now 2
+      provider.setScope(scopeB);
+      queue.setActiveScope(scopeB);
+      provider.setScope(scopeA);
+      queue.setActiveScope(scopeA);
+      expect(queue.getScopeGeneration()).toBe(2);
+
+      // Gen 2: Batch Y takes ownership of mut-rt14
+      const batchY = await queue.preparePushBatch();
+      expect(batchY.scopeGeneration).toBe(2);
+      expect(batchY.mutations).toHaveLength(1);
+
+      // Late response from Batch X arrives
+      await expect(
+        queue.processServerBatchResults({
+          batch: batchX,
+          results: [{ mutationId: 'mut-rt14', status: 'APPLIED', assignedRevision: '1' }],
+        })
+      ).rejects.toThrow(StaleBatchRejectedError);
+
+      // Batch Y must still own mut-rt14; concurrent preparePushBatch must return empty
+      const concurrentBatch = await queue.preparePushBatch();
+      expect(concurrentBatch.mutations).toHaveLength(0);
+
+      // Pending mutation mut-rt14 was NOT deleted by Batch X
+      const pending = await dbClient.getPendingMutation(scopeA, 'mut-rt14');
+      expect(pending).not.toBeNull();
+
+      // Now valid Batch Y response arrives and successfully applies
+      const resY = await queue.processServerBatchResults({
+        batch: batchY,
+        results: [{ mutationId: 'mut-rt14', status: 'APPLIED', assignedRevision: '2' }],
+      });
+      expect(resY.appliedCount).toBe(1);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt14')).toBeNull();
+    });
+
+    it('RT-15: stale handleNetworkFailure does not release or increment retry after A -> B -> A', async () => {
+      const provider = createStaticIdentityProvider(scopeA);
+      const queue = createTestQueue({ ownerScope: scopeA, identityStateProvider: provider });
+
+      const mut = createDummyMutation({ ownerScope: scopeA, mutationId: 'mut-rt15', retryCount: 0 });
+      await queue.enqueue(mut);
+
+      // Gen 0: Batch X
+      const batchX = await queue.preparePushBatch();
+
+      // Switch A -> B -> A
+      provider.setScope(scopeB);
+      queue.setActiveScope(scopeB);
+      provider.setScope(scopeA);
+      queue.setActiveScope(scopeA);
+
+      // Gen 2: Batch Y
+      const batchY = await queue.preparePushBatch();
+      expect(batchY.mutations).toHaveLength(1);
+
+      // Late network failure for Batch X arrives
+      await queue.handleNetworkFailure(batchX, new Error('Late timeout from Gen 0'));
+
+      // Retry count must still be 0 (not incremented by Batch X)
+      const pending = await dbClient.getPendingMutation(scopeA, 'mut-rt15');
+      expect(pending?.retryCount).toBe(0);
+
+      // Batch Y must still own mut-rt15; preparePushBatch must return empty
+      const concurrent = await queue.preparePushBatch();
+      expect(concurrent.mutations).toHaveLength(0);
+    });
+
+    it('RT-16: isolates batches within same generation (batch X cannot release or mutate batch Y)', async () => {
+      const queue = createTestQueue({ ownerScope: scopeA });
+
+      const mut = createDummyMutation({ ownerScope: scopeA, mutationId: 'mut-rt16' });
+      await queue.enqueue(mut);
+
+      // 1. Prepare Batch X in Gen 0
+      const batchX = await queue.preparePushBatch();
+      expect(batchX.mutations).toHaveLength(1);
+
+      // 2. Explicitly release Batch X (simulating legitimate timeout release)
+      queue.releaseInFlight(batchX);
+
+      // 3. Prepare Batch Y in same Gen 0; mut-rt16 is now owned by Batch Y
+      const batchY = await queue.preparePushBatch();
+      expect(batchY.mutations).toHaveLength(1);
+      expect(batchY.batchId).not.toBe(batchX.batchId);
+
+      // 4. Stale explicit release from Batch X arrives
+      queue.releaseInFlight(batchX);
+
+      // 5. Batch Y must STILL hold in-flight ownership
+      const concurrent = await queue.preparePushBatch();
+      expect(concurrent.mutations).toHaveLength(0);
+
+      // 6. Stale server receipt from Batch X arrives: must be skipped because batchX does not own mut-rt16
+      const summaryX = await queue.processServerBatchResults({
+        batch: batchX,
+        results: [{ mutationId: 'mut-rt16', status: 'APPLIED', assignedRevision: '1' }],
+      });
+      expect(summaryX.appliedCount).toBe(0);
+
+      // Pending record is NOT deleted
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt16')).not.toBeNull();
+
+      // 7. Legitimate receipt from Batch Y arrives: successfully applied and deleted
+      const summaryY = await queue.processServerBatchResults({
+        batch: batchY,
+        results: [{ mutationId: 'mut-rt16', status: 'APPLIED', assignedRevision: '2' }],
+      });
+      expect(summaryY.appliedCount).toBe(1);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt16')).toBeNull();
+    });
+
+    it('RT-17: transaction admission race blocks deletePendingMutation (APPLIED) if authority revoked during getDatabase', async () => {
+      let canMutate = true;
+      const provider: IdentityStateProvider = {
+        getActiveScope: () => scopeA,
+        isTransitioning: () => false,
+        canMutateUserState: () => canMutate,
+      };
+      const queue = createTestQueue({ ownerScope: scopeA, identityStateProvider: provider });
+
+      const mut = createDummyMutation({ ownerScope: scopeA, mutationId: 'mut-rt17' });
+      await queue.enqueue(mut);
+      const batch = await queue.preparePushBatch();
+
+      // Intercept dbClient.getDatabase to revoke authority during await
+      const originalGetDb = dbClient.getDatabase.bind(dbClient);
+      vi.spyOn(dbClient, 'getDatabase').mockImplementationOnce(async () => {
+        const db = await originalGetDb();
+        canMutate = false; // Revoke authority!
+        return db;
+      });
+
+      // processServerBatchResults APPLIED must fail admission guard
+      await expect(
+        queue.processServerBatchResults({
+          batch,
+          results: [{ mutationId: 'mut-rt17', status: 'APPLIED', assignedRevision: '1' }],
+        })
+      ).rejects.toThrow(ScopeTransitioningError);
+
+      // Pending record remains untouched
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt17')).not.toBeNull();
+    });
+
+    it('RT-18: transaction admission race blocks quarantineMutation (REJECTED_STALE) if authority revoked during getDatabase', async () => {
+      let canMutate = true;
+      let callbackFired = false;
+      const provider: IdentityStateProvider = {
+        getActiveScope: () => scopeA,
+        isTransitioning: () => false,
+        canMutateUserState: () => canMutate,
+      };
+      const queue = createTestQueue({
+        ownerScope: scopeA,
+        identityStateProvider: provider,
+        onMutationQuarantined: () => {
+          callbackFired = true;
+        },
+      });
+
+      const mut = createDummyMutation({ ownerScope: scopeA, mutationId: 'mut-rt18' });
+      await queue.enqueue(mut);
+      const batch = await queue.preparePushBatch();
+
+      // Intercept getDatabase
+      const originalGetDb = dbClient.getDatabase.bind(dbClient);
+      vi.spyOn(dbClient, 'getDatabase').mockImplementationOnce(async () => {
+        const db = await originalGetDb();
+        canMutate = false;
+        return db;
+      });
+
+      await expect(
+        queue.processServerBatchResults({
+          batch,
+          results: [{ mutationId: 'mut-rt18', status: 'REJECTED_STALE', message: 'Stale', assignedRevision: null }],
+        })
+      ).rejects.toThrow(ScopeTransitioningError);
+
+      expect(callbackFired).toBe(false);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt18')).not.toBeNull();
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-rt18')).toBeNull();
+    });
+
+    it('RT-19: transaction admission race blocks evictReplicaAndRemovePending (REJECTED_TOMBSTONE) if authority revoked', async () => {
+      let canMutate = true;
+      let evictedFired = false;
+      const provider: IdentityStateProvider = {
+        getActiveScope: () => scopeA,
+        isTransitioning: () => false,
+        canMutateUserState: () => canMutate,
+      };
+      const queue = createTestQueue({
+        ownerScope: scopeA,
+        identityStateProvider: provider,
+        onReplicaEvicted: () => {
+          evictedFired = true;
+        },
+      });
+
+      // Save bookmark replica in DB
+      await dbClient.putBookmark({
+        ownerScope: scopeA,
+        storyId: 'story-tomb-19',
+        title: 'Story 19',
+        createdAt: new Date().toISOString(),
+      });
+
+      const mut = createDummyMutation({
+        ownerScope: scopeA,
+        mutationId: 'mut-rt19',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'story-tomb-19',
+      });
+      await queue.enqueue(mut);
+      const batch = await queue.preparePushBatch();
+
+      // Intercept getDatabase
+      const originalGetDb = dbClient.getDatabase.bind(dbClient);
+      vi.spyOn(dbClient, 'getDatabase').mockImplementationOnce(async () => {
+        const db = await originalGetDb();
+        canMutate = false;
+        return db;
+      });
+
+      await expect(
+        queue.processServerBatchResults({
+          batch,
+          results: [{ mutationId: 'mut-rt19', status: 'REJECTED_TOMBSTONE', message: 'Deleted', assignedRevision: null }],
+        })
+      ).rejects.toThrow(ScopeTransitioningError);
+
+      expect(evictedFired).toBe(false);
+      // Replica must NOT have been deleted
+      expect(await dbClient.getBookmark(scopeA, 'story-tomb-19')).not.toBeNull();
+      // Pending mutation must NOT have been deleted
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt19')).not.toBeNull();
+
+      // Verify that when authority is valid, atomic eviction succeeds
+      canMutate = true;
+      const validSummary = await queue.processServerBatchResults({
+        batch,
+        results: [{ mutationId: 'mut-rt19', status: 'REJECTED_TOMBSTONE', message: 'Deleted', assignedRevision: null }],
+      });
+      expect(validSummary.tombstoneEvictedCount).toBe(1);
+      expect(evictedFired).toBe(true);
+      expect(await dbClient.getBookmark(scopeA, 'story-tomb-19')).toBeNull();
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt19')).toBeNull();
+    });
+
+    it('RT-20: blocks deleteQuarantined and clearQuarantined if authority revoked during getDatabase', async () => {
+      let canMutate = true;
+      const provider: IdentityStateProvider = {
+        getActiveScope: () => scopeA,
+        isTransitioning: () => false,
+        canMutateUserState: () => canMutate,
+      };
+      const queue = createTestQueue({ ownerScope: scopeA, identityStateProvider: provider });
+
+      // Put 2 mutations into quarantine
+      const mut1 = createDummyMutation({ mutationId: 'mut-rt20-1' });
+      const mut2 = createDummyMutation({ mutationId: 'mut-rt20-2' });
+      await queue.enqueue(mut1);
+      await queue.enqueue(mut2);
+      await queue.quarantine('mut-rt20-1', 'Reason 1');
+      await queue.quarantine('mut-rt20-2', 'Reason 2');
+
+      expect(await dbClient.getQuarantinedMutations(scopeA)).toHaveLength(2);
+
+      // Intercept getDatabase during deleteQuarantined
+      const originalGetDb = dbClient.getDatabase.bind(dbClient);
+      vi.spyOn(dbClient, 'getDatabase').mockImplementationOnce(async () => {
+        const db = await originalGetDb();
+        canMutate = false;
+        return db;
+      });
+
+      await expect(queue.deleteQuarantined('mut-rt20-1')).rejects.toThrow(ScopeTransitioningError);
+      // Records still intact
+      expect(await dbClient.getQuarantinedMutations(scopeA)).toHaveLength(2);
+
+      // Intercept getDatabase during clearQuarantined
+      vi.spyOn(dbClient, 'getDatabase').mockImplementationOnce(async () => {
+        const db = await originalGetDb();
+        canMutate = false;
+        return db;
+      });
+
+      await expect(queue.clearQuarantined()).rejects.toThrow(ScopeTransitioningError);
+      expect(await dbClient.getQuarantinedMutations(scopeA)).toHaveLength(2);
+
+      // Once authority is restored, delete and clear succeed
+      canMutate = true;
+      await queue.deleteQuarantined('mut-rt20-1');
+      expect(await dbClient.getQuarantinedMutations(scopeA)).toHaveLength(1);
+      await queue.clearQuarantined();
+      expect(await dbClient.getQuarantinedMutations(scopeA)).toHaveLength(0);
+    });
+
+    it('RT-21: real IndexedDB transaction rollback on abort preserves pending state and prevents partial quarantine', async () => {
+      const mut = createDummyMutation({ mutationId: 'mut-rt21', retryCount: 0 });
+      await dbClient.enqueuePendingMutation(mut);
+
+      // Trigger a real transaction abort via _testHookBeforeComplete
+      const promise = dbClient.recordTransientFailureAtomic(scopeA, 'mut-rt21', {
+        maxRetries: 1, // Will attempt to quarantine
+        initialBackoffMs: 100,
+        maxBackoffMs: 1000,
+        backoffFactor: 2,
+        failureReason: 'Real abort test',
+        _testHookBeforeComplete: (tx) => {
+          tx.abort(); // Real IndexedDB transaction abort!
+        },
+      });
+
+      await expect(promise).rejects.toThrow();
+
+      // Pending record is NOT deleted, retryCount is NOT updated
+      const pending = await dbClient.getPendingMutation(scopeA, 'mut-rt21');
+      expect(pending).not.toBeNull();
+      expect(pending?.retryCount).toBe(0);
+
+      // Quarantine store has NO partial record
+      const quarantined = await dbClient.getQuarantinedMutation(scopeA, 'mut-rt21');
+      expect(quarantined).toBeNull();
+    });
+
+    it('RT-22: suppresses callbacks and delta pull if authority is revoked after transaction commit', async () => {
+      let canMutate = true;
+      let callbackFired = false;
+      let deltaPullFired = false;
+      const provider: IdentityStateProvider = {
+        getActiveScope: () => scopeA,
+        isTransitioning: () => false,
+        canMutateUserState: () => canMutate,
+      };
+
+      const queue = createTestQueue({
+        ownerScope: scopeA,
+        identityStateProvider: provider,
+        onMutationQuarantined: () => {
+          callbackFired = true;
+        },
+        onAuthoritativeDeltaPullRequired: () => {
+          deltaPullFired = true;
+        },
+      });
+
+      const mut = createDummyMutation({ mutationId: 'mut-rt22' });
+      await queue.enqueue(mut);
+      const batch = await queue.preparePushBatch();
+
+      // Revoke authority immediately after transaction commits inside quarantineMutation
+      const origQuarantine = dbClient.quarantineMutation.bind(dbClient);
+      vi.spyOn(dbClient, 'quarantineMutation').mockImplementationOnce(async (q, opts) => {
+        await origQuarantine(q, opts);
+        // Authority revoked right after commit!
+        canMutate = false;
+      });
+
+      // Process REJECTED_STALE: transaction commits, but callback must be safely suppressed
+      const summary = await queue.processServerBatchResults({
+        batch,
+        results: [{ mutationId: 'mut-rt22', status: 'REJECTED_STALE', message: 'Stale', assignedRevision: null }],
+      });
+      expect(summary.staleQuarantinedCount).toBe(1);
+      expect(callbackFired).toBe(false); // Stale callback suppressed!
+
+      // Same test for CONFLICT_MERGED delta pull
+      canMutate = true;
+      const mutDelta = createDummyMutation({ mutationId: 'mut-rt22-delta' });
+      await queue.enqueue(mutDelta);
+      const batchDelta = await queue.preparePushBatch();
+
+      const origDelete = dbClient.deletePendingMutation.bind(dbClient);
+      vi.spyOn(dbClient, 'deletePendingMutation').mockImplementationOnce(async (s, id, opts) => {
+        await origDelete(s, id, opts);
+        canMutate = false; // Revoke right after commit
+      });
+
+      const summaryDelta = await queue.processServerBatchResults({
+        batch: batchDelta,
+        results: [{ mutationId: 'mut-rt22-delta', status: 'CONFLICT_MERGED', assignedRevision: null }],
+      });
+      expect(summaryDelta.conflictMergedCount).toBe(1);
+      expect(deltaPullFired).toBe(false); // Stale delta pull suppressed!
+    });
+
+    it('RT-23: duplicate and late callback safety (settled batch, late failure after terminal receipt)', async () => {
+      let quarantineCount = 0;
+      const queue = createTestQueue({
+        ownerScope: scopeA,
+        maxRetries: 1,
+        onMutationQuarantined: () => {
+          quarantineCount++;
+        },
+      });
+
+      const mut = createDummyMutation({ mutationId: 'mut-rt23' });
+      await queue.enqueue(mut);
+      const batch = await queue.preparePushBatch();
+
+      // Scenario A: First receipt applies
+      const res1 = await queue.processServerBatchResults({
+        batch,
+        results: [{ mutationId: 'mut-rt23', status: 'APPLIED', assignedRevision: '1' }],
+      });
+      expect(res1.appliedCount).toBe(1);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt23')).toBeNull();
+
+      // Duplicate receipt for the exact same batch arrives
+      const res2 = await queue.processServerBatchResults({
+        batch,
+        results: [{ mutationId: 'mut-rt23', status: 'APPLIED', assignedRevision: '1' }],
+      });
+      expect(res2.appliedCount).toBe(0); // Settled batch skipped cleanly
+
+      // Scenario B: Late network failure arrives after terminal receipt
+      await queue.handleNetworkFailure(batch, new Error('Late timeout after APPLIED'));
+
+      // Invariants: pending not resurrected, quarantine not triggered, no fake callback
+      expect(quarantineCount).toBe(0);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt23')).toBeNull();
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-rt23')).toBeNull();
+    });
+  });
 });

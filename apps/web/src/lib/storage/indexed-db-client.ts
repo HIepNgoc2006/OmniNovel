@@ -112,6 +112,7 @@ export interface RecordTransientFailureOptions {
   backoffFactor: number;
   failureReason: string;
   checkAdmission?: () => void;
+  _testHookBeforeComplete?: (tx: IDBTransaction) => void;
 }
 
 export interface LocalSnapshotStagingItem {
@@ -1305,29 +1306,53 @@ export class IndexedDbClient {
     });
   }
 
-  async deletePendingMutation(ownerScope: string, mutationId: string): Promise<void> {
+  async deletePendingMutation(
+    ownerScope: string,
+    mutationId: string,
+    options?: { checkAdmission?: () => void }
+  ): Promise<void> {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
+    if (options?.checkAdmission) {
+      options.checkAdmission();
+    }
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_PENDING_MUTATIONS, 'readwrite');
-      tx.objectStore(STORE_PENDING_MUTATIONS).delete([ownerScope, mutationId]);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+      try {
+        const tx = db.transaction(STORE_PENDING_MUTATIONS, 'readwrite');
+        tx.objectStore(STORE_PENDING_MUTATIONS).delete([ownerScope, mutationId]);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted in deletePendingMutation.'));
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 
-  async deletePendingMutationsBatch(ownerScope: string, mutationIds: string[]): Promise<void> {
+  async deletePendingMutationsBatch(
+    ownerScope: string,
+    mutationIds: string[],
+    options?: { checkAdmission?: () => void }
+  ): Promise<void> {
     assertValidScope(ownerScope);
     if (mutationIds.length === 0) return;
     const db = await this.getDatabase();
+    if (options?.checkAdmission) {
+      options.checkAdmission();
+    }
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_PENDING_MUTATIONS, 'readwrite');
-      const store = tx.objectStore(STORE_PENDING_MUTATIONS);
-      for (const id of mutationIds) {
-        store.delete([ownerScope, id]);
+      try {
+        const tx = db.transaction(STORE_PENDING_MUTATIONS, 'readwrite');
+        const store = tx.objectStore(STORE_PENDING_MUTATIONS);
+        for (const id of mutationIds) {
+          store.delete([ownerScope, id]);
+        }
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted in deletePendingMutationsBatch.'));
+      } catch (err) {
+        reject(err);
       }
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
     });
   }
 
@@ -1435,6 +1460,14 @@ export class IndexedDbClient {
               retryCount: newRetryCount,
               nextRetryAt: item.nextRetryAt,
             };
+          }
+
+          if (options._testHookBeforeComplete) {
+            try {
+              options._testHookBeforeComplete(tx);
+            } catch (hookErr) {
+              reject(hookErr);
+            }
           }
         };
 
@@ -1545,9 +1578,15 @@ export class IndexedDbClient {
 
   // ==================== QUARANTINED MUTATIONS OPERATIONS (Phase 7C.3) ====================
 
-  async quarantineMutation(quarantined: LocalQuarantinedMutation): Promise<void> {
+  async quarantineMutation(
+    quarantined: LocalQuarantinedMutation,
+    options?: { checkAdmission?: () => void }
+  ): Promise<void> {
     assertValidScope(quarantined.ownerScope);
     const db = await this.getDatabase();
+    if (options?.checkAdmission) {
+      options.checkAdmission();
+    }
     return new Promise((resolve, reject) => {
       try {
         const tx = db.transaction([STORE_PENDING_MUTATIONS, STORE_QUARANTINED_MUTATIONS], 'readwrite');
@@ -1560,6 +1599,7 @@ export class IndexedDbClient {
         tx.objectStore(STORE_QUARANTINED_MUTATIONS).put(recordToStore);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted in quarantineMutation.'));
       } catch (err) {
         reject(err);
       }
@@ -1605,37 +1645,60 @@ export class IndexedDbClient {
     });
   }
 
-  async deleteQuarantinedMutation(ownerScope: string, mutationId: string): Promise<void> {
+  async deleteQuarantinedMutation(
+    ownerScope: string,
+    mutationId: string,
+    options?: { checkAdmission?: () => void }
+  ): Promise<void> {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
+    if (options?.checkAdmission) {
+      options.checkAdmission();
+    }
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_QUARANTINED_MUTATIONS, 'readwrite');
-      tx.objectStore(STORE_QUARANTINED_MUTATIONS).delete([ownerScope, mutationId]);
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+      try {
+        const tx = db.transaction(STORE_QUARANTINED_MUTATIONS, 'readwrite');
+        tx.objectStore(STORE_QUARANTINED_MUTATIONS).delete([ownerScope, mutationId]);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted in deleteQuarantinedMutation.'));
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 
-  async clearQuarantinedMutations(ownerScope: string): Promise<void> {
+  async clearQuarantinedMutations(
+    ownerScope: string,
+    options?: { checkAdmission?: () => void }
+  ): Promise<void> {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
+    if (options?.checkAdmission) {
+      options.checkAdmission();
+    }
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_QUARANTINED_MUTATIONS, 'readwrite');
-      const store = tx.objectStore(STORE_QUARANTINED_MUTATIONS);
-      const range = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
-      const req = store.openCursor(range);
-      req.onsuccess = () => {
-        const cursor = req.result;
-        if (cursor) {
-          const item = cursor.value as LocalQuarantinedMutation;
-          if (item.ownerScope === ownerScope) {
-            cursor.delete();
+      try {
+        const tx = db.transaction(STORE_QUARANTINED_MUTATIONS, 'readwrite');
+        const store = tx.objectStore(STORE_QUARANTINED_MUTATIONS);
+        const range = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+        const req = store.openCursor(range);
+        req.onsuccess = () => {
+          const cursor = req.result;
+          if (cursor) {
+            const item = cursor.value as LocalQuarantinedMutation;
+            if (item.ownerScope === ownerScope) {
+              cursor.delete();
+            }
+            cursor.continue();
           }
-          cursor.continue();
-        }
-      };
-      tx.oncomplete = () => resolve();
-      tx.onerror = () => reject(tx.error);
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted in clearQuarantinedMutations.'));
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 
@@ -1726,10 +1789,14 @@ export class IndexedDbClient {
     domain: SyncDomain,
     entityId: string,
     mutationId: string,
-    payload?: Record<string, unknown>
+    payload?: Record<string, unknown>,
+    options?: { checkAdmission?: () => void }
   ): Promise<void> {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
+    if (options?.checkAdmission) {
+      options.checkAdmission();
+    }
 
     return new Promise((resolve, reject) => {
       try {

@@ -82,6 +82,12 @@ export function createStaticIdentityProvider(scope: string): SettableIdentitySta
   };
 }
 
+export interface InFlightOwner {
+  ownerScope: string;
+  scopeGeneration: number;
+  batchId: string;
+}
+
 export interface PreparedPushBatch {
   batchId: string;
   ownerScope: string;
@@ -161,10 +167,17 @@ export class MutationQueue {
   private readonly onMutationQuarantined?: (scope: string, mutation: LocalQuarantinedMutation) => void;
 
   /**
-   * Generation-scoped in-flight mutation map [mutationId -> scopeGeneration] (P0-08).
-   * Prevents late callbacks from previous generations from clearing in-flight locks of newer generations.
+   * Generation-scoped & Batch-scoped in-flight mutation map [mutationId -> InFlightOwner] (P0-09).
+   * Prevents late callbacks from previous generations or different batches from clearing in-flight locks.
    */
-  private readonly inFlightMap: Map<string, number> = new Map();
+  private readonly inFlightMap: Map<string, InFlightOwner> = new Map();
+
+  /**
+   * Tracks settled batch IDs to prevent duplicate callbacks or race conditions within the same batch.
+   */
+  private readonly settledBatches: Set<string> = new Set();
+  private readonly settledBatchQueue: string[] = [];
+  private readonly maxSettledBatches: number = 500;
 
   constructor(options: MutationQueueOptions) {
     assertValidScope(options.ownerScope);
@@ -184,12 +197,86 @@ export class MutationQueue {
     this.onMutationQuarantined = options.onMutationQuarantined;
   }
 
+  // ==================== BATCH OWNERSHIP & SETTLEMENT ====================
+
+  private markBatchSettled(batchId: string): void {
+    if (this.settledBatches.has(batchId)) return;
+    this.settledBatches.add(batchId);
+    this.settledBatchQueue.push(batchId);
+    if (this.settledBatchQueue.length > this.maxSettledBatches) {
+      const oldest = this.settledBatchQueue.shift();
+      if (oldest) {
+        this.settledBatches.delete(oldest);
+      }
+    }
+  }
+
+  private isBatchOwner(
+    batch: { ownerScope: string; scopeGeneration: number; batchId?: string },
+    mutationId: string
+  ): boolean {
+    const currentOwner = this.inFlightMap.get(mutationId);
+    if (!currentOwner) return false;
+    if (batch.batchId) {
+      return (
+        currentOwner.ownerScope === batch.ownerScope &&
+        currentOwner.scopeGeneration === batch.scopeGeneration &&
+        currentOwner.batchId === batch.batchId
+      );
+    }
+    return (
+      currentOwner.ownerScope === batch.ownerScope &&
+      currentOwner.scopeGeneration === batch.scopeGeneration
+    );
+  }
+
+  private assertBatchOwnership(
+    batch: { ownerScope: string; scopeGeneration: number; batchId?: string },
+    mutationId: string
+  ): void {
+    if (!this.isBatchOwner(batch, mutationId)) {
+      throw new StaleBatchRejectedError(
+        `Batch ownership mismatch for mutation "${mutationId}": batch "${batch.batchId || 'unspecified'}" (scope "${batch.ownerScope}", gen ${batch.scopeGeneration}) does not own this mutation.`
+      );
+    }
+  }
+
+  private assertBatchOwnershipOrUnowned(
+    batch: { ownerScope: string; scopeGeneration: number; batchId?: string },
+    mutationId: string
+  ): void {
+    const currentOwner = this.inFlightMap.get(mutationId);
+    if (!currentOwner) {
+      return;
+    }
+    if (
+      currentOwner.ownerScope !== batch.ownerScope ||
+      currentOwner.scopeGeneration !== batch.scopeGeneration ||
+      (batch.batchId && currentOwner.batchId !== batch.batchId)
+    ) {
+      throw new StaleBatchRejectedError(
+        `Batch ownership mismatch for mutation "${mutationId}": batch "${batch.batchId || 'unspecified'}" does not own this mutation; currently owned by batch "${currentOwner.batchId}".`
+      );
+    }
+  }
+
+  private releaseOwnedMutation(
+    batch: { ownerScope: string; scopeGeneration: number; batchId?: string },
+    mutationId: string
+  ): boolean {
+    if (this.isBatchOwner(batch, mutationId)) {
+      this.inFlightMap.delete(mutationId);
+      return true;
+    }
+    return false;
+  }
+
   // ==================== SCOPE & LIFECYCLE MANAGEMENT ====================
 
   /**
    * Switches the active account scope.
    * Increments scopeGeneration to immediately invalidate any in-flight asynchronous operations or stale batches.
-   * Clears in-flight tracking for the previous scope.
+   * Clears in-flight tracking and settled batch tracking for the previous scope.
    */
   setActiveScope(newScope: string): void {
     assertValidScope(newScope);
@@ -198,6 +285,8 @@ export class MutationQueue {
     }
     this.scopeGeneration++;
     this.inFlightMap.clear();
+    this.settledBatches.clear();
+    this.settledBatchQueue.length = 0;
     this.ownerScope = newScope;
   }
 
@@ -319,9 +408,10 @@ export class MutationQueue {
 
     const limit = options?.limit ?? 50;
     const now = options?.now ?? Date.now();
+    const batchId = `batch-${now}-${Math.random().toString(36).slice(2, 8)}-${Math.random().toString(36).slice(2, 8)}`;
 
     const emptyBatch: PreparedPushBatch = {
-      batchId: `batch-${now}-${Math.random().toString(36).slice(2, 8)}`,
+      batchId,
       ownerScope: currentScope,
       scopeGeneration: currentGeneration,
       createdAt: now,
@@ -359,12 +449,16 @@ export class MutationQueue {
         continue;
       }
 
-      this.inFlightMap.set(item.mutationId, currentGeneration);
+      this.inFlightMap.set(item.mutationId, {
+        ownerScope: currentScope,
+        scopeGeneration: currentGeneration,
+        batchId,
+      });
       selected.push(item);
     }
 
     return {
-      batchId: `batch-${now}-${Math.random().toString(36).slice(2, 8)}`,
+      batchId,
       ownerScope: currentScope,
       scopeGeneration: currentGeneration,
       createdAt: now,
@@ -373,23 +467,13 @@ export class MutationQueue {
   }
 
   /**
-   * Releases in-flight status for a batch of mutations (P0-08 Generation Isolated).
+   * Releases in-flight status for a batch of mutations (P0-09 Generation & Batch Isolated).
+   * Strictly requires a PreparedPushBatch and only releases mutations owned by that exact batch.
    */
-  releaseInFlight(batchOrIds: PreparedPushBatch | LocalPendingMutation[] | string[]): void {
-    if ('mutations' in batchOrIds && Array.isArray(batchOrIds.mutations)) {
-      const batchGen = batchOrIds.scopeGeneration;
-      for (const m of batchOrIds.mutations) {
-        if (this.inFlightMap.get(m.mutationId) === batchGen) {
-          this.inFlightMap.delete(m.mutationId);
-        }
-      }
-    } else if (Array.isArray(batchOrIds)) {
-      for (const item of batchOrIds) {
-        const id = typeof item === 'string' ? item : item.mutationId;
-        if (this.inFlightMap.get(id) === this.scopeGeneration) {
-          this.inFlightMap.delete(id);
-        }
-      }
+  releaseInFlight(batch: PreparedPushBatch): void {
+    if (!batch || !Array.isArray(batch.mutations)) return;
+    for (const m of batch.mutations) {
+      this.releaseOwnedMutation(batch, m.mutationId);
     }
   }
 
@@ -412,19 +496,33 @@ export class MutationQueue {
     const { results, batch, leaderSignal } = params;
     const { ownerScope: batchOwnerScope, scopeGeneration: batchScopeGeneration, mutations: batchMutations } = batch;
 
-    // 1. Stale Batch Guard (P0-04 Invariant)
+    // 1. Stale Batch Guard (P0-04 & P0-09 Invariant): Never mutate state or release in-flight state of new generation!
     if (batchOwnerScope !== this.ownerScope || batchScopeGeneration !== this.scopeGeneration) {
-      this.releaseInFlight(batchMutations);
       throw new StaleBatchRejectedError(
         `Stale batch rejected: batch belongs to scope "${batchOwnerScope}" (gen ${batchScopeGeneration}), ` +
         `but active queue is at scope "${this.ownerScope}" (gen ${this.scopeGeneration}). Operation aborted to prevent cross-account contamination.`
       );
     }
 
-    // 2. Validate individual mutation scope integrity
+    // 2. Duplicate Callback Protection: If batch was already settled, return empty summary without repeating writes
+    if (this.settledBatches.has(batch.batchId)) {
+      return {
+        ownerScope: batchOwnerScope,
+        processedCount: 0,
+        appliedCount: 0,
+        deduplicatedCount: 0,
+        tombstoneEvictedCount: 0,
+        staleQuarantinedCount: 0,
+        unsupportedCount: 0,
+        conflictMergedCount: 0,
+        transientRetryCount: 0,
+      };
+    }
+
+    // 3. Validate individual mutation scope integrity
     for (const m of batchMutations) {
       if (m.ownerScope !== batchOwnerScope) {
-        this.releaseInFlight(batchMutations);
+        this.releaseInFlight(batch);
         throw new ScopeMismatchError(batchOwnerScope, m.ownerScope);
       }
     }
@@ -432,7 +530,7 @@ export class MutationQueue {
     this.assertSafeExecution(batchOwnerScope);
 
     if (leaderSignal?.aborted) {
-      this.releaseInFlight(batchMutations);
+      this.releaseInFlight(batch);
       throw new Error('Leader signal aborted while processing server batch results.');
     }
 
@@ -460,20 +558,22 @@ export class MutationQueue {
       this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
 
       if (leaderSignal?.aborted) {
-        this.releaseInFlight(batchMutations);
+        this.releaseInFlight(batch);
         throw new Error('Leader signal aborted while processing server batch results.');
       }
 
-      if (this.inFlightMap.get(mutation.mutationId) === batchScopeGeneration) {
-        this.inFlightMap.delete(mutation.mutationId);
+      // Ownership Guard (P0-09B): If this batch no longer owns the mutation (e.g. taken by newer batch or settled),
+      // SKIP processing to prevent mutating state owned by another batch!
+      if (!this.isBatchOwner(batch, mutation.mutationId)) {
+        continue;
       }
+
       const res = resultMap.get(mutation.mutationId);
 
       if (!res) {
         // Missing from server response: treat as transient network omission, apply persistent retry backoff
         await this.handleTransientFailure(
-          batchOwnerScope,
-          batchScopeGeneration,
+          batch,
           mutation,
           new Error('Missing result item in server batch response.')
         );
@@ -483,13 +583,25 @@ export class MutationQueue {
 
       switch (res.status) {
         case 'APPLIED':
-          await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId);
+          await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId, {
+            checkAdmission: () => {
+              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+              this.assertBatchOwnership(batch, mutation.mutationId);
+            },
+          });
           summary.appliedCount++;
+          this.releaseOwnedMutation(batch, mutation.mutationId);
           break;
 
         case 'DEDUPLICATED':
-          await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId);
+          await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId, {
+            checkAdmission: () => {
+              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+              this.assertBatchOwnership(batch, mutation.mutationId);
+            },
+          });
           summary.deduplicatedCount++;
+          this.releaseOwnedMutation(batch, mutation.mutationId);
           break;
 
         case 'REJECTED_TOMBSTONE': {
@@ -499,10 +611,25 @@ export class MutationQueue {
             mutation.domain,
             mutation.entityId,
             mutation.mutationId,
-            mutation.payload
+            mutation.payload,
+            {
+              checkAdmission: () => {
+                this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+                this.assertBatchOwnership(batch, mutation.mutationId);
+              },
+            }
           );
           summary.tombstoneEvictedCount++;
-          this.onReplicaEvicted?.(batchOwnerScope, mutation.domain, mutation.entityId);
+          this.releaseOwnedMutation(batch, mutation.mutationId);
+          // Post-commit callback safety (Section 5)
+          if (this.ownerScope === batchOwnerScope && this.scopeGeneration === batchScopeGeneration) {
+            try {
+              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+              this.onReplicaEvicted?.(batchOwnerScope, mutation.domain, mutation.entityId);
+            } catch {
+              // Authority revoked after commit; do not emit stale callback
+            }
+          }
           break;
         }
 
@@ -523,16 +650,36 @@ export class MutationQueue {
             triageStatus: 'PENDING',
             originalCreatedAt: mutation.createdAt,
           };
-          await this.dbClient.quarantineMutation(quarantined);
+          await this.dbClient.quarantineMutation(quarantined, {
+            checkAdmission: () => {
+              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+              this.assertBatchOwnership(batch, mutation.mutationId);
+            },
+          });
           summary.staleQuarantinedCount++;
-          this.onMutationQuarantined?.(batchOwnerScope, quarantined);
+          this.releaseOwnedMutation(batch, mutation.mutationId);
+          // Post-commit callback safety (Section 5)
+          if (this.ownerScope === batchOwnerScope && this.scopeGeneration === batchScopeGeneration) {
+            try {
+              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+              this.onMutationQuarantined?.(batchOwnerScope, quarantined);
+            } catch {
+              // Authority revoked after commit; do not emit stale callback
+            }
+          }
           break;
         }
 
         case 'CONFLICT_MERGED': {
           // Invariant: Response has no resolvedPayload. Remove pending and trigger authoritative delta pull.
-          await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId);
+          await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId, {
+            checkAdmission: () => {
+              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+              this.assertBatchOwnership(batch, mutation.mutationId);
+            },
+          });
           summary.conflictMergedCount++;
+          this.releaseOwnedMutation(batch, mutation.mutationId);
           deltaPullNeeded = true;
           break;
         }
@@ -554,15 +701,28 @@ export class MutationQueue {
             triageStatus: 'PENDING',
             originalCreatedAt: mutation.createdAt,
           };
-          await this.dbClient.quarantineMutation(quarantined);
+          await this.dbClient.quarantineMutation(quarantined, {
+            checkAdmission: () => {
+              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+              this.assertBatchOwnership(batch, mutation.mutationId);
+            },
+          });
           summary.unsupportedCount++;
-          this.onMutationQuarantined?.(batchOwnerScope, quarantined);
+          this.releaseOwnedMutation(batch, mutation.mutationId);
+          if (this.ownerScope === batchOwnerScope && this.scopeGeneration === batchScopeGeneration) {
+            try {
+              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+              this.onMutationQuarantined?.(batchOwnerScope, quarantined);
+            } catch {
+              // Authority revoked after commit
+            }
+          }
           break;
         }
 
         default:
           // Unrecognized status: safe fallback to quarantine
-          await this.dbClient.quarantineMutation({
+          const fallbackQuarantined: LocalQuarantinedMutation = {
             ownerScope: batchOwnerScope,
             mutationId: mutation.mutationId,
             clientId: mutation.clientId,
@@ -576,16 +736,31 @@ export class MutationQueue {
             rejectedAt: new Date().toISOString(),
             triageStatus: 'PENDING',
             originalCreatedAt: mutation.createdAt,
+          };
+          await this.dbClient.quarantineMutation(fallbackQuarantined, {
+            checkAdmission: () => {
+              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+              this.assertBatchOwnership(batch, mutation.mutationId);
+            },
           });
           summary.unsupportedCount++;
+          this.releaseOwnedMutation(batch, mutation.mutationId);
           break;
       }
     }
 
     if (deltaPullNeeded && this.onAuthoritativeDeltaPullRequired) {
-      await this.onAuthoritativeDeltaPullRequired(batchOwnerScope);
+      if (this.ownerScope === batchOwnerScope && this.scopeGeneration === batchScopeGeneration) {
+        try {
+          this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+          await this.onAuthoritativeDeltaPullRequired(batchOwnerScope);
+        } catch {
+          // Authority revoked or scope changed; do not schedule delta pull for stale scope
+        }
+      }
     }
 
+    this.markBatchSettled(batch.batchId);
     return summary;
   }
 
@@ -603,9 +778,13 @@ export class MutationQueue {
   ): Promise<void> {
     const { ownerScope: batchOwnerScope, scopeGeneration: batchScopeGeneration, mutations: batchMutations } = batch;
 
-    // Stale Batch Check
+    // Stale Batch Check: Do NOT release in-flight state of new generation!
     if (batchOwnerScope !== this.ownerScope || batchScopeGeneration !== this.scopeGeneration) {
-      this.releaseInFlight(batchMutations);
+      return;
+    }
+
+    // Duplicate Callback Protection
+    if (this.settledBatches.has(batch.batchId)) {
       return;
     }
 
@@ -614,12 +793,13 @@ export class MutationQueue {
     for (const mutation of batchMutations) {
       // Re-check authority before each mutation retry
       if (this.ownerScope !== batchOwnerScope || this.scopeGeneration !== batchScopeGeneration) {
-        this.releaseInFlight(batchMutations);
         return;
       }
       this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-      await this.handleTransientFailure(batchOwnerScope, batchScopeGeneration, mutation, error);
+      await this.handleTransientFailure(batch, mutation, error);
     }
+
+    this.markBatchSettled(batch.batchId);
   }
 
   /**
@@ -627,14 +807,40 @@ export class MutationQueue {
    * Eliminates read-then-write lost updates and ensures single-transaction retry vs quarantine decisions.
    */
   private async handleTransientFailure(
-    batchOwnerScope: string,
-    batchScopeGeneration: number,
-    mutation: LocalPendingMutation,
-    error: Error
+    batchOrScope: PreparedPushBatch | string,
+    mutationOrGen: LocalPendingMutation | number,
+    errorOrMutation: Error | LocalPendingMutation,
+    legacyError?: Error
   ): Promise<void> {
-    // 1. Generation-aware in-flight release
-    if (this.inFlightMap.get(mutation.mutationId) === batchScopeGeneration) {
-      this.inFlightMap.delete(mutation.mutationId);
+    let batch: { ownerScope: string; scopeGeneration: number; batchId?: string };
+    let mutation: LocalPendingMutation;
+    let error: Error;
+
+    if (typeof batchOrScope === 'string') {
+      const scope = batchOrScope;
+      const gen = mutationOrGen as number;
+      mutation = errorOrMutation as LocalPendingMutation;
+      error = legacyError || new Error('Transient failure');
+      const owner = this.inFlightMap.get(mutation.mutationId);
+      batch = {
+        ownerScope: scope,
+        scopeGeneration: gen,
+        batchId: owner?.batchId,
+      };
+    } else {
+      batch = batchOrScope;
+      mutation = mutationOrGen as LocalPendingMutation;
+      error = errorOrMutation as Error;
+    }
+
+    const { ownerScope: batchOwnerScope, scopeGeneration: batchScopeGeneration } = batch;
+
+    // 1. Verify batch ownership: if no longer owned by this batch and owned by another batch, skip!
+    if (!this.isBatchOwner(batch, mutation.mutationId)) {
+      const currentOwner = this.inFlightMap.get(mutation.mutationId);
+      if (currentOwner && currentOwner.batchId !== batch.batchId) {
+        return;
+      }
     }
 
     // 2. Pre-transaction authority admission check
@@ -654,11 +860,15 @@ export class MutationQueue {
         failureReason: error.message,
         checkAdmission: () => {
           this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+          this.assertBatchOwnershipOrUnowned(batch, mutation.mutationId);
         },
       }
     );
 
-    // 4. Post-transaction authority guard before firing side effects / callbacks
+    // 4. Release in-flight ownership ONLY after DAL operation completes
+    this.releaseOwnedMutation(batch, mutation.mutationId);
+
+    // 5. Post-transaction authority guard before firing side effects / callbacks
     if (result.outcome === 'QUARANTINED' && result.quarantinedMutation) {
       if (this.ownerScope === batchOwnerScope && this.scopeGeneration === batchScopeGeneration) {
         try {
@@ -682,7 +892,8 @@ export class MutationQueue {
     const currentGen = this.scopeGeneration;
     this.assertAuthorityAtBoundary(currentScope, currentGen);
 
-    if (this.inFlightMap.get(mutationId) === currentGen) {
+    const owner = this.inFlightMap.get(mutationId);
+    if (owner && owner.ownerScope === currentScope && owner.scopeGeneration === currentGen) {
       this.inFlightMap.delete(mutationId);
     }
 
@@ -699,7 +910,12 @@ export class MutationQueue {
     );
 
     if (this.ownerScope === currentScope && this.scopeGeneration === currentGen && quarantined) {
-      this.onMutationQuarantined?.(currentScope, quarantined);
+      try {
+        this.assertAuthorityAtBoundary(currentScope, currentGen);
+        this.onMutationQuarantined?.(currentScope, quarantined);
+      } catch {
+        // Authority revoked after commit; do not emit stale callback
+      }
     }
   }
 
@@ -753,7 +969,11 @@ export class MutationQueue {
     const currentScope = this.ownerScope;
     const currentGen = this.scopeGeneration;
     this.assertAuthorityAtBoundary(currentScope, currentGen);
-    await this.dbClient.deleteQuarantinedMutation(currentScope, mutationId);
+    await this.dbClient.deleteQuarantinedMutation(currentScope, mutationId, {
+      checkAdmission: () => {
+        this.assertAuthorityAtBoundary(currentScope, currentGen);
+      },
+    });
   }
 
   /**
@@ -763,7 +983,11 @@ export class MutationQueue {
     const currentScope = this.ownerScope;
     const currentGen = this.scopeGeneration;
     this.assertAuthorityAtBoundary(currentScope, currentGen);
-    await this.dbClient.clearQuarantinedMutations(currentScope);
+    await this.dbClient.clearQuarantinedMutations(currentScope, {
+      checkAdmission: () => {
+        this.assertAuthorityAtBoundary(currentScope, currentGen);
+      },
+    });
   }
 
   // ==================== QUEUE STATUS & DIAGNOSTICS ====================

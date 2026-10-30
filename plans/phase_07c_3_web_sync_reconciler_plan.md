@@ -141,6 +141,12 @@ apps/web/src/lib/
   - **Post-Commit Callback Safety:** Re-verify authority trước khi phát các continuation callbacks (`onMutationQuarantined`, `onReplicaEvicted`, `onAuthoritativeDeltaPullRequired`), ngăn chặn hoàn toàn việc phát callback cho stale scope sau khi transaction đã commit.
   - **Deterministic Regression Matrix (RT-14 đến RT-23):** Bổ sung 10 regression test cases mới mô phỏng production call paths: stale `processServerBatchResults` & `handleNetworkFailure` sau $A \to B \to A$, same-generation batch isolation, transaction admission races (APPLIED, REJECTED_STALE, REJECTED_TOMBSTONE, delete/clear quarantine), real IndexedDB abort rollback (`tx.abort()`), post-commit callback suppression, và duplicate callback safety.
   - **Nghiệm thu Local:** 54/54 tests `mutation-queue.spec.ts` PASS, 85/85 sync tests PASS, 54/54 test suites (750/750 tests) toàn web PASS, TypeScript 0 lỗi, Next.js 16 build SUCCESS — **STEP 4 CLOSED / FROZEN CLEAN LOCAL** ✅.
+- [x] **Bước 4a.2 (Strict Batch Ownership, Concurrent Settlement & Callback Failure Semantics):** Khắc phục toàn diện 3 vấn đề phát hiện tại Gate Review Step 4a.1:
+  - **P0-11 (Strict Ownership for Transient Failure):** Loại bỏ hoàn toàn legacy overload `batchOrScope: PreparedPushBatch | string` và suy đoán `batchId` từ in-flight map trong `handleTransientFailure()`. Narrow chặt chẽ thành `(batch: PreparedPushBatch, mutation: LocalPendingMutation, error: Error)`. Đột nhập cấm triệt để: mutation không thuộc sở hữu của batch (`!isBatchOwner(batch, mutation.mutationId)`) lập tức no-op, cấm retry/quarantine. Loại bỏ `assertBatchOwnershipOrUnowned()` khỏi DAL admission path, thay bằng `assertBatchOwnership(batch, mutation.mutationId)`.
+  - **P0-12 (Concurrent Batch Settlement Race & Lifecycle State Machine):** Triển khai Batch Lifecycle State Machine với các trạng thái tường minh: `'ACTIVE' | 'PROCESSING' | 'SETTLED' | 'RELEASED' | 'FAILED'`. Cơ chế `tryClaimBatchProcessing(batch, intent)` thực hiện claim đồng bộ (`PROCESSING`) TRƯỚC BẤT KỲ `await` nào, đảm bảo mutual exclusion tuyệt đối giữa các concurrent receipt callbacks và network failure handlers. Ngăn chặn triệt để duplicate destructive writes, duplicate quarantine callbacks và hanging processing state.
+  - **P1-04 (Callback Error Propagation & Reconciliation Semantics):** Phân biệt rành mạch giữa authority cancellation (thu hồi quyền trước khi gọi callback -> intentional cancellation, không phát sinh lỗi) và runtime callback failure (`onAuthoritativeDeltaPullRequired` throw error trong quá trình chạy). Xuất `AuthoritativePullTriggerError` bao bọc nguyên bản exception, không nuốt lỗi (no silent swallow). Bảo toàn kết quả terminal mutations đã commit (`CONFLICT_MERGED` deletion), cấm replay hay rollback các thay đổi đã commit thành công.
+  - **Deterministic Regression Matrix (RT-25 đến RT-34):** Bổ sung 10 regression test cases mới mô phỏng production concurrent call paths: unowned failure rejection, strict admission after release, concurrent network failure race, concurrent terminal receipts race, receipt vs failure mutual exclusion, partial batch transaction failure & lifecycle FAILED, failed claim cleanup, authoritative pull error wrapping, authority cancellation vs runtime error, và bounded settlement cache eviction replay protection.
+  - **Nghiệm thu Local:** 64/64 tests `mutation-queue.spec.ts` PASS, 95/95 sync tests PASS, 54/54 test suites (760/760 tests) toàn web PASS, TypeScript 0 lỗi, Next.js 16 build SUCCESS — **STEP 4 CLOSED / FROZEN CLEAN LOCAL** ✅.
 - [ ] **Bước 5:** Cài đặt `apps/web/src/lib/sync/delta-pull-reconciler.ts` kéo changes, paginated checkpoint (`nextRevision` khi `hasMore=true`, `currentServerRevision` khi `hasMore=false`) và áp dụng checkpoint nguyên tử.
 - [ ] **Bước 6:** Cài đặt `apps/web/src/lib/sync/snapshot-reconciler.ts` xử lý Safe 410 Gone Full Resync với staging, hủy bỏ staging khi gặp 409 snapshot invalidation.
 - [ ] **Bước 7:** Tích hợp `apps/web/src/lib/sync/web-sync-coordinator.ts` và gắn kết với Auth/Identity/Reader hooks.
@@ -148,7 +154,27 @@ apps/web/src/lib/
 
 ---
 
-## 6. Hồ Sơ Bằng Chứng Nghiệm Thu Step 4a.1 (Evidence Matrix)
+## 6. Hồ Sơ Bằng Chứng Nghiệm Thu Step 4a.2 (Evidence Matrix)
+
+### Step 4a.2 — Strict Batch Lifecycle & Callback Failure Remediation
+
+| Claim | Source File | Test / Gate | Commit SHA | Hosted Run | Evidence Type | What This Does NOT Prove | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **C1: Strict Transient Failure Ownership (P0-11)** | `apps/web/src/lib/sync/mutation-queue.ts` | RT-25, RT-26 (`mutation-queue.spec.ts`) | Pending Commit | Pending | Unit & Async Admission Interleaving Test | Không chứng minh exactly-once network delivery qua mạng vật lý | **PASS LOCAL** |
+| **C2: Concurrent Failure Claim (P0-12)** | `apps/web/src/lib/sync/mutation-queue.ts` | RT-27 (`mutation-queue.spec.ts`) | Pending Commit | Pending | Async Interleaving & Concurrency Barrier Test | Không chứng minh cross-tab mutual exclusion (được bảo vệ bởi Web Locks ở Step 3) | **PASS LOCAL** |
+| **C3: Concurrent Terminal Receipt Claim (P0-12)** | `apps/web/src/lib/sync/mutation-queue.ts` | RT-28 (`mutation-queue.spec.ts`) | Pending Commit | Pending | Async Barrier & Idempotent Commit Test | Không thay thế server-side deduplication | **PASS LOCAL** |
+| **C4: Receipt/Failure Mutual Exclusion (P0-12)** | `apps/web/src/lib/sync/mutation-queue.ts` | RT-29 (`mutation-queue.spec.ts`) | Pending Commit | Pending | Bidirectional Race Condition Test | Không chứng minh hành vi crash recovery của OS khi process bị kill đột ngột | **PASS LOCAL** |
+| **C5: Partial Batch Recovery (P0-12)** | `apps/web/src/lib/sync/mutation-queue.ts` | RT-30, RT-31 (`mutation-queue.spec.ts`) | Pending Commit | Pending | DAL Failure Injection & Lifecycle State Test | Không phục hồi phần cứng đĩa nếu IndexedDB bị corrupt vật lý | **PASS LOCAL** |
+| **C6: Callback Failure Propagation (P1-04)** | `apps/web/src/lib/sync/mutation-queue.ts` | RT-32, RT-33 (`mutation-queue.spec.ts`) | Pending Commit | Pending | Exception Propagation & Post-Commit Semantics Test | Callback trigger thành công không chứng minh Delta Pull đã hoàn tất tải dữ liệu | **PASS LOCAL** |
+| **C7: Bounded Settlement Replay Protection (P0-12)** | `apps/web/src/lib/sync/mutation-queue.ts` | RT-34 (`mutation-queue.spec.ts`) | Pending Commit | Pending | Cache Eviction & In-Flight Ownership Boundary Test | Local settlement không chứng minh crash-safe recovery sau browser termination | **PASS LOCAL** |
+| **C8: Atomic Retry Regression Preservation** | `apps/web/src/test/mutation-queue.spec.ts` | RT-01 đến RT-13, RT-24 (PASS) | Pending Commit | Pending | Full Mutation Queue Vitest Suite | Chưa tích hợp toàn diện với Step 5 Delta Pull Reconciler | **PASS LOCAL** |
+| **C9: Scope/Generation/Batch Isolation** | `apps/web/src/test/mutation-queue.spec.ts` | RT-14 đến RT-23 (PASS) | Pending Commit | Pending | Authority Boundary Interleaving Suite | fake-indexeddb không thay thế toàn bộ browser engine testing | **PASS LOCAL** |
+| **C10: Complete Local Verification** | `apps/web` | Gates A–F (64 Queue, 95 Sync, 760 Web, Typecheck 0, Build SUCCESS) | Pending Commit | Pending | Full Local Acceptance Gates | Local Vitest PASS không chứng minh hosted CI PASS | **PASS LOCAL** |
+| **C11: Hosted CI Status** | `.github/workflows/ci.yml` | GitHub Actions push pipeline | Pending Commit | Pending | Hosted CI Infrastructure | **Bị chặn bởi giới hạn chi tiêu GitHub Actions (Account spending limit reached). Không phải lỗi mã nguồn.** | **PENDING EXTERNAL BLOCKER** |
+
+---
+
+### Step 4a.1 Archive (Historical Reference)
 
 | Claim | Source File | Test / Gate | Commit SHA | Hosted Run | Evidence Type | What This Does NOT Prove | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |

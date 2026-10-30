@@ -44,6 +44,34 @@ export class RequeueProhibitedError extends Error {
   }
 }
 
+export class AuthoritativePullTriggerError extends Error {
+  constructor(
+    message: string,
+    public readonly scope: string,
+    public readonly originalCause?: unknown
+  ) {
+    super(message);
+    this.name = 'AuthoritativePullTriggerError';
+  }
+}
+
+/**
+ * Batch Lifecycle States for strict concurrency control (Step 4a.2 — P0-12).
+ */
+export type BatchLifecycleState = 'ACTIVE' | 'PROCESSING' | 'SETTLED' | 'RELEASED' | 'FAILED';
+
+export interface BatchLifecycleRecord {
+  state: BatchLifecycleState;
+  intent?: 'RECEIPT' | 'NETWORK_FAILURE';
+  claimedAt?: number;
+  completedAt?: number;
+  error?: Error;
+}
+
+export type ClaimResult =
+  | { success: true }
+  | { success: false; reason: 'ALREADY_PROCESSING' | 'ALREADY_SETTLED' | 'ALREADY_RELEASED' | 'STALE_SCOPE_OR_GEN' };
+
 /**
  * Interface for authoritative identity state provider (e.g. ActiveScopeCoordinator)
  */
@@ -108,6 +136,7 @@ export interface MutationQueueOptions {
   onAuthoritativeDeltaPullRequired?: (scope: string) => void | Promise<void>;
   onReplicaEvicted?: (scope: string, domain: SyncDomain, entityId: string) => void;
   onMutationQuarantined?: (scope: string, mutation: LocalQuarantinedMutation) => void;
+  maxSettledBatches?: number;
 }
 
 export interface BatchProcessingSummary {
@@ -173,11 +202,12 @@ export class MutationQueue {
   private readonly inFlightMap: Map<string, InFlightOwner> = new Map();
 
   /**
-   * Tracks settled batch IDs to prevent duplicate callbacks or race conditions within the same batch.
+   * Tracks batch lifecycle states for concurrency claim & settlement (Step 4a.2 — P0-12).
    */
+  private readonly batchLifecycle: Map<string, BatchLifecycleRecord> = new Map();
   private readonly settledBatches: Set<string> = new Set();
   private readonly settledBatchQueue: string[] = [];
-  private readonly maxSettledBatches: number = 500;
+  private readonly maxSettledBatches: number;
 
   constructor(options: MutationQueueOptions) {
     assertValidScope(options.ownerScope);
@@ -195,73 +225,107 @@ export class MutationQueue {
     this.onAuthoritativeDeltaPullRequired = options.onAuthoritativeDeltaPullRequired;
     this.onReplicaEvicted = options.onReplicaEvicted;
     this.onMutationQuarantined = options.onMutationQuarantined;
+    this.maxSettledBatches = options.maxSettledBatches ?? 500;
   }
 
-  // ==================== BATCH OWNERSHIP & SETTLEMENT ====================
+  // ==================== BATCH OWNERSHIP & LIFECYCLE STATE MACHINE ====================
+
+  /**
+   * Synchronously claims processing rights for a batch before any async await (P0-12).
+   * Guarantees mutual exclusion between concurrent receipts and network failure handlers.
+   */
+  private tryClaimBatchProcessing(
+    batch: PreparedPushBatch,
+    intent: 'RECEIPT' | 'NETWORK_FAILURE'
+  ): ClaimResult {
+    if (batch.ownerScope !== this.ownerScope || batch.scopeGeneration !== this.scopeGeneration) {
+      return { success: false, reason: 'STALE_SCOPE_OR_GEN' };
+    }
+
+    if (this.settledBatches.has(batch.batchId)) {
+      return { success: false, reason: 'ALREADY_SETTLED' };
+    }
+
+    const record = this.batchLifecycle.get(batch.batchId);
+    if (record) {
+      if (record.state === 'SETTLED') {
+        return { success: false, reason: 'ALREADY_SETTLED' };
+      }
+      if (record.state === 'RELEASED') {
+        return { success: false, reason: 'ALREADY_RELEASED' };
+      }
+      if (record.state === 'PROCESSING') {
+        return { success: false, reason: 'ALREADY_PROCESSING' };
+      }
+    }
+
+    // Synchronously claim PROCESSING before any await
+    this.batchLifecycle.set(batch.batchId, {
+      state: 'PROCESSING',
+      intent,
+      claimedAt: Date.now(),
+    });
+    return { success: true };
+  }
 
   private markBatchSettled(batchId: string): void {
-    if (this.settledBatches.has(batchId)) return;
-    this.settledBatches.add(batchId);
-    this.settledBatchQueue.push(batchId);
-    if (this.settledBatchQueue.length > this.maxSettledBatches) {
-      const oldest = this.settledBatchQueue.shift();
-      if (oldest) {
-        this.settledBatches.delete(oldest);
+    const record = this.batchLifecycle.get(batchId);
+    if (record) {
+      record.state = 'SETTLED';
+      record.completedAt = Date.now();
+    } else {
+      this.batchLifecycle.set(batchId, { state: 'SETTLED', completedAt: Date.now() });
+    }
+
+    if (!this.settledBatches.has(batchId)) {
+      this.settledBatches.add(batchId);
+      this.settledBatchQueue.push(batchId);
+      if (this.settledBatchQueue.length > this.maxSettledBatches) {
+        const oldest = this.settledBatchQueue.shift();
+        if (oldest) {
+          this.settledBatches.delete(oldest);
+          this.batchLifecycle.delete(oldest);
+        }
       }
     }
   }
 
+  private markBatchFailed(batchId: string, error: Error): void {
+    const record = this.batchLifecycle.get(batchId);
+    if (record) {
+      record.state = 'FAILED';
+      record.error = error;
+    } else {
+      this.batchLifecycle.set(batchId, { state: 'FAILED', error });
+    }
+  }
+
   private isBatchOwner(
-    batch: { ownerScope: string; scopeGeneration: number; batchId?: string },
+    batch: { ownerScope: string; scopeGeneration: number; batchId: string },
     mutationId: string
   ): boolean {
     const currentOwner = this.inFlightMap.get(mutationId);
     if (!currentOwner) return false;
-    if (batch.batchId) {
-      return (
-        currentOwner.ownerScope === batch.ownerScope &&
-        currentOwner.scopeGeneration === batch.scopeGeneration &&
-        currentOwner.batchId === batch.batchId
-      );
-    }
     return (
       currentOwner.ownerScope === batch.ownerScope &&
-      currentOwner.scopeGeneration === batch.scopeGeneration
+      currentOwner.scopeGeneration === batch.scopeGeneration &&
+      currentOwner.batchId === batch.batchId
     );
   }
 
   private assertBatchOwnership(
-    batch: { ownerScope: string; scopeGeneration: number; batchId?: string },
+    batch: { ownerScope: string; scopeGeneration: number; batchId: string },
     mutationId: string
   ): void {
     if (!this.isBatchOwner(batch, mutationId)) {
       throw new StaleBatchRejectedError(
-        `Batch ownership mismatch for mutation "${mutationId}": batch "${batch.batchId || 'unspecified'}" (scope "${batch.ownerScope}", gen ${batch.scopeGeneration}) does not own this mutation.`
-      );
-    }
-  }
-
-  private assertBatchOwnershipOrUnowned(
-    batch: { ownerScope: string; scopeGeneration: number; batchId?: string },
-    mutationId: string
-  ): void {
-    const currentOwner = this.inFlightMap.get(mutationId);
-    if (!currentOwner) {
-      return;
-    }
-    if (
-      currentOwner.ownerScope !== batch.ownerScope ||
-      currentOwner.scopeGeneration !== batch.scopeGeneration ||
-      (batch.batchId && currentOwner.batchId !== batch.batchId)
-    ) {
-      throw new StaleBatchRejectedError(
-        `Batch ownership mismatch for mutation "${mutationId}": batch "${batch.batchId || 'unspecified'}" does not own this mutation; currently owned by batch "${currentOwner.batchId}".`
+        `Batch ownership mismatch for mutation "${mutationId}": batch "${batch.batchId}" (scope "${batch.ownerScope}", gen ${batch.scopeGeneration}) does not own this mutation.`
       );
     }
   }
 
   private releaseOwnedMutation(
-    batch: { ownerScope: string; scopeGeneration: number; batchId?: string },
+    batch: { ownerScope: string; scopeGeneration: number; batchId: string },
     mutationId: string
   ): boolean {
     if (this.isBatchOwner(batch, mutationId)) {
@@ -276,7 +340,7 @@ export class MutationQueue {
   /**
    * Switches the active account scope.
    * Increments scopeGeneration to immediately invalidate any in-flight asynchronous operations or stale batches.
-   * Clears in-flight tracking and settled batch tracking for the previous scope.
+   * Clears in-flight tracking, lifecycle state, and settled batch tracking for the previous scope.
    */
   setActiveScope(newScope: string): void {
     assertValidScope(newScope);
@@ -285,6 +349,7 @@ export class MutationQueue {
     }
     this.scopeGeneration++;
     this.inFlightMap.clear();
+    this.batchLifecycle.clear();
     this.settledBatches.clear();
     this.settledBatchQueue.length = 0;
     this.ownerScope = newScope;
@@ -457,6 +522,10 @@ export class MutationQueue {
       selected.push(item);
     }
 
+    if (selected.length > 0) {
+      this.batchLifecycle.set(batchId, { state: 'ACTIVE' });
+    }
+
     return {
       batchId,
       ownerScope: currentScope,
@@ -475,6 +544,16 @@ export class MutationQueue {
     for (const m of batch.mutations) {
       this.releaseOwnedMutation(batch, m.mutationId);
     }
+    const record = this.batchLifecycle.get(batch.batchId);
+    if (record && record.state !== 'SETTLED' && record.state !== 'FAILED') {
+      record.state = 'RELEASED';
+    } else if (!record) {
+      this.batchLifecycle.set(batch.batchId, { state: 'RELEASED' });
+    }
+  }
+
+  getBatchLifecycle(batchId: string): BatchLifecycleRecord | undefined {
+    return this.batchLifecycle.get(batchId);
   }
 
   // ==================== SERVER RECEIPT & RESPONSE PROCESSING ====================
@@ -482,11 +561,14 @@ export class MutationQueue {
   /**
    * Processes receipt results from POST /api/v1/sync/mutations/batch.
    *
-   * Strict Invariant Enforcement (P0-04 Remediation):
+   * Strict Invariant Enforcement (P0-04 Remediation & P0-12 Concurrency):
    * - Stale Batch Guard: Rejects batch if batch.ownerScope or batch.scopeGeneration does not match
    *   the queue's active state. Old responses NEVER mutate a newly switched account!
-   * - Asynchronous Boundary Verification: Re-checks scope and generation before EVERY IndexedDB write.
+   * - Synchronous Processing Claim: Claims PROCESSING state before any await to prevent race with
+   *   concurrent receipts or failure handlers.
+   * - Asynchronous Boundary Verification: Re-checks scope, generation, and batch ownership before EVERY IndexedDB write.
    * - Atomic Tombstone Eviction: Uses evictReplicaAndRemovePending to atomically evict replica and remove pending mutation.
+   * - Callback Error Propagation (P1-04): Throws AuthoritativePullTriggerError on callback failure; does NOT swallow.
    */
   async processServerBatchResults(params: {
     results: MutationResultItem[];
@@ -504,8 +586,10 @@ export class MutationQueue {
       );
     }
 
-    // 2. Duplicate Callback Protection: If batch was already settled, return empty summary without repeating writes
-    if (this.settledBatches.has(batch.batchId)) {
+    // 2. Synchronous Processing Claim (P0-12):
+    // Claims processing rights synchronously BEFORE first await to prevent concurrent callback execution.
+    const claim = this.tryClaimBatchProcessing(batch, 'RECEIPT');
+    if (!claim.success) {
       return {
         ownerScope: batchOwnerScope,
         processedCount: 0,
@@ -519,249 +603,267 @@ export class MutationQueue {
       };
     }
 
-    // 3. Validate individual mutation scope integrity
-    for (const m of batchMutations) {
-      if (m.ownerScope !== batchOwnerScope) {
-        this.releaseInFlight(batch);
-        throw new ScopeMismatchError(batchOwnerScope, m.ownerScope);
+    try {
+      // 3. Validate individual mutation scope integrity
+      for (const m of batchMutations) {
+        if (m.ownerScope !== batchOwnerScope) {
+          this.releaseInFlight(batch);
+          throw new ScopeMismatchError(batchOwnerScope, m.ownerScope);
+        }
       }
-    }
 
-    this.assertSafeExecution(batchOwnerScope);
-
-    if (leaderSignal?.aborted) {
-      this.releaseInFlight(batch);
-      throw new Error('Leader signal aborted while processing server batch results.');
-    }
-
-    const summary: BatchProcessingSummary = {
-      ownerScope: batchOwnerScope,
-      processedCount: batchMutations.length,
-      appliedCount: 0,
-      deduplicatedCount: 0,
-      tombstoneEvictedCount: 0,
-      staleQuarantinedCount: 0,
-      unsupportedCount: 0,
-      conflictMergedCount: 0,
-      transientRetryCount: 0,
-    };
-
-    const resultMap = new Map<string, MutationResultItem>();
-    for (const r of results) {
-      resultMap.set(r.mutationId, r);
-    }
-
-    let deltaPullNeeded = false;
-
-    for (const mutation of batchMutations) {
-      // Asynchronous Boundary Guard: Re-verify scope, generation, and authority before EACH operation
-      this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+      this.assertSafeExecution(batchOwnerScope);
 
       if (leaderSignal?.aborted) {
         this.releaseInFlight(batch);
         throw new Error('Leader signal aborted while processing server batch results.');
       }
 
-      // Ownership Guard (P0-09B): If this batch no longer owns the mutation (e.g. taken by newer batch or settled),
-      // SKIP processing to prevent mutating state owned by another batch!
-      if (!this.isBatchOwner(batch, mutation.mutationId)) {
-        continue;
+      const summary: BatchProcessingSummary = {
+        ownerScope: batchOwnerScope,
+        processedCount: batchMutations.length,
+        appliedCount: 0,
+        deduplicatedCount: 0,
+        tombstoneEvictedCount: 0,
+        staleQuarantinedCount: 0,
+        unsupportedCount: 0,
+        conflictMergedCount: 0,
+        transientRetryCount: 0,
+      };
+
+      const resultMap = new Map<string, MutationResultItem>();
+      for (const r of results) {
+        resultMap.set(r.mutationId, r);
       }
 
-      const res = resultMap.get(mutation.mutationId);
+      let deltaPullNeeded = false;
 
-      if (!res) {
-        // Missing from server response: treat as transient network omission, apply persistent retry backoff
-        await this.handleTransientFailure(
-          batch,
-          mutation,
-          new Error('Missing result item in server batch response.')
-        );
-        summary.transientRetryCount++;
-        continue;
-      }
+      for (const mutation of batchMutations) {
+        // Asynchronous Boundary Guard: Re-verify scope, generation, and authority before EACH operation
+        this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
 
-      switch (res.status) {
-        case 'APPLIED':
-          await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId, {
-            checkAdmission: () => {
-              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-              this.assertBatchOwnership(batch, mutation.mutationId);
-            },
-          });
-          summary.appliedCount++;
-          this.releaseOwnedMutation(batch, mutation.mutationId);
-          break;
+        if (leaderSignal?.aborted) {
+          this.releaseInFlight(batch);
+          throw new Error('Leader signal aborted while processing server batch results.');
+        }
 
-        case 'DEDUPLICATED':
-          await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId, {
-            checkAdmission: () => {
-              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-              this.assertBatchOwnership(batch, mutation.mutationId);
-            },
-          });
-          summary.deduplicatedCount++;
-          this.releaseOwnedMutation(batch, mutation.mutationId);
-          break;
+        // Ownership Guard (P0-09B): If this batch no longer owns the mutation, skip!
+        if (!this.isBatchOwner(batch, mutation.mutationId)) {
+          continue;
+        }
 
-        case 'REJECTED_TOMBSTONE': {
-          // Anti-Tombstone Resurrection: ATOMIC eviction of replica and deletion of pending mutation
-          await this.dbClient.evictReplicaAndRemovePending(
-            batchOwnerScope,
-            mutation.domain,
-            mutation.entityId,
-            mutation.mutationId,
-            mutation.payload,
-            {
+        const res = resultMap.get(mutation.mutationId);
+
+        if (!res) {
+          // Missing from server response: treat as transient network omission, apply persistent retry backoff
+          await this.handleTransientFailure(
+            batch,
+            mutation,
+            new Error('Missing result item in server batch response.')
+          );
+          summary.transientRetryCount++;
+          continue;
+        }
+
+        switch (res.status) {
+          case 'APPLIED':
+            await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId, {
               checkAdmission: () => {
                 this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
                 this.assertBatchOwnership(batch, mutation.mutationId);
               },
+            });
+            summary.appliedCount++;
+            this.releaseOwnedMutation(batch, mutation.mutationId);
+            break;
+
+          case 'DEDUPLICATED':
+            await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId, {
+              checkAdmission: () => {
+                this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+                this.assertBatchOwnership(batch, mutation.mutationId);
+              },
+            });
+            summary.deduplicatedCount++;
+            this.releaseOwnedMutation(batch, mutation.mutationId);
+            break;
+
+          case 'REJECTED_TOMBSTONE': {
+            // Anti-Tombstone Resurrection: ATOMIC eviction of replica and deletion of pending mutation
+            await this.dbClient.evictReplicaAndRemovePending(
+              batchOwnerScope,
+              mutation.domain,
+              mutation.entityId,
+              mutation.mutationId,
+              mutation.payload,
+              {
+                checkAdmission: () => {
+                  this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+                  this.assertBatchOwnership(batch, mutation.mutationId);
+                },
+              }
+            );
+            summary.tombstoneEvictedCount++;
+            this.releaseOwnedMutation(batch, mutation.mutationId);
+            // Post-commit callback safety (Section 5)
+            if (this.ownerScope === batchOwnerScope && this.scopeGeneration === batchScopeGeneration) {
+              try {
+                this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+                this.onReplicaEvicted?.(batchOwnerScope, mutation.domain, mutation.entityId);
+              } catch {
+                // Authority revoked after commit; do not emit stale callback
+              }
             }
-          );
-          summary.tombstoneEvictedCount++;
-          this.releaseOwnedMutation(batch, mutation.mutationId);
-          // Post-commit callback safety (Section 5)
-          if (this.ownerScope === batchOwnerScope && this.scopeGeneration === batchScopeGeneration) {
-            try {
-              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-              this.onReplicaEvicted?.(batchOwnerScope, mutation.domain, mutation.entityId);
-            } catch {
-              // Authority revoked after commit; do not emit stale callback
-            }
+            break;
           }
-          break;
-        }
 
-        case 'REJECTED_STALE': {
-          // Invariant: Do NOT rebase or replay. Quarantine atomically for triage with full metadata.
-          const quarantined: LocalQuarantinedMutation = {
-            ownerScope: batchOwnerScope,
-            mutationId: mutation.mutationId,
-            clientId: mutation.clientId,
-            domain: mutation.domain,
-            entityId: mutation.entityId,
-            operation: mutation.operation,
-            baseServerRevision: mutation.baseServerRevision,
-            payload: mutation.payload,
-            rejectionReason: res.reason || res.message || 'REJECTED_STALE',
-            rejectionStatus: 'REJECTED_STALE',
-            rejectedAt: new Date().toISOString(),
-            triageStatus: 'PENDING',
-            originalCreatedAt: mutation.createdAt,
-          };
-          await this.dbClient.quarantineMutation(quarantined, {
-            checkAdmission: () => {
-              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-              this.assertBatchOwnership(batch, mutation.mutationId);
-            },
-          });
-          summary.staleQuarantinedCount++;
-          this.releaseOwnedMutation(batch, mutation.mutationId);
-          // Post-commit callback safety (Section 5)
-          if (this.ownerScope === batchOwnerScope && this.scopeGeneration === batchScopeGeneration) {
-            try {
-              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-              this.onMutationQuarantined?.(batchOwnerScope, quarantined);
-            } catch {
-              // Authority revoked after commit; do not emit stale callback
+          case 'REJECTED_STALE': {
+            // Invariant: Do NOT rebase or replay. Quarantine atomically for triage with full metadata.
+            const quarantined: LocalQuarantinedMutation = {
+              ownerScope: batchOwnerScope,
+              mutationId: mutation.mutationId,
+              clientId: mutation.clientId,
+              domain: mutation.domain,
+              entityId: mutation.entityId,
+              operation: mutation.operation,
+              baseServerRevision: mutation.baseServerRevision,
+              payload: mutation.payload,
+              rejectionReason: res.reason || res.message || 'REJECTED_STALE',
+              rejectionStatus: 'REJECTED_STALE',
+              rejectedAt: new Date().toISOString(),
+              triageStatus: 'PENDING',
+              originalCreatedAt: mutation.createdAt,
+            };
+            await this.dbClient.quarantineMutation(quarantined, {
+              checkAdmission: () => {
+                this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+                this.assertBatchOwnership(batch, mutation.mutationId);
+              },
+            });
+            summary.staleQuarantinedCount++;
+            this.releaseOwnedMutation(batch, mutation.mutationId);
+            // Post-commit callback safety (Section 5)
+            if (this.ownerScope === batchOwnerScope && this.scopeGeneration === batchScopeGeneration) {
+              try {
+                this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+                this.onMutationQuarantined?.(batchOwnerScope, quarantined);
+              } catch {
+                // Authority revoked after commit; do not emit stale callback
+              }
             }
+            break;
           }
-          break;
-        }
 
-        case 'CONFLICT_MERGED': {
-          // Invariant: Response has no resolvedPayload. Remove pending and trigger authoritative delta pull.
-          await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId, {
-            checkAdmission: () => {
-              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-              this.assertBatchOwnership(batch, mutation.mutationId);
-            },
-          });
-          summary.conflictMergedCount++;
-          this.releaseOwnedMutation(batch, mutation.mutationId);
-          deltaPullNeeded = true;
-          break;
-        }
+          case 'CONFLICT_MERGED': {
+            // Invariant: Response has no resolvedPayload. Remove pending and trigger authoritative delta pull.
+            await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId, {
+              checkAdmission: () => {
+                this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+                this.assertBatchOwnership(batch, mutation.mutationId);
+              },
+            });
+            summary.conflictMergedCount++;
+            this.releaseOwnedMutation(batch, mutation.mutationId);
+            deltaPullNeeded = true;
+            break;
+          }
 
-        case 'DOMAIN_NOT_SUPPORTED': {
-          // Invariant: Do not retry infinitely. Quarantine for diagnosis.
-          const quarantined: LocalQuarantinedMutation = {
-            ownerScope: batchOwnerScope,
-            mutationId: mutation.mutationId,
-            clientId: mutation.clientId,
-            domain: mutation.domain,
-            entityId: mutation.entityId,
-            operation: mutation.operation,
-            baseServerRevision: mutation.baseServerRevision,
-            payload: mutation.payload,
-            rejectionReason: res.reason || res.message || 'DOMAIN_NOT_SUPPORTED',
-            rejectionStatus: 'DOMAIN_NOT_SUPPORTED',
-            rejectedAt: new Date().toISOString(),
-            triageStatus: 'PENDING',
-            originalCreatedAt: mutation.createdAt,
-          };
-          await this.dbClient.quarantineMutation(quarantined, {
-            checkAdmission: () => {
-              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-              this.assertBatchOwnership(batch, mutation.mutationId);
-            },
-          });
-          summary.unsupportedCount++;
-          this.releaseOwnedMutation(batch, mutation.mutationId);
-          if (this.ownerScope === batchOwnerScope && this.scopeGeneration === batchScopeGeneration) {
-            try {
-              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-              this.onMutationQuarantined?.(batchOwnerScope, quarantined);
-            } catch {
-              // Authority revoked after commit
+          case 'DOMAIN_NOT_SUPPORTED': {
+            // Invariant: Do not retry infinitely. Quarantine for diagnosis.
+            const quarantined: LocalQuarantinedMutation = {
+              ownerScope: batchOwnerScope,
+              mutationId: mutation.mutationId,
+              clientId: mutation.clientId,
+              domain: mutation.domain,
+              entityId: mutation.entityId,
+              operation: mutation.operation,
+              baseServerRevision: mutation.baseServerRevision,
+              payload: mutation.payload,
+              rejectionReason: res.reason || res.message || 'DOMAIN_NOT_SUPPORTED',
+              rejectionStatus: 'DOMAIN_NOT_SUPPORTED',
+              rejectedAt: new Date().toISOString(),
+              triageStatus: 'PENDING',
+              originalCreatedAt: mutation.createdAt,
+            };
+            await this.dbClient.quarantineMutation(quarantined, {
+              checkAdmission: () => {
+                this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+                this.assertBatchOwnership(batch, mutation.mutationId);
+              },
+            });
+            summary.unsupportedCount++;
+            this.releaseOwnedMutation(batch, mutation.mutationId);
+            if (this.ownerScope === batchOwnerScope && this.scopeGeneration === batchScopeGeneration) {
+              try {
+                this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+                this.onMutationQuarantined?.(batchOwnerScope, quarantined);
+              } catch {
+                // Authority revoked after commit
+              }
             }
+            break;
           }
-          break;
-        }
 
-        default:
-          // Unrecognized status: safe fallback to quarantine
-          const fallbackQuarantined: LocalQuarantinedMutation = {
-            ownerScope: batchOwnerScope,
-            mutationId: mutation.mutationId,
-            clientId: mutation.clientId,
-            domain: mutation.domain,
-            entityId: mutation.entityId,
-            operation: mutation.operation,
-            baseServerRevision: mutation.baseServerRevision,
-            payload: mutation.payload,
-            rejectionReason: `UNRECOGNIZED_STATUS: ${(res as any).status}`,
-            rejectionStatus: 'MANUAL',
-            rejectedAt: new Date().toISOString(),
-            triageStatus: 'PENDING',
-            originalCreatedAt: mutation.createdAt,
-          };
-          await this.dbClient.quarantineMutation(fallbackQuarantined, {
-            checkAdmission: () => {
-              this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-              this.assertBatchOwnership(batch, mutation.mutationId);
-            },
-          });
-          summary.unsupportedCount++;
-          this.releaseOwnedMutation(batch, mutation.mutationId);
-          break;
+          default: {
+            // Unrecognized status: safe fallback to quarantine
+            const fallbackQuarantined: LocalQuarantinedMutation = {
+              ownerScope: batchOwnerScope,
+              mutationId: mutation.mutationId,
+              clientId: mutation.clientId,
+              domain: mutation.domain,
+              entityId: mutation.entityId,
+              operation: mutation.operation,
+              baseServerRevision: mutation.baseServerRevision,
+              payload: mutation.payload,
+              rejectionReason: `UNRECOGNIZED_STATUS: ${(res as any).status}`,
+              rejectionStatus: 'MANUAL',
+              rejectedAt: new Date().toISOString(),
+              triageStatus: 'PENDING',
+              originalCreatedAt: mutation.createdAt,
+            };
+            await this.dbClient.quarantineMutation(fallbackQuarantined, {
+              checkAdmission: () => {
+                this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+                this.assertBatchOwnership(batch, mutation.mutationId);
+              },
+            });
+            summary.unsupportedCount++;
+            this.releaseOwnedMutation(batch, mutation.mutationId);
+            break;
+          }
+        }
       }
-    }
 
-    if (deltaPullNeeded && this.onAuthoritativeDeltaPullRequired) {
-      if (this.ownerScope === batchOwnerScope && this.scopeGeneration === batchScopeGeneration) {
+      // P1-04: Authoritative Delta Pull Trigger & Error Semantics
+      if (deltaPullNeeded && this.onAuthoritativeDeltaPullRequired) {
+        let isAuthorityValid = false;
         try {
           this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-          await this.onAuthoritativeDeltaPullRequired(batchOwnerScope);
+          isAuthorityValid = true;
         } catch {
-          // Authority revoked or scope changed; do not schedule delta pull for stale scope
+          // Authority was revoked before invocation: intentional cancellation - do NOT run callback
+          isAuthorityValid = false;
+        }
+
+        if (isAuthorityValid) {
+          try {
+            await this.onAuthoritativeDeltaPullRequired(batchOwnerScope);
+          } catch (callbackErr) {
+            throw new AuthoritativePullTriggerError(
+              `Failed to trigger authoritative delta pull for scope "${batchOwnerScope}": ${(callbackErr as Error)?.message || callbackErr}`,
+              batchOwnerScope,
+              callbackErr
+            );
+          }
         }
       }
-    }
 
-    this.markBatchSettled(batch.batchId);
-    return summary;
+      this.markBatchSettled(batch.batchId);
+      return summary;
+    } catch (err) {
+      this.markBatchFailed(batch.batchId, err as Error);
+      throw err;
+    }
   }
 
   // ==================== NETWORK & TRANSIENT FAILURE HANDLING ====================
@@ -783,64 +885,48 @@ export class MutationQueue {
       return;
     }
 
-    // Duplicate Callback Protection
-    if (this.settledBatches.has(batch.batchId)) {
+    const claim = this.tryClaimBatchProcessing(batch, 'NETWORK_FAILURE');
+    if (!claim.success) {
       return;
     }
 
-    this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-
-    for (const mutation of batchMutations) {
-      // Re-check authority before each mutation retry
-      if (this.ownerScope !== batchOwnerScope || this.scopeGeneration !== batchScopeGeneration) {
-        return;
-      }
+    try {
       this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-      await this.handleTransientFailure(batch, mutation, error);
-    }
 
-    this.markBatchSettled(batch.batchId);
+      for (const mutation of batchMutations) {
+        // Re-check authority before each mutation retry
+        if (this.ownerScope !== batchOwnerScope || this.scopeGeneration !== batchScopeGeneration) {
+          return;
+        }
+        this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
+        await this.handleTransientFailure(batch, mutation, error);
+      }
+
+      this.markBatchSettled(batch.batchId);
+    } catch (err) {
+      this.markBatchFailed(batch.batchId, err as Error);
+      throw err;
+    }
   }
 
   /**
    * Handles transient failure for a single mutation using the atomic DAL primitive recordTransientFailureAtomic.
    * Eliminates read-then-write lost updates and ensures single-transaction retry vs quarantine decisions.
+   *
+   * Strict Batch Ownership (P0-11):
+   * Requires a valid PreparedPushBatch. If the batch does not own the mutation, immediately no-ops.
    */
   private async handleTransientFailure(
-    batchOrScope: PreparedPushBatch | string,
-    mutationOrGen: LocalPendingMutation | number,
-    errorOrMutation: Error | LocalPendingMutation,
-    legacyError?: Error
+    batch: PreparedPushBatch,
+    mutation: LocalPendingMutation,
+    error: Error
   ): Promise<void> {
-    let batch: { ownerScope: string; scopeGeneration: number; batchId?: string };
-    let mutation: LocalPendingMutation;
-    let error: Error;
-
-    if (typeof batchOrScope === 'string') {
-      const scope = batchOrScope;
-      const gen = mutationOrGen as number;
-      mutation = errorOrMutation as LocalPendingMutation;
-      error = legacyError || new Error('Transient failure');
-      const owner = this.inFlightMap.get(mutation.mutationId);
-      batch = {
-        ownerScope: scope,
-        scopeGeneration: gen,
-        batchId: owner?.batchId,
-      };
-    } else {
-      batch = batchOrScope;
-      mutation = mutationOrGen as LocalPendingMutation;
-      error = errorOrMutation as Error;
-    }
-
     const { ownerScope: batchOwnerScope, scopeGeneration: batchScopeGeneration } = batch;
 
-    // 1. Verify batch ownership: if no longer owned by this batch and owned by another batch, skip!
+    // 1. Strict batch ownership check (P0-11):
+    // If this batch does NOT own the mutation, under NO circumstances should it retry or quarantine.
     if (!this.isBatchOwner(batch, mutation.mutationId)) {
-      const currentOwner = this.inFlightMap.get(mutation.mutationId);
-      if (currentOwner && currentOwner.batchId !== batch.batchId) {
-        return;
-      }
+      return;
     }
 
     // 2. Pre-transaction authority admission check
@@ -860,7 +946,7 @@ export class MutationQueue {
         failureReason: error.message,
         checkAdmission: () => {
           this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-          this.assertBatchOwnershipOrUnowned(batch, mutation.mutationId);
+          this.assertBatchOwnership(batch, mutation.mutationId);
         },
       }
     );

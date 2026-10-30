@@ -1335,6 +1335,41 @@ export class IndexedDbClient {
   }
 
   /**
+   * Atomic Primitive: Increments retryCount and sets nextRetryAt in a SINGLE readwrite transaction.
+   * Eliminates read-then-write race conditions under concurrent network failure handling.
+   * Returns the updated retryCount and nextRetryAt, or null if mutation was not found.
+   */
+  async incrementPendingMutationRetryAtomic(
+    ownerScope: string,
+    mutationId: string,
+    delayMs: number
+  ): Promise<{ retryCount: number; nextRetryAt: number } | null> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_PENDING_MUTATIONS, 'readwrite');
+      const store = tx.objectStore(STORE_PENDING_MUTATIONS);
+      const req = store.get([ownerScope, mutationId]);
+      let result: { retryCount: number; nextRetryAt: number } | null = null;
+
+      req.onsuccess = () => {
+        const item = req.result as LocalPendingMutation | undefined;
+        if (!item) {
+          resolve(null);
+          return;
+        }
+        item.retryCount = (item.retryCount || 0) + 1;
+        item.nextRetryAt = Date.now() + delayMs;
+        store.put(item);
+        result = { retryCount: item.retryCount, nextRetryAt: item.nextRetryAt };
+      };
+
+      tx.oncomplete = () => resolve(result);
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  /**
    * Atomic Primitive: Moves a mutation from pending_mutations to quarantined_mutations by direct composite key lookup.
    * Avoids scanning or pagination limits.
    */
@@ -1517,10 +1552,14 @@ export class IndexedDbClient {
           }
 
           if (
-            (q.rejectionStatus === 'REJECTED_STALE' || q.rejectionStatus === 'HTTP_410_GONE') &&
-            (!triageProof || triageProof.triageApproved !== true)
+            q.rejectionStatus === 'REJECTED_STALE' ||
+            q.rejectionStatus === 'HTTP_410_GONE'
           ) {
-            reject(new Error('REQUEUE_PROHIBITED: Cannot requeue REJECTED_STALE or HTTP_410 mutation without approved causal triage proof.'));
+            reject(
+              new Error(
+                'REQUEUE_PROHIBITED: Requeuing REJECTED_STALE or HTTP_410 mutations is locked until Step 6 Causal Triage Engine is implemented.'
+              )
+            );
             return;
           }
 

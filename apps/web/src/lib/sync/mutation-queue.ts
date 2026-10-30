@@ -48,7 +48,36 @@ export class RequeueProhibitedError extends Error {
 export interface IdentityStateProvider {
   getActiveScope: () => string | null;
   isTransitioning: () => boolean;
-  canMutateUserState?: () => boolean;
+  canMutateUserState: () => boolean;
+}
+
+export interface SettableIdentityStateProvider extends IdentityStateProvider {
+  setScope: (scope: string | null) => void;
+  setTransitioning: (transitioning: boolean) => void;
+  setCanMutate: (canMutate: boolean) => void;
+}
+
+/**
+ * Creates an identity provider for testing or stable sessions.
+ */
+export function createStaticIdentityProvider(scope: string): SettableIdentityStateProvider {
+  let currentScope: string | null = scope;
+  let transitioning = false;
+  let canMutate = true;
+  return {
+    getActiveScope: () => currentScope,
+    isTransitioning: () => transitioning,
+    canMutateUserState: () => canMutate,
+    setScope: (s: string | null) => {
+      currentScope = s;
+    },
+    setTransitioning: (t: boolean) => {
+      transitioning = t;
+    },
+    setCanMutate: (c: boolean) => {
+      canMutate = c;
+    },
+  };
 }
 
 export interface PreparedPushBatch {
@@ -61,12 +90,12 @@ export interface PreparedPushBatch {
 
 export interface MutationQueueOptions {
   ownerScope: string;
+  identityStateProvider: IdentityStateProvider;
   dbClient?: IndexedDbClient;
   maxRetries?: number;
   initialBackoffMs?: number;
   maxBackoffMs?: number;
   backoffFactor?: number;
-  identityStateProvider?: IdentityStateProvider;
   isScopeTransitioning?: () => boolean;
   onAuthoritativeDeltaPullRequired?: (scope: string) => void | Promise<void>;
   onReplicaEvicted?: (scope: string, domain: SyncDomain, entityId: string) => void;
@@ -123,7 +152,7 @@ export class MutationQueue {
   private readonly initialBackoffMs: number;
   private readonly maxBackoffMs: number;
   private readonly backoffFactor: number;
-  private readonly identityStateProvider?: IdentityStateProvider;
+  private readonly identityStateProvider: IdentityStateProvider;
   private readonly isScopeTransitioningFn?: () => boolean;
   private readonly onAuthoritativeDeltaPullRequired?: (scope: string) => void | Promise<void>;
   private readonly onReplicaEvicted?: (scope: string, domain: SyncDomain, entityId: string) => void;
@@ -136,13 +165,16 @@ export class MutationQueue {
 
   constructor(options: MutationQueueOptions) {
     assertValidScope(options.ownerScope);
+    if (!options.identityStateProvider) {
+      throw new ScopeTransitioningError('MutationQueue requires an authoritative IdentityStateProvider.');
+    }
     this.ownerScope = options.ownerScope;
+    this.identityStateProvider = options.identityStateProvider;
     this.dbClient = options.dbClient || indexedDbClient;
     this.maxRetries = options.maxRetries ?? 5;
     this.initialBackoffMs = options.initialBackoffMs ?? 1000;
     this.maxBackoffMs = options.maxBackoffMs ?? 30000;
     this.backoffFactor = options.backoffFactor ?? 2;
-    this.identityStateProvider = options.identityStateProvider;
     this.isScopeTransitioningFn = options.isScopeTransitioning;
     this.onAuthoritativeDeltaPullRequired = options.onAuthoritativeDeltaPullRequired;
     this.onReplicaEvicted = options.onReplicaEvicted;
@@ -183,22 +215,23 @@ export class MutationQueue {
     }
 
     // 1. Authoritative IdentityStateProvider check (Fail-closed)
-    if (this.identityStateProvider) {
-      if (this.identityStateProvider.isTransitioning()) {
-        throw new ScopeTransitioningError('Cannot execute mutation queue operation while identity is transitioning.');
-      }
-      if (
-        this.identityStateProvider.canMutateUserState !== undefined &&
-        !this.identityStateProvider.canMutateUserState()
-      ) {
-        throw new ScopeTransitioningError(
-          'Cannot execute mutation queue operation: active scope is not authorized to mutate user state.'
-        );
-      }
-      const providerScope = this.identityStateProvider.getActiveScope();
-      if (providerScope && providerScope !== this.ownerScope) {
-        throw new ScopeMismatchError(this.ownerScope, providerScope);
-      }
+    if (!this.identityStateProvider) {
+      throw new ScopeTransitioningError('MutationQueue requires an authoritative IdentityStateProvider.');
+    }
+
+    if (this.identityStateProvider.isTransitioning()) {
+      throw new ScopeTransitioningError('Cannot execute mutation queue operation while identity is transitioning.');
+    }
+
+    if (!this.identityStateProvider.canMutateUserState()) {
+      throw new ScopeTransitioningError(
+        'Cannot execute mutation queue operation: active scope is not authorized to mutate user state.'
+      );
+    }
+
+    const providerScope = this.identityStateProvider.getActiveScope();
+    if (!providerScope || providerScope !== this.ownerScope) {
+      throw new ScopeMismatchError(this.ownerScope, providerScope ?? 'null');
     }
 
     // 2. Custom callback check
@@ -223,7 +256,8 @@ export class MutationQueue {
    */
   async getPendingMutations(limit: number = 100): Promise<LocalPendingMutation[]> {
     this.assertSafeExecution();
-    return this.dbClient.getPendingMutations(this.ownerScope, limit);
+    const currentScope = this.ownerScope;
+    return this.dbClient.getPendingMutations(currentScope, limit);
   }
 
   /**
@@ -231,7 +265,8 @@ export class MutationQueue {
    */
   async getQuarantinedMutations(): Promise<LocalQuarantinedMutation[]> {
     this.assertSafeExecution();
-    return this.dbClient.getQuarantinedMutations(this.ownerScope);
+    const currentScope = this.ownerScope;
+    return this.dbClient.getQuarantinedMutations(currentScope);
   }
 
   // ==================== PUSH BATCH PREPARATION ====================
@@ -269,8 +304,14 @@ export class MutationQueue {
 
     const pending = await this.dbClient.getPendingMutations(currentScope, limit * 2);
 
-    // Asynchronous boundary check: ensure scope hasn't changed during getPendingMutations
-    if (this.ownerScope !== currentScope || this.scopeGeneration !== currentGeneration) {
+    // Asynchronous boundary check: ensure scope, generation, and identity state haven't changed during getPendingMutations
+    if (
+      this.ownerScope !== currentScope ||
+      this.scopeGeneration !== currentGeneration ||
+      this.identityStateProvider.isTransitioning() ||
+      !this.identityStateProvider.canMutateUserState() ||
+      this.identityStateProvider.getActiveScope() !== currentScope
+    ) {
       return emptyBatch;
     }
 
@@ -330,15 +371,11 @@ export class MutationQueue {
    */
   async processServerBatchResults(params: {
     results: MutationResultItem[];
-    batch: PreparedPushBatch | LocalPendingMutation[];
+    batch: PreparedPushBatch;
     leaderSignal?: AbortSignal;
   }): Promise<BatchProcessingSummary> {
     const { results, batch, leaderSignal } = params;
-
-    const isPreparedBatch = !Array.isArray(batch) && 'mutations' in batch;
-    const batchMutations: LocalPendingMutation[] = isPreparedBatch ? batch.mutations : batch;
-    const batchOwnerScope: string = isPreparedBatch ? batch.ownerScope : (batchMutations[0]?.ownerScope || this.ownerScope);
-    const batchScopeGeneration: number = isPreparedBatch ? batch.scopeGeneration : this.scopeGeneration;
+    const { ownerScope: batchOwnerScope, scopeGeneration: batchScopeGeneration, mutations: batchMutations } = batch;
 
     // 1. Stale Batch Guard (P0-04 Invariant)
     if (batchOwnerScope !== this.ownerScope || batchScopeGeneration !== this.scopeGeneration) {
@@ -397,7 +434,12 @@ export class MutationQueue {
 
       if (!res) {
         // Missing from server response: treat as transient network omission, apply persistent retry backoff
-        await this.handleTransientFailure(mutation, new Error('Missing result item in server batch response.'));
+        await this.handleTransientFailure(
+          batchOwnerScope,
+          batchScopeGeneration,
+          mutation,
+          new Error('Missing result item in server batch response.')
+        );
         summary.transientRetryCount++;
         continue;
       }
@@ -519,13 +561,10 @@ export class MutationQueue {
    * Quarantines mutations that exceed maxRetries.
    */
   async handleNetworkFailure(
-    batch: PreparedPushBatch | LocalPendingMutation[],
+    batch: PreparedPushBatch,
     error: Error
   ): Promise<void> {
-    const isPreparedBatch = !Array.isArray(batch) && 'mutations' in batch;
-    const batchMutations: LocalPendingMutation[] = isPreparedBatch ? batch.mutations : batch;
-    const batchOwnerScope: string = isPreparedBatch ? batch.ownerScope : (batchMutations[0]?.ownerScope || this.ownerScope);
-    const batchScopeGeneration: number = isPreparedBatch ? batch.scopeGeneration : this.scopeGeneration;
+    const { ownerScope: batchOwnerScope, scopeGeneration: batchScopeGeneration, mutations: batchMutations } = batch;
 
     // Stale Batch Check
     if (batchOwnerScope !== this.ownerScope || batchScopeGeneration !== this.scopeGeneration) {
@@ -536,21 +575,42 @@ export class MutationQueue {
     this.assertSafeExecution(batchOwnerScope);
 
     for (const mutation of batchMutations) {
-      await this.handleTransientFailure(mutation, error);
+      // Re-check scope and generation before each mutation retry
+      if (this.ownerScope !== batchOwnerScope || this.scopeGeneration !== batchScopeGeneration) {
+        this.releaseInFlight(batchMutations);
+        return;
+      }
+      await this.handleTransientFailure(batchOwnerScope, batchScopeGeneration, mutation, error);
     }
   }
 
-  private async handleTransientFailure(mutation: LocalPendingMutation, error: Error): Promise<void> {
+  private async handleTransientFailure(
+    batchOwnerScope: string,
+    batchScopeGeneration: number,
+    mutation: LocalPendingMutation,
+    error: Error
+  ): Promise<void> {
     this.inFlightSet.delete(mutation.mutationId);
 
-    // Atomically read latest retryCount from DB to avoid stale snapshot races
-    const latestItem = await this.dbClient.getPendingMutation(this.ownerScope, mutation.mutationId);
+    // Guard before async boundary
+    if (this.ownerScope !== batchOwnerScope || this.scopeGeneration !== batchScopeGeneration) {
+      return;
+    }
+
+    // Atomically read latest retryCount from DB using batchOwnerScope (NOT this.ownerScope)
+    const latestItem = await this.dbClient.getPendingMutation(batchOwnerScope, mutation.mutationId);
+
+    // Post-async boundary verification: ensure scope and generation haven't changed while awaiting DB
+    if (this.ownerScope !== batchOwnerScope || this.scopeGeneration !== batchScopeGeneration) {
+      return;
+    }
+
     const currentRetry = ((latestItem ? latestItem.retryCount : mutation.retryCount) || 0) + 1;
 
     if (currentRetry >= this.maxRetries) {
       // Exceeded retry limit: atomically quarantine to avoid blocking the queue
       const quarantined: LocalQuarantinedMutation = {
-        ownerScope: this.ownerScope,
+        ownerScope: batchOwnerScope,
         mutationId: mutation.mutationId,
         clientId: mutation.clientId,
         domain: mutation.domain,
@@ -565,9 +625,12 @@ export class MutationQueue {
         originalCreatedAt: mutation.createdAt,
       };
       await this.dbClient.quarantineMutation(quarantined);
-      this.onMutationQuarantined?.(this.ownerScope, quarantined);
+
+      if (this.ownerScope === batchOwnerScope && this.scopeGeneration === batchScopeGeneration) {
+        this.onMutationQuarantined?.(batchOwnerScope, quarantined);
+      }
     } else {
-      // Invariant: Persist incremented retryCount and nextRetryAt directly in IndexedDB
+      // Invariant: Persist incremented retryCount and nextRetryAt directly in IndexedDB using batchOwnerScope
       const delay = Math.min(
         this.maxBackoffMs,
         this.initialBackoffMs * Math.pow(this.backoffFactor, currentRetry - 1)
@@ -575,7 +638,7 @@ export class MutationQueue {
       const nextRetryAt = Date.now() + delay;
 
       await this.dbClient.updatePendingMutationRetry(
-        this.ownerScope,
+        batchOwnerScope,
         mutation.mutationId,
         currentRetry,
         nextRetryAt
@@ -591,17 +654,19 @@ export class MutationQueue {
    */
   async quarantine(mutationId: string, reason: string): Promise<void> {
     this.assertSafeExecution();
+    const currentScope = this.ownerScope;
+    const currentGen = this.scopeGeneration;
     this.inFlightSet.delete(mutationId);
 
     const quarantined = await this.dbClient.quarantinePendingMutationByKey(
-      this.ownerScope,
+      currentScope,
       mutationId,
       reason,
       'MANUAL'
     );
 
-    if (quarantined) {
-      this.onMutationQuarantined?.(this.ownerScope, quarantined);
+    if (this.ownerScope === currentScope && this.scopeGeneration === currentGen && quarantined) {
+      this.onMutationQuarantined?.(currentScope, quarantined);
     }
   }
 
@@ -616,10 +681,16 @@ export class MutationQueue {
    */
   async requeue(mutationId: string, triageProof?: CausalTriageProof): Promise<void> {
     this.assertSafeExecution();
+    const currentScope = this.ownerScope;
+    const currentGen = this.scopeGeneration;
 
-    const quarantined = await this.dbClient.getQuarantinedMutation(this.ownerScope, mutationId);
+    const quarantined = await this.dbClient.getQuarantinedMutation(currentScope, mutationId);
     if (!quarantined) {
-      throw new Error(`Quarantined mutation "${mutationId}" not found for scope "${this.ownerScope}".`);
+      throw new Error(`Quarantined mutation "${mutationId}" not found for scope "${currentScope}".`);
+    }
+
+    if (this.ownerScope !== currentScope || this.scopeGeneration !== currentGen) {
+      throw new ScopeTransitioningError('Scope changed while retrieving quarantined mutation.');
     }
 
     if (quarantined.rejectionStatus === 'REJECTED_TOMBSTONE') {
@@ -629,15 +700,15 @@ export class MutationQueue {
     }
 
     if (
-      (quarantined.rejectionStatus === 'REJECTED_STALE' || quarantined.rejectionStatus === 'HTTP_410_GONE') &&
-      (!triageProof || triageProof.triageApproved !== true)
+      quarantined.rejectionStatus === 'REJECTED_STALE' ||
+      quarantined.rejectionStatus === 'HTTP_410_GONE'
     ) {
       throw new RequeueProhibitedError(
-        `Cannot requeue stale/expired mutation "${mutationId}": explicit approved causal triage proof is required.`
+        `Cannot requeue mutation "${mutationId}": Requeuing ${quarantined.rejectionStatus} mutations is locked until Step 6 Causal Triage Engine is implemented.`
       );
     }
 
-    await this.dbClient.requeueQuarantinedMutation(this.ownerScope, mutationId, triageProof);
+    await this.dbClient.requeueQuarantinedMutation(currentScope, mutationId, triageProof);
   }
 
   /**
@@ -645,7 +716,8 @@ export class MutationQueue {
    */
   async deleteQuarantined(mutationId: string): Promise<void> {
     this.assertSafeExecution();
-    await this.dbClient.deleteQuarantinedMutation(this.ownerScope, mutationId);
+    const currentScope = this.ownerScope;
+    await this.dbClient.deleteQuarantinedMutation(currentScope, mutationId);
   }
 
   /**
@@ -653,7 +725,8 @@ export class MutationQueue {
    */
   async clearQuarantined(): Promise<void> {
     this.assertSafeExecution();
-    await this.dbClient.clearQuarantinedMutations(this.ownerScope);
+    const currentScope = this.ownerScope;
+    await this.dbClient.clearQuarantinedMutations(currentScope);
   }
 
   // ==================== QUEUE STATUS & DIAGNOSTICS ====================
@@ -663,8 +736,10 @@ export class MutationQueue {
    */
   async getStatus(): Promise<QueueStatusReport> {
     this.assertSafeExecution();
-    const pending = await this.dbClient.getPendingMutations(this.ownerScope, 1000);
-    const quarantined = await this.dbClient.getQuarantinedMutations(this.ownerScope);
+    const currentScope = this.ownerScope;
+    const currentGen = this.scopeGeneration;
+    const pending = await this.dbClient.getPendingMutations(currentScope, 1000);
+    const quarantined = await this.dbClient.getQuarantinedMutations(currentScope);
     const now = Date.now();
 
     let inBackoffCount = 0;
@@ -675,8 +750,8 @@ export class MutationQueue {
     }
 
     return {
-      ownerScope: this.ownerScope,
-      scopeGeneration: this.scopeGeneration,
+      ownerScope: currentScope,
+      scopeGeneration: currentGen,
       pendingCount: pending.length,
       inFlightCount: this.inFlightSet.size,
       quarantinedCount: quarantined.length,

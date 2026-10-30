@@ -16,11 +16,13 @@ import {
 } from '../lib/storage/indexed-db-client';
 import {
   MutationQueue,
+  MutationQueueOptions,
   ScopeMismatchError,
   ScopeTransitioningError,
   StaleBatchRejectedError,
   RequeueProhibitedError,
   IdentityStateProvider,
+  createStaticIdentityProvider,
   PreparedPushBatch,
 } from '../lib/sync/mutation-queue';
 import {
@@ -54,6 +56,18 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
     vi.restoreAllMocks();
   });
 
+  const createTestQueue = (
+    options: Partial<MutationQueueOptions> & { ownerScope?: string } = {}
+  ): MutationQueue => {
+    const scope = options.ownerScope ?? scopeA;
+    return new MutationQueue({
+      ownerScope: scope,
+      identityStateProvider: options.identityStateProvider ?? createStaticIdentityProvider(scope),
+      dbClient: options.dbClient ?? dbClient,
+      ...options,
+    });
+  };
+
   const createDummyMutation = (
     overrides?: Partial<LocalPendingMutation>
   ): LocalPendingMutation => ({
@@ -72,7 +86,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
   describe('1. Mutation Ingestion & Immutability Invariants (P0)', () => {
     it('enqueues a valid mutation preserving all causal metadata, baseServerRevision, and payload', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
       const mutation = createDummyMutation({
         domain: SyncDomain.PROGRESS,
         entityId: 'story-404',
@@ -98,7 +112,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
     });
 
     it('strictly rejects duplicate mutation [ownerScope, mutationId] to enforce mutation immutability', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
       const mutation1 = createDummyMutation({ mutationId: 'mut-dup-1' });
       await queue.enqueue(mutation1);
 
@@ -117,7 +131,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
     });
 
     it('retrieves pending mutations in chronological order', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
       const m1 = createDummyMutation({
         mutationId: 'mut-seq-1',
         createdAt: '2026-10-30T10:00:00.000Z',
@@ -143,7 +157,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
   describe('2. Scope Isolation & Identity Transition Guard (P0)', () => {
     it('throws ScopeMismatchError when attempting to enqueue a mutation with mismatched scope', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
       const foreignMutation = createDummyMutation({ ownerScope: scopeB });
 
       await expect(queue.enqueue(foreignMutation)).rejects.toThrow(ScopeMismatchError);
@@ -151,9 +165,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
     it('refuses queue operations and push preparation while identity is TRANSITIONING', async () => {
       let isTransitioning = false;
-      const queue = new MutationQueue({
+      const queue = createTestQueue({
         ownerScope: scopeA,
-        dbClient,
         isScopeTransitioning: () => isTransitioning,
       });
 
@@ -172,8 +185,9 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
     });
 
     it('isolates mutations cleanly between different scopes and resets in-flight on setActiveScope()', async () => {
-      const queueA = new MutationQueue({ ownerScope: scopeA, dbClient });
-      const queueB = new MutationQueue({ ownerScope: scopeB, dbClient });
+      const providerA = createStaticIdentityProvider(scopeA);
+      const queueA = createTestQueue({ ownerScope: scopeA, identityStateProvider: providerA });
+      const queueB = createTestQueue({ ownerScope: scopeB });
 
       const mutA = createDummyMutation({ ownerScope: scopeA, mutationId: 'mut-scopeA' });
       const mutB = createDummyMutation({ ownerScope: scopeB, mutationId: 'mut-scopeB' });
@@ -188,7 +202,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       const batchA = await queueA.preparePushBatch();
       expect(batchA.mutations).toHaveLength(1);
 
-      // Now switch active scope on queueA to scopeB
+      // Now switch active scope on providerA and queueA to scopeB
+      providerA.setScope(scopeB);
       queueA.setActiveScope(scopeB);
       expect(queueA.getActiveScope()).toBe(scopeB);
       expect(queueA.getScopeGeneration()).toBe(1);
@@ -201,7 +216,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
   describe('3. Server Rejection Handling & Anti-Resurrection (P0)', () => {
     it('handles APPLIED and DEDUPLICATED by removing mutations from pending_mutations', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
       const m1 = createDummyMutation({ mutationId: 'mut-app-1' });
       const m2 = createDummyMutation({ mutationId: 'mut-dedup-1' });
 
@@ -226,9 +241,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       let evictedDomain: SyncDomain | null = null;
       let evictedEntityId: string | null = null;
 
-      const queue = new MutationQueue({
+      const queue = createTestQueue({
         ownerScope: scopeA,
-        dbClient,
         onReplicaEvicted: (s, dom, ent) => {
           evictedDomain = dom;
           evictedEntityId = ent;
@@ -290,7 +304,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
     });
 
     it('anti-resurrection: evicts history and preference replicas upon REJECTED_TOMBSTONE', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
 
       // Stage history and preference
       await dbClient.recordReadingSession(
@@ -359,9 +373,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
     it('anti-rebase invariant: REJECTED_STALE moves mutation to quarantine without modifying mutationId, payload, or baseServerRevision', async () => {
       let quarantinedEventMutation: LocalQuarantinedMutation | null = null;
-      const queue = new MutationQueue({
+      const queue = createTestQueue({
         ownerScope: scopeA,
-        dbClient,
         onMutationQuarantined: (s, m) => {
           quarantinedEventMutation = m;
         },
@@ -416,9 +429,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
     it('CONFLICT_MERGED: triggers authoritative delta pull without inferring local synthetic payload', async () => {
       let deltaPullTriggeredScope: string | null = null;
-      const queue = new MutationQueue({
+      const queue = createTestQueue({
         ownerScope: scopeA,
-        dbClient,
         onAuthoritativeDeltaPullRequired: async (s) => {
           deltaPullTriggeredScope = s;
         },
@@ -447,7 +459,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
     });
 
     it('DOMAIN_NOT_SUPPORTED: quarantines mutation to prevent infinite retry', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
       const mutation = createDummyMutation({
         domain: SyncDomain.FOLLOW,
         mutationId: 'mut-unsupported-1',
@@ -480,7 +492,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
   describe('4. Transaction Rollback & Quarantine Atomicity (P0)', () => {
     it('atomically moves from pending to quarantined in a single IDB transaction via direct key lookup', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
       const mutation = createDummyMutation({ mutationId: 'mut-atomic-q' });
       await queue.enqueue(mutation);
 
@@ -497,7 +509,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
     });
 
     it('atomically requeues quarantined mutation back to pending with retryCount=0, preserving exact mutationId and payload', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
       const originalPayload = { storyId: 'story-requeue-1', notes: 'Important causal data' };
       const mutation = createDummyMutation({
         mutationId: 'mut-requeue-1',
@@ -527,7 +539,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
         new Error('Simulated IDB transaction crash')
       );
 
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
       const mutation = createDummyMutation({ mutationId: 'mut-crash-test' });
       await queue.enqueue(mutation);
 
@@ -546,9 +558,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
   describe('5. Network Timeout, Retry Safety & Backoff (P0)', () => {
     it('preserves mutation identity, payload, and baseServerRevision when network failure triggers retry with backoff', async () => {
-      const queue = new MutationQueue({
+      const queue = createTestQueue({
         ownerScope: scopeA,
-        dbClient,
         maxRetries: 3,
         initialBackoffMs: 1000,
         backoffFactor: 2,
@@ -614,7 +625,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
   describe('6. Worker Authority & In-Flight Batch Protection', () => {
     it('prevents concurrent double-pushing by tracking in-flight mutation IDs', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
       await queue.enqueue(createDummyMutation({ mutationId: 'mut-inf-1' }));
       await queue.enqueue(createDummyMutation({ mutationId: 'mut-inf-2' }));
 
@@ -640,7 +651,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
     });
 
     it('aborts push preparation and releases in-flight when leaderSignal is aborted', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
       await queue.enqueue(createDummyMutation({ mutationId: 'mut-abort-1' }));
 
       const abortController = new AbortController();
@@ -670,9 +681,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
   describe('7. Diagnostics & Status Reporting', () => {
     it('accurately computes and returns queue diagnostic status with persisted backoff count', async () => {
-      const queue = new MutationQueue({
+      const queue = createTestQueue({
         ownerScope: scopeA,
-        dbClient,
         maxRetries: 5,
         initialBackoffMs: 5000,
       });
@@ -703,7 +713,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
   describe('8. Stale Batch & Asynchronous Scope Switching Invariants (P0-04 Remediation)', () => {
     it('strictly rejects late server response from Scope A after setActiveScope(B), preventing cross-account corruption', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
 
       // Scope A: enqueues a mutation on story-shared-99
       const mutA = createDummyMutation({
@@ -769,8 +779,70 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       expect(alicePending?.ownerScope).toBe(scopeA);
     });
 
+    it('strictly rejects stale batch after A -> B -> A account switching sequence due to generation mismatch', async () => {
+      const provider = createStaticIdentityProvider(scopeA);
+      const queue = createTestQueue({ ownerScope: scopeA, identityStateProvider: provider });
+      const mutA = createDummyMutation({ ownerScope: scopeA, mutationId: 'mut-aba-1' });
+      await queue.enqueue(mutA);
+
+      // 1. Prepare batch at scope A (generation 0)
+      const batchA_gen0 = await queue.preparePushBatch();
+      expect(batchA_gen0.scopeGeneration).toBe(0);
+      expect(batchA_gen0.ownerScope).toBe(scopeA);
+
+      // 2. Switch to scope B (generation becomes 1)
+      provider.setScope(scopeB);
+      queue.setActiveScope(scopeB);
+      expect(queue.getScopeGeneration()).toBe(1);
+
+      // 3. Switch BACK to scope A (generation becomes 2)
+      provider.setScope(scopeA);
+      queue.setActiveScope(scopeA);
+      expect(queue.getScopeGeneration()).toBe(2);
+      expect(queue.getActiveScope()).toBe(scopeA);
+
+      // 4. Stale batch from generation 0 arrives now for scope A!
+      const lateResults: MutationResultItem[] = [
+        { mutationId: 'mut-aba-1', status: 'APPLIED', assignedRevision: '999' },
+      ];
+
+      // MUST REJECT because generation 0 != 2, preventing stale receipt race!
+      await expect(
+        queue.processServerBatchResults({ results: lateResults, batch: batchA_gen0 })
+      ).rejects.toThrow(StaleBatchRejectedError);
+    });
+
+    it('does not mutate or retry mutation under new scope if scope switches during handleTransientFailure await', async () => {
+      const provider = createStaticIdentityProvider(scopeA);
+      const queue = createTestQueue({ ownerScope: scopeA, identityStateProvider: provider });
+      const mutA = createDummyMutation({ ownerScope: scopeA, mutationId: 'mut-race-retry-1' });
+      await queue.enqueue(mutA);
+
+      const batchA = await queue.preparePushBatch();
+      expect(batchA.mutations).toHaveLength(1);
+
+      // Mock dbClient.getPendingMutation to switch scope during the await
+      const originalGetPending = dbClient.getPendingMutation.bind(dbClient);
+      vi.spyOn(dbClient, 'getPendingMutation').mockImplementationOnce(async (scope, id) => {
+        const res = await originalGetPending(scope, id);
+        // Switch scope while getPendingMutation is awaiting!
+        provider.setScope(scopeB);
+        queue.setActiveScope(scopeB);
+        return res;
+      });
+
+      const updateSpy = vi.spyOn(dbClient, 'updatePendingMutationRetry');
+      const quarantineSpy = vi.spyOn(dbClient, 'quarantineMutation');
+
+      await queue.handleNetworkFailure(batchA, new Error('Network dropped'));
+
+      // Invariant: Because scope switched to scopeB mid-await, neither updatePendingMutationRetry nor quarantineMutation was executed on scopeB
+      expect(updateSpy).not.toHaveBeenCalledWith(scopeB, expect.anything(), expect.anything(), expect.anything());
+      expect(quarantineSpy).not.toHaveBeenCalledWith(expect.objectContaining({ ownerScope: scopeB }));
+    });
+
     it('rejects stale batch if individual mutation ownerScope mismatches batch header', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
       const tamperedBatch: PreparedPushBatch = {
         batchId: 'batch-tampered-1',
         ownerScope: scopeA,
@@ -789,7 +861,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
   describe('9. Causal Triage & Requeue Protection (P0-05 Remediation)', () => {
     it('permanently prohibits requeue of REJECTED_TOMBSTONE mutations to prevent resurrection', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const queue = createTestQueue({ ownerScope: scopeA });
       const mut = createDummyMutation({ mutationId: 'mut-tomb-perm', entityId: 'story-dead-1' });
       await queue.enqueue(mut);
 
@@ -820,8 +892,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       expect(quarantined[0].mutationId).toBe('mut-tomb-perm');
     });
 
-    it('prohibits requeue of REJECTED_STALE mutations without explicit approved causal triage proof', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+    it('permanently locks out requeue of REJECTED_STALE and HTTP_410 mutations at Step 4 even with triageApproved: true', async () => {
+      const queue = createTestQueue({ ownerScope: scopeA });
       const mut = createDummyMutation({ mutationId: 'mut-stale-gate', entityId: 'story-stale-99' });
       await queue.enqueue(mut);
 
@@ -834,38 +906,33 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       // 1. Requeue without triage proof -> FAILS
       await expect(queue.requeue('mut-stale-gate')).rejects.toThrow(RequeueProhibitedError);
 
-      // 2. Requeue with unapproved triage proof -> FAILS
-      const unapprovedProof: CausalTriageProof = {
-        observedEpoch: 1,
-        validatedRevision: '500',
-        triageApproved: false,
-        triageReason: 'Still conflicts with server head',
-      };
-      await expect(queue.requeue('mut-stale-gate', unapprovedProof)).rejects.toThrow(
-        RequeueProhibitedError
-      );
-
-      // 3. Requeue with approved causal proof -> SUCCEEDS
+      // 2. Requeue even with triageApproved: true -> STILL FAILS (locked until Step 6 Causal Triage Engine)
       const approvedProof: CausalTriageProof = {
         observedEpoch: 3,
         validatedRevision: '2500',
         triageApproved: true,
         triageReason: 'User resolved conflict against server head snapshot',
       };
-      await queue.requeue('mut-stale-gate', approvedProof);
+      await expect(queue.requeue('mut-stale-gate', approvedProof)).rejects.toThrow(
+        RequeueProhibitedError
+      );
+      await expect(queue.requeue('mut-stale-gate', approvedProof)).rejects.toThrow(
+        /locked until Step 6 Causal Triage Engine is implemented/
+      );
 
-      // Verify moved back to pending with exact identity preserved
+      // Verify it remained quarantined
       const quarantined = await queue.getQuarantinedMutations();
-      expect(quarantined).toHaveLength(0);
+      expect(quarantined).toHaveLength(1);
+      expect(quarantined[0].mutationId).toBe('mut-stale-gate');
 
-      const pending = await queue.getPendingMutations();
-      expect(pending).toHaveLength(1);
-      expect(pending[0].mutationId).toBe('mut-stale-gate');
-      expect(pending[0].retryCount).toBe(0);
+      // Verify direct dbClient call also fails
+      await expect(
+        dbClient.requeueQuarantinedMutation(scopeA, 'mut-stale-gate', approvedProof)
+      ).rejects.toThrow(/locked until Step 6 Causal Triage Engine is implemented/);
     });
 
     it('allows requeue for transient EXCEEDED_MAX_RETRIES without requiring causal triage', async () => {
-      const queue = new MutationQueue({ ownerScope: scopeA, dbClient, maxRetries: 1 });
+      const queue = createTestQueue({ ownerScope: scopeA, maxRetries: 1 });
       const mut = createDummyMutation({ mutationId: 'mut-retry-exhaust' });
       await queue.enqueue(mut);
 
@@ -888,6 +955,58 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
   });
 
   describe('10. Fail-Closed Identity State Provider Invariants (P0-06 Remediation)', () => {
+    it('fails closed when identityStateProvider is omitted', () => {
+      expect(
+        () => new MutationQueue({ ownerScope: scopeA, dbClient } as any)
+      ).toThrow(ScopeTransitioningError);
+    });
+
+    it('fails closed when canMutateUserState returns false', async () => {
+      const provider: IdentityStateProvider = {
+        getActiveScope: () => scopeA,
+        isTransitioning: () => false,
+        canMutateUserState: () => false,
+      };
+
+      const queue = new MutationQueue({
+        ownerScope: scopeA,
+        dbClient,
+        identityStateProvider: provider,
+      });
+
+      await expect(queue.preparePushBatch()).rejects.toThrow(ScopeTransitioningError);
+      await expect(queue.getPendingMutations()).rejects.toThrow(ScopeTransitioningError);
+    });
+
+    it('aborts batch preparation and returns empty batch if identity transitions during preparePushBatch await', async () => {
+      let isTransitioning = false;
+      const provider: IdentityStateProvider = {
+        getActiveScope: () => scopeA,
+        isTransitioning: () => isTransitioning,
+        canMutateUserState: () => !isTransitioning,
+      };
+
+      const queue = new MutationQueue({
+        ownerScope: scopeA,
+        dbClient,
+        identityStateProvider: provider,
+      });
+
+      await queue.enqueue(createDummyMutation({ mutationId: 'mut-race-trans-1' }));
+
+      // Hook dbClient.getPendingMutations to trigger transition during await
+      const originalGetPending = dbClient.getPendingMutations.bind(dbClient);
+      vi.spyOn(dbClient, 'getPendingMutations').mockImplementationOnce(async (scope, limit) => {
+        const res = await originalGetPending(scope, limit);
+        isTransitioning = true; // Identity starts transitioning while DB read is resolving
+        return res;
+      });
+
+      const batch = await queue.preparePushBatch();
+      // Fail-closed: returns empty batch and does not mark mutations in flight
+      expect(batch.mutations).toHaveLength(0);
+    });
+
     it('fails closed when identityStateProvider reports TRANSITIONING', async () => {
       let isTransitioning = false;
       let canMutate = true;
@@ -940,9 +1059,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
   describe('11. Persistent Retry Backoff across Session Reloads (P1 Remediation)', () => {
     it('persists nextRetryAt directly in IndexedDB so backoff survives page reload', async () => {
-      const queue1 = new MutationQueue({
+      const queue1 = createTestQueue({
         ownerScope: scopeA,
-        dbClient,
         maxRetries: 5,
         initialBackoffMs: 2000,
       });
@@ -964,9 +1082,8 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       expect(storedItem?.nextRetryAt).toBeGreaterThanOrEqual(beforeFail + 1900);
 
       // SIMULATE PAGE RELOAD: Instantiate a completely new MutationQueue instance with fresh memory state
-      const reloadedQueue = new MutationQueue({
+      const reloadedQueue = createTestQueue({
         ownerScope: scopeA,
-        dbClient,
         maxRetries: 5,
         initialBackoffMs: 2000,
       });
@@ -1011,6 +1128,22 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       // Both must be wiped
       expect(await dbClient.getBookmark(scopeA, 'story-atomic-tomb')).toBeNull();
       expect(await dbClient.getPendingMutation(scopeA, 'mut-atomic-tomb')).toBeNull();
+    });
+
+    it('atomic primitive: incrementPendingMutationRetryAtomic updates retryCount and nextRetryAt in single transaction', async () => {
+      const mut = createDummyMutation({ mutationId: 'mut-atomic-retry', retryCount: 0 });
+      await dbClient.enqueuePendingMutation(mut);
+
+      const before = Date.now();
+      const res = await dbClient.incrementPendingMutationRetryAtomic(scopeA, 'mut-atomic-retry', 5000);
+
+      expect(res).not.toBeNull();
+      expect(res?.retryCount).toBe(1);
+      expect(res?.nextRetryAt).toBeGreaterThanOrEqual(before + 4900);
+
+      const updated = await dbClient.getPendingMutation(scopeA, 'mut-atomic-retry');
+      expect(updated?.retryCount).toBe(1);
+      expect(updated?.nextRetryAt).toBe(res?.nextRetryAt);
     });
   });
 });

@@ -5,6 +5,7 @@ import {
   ConflictResolution,
   SyncDomain,
   SyncOperation,
+  MutationExecutionStatus,
 } from '@omninovel/shared';
 
 export const DB_NAME = 'omninovel_local_v2';
@@ -47,6 +48,23 @@ export interface LocalSyncMeta {
   lastErrorMessage?: string | null;
 }
 
+export type QuarantineRejectionStatus =
+  | MutationExecutionStatus
+  | 'EXCEEDED_MAX_RETRIES'
+  | 'MANUAL'
+  | 'HTTP_410_GONE'
+  | string;
+
+export type QuarantineTriageStatus = 'PENDING' | 'APPROVED' | 'DISCARDED';
+
+export interface CausalTriageProof {
+  observedEpoch?: number;
+  validatedRevision?: string;
+  triageApproved: boolean;
+  triageReason?: string;
+  evidence?: Record<string, unknown>;
+}
+
 export interface LocalPendingMutation {
   ownerScope: string;
   mutationId: string;
@@ -58,6 +76,7 @@ export interface LocalPendingMutation {
   payload: Record<string, unknown>;
   createdAt: string;
   retryCount?: number;
+  nextRetryAt?: number;
 }
 
 export interface LocalQuarantinedMutation {
@@ -70,7 +89,10 @@ export interface LocalQuarantinedMutation {
   baseServerRevision: string;
   payload: Record<string, unknown>;
   rejectionReason: string;
+  rejectionStatus?: QuarantineRejectionStatus;
   rejectedAt: string;
+  triageStatus?: QuarantineTriageStatus;
+  causalEvidence?: CausalTriageProof;
   originalCreatedAt?: string;
 }
 
@@ -1220,6 +1242,17 @@ export class IndexedDbClient {
     });
   }
 
+  async getPendingMutation(ownerScope: string, mutationId: string): Promise<LocalPendingMutation | null> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_PENDING_MUTATIONS, 'readonly');
+      const req = tx.objectStore(STORE_PENDING_MUTATIONS).get([ownerScope, mutationId]);
+      req.onsuccess = () => resolve((req.result as LocalPendingMutation) || null);
+      req.onerror = () => reject(tx.error || req.error);
+    });
+  }
+
   async getPendingMutations(ownerScope: string, limit: number = 100): Promise<LocalPendingMutation[]> {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
@@ -1274,7 +1307,12 @@ export class IndexedDbClient {
     });
   }
 
-  async updatePendingMutationRetry(ownerScope: string, mutationId: string, retryCount: number): Promise<void> {
+  async updatePendingMutationRetry(
+    ownerScope: string,
+    mutationId: string,
+    retryCount: number,
+    nextRetryAt?: number
+  ): Promise<void> {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
@@ -1285,11 +1323,65 @@ export class IndexedDbClient {
         const item = req.result as LocalPendingMutation | undefined;
         if (item) {
           item.retryCount = retryCount;
+          if (nextRetryAt !== undefined) {
+            item.nextRetryAt = nextRetryAt;
+          }
           store.put(item);
         }
       };
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  /**
+   * Atomic Primitive: Moves a mutation from pending_mutations to quarantined_mutations by direct composite key lookup.
+   * Avoids scanning or pagination limits.
+   */
+  async quarantinePendingMutationByKey(
+    ownerScope: string,
+    mutationId: string,
+    reason: string,
+    status: QuarantineRejectionStatus = 'MANUAL'
+  ): Promise<LocalQuarantinedMutation | null> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction([STORE_PENDING_MUTATIONS, STORE_QUARANTINED_MUTATIONS], 'readwrite');
+        const pStore = tx.objectStore(STORE_PENDING_MUTATIONS);
+        const qStore = tx.objectStore(STORE_QUARANTINED_MUTATIONS);
+
+        const req = pStore.get([ownerScope, mutationId]);
+        req.onsuccess = () => {
+          const target = req.result as LocalPendingMutation | undefined;
+          if (!target) {
+            resolve(null);
+            return;
+          }
+          pStore.delete([ownerScope, mutationId]);
+          const quarantined: LocalQuarantinedMutation = {
+            ownerScope: target.ownerScope,
+            mutationId: target.mutationId,
+            clientId: target.clientId,
+            domain: target.domain,
+            entityId: target.entityId,
+            operation: target.operation,
+            baseServerRevision: target.baseServerRevision,
+            payload: target.payload,
+            rejectionReason: reason,
+            rejectionStatus: status,
+            rejectedAt: new Date().toISOString(),
+            triageStatus: 'PENDING',
+            originalCreatedAt: target.createdAt,
+          };
+          qStore.put(quarantined);
+          tx.oncomplete = () => resolve(quarantined);
+        };
+        tx.onerror = () => reject(tx.error);
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 
@@ -1302,12 +1394,28 @@ export class IndexedDbClient {
       try {
         const tx = db.transaction([STORE_PENDING_MUTATIONS, STORE_QUARANTINED_MUTATIONS], 'readwrite');
         tx.objectStore(STORE_PENDING_MUTATIONS).delete([quarantined.ownerScope, quarantined.mutationId]);
-        tx.objectStore(STORE_QUARANTINED_MUTATIONS).put(quarantined);
+        const recordToStore: LocalQuarantinedMutation = {
+          ...quarantined,
+          rejectionStatus: quarantined.rejectionStatus || 'MANUAL',
+          triageStatus: quarantined.triageStatus || 'PENDING',
+        };
+        tx.objectStore(STORE_QUARANTINED_MUTATIONS).put(recordToStore);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       } catch (err) {
         reject(err);
       }
+    });
+  }
+
+  async getQuarantinedMutation(ownerScope: string, mutationId: string): Promise<LocalQuarantinedMutation | null> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE_QUARANTINED_MUTATIONS, 'readonly');
+      const req = tx.objectStore(STORE_QUARANTINED_MUTATIONS).get([ownerScope, mutationId]);
+      req.onsuccess = () => resolve((req.result as LocalQuarantinedMutation) || null);
+      req.onerror = () => reject(tx.error || req.error);
     });
   }
 
@@ -1377,8 +1485,16 @@ export class IndexedDbClient {
    * Atomic Primitive: Requeues a quarantined mutation back to pending_mutations with retryCount = 0.
    * Transfers from quarantined_mutations to pending_mutations in a single atomic IDB transaction.
    * Strictly preserves exact mutationId, payload, and baseServerRevision.
+   *
+   * Invariant Enforcement (P0-05):
+   * - REJECTED_TOMBSTONE mutations are strictly PERMANENT and CANNOT be requeued.
+   * - REJECTED_STALE or HTTP_410 mutations require explicit approved causal triage proof.
    */
-  async requeueQuarantinedMutation(ownerScope: string, mutationId: string): Promise<void> {
+  async requeueQuarantinedMutation(
+    ownerScope: string,
+    mutationId: string,
+    triageProof?: CausalTriageProof
+  ): Promise<void> {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
     return new Promise((resolve, reject) => {
@@ -1391,8 +1507,23 @@ export class IndexedDbClient {
         getReq.onsuccess = () => {
           const q = getReq.result as LocalQuarantinedMutation | undefined;
           if (!q) {
+            reject(new Error(`Quarantined mutation [${ownerScope}, ${mutationId}] not found.`));
             return;
           }
+
+          if (q.rejectionStatus === 'REJECTED_TOMBSTONE') {
+            reject(new Error('REQUEUE_PROHIBITED: Cannot requeue REJECTED_TOMBSTONE mutation. Entity has authoritative tombstone on server.'));
+            return;
+          }
+
+          if (
+            (q.rejectionStatus === 'REJECTED_STALE' || q.rejectionStatus === 'HTTP_410_GONE') &&
+            (!triageProof || triageProof.triageApproved !== true)
+          ) {
+            reject(new Error('REQUEUE_PROHIBITED: Cannot requeue REJECTED_STALE or HTTP_410 mutation without approved causal triage proof.'));
+            return;
+          }
+
           qStore.delete([ownerScope, mutationId]);
           const pending: LocalPendingMutation = {
             ownerScope: q.ownerScope,
@@ -1405,12 +1536,102 @@ export class IndexedDbClient {
             payload: q.payload,
             createdAt: q.originalCreatedAt || new Date().toISOString(),
             retryCount: 0,
+            nextRetryAt: undefined,
           };
           pStore.add(pending);
         };
 
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * Anti-Tombstone Resurrection (Atomic): Evicts local replica data from local store AND removes
+   * pending mutation in a SINGLE atomic IndexedDB transaction.
+   * Eliminates race conditions or partial failures between replica deletion and pending removal.
+   */
+  async evictReplicaAndRemovePending(
+    ownerScope: string,
+    domain: SyncDomain,
+    entityId: string,
+    mutationId: string,
+    payload?: Record<string, unknown>
+  ): Promise<void> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+
+    return new Promise((resolve, reject) => {
+      try {
+        let tx: IDBTransaction;
+        switch (domain) {
+          case SyncDomain.BOOKMARK: {
+            tx = db.transaction([STORE_BOOKMARKS, STORE_PENDING_MUTATIONS], 'readwrite');
+            tx.objectStore(STORE_BOOKMARKS).delete([ownerScope, entityId]);
+            tx.objectStore(STORE_PENDING_MUTATIONS).delete([ownerScope, mutationId]);
+            break;
+          }
+          case SyncDomain.PROGRESS: {
+            tx = db.transaction([STORE_PROGRESS, STORE_PENDING_MUTATIONS], 'readwrite');
+            tx.objectStore(STORE_PROGRESS).delete([ownerScope, entityId]);
+            tx.objectStore(STORE_PENDING_MUTATIONS).delete([ownerScope, mutationId]);
+            break;
+          }
+          case SyncDomain.HISTORY: {
+            tx = db.transaction([STORE_HISTORY, STORE_PROGRESS, STORE_PENDING_MUTATIONS], 'readwrite');
+            const histStore = tx.objectStore(STORE_HISTORY);
+            const progStore = tx.objectStore(STORE_PROGRESS);
+
+            if (entityId === 'all' || entityId === '00000000-0000-0000-0000-000000000000') {
+              const histRange = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+              const hReq = histStore.openCursor(histRange);
+              hReq.onsuccess = () => {
+                const c = hReq.result;
+                if (c) { c.delete(); c.continue(); }
+              };
+              const progRange = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+              const pReq = progStore.openCursor(progRange);
+              pReq.onsuccess = () => {
+                const c = pReq.result;
+                if (c) { c.delete(); c.continue(); }
+              };
+            } else if (payload && payload.storyId && payload.chapterId) {
+              histStore.delete([ownerScope, String(payload.storyId), String(payload.chapterId)]);
+            } else if (entityId.includes(':')) {
+              const [sId, cId] = entityId.split(':');
+              histStore.delete([ownerScope, sId, cId]);
+            } else {
+              const range = IDBKeyRange.bound([ownerScope, entityId, ''], [ownerScope, entityId, '\uffff']);
+              const req = histStore.openCursor(range);
+              req.onsuccess = () => {
+                const c = req.result;
+                if (c) { c.delete(); c.continue(); }
+              };
+              progStore.delete([ownerScope, entityId]);
+            }
+            tx.objectStore(STORE_PENDING_MUTATIONS).delete([ownerScope, mutationId]);
+            break;
+          }
+          case SyncDomain.PREFERENCE: {
+            tx = db.transaction([STORE_PREFERENCES, STORE_PENDING_MUTATIONS], 'readwrite');
+            const key = String((payload && payload.key) || entityId);
+            tx.objectStore(STORE_PREFERENCES).delete([ownerScope, key]);
+            tx.objectStore(STORE_PENDING_MUTATIONS).delete([ownerScope, mutationId]);
+            break;
+          }
+          default: {
+            tx = db.transaction(STORE_PENDING_MUTATIONS, 'readwrite');
+            tx.objectStore(STORE_PENDING_MUTATIONS).delete([ownerScope, mutationId]);
+            break;
+          }
+        }
+
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('Transaction aborted.'));
       } catch (err) {
         reject(err);
       }

@@ -12,11 +12,16 @@ import {
   LocalPendingMutation,
   LocalQuarantinedMutation,
   LocalPreference,
+  CausalTriageProof,
 } from '../lib/storage/indexed-db-client';
 import {
   MutationQueue,
   ScopeMismatchError,
   ScopeTransitioningError,
+  StaleBatchRejectedError,
+  RequeueProhibitedError,
+  IdentityStateProvider,
+  PreparedPushBatch,
 } from '../lib/sync/mutation-queue';
 import {
   SyncDomain,
@@ -28,7 +33,7 @@ import {
   MutationResultItem,
 } from '@omninovel/shared';
 
-describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
+describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated)', () => {
   let dbClient: IndexedDbClient;
   const scopeA = 'account:usr-alice';
   const scopeB = 'account:usr-bob';
@@ -181,11 +186,12 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
 
       // Prepare batch for scopeA: mut-scopeA becomes in-flight
       const batchA = await queueA.preparePushBatch();
-      expect(batchA).toHaveLength(1);
+      expect(batchA.mutations).toHaveLength(1);
 
       // Now switch active scope on queueA to scopeB
       queueA.setActiveScope(scopeB);
       expect(queueA.getActiveScope()).toBe(scopeB);
+      expect(queueA.getScopeGeneration()).toBe(1);
 
       // In-flight tracking was cleared; can now see scopeB items
       const pendingOnSwitchedQueue = await queueA.getPendingMutations();
@@ -402,6 +408,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
       expect(quarantined[0].baseServerRevision).toBe('500'); // NOT re-based!
       expect(quarantined[0].payload).toEqual(originalPayload);
       expect(quarantined[0].rejectionReason).toBe('Causal history epoch mismatch');
+      expect(quarantined[0].rejectionStatus).toBe('REJECTED_STALE');
 
       expect(quarantinedEventMutation).not.toBeNull();
       expect(quarantinedEventMutation!.mutationId).toBe('mut-stale-p0');
@@ -467,11 +474,12 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
       expect(quarantined).toHaveLength(1);
       expect(quarantined[0].mutationId).toBe('mut-unsupported-1');
       expect(quarantined[0].rejectionReason).toBe('Domain FOLLOW is not yet enabled on this cluster');
+      expect(quarantined[0].rejectionStatus).toBe('DOMAIN_NOT_SUPPORTED');
     });
   });
 
   describe('4. Transaction Rollback & Quarantine Atomicity (P0)', () => {
-    it('atomically moves from pending to quarantined in a single IDB transaction', async () => {
+    it('atomically moves from pending to quarantined in a single IDB transaction via direct key lookup', async () => {
       const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
       const mutation = createDummyMutation({ mutationId: 'mut-atomic-q' });
       await queue.enqueue(mutation);
@@ -485,6 +493,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
       expect(quarantined).toHaveLength(1);
       expect(quarantined[0].mutationId).toBe('mut-atomic-q');
       expect(quarantined[0].rejectionReason).toBe('Manual quarantine for audit');
+      expect(quarantined[0].rejectionStatus).toBe('MANUAL');
     });
 
     it('atomically requeues quarantined mutation back to pending with retryCount=0, preserving exact mutationId and payload', async () => {
@@ -496,7 +505,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
         baseServerRevision: '777',
       });
       await queue.enqueue(mutation);
-      await queue.quarantine('mut-requeue-1', 'Stale revision');
+      await queue.quarantine('mut-requeue-1', 'Transient issue');
 
       // Requeue back to pending
       await queue.requeue('mut-requeue-1');
@@ -510,17 +519,21 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
       expect(pending[0].baseServerRevision).toBe('777');
       expect(pending[0].payload).toEqual(originalPayload);
       expect(pending[0].retryCount).toBe(0);
+      expect(pending[0].nextRetryAt).toBeUndefined();
     });
 
     it('rolls back completely without losing mutation if IDB error occurs during quarantine', async () => {
-      // Simulate IDB transaction abort on quarantineMutation
-      const spy = vi.spyOn(dbClient, 'quarantineMutation').mockRejectedValueOnce(new Error('Simulated IDB transaction crash'));
+      const spy = vi.spyOn(dbClient, 'quarantinePendingMutationByKey').mockRejectedValueOnce(
+        new Error('Simulated IDB transaction crash')
+      );
 
       const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
       const mutation = createDummyMutation({ mutationId: 'mut-crash-test' });
       await queue.enqueue(mutation);
 
-      await expect(queue.quarantine('mut-crash-test', 'Should fail')).rejects.toThrow('Simulated IDB transaction crash');
+      await expect(queue.quarantine('mut-crash-test', 'Should fail')).rejects.toThrow(
+        'Simulated IDB transaction crash'
+      );
 
       // Mutation is NOT lost from pending store
       const pending = await queue.getPendingMutations();
@@ -549,30 +562,31 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
       await queue.enqueue(mutation);
 
       const batch = await queue.preparePushBatch();
-      expect(batch).toHaveLength(1);
+      expect(batch.mutations).toHaveLength(1);
 
       // First network failure
       const netError = new Error('Gateway Timeout 504');
       await queue.handleNetworkFailure(batch, netError);
 
       // Invariant: In-flight released
-      // Pending mutation has incremented retryCount, while mutationId, payload, and revision remain intact!
+      // Pending mutation has incremented retryCount and nextRetryAt, while mutationId, payload, and revision remain intact!
       const pendingAfterFail1 = await queue.getPendingMutations();
       expect(pendingAfterFail1).toHaveLength(1);
       expect(pendingAfterFail1[0].mutationId).toBe('mut-net-retry');
       expect(pendingAfterFail1[0].baseServerRevision).toBe('9000');
       expect(pendingAfterFail1[0].payload).toEqual({ storyId: 'story-9000', progressPercentage: 99 });
       expect(pendingAfterFail1[0].retryCount).toBe(1);
+      expect(pendingAfterFail1[0].nextRetryAt).toBeDefined();
 
       // Immediate preparePushBatch at now should skip it because backoff is active
       const now = Date.now();
       const immediateBatch = await queue.preparePushBatch({ now });
-      expect(immediateBatch).toHaveLength(0);
+      expect(immediateBatch.mutations).toHaveLength(0);
 
       // Once backoff passes (e.g. now + 1500ms), it is included again
       const delayedBatch = await queue.preparePushBatch({ now: now + 1500 });
-      expect(delayedBatch).toHaveLength(1);
-      expect(delayedBatch[0].mutationId).toBe('mut-net-retry');
+      expect(delayedBatch.mutations).toHaveLength(1);
+      expect(delayedBatch.mutations[0].mutationId).toBe('mut-net-retry');
 
       // Second failure
       await queue.handleNetworkFailure(delayedBatch, netError);
@@ -594,6 +608,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
       expect(quarantined[0].baseServerRevision).toBe('9000');
       expect(quarantined[0].payload).toEqual({ storyId: 'story-9000', progressPercentage: 99 });
       expect(quarantined[0].rejectionReason).toContain('EXCEEDED_MAX_RETRIES: Gateway Timeout 504');
+      expect(quarantined[0].rejectionStatus).toBe('EXCEEDED_MAX_RETRIES');
     });
   });
 
@@ -605,23 +620,23 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
 
       // First caller prepares batch
       const batch1 = await queue.preparePushBatch({ limit: 1 });
-      expect(batch1).toHaveLength(1);
-      expect(batch1[0].mutationId).toBe('mut-inf-1');
+      expect(batch1.mutations).toHaveLength(1);
+      expect(batch1.mutations[0].mutationId).toBe('mut-inf-1');
 
       // Concurrent caller prepares batch: mut-inf-1 is in-flight, so only mut-inf-2 is returned
       const batch2 = await queue.preparePushBatch({ limit: 1 });
-      expect(batch2).toHaveLength(1);
-      expect(batch2[0].mutationId).toBe('mut-inf-2');
+      expect(batch2.mutations).toHaveLength(1);
+      expect(batch2.mutations[0].mutationId).toBe('mut-inf-2');
 
       // Third caller: both are in-flight, returns empty
       const batch3 = await queue.preparePushBatch({ limit: 1 });
-      expect(batch3).toHaveLength(0);
+      expect(batch3.mutations).toHaveLength(0);
 
       // If network call aborts, release in-flight
       queue.releaseInFlight(batch1);
       const batchAfterRelease = await queue.preparePushBatch({ limit: 1 });
-      expect(batchAfterRelease).toHaveLength(1);
-      expect(batchAfterRelease[0].mutationId).toBe('mut-inf-1');
+      expect(batchAfterRelease.mutations).toHaveLength(1);
+      expect(batchAfterRelease.mutations[0].mutationId).toBe('mut-inf-1');
     });
 
     it('aborts push preparation and releases in-flight when leaderSignal is aborted', async () => {
@@ -633,11 +648,11 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
 
       // preparePushBatch returns empty immediately when signal is already aborted
       const batch = await queue.preparePushBatch({ leaderSignal: abortController.signal });
-      expect(batch).toHaveLength(0);
+      expect(batch.mutations).toHaveLength(0);
 
       // If signal aborts during processServerBatchResults
       const normalBatch = await queue.preparePushBatch();
-      expect(normalBatch).toHaveLength(1);
+      expect(normalBatch.mutations).toHaveLength(1);
 
       await expect(
         queue.processServerBatchResults({
@@ -654,7 +669,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
   });
 
   describe('7. Diagnostics & Status Reporting', () => {
-    it('accurately computes and returns queue diagnostic status', async () => {
+    it('accurately computes and returns queue diagnostic status with persisted backoff count', async () => {
       const queue = new MutationQueue({
         ownerScope: scopeA,
         dbClient,
@@ -668,7 +683,7 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
 
       // Prepare 1 item into in-flight
       const batch = await queue.preparePushBatch({ limit: 1 });
-      expect(batch).toHaveLength(1);
+      expect(batch.mutations).toHaveLength(1);
 
       // Put 1 item in backoff
       await queue.handleNetworkFailure(batch, new Error('Transient error'));
@@ -678,10 +693,324 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging', () => {
 
       const status = await queue.getStatus();
       expect(status.ownerScope).toBe(scopeA);
+      expect(status.scopeGeneration).toBe(0);
       expect(status.pendingCount).toBe(2); // mut-stat-1 (backoff), mut-stat-3 (ready)
       expect(status.quarantinedCount).toBe(1); // mut-stat-2
       expect(status.inBackoffCount).toBe(1); // mut-stat-1
       expect(status.inFlightCount).toBe(0);
+    });
+  });
+
+  describe('8. Stale Batch & Asynchronous Scope Switching Invariants (P0-04 Remediation)', () => {
+    it('strictly rejects late server response from Scope A after setActiveScope(B), preventing cross-account corruption', async () => {
+      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+
+      // Scope A: enqueues a mutation on story-shared-99
+      const mutA = createDummyMutation({
+        ownerScope: scopeA,
+        mutationId: 'mut-alice-1',
+        entityId: 'story-shared-99',
+      });
+      await queue.enqueue(mutA);
+
+      // Prepare batch under Scope A (generation 0)
+      const batchA = await queue.preparePushBatch();
+      expect(batchA.ownerScope).toBe(scopeA);
+      expect(batchA.scopeGeneration).toBe(0);
+      expect(batchA.mutations).toHaveLength(1);
+
+      // Scope B: independently has its own local replica and pending mutation with matching entityId and mutationId
+      await dbClient.putBookmark({
+        ownerScope: scopeB,
+        storyId: 'story-shared-99',
+        title: "Bob's Bookmark for story-shared-99",
+        createdAt: new Date().toISOString(),
+      });
+      const mutB = createDummyMutation({
+        ownerScope: scopeB,
+        mutationId: 'mut-alice-1', // Same ID in different scope to test collision isolation
+        entityId: 'story-shared-99',
+      });
+      await dbClient.enqueuePendingMutation(mutB);
+
+      // USER SWITCHES ACCOUNT: Scope A -> Scope B!
+      queue.setActiveScope(scopeB);
+      expect(queue.getActiveScope()).toBe(scopeB);
+      expect(queue.getScopeGeneration()).toBe(1);
+
+      // Late server response for Scope A arrives now!
+      const lateResults: MutationResultItem[] = [
+        {
+          mutationId: 'mut-alice-1',
+          status: 'REJECTED_TOMBSTONE',
+          assignedRevision: null,
+          reason: 'Story deleted on server for Alice',
+        },
+      ];
+
+      // P0-04 Invariant: Processing late batchA under active scopeB MUST fail and reject!
+      await expect(
+        queue.processServerBatchResults({ results: lateResults, batch: batchA })
+      ).rejects.toThrow(StaleBatchRejectedError);
+
+      // CRITICAL ASSERTION: Scope B's local replica MUST NOT be evicted or touched!
+      const bobBookmark = await dbClient.getBookmark(scopeB, 'story-shared-99');
+      expect(bobBookmark).not.toBeNull();
+      expect(bobBookmark?.title).toBe("Bob's Bookmark for story-shared-99");
+
+      // CRITICAL ASSERTION: Scope B's pending mutation MUST NOT be deleted!
+      const bobPending = await dbClient.getPendingMutation(scopeB, 'mut-alice-1');
+      expect(bobPending).not.toBeNull();
+      expect(bobPending?.ownerScope).toBe(scopeB);
+
+      // Scope A's pending mutation was NOT deleted or corrupted under scope B
+      const alicePending = await dbClient.getPendingMutation(scopeA, 'mut-alice-1');
+      expect(alicePending).not.toBeNull();
+      expect(alicePending?.ownerScope).toBe(scopeA);
+    });
+
+    it('rejects stale batch if individual mutation ownerScope mismatches batch header', async () => {
+      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const tamperedBatch: PreparedPushBatch = {
+        batchId: 'batch-tampered-1',
+        ownerScope: scopeA,
+        scopeGeneration: 0,
+        createdAt: Date.now(),
+        mutations: [
+          createDummyMutation({ ownerScope: scopeB, mutationId: 'mut-tampered-foreign' }),
+        ],
+      };
+
+      await expect(
+        queue.processServerBatchResults({ results: [], batch: tamperedBatch })
+      ).rejects.toThrow(ScopeMismatchError);
+    });
+  });
+
+  describe('9. Causal Triage & Requeue Protection (P0-05 Remediation)', () => {
+    it('permanently prohibits requeue of REJECTED_TOMBSTONE mutations to prevent resurrection', async () => {
+      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const mut = createDummyMutation({ mutationId: 'mut-tomb-perm', entityId: 'story-dead-1' });
+      await queue.enqueue(mut);
+
+      // Quarantine with status REJECTED_TOMBSTONE
+      await dbClient.quarantineMutation({
+        ownerScope: scopeA,
+        mutationId: 'mut-tomb-perm',
+        clientId: 'client-1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'story-dead-1',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '10',
+        payload: { storyId: 'story-dead-1' },
+        rejectionReason: 'Authoritative tombstone',
+        rejectionStatus: 'REJECTED_TOMBSTONE',
+        rejectedAt: new Date().toISOString(),
+      });
+
+      // P0-05 Invariant: Requeue MUST be strictly prohibited
+      await expect(queue.requeue('mut-tomb-perm')).rejects.toThrow(RequeueProhibitedError);
+      await expect(queue.requeue('mut-tomb-perm')).rejects.toThrow(
+        /REJECTED_TOMBSTONE.*anti-resurrection/
+      );
+
+      // Verify it remained quarantined
+      const quarantined = await queue.getQuarantinedMutations();
+      expect(quarantined).toHaveLength(1);
+      expect(quarantined[0].mutationId).toBe('mut-tomb-perm');
+    });
+
+    it('prohibits requeue of REJECTED_STALE mutations without explicit approved causal triage proof', async () => {
+      const queue = new MutationQueue({ ownerScope: scopeA, dbClient });
+      const mut = createDummyMutation({ mutationId: 'mut-stale-gate', entityId: 'story-stale-99' });
+      await queue.enqueue(mut);
+
+      const batch = await queue.preparePushBatch();
+      await queue.processServerBatchResults({
+        results: [{ mutationId: 'mut-stale-gate', status: 'REJECTED_STALE', assignedRevision: null }],
+        batch,
+      });
+
+      // 1. Requeue without triage proof -> FAILS
+      await expect(queue.requeue('mut-stale-gate')).rejects.toThrow(RequeueProhibitedError);
+
+      // 2. Requeue with unapproved triage proof -> FAILS
+      const unapprovedProof: CausalTriageProof = {
+        observedEpoch: 1,
+        validatedRevision: '500',
+        triageApproved: false,
+        triageReason: 'Still conflicts with server head',
+      };
+      await expect(queue.requeue('mut-stale-gate', unapprovedProof)).rejects.toThrow(
+        RequeueProhibitedError
+      );
+
+      // 3. Requeue with approved causal proof -> SUCCEEDS
+      const approvedProof: CausalTriageProof = {
+        observedEpoch: 3,
+        validatedRevision: '2500',
+        triageApproved: true,
+        triageReason: 'User resolved conflict against server head snapshot',
+      };
+      await queue.requeue('mut-stale-gate', approvedProof);
+
+      // Verify moved back to pending with exact identity preserved
+      const quarantined = await queue.getQuarantinedMutations();
+      expect(quarantined).toHaveLength(0);
+
+      const pending = await queue.getPendingMutations();
+      expect(pending).toHaveLength(1);
+      expect(pending[0].mutationId).toBe('mut-stale-gate');
+      expect(pending[0].retryCount).toBe(0);
+    });
+
+    it('allows requeue for transient EXCEEDED_MAX_RETRIES without requiring causal triage', async () => {
+      const queue = new MutationQueue({ ownerScope: scopeA, dbClient, maxRetries: 1 });
+      const mut = createDummyMutation({ mutationId: 'mut-retry-exhaust' });
+      await queue.enqueue(mut);
+
+      const batch = await queue.preparePushBatch();
+      await queue.handleNetworkFailure(batch, new Error('Network timeout'));
+
+      // Quarantined due to retry exhaustion
+      const quarantined = await queue.getQuarantinedMutations();
+      expect(quarantined).toHaveLength(1);
+      expect(quarantined[0].rejectionStatus).toBe('EXCEEDED_MAX_RETRIES');
+
+      // Requeue succeeds without causal proof because it is a transient error
+      await queue.requeue('mut-retry-exhaust');
+
+      const pending = await queue.getPendingMutations();
+      expect(pending).toHaveLength(1);
+      expect(pending[0].mutationId).toBe('mut-retry-exhaust');
+      expect(pending[0].retryCount).toBe(0);
+    });
+  });
+
+  describe('10. Fail-Closed Identity State Provider Invariants (P0-06 Remediation)', () => {
+    it('fails closed when identityStateProvider reports TRANSITIONING', async () => {
+      let isTransitioning = false;
+      let canMutate = true;
+
+      const mockIdentityProvider: IdentityStateProvider = {
+        getActiveScope: () => scopeA,
+        isTransitioning: () => isTransitioning,
+        canMutateUserState: () => canMutate,
+      };
+
+      const queue = new MutationQueue({
+        ownerScope: scopeA,
+        dbClient,
+        identityStateProvider: mockIdentityProvider,
+      });
+
+      // Normal operations work when active
+      await queue.enqueue(createDummyMutation({ mutationId: 'mut-id-test-1' }));
+      expect((await queue.preparePushBatch()).mutations).toHaveLength(1);
+
+      // Enter TRANSITIONING state
+      isTransitioning = true;
+      canMutate = false;
+
+      // Fail-closed on all operations
+      await expect(queue.preparePushBatch()).rejects.toThrow(ScopeTransitioningError);
+      await expect(queue.getPendingMutations()).rejects.toThrow(ScopeTransitioningError);
+      await expect(queue.getQuarantinedMutations()).rejects.toThrow(ScopeTransitioningError);
+      await expect(
+        queue.enqueue(createDummyMutation({ mutationId: 'mut-id-test-2' }))
+      ).rejects.toThrow(ScopeTransitioningError);
+    });
+
+    it('fails closed when identityStateProvider reports scope mismatch', async () => {
+      const mockIdentityProvider: IdentityStateProvider = {
+        getActiveScope: () => scopeB, // Provider says scopeB, but queue is at scopeA
+        isTransitioning: () => false,
+        canMutateUserState: () => true,
+      };
+
+      const queue = new MutationQueue({
+        ownerScope: scopeA,
+        dbClient,
+        identityStateProvider: mockIdentityProvider,
+      });
+
+      await expect(queue.preparePushBatch()).rejects.toThrow(ScopeMismatchError);
+    });
+  });
+
+  describe('11. Persistent Retry Backoff across Session Reloads (P1 Remediation)', () => {
+    it('persists nextRetryAt directly in IndexedDB so backoff survives page reload', async () => {
+      const queue1 = new MutationQueue({
+        ownerScope: scopeA,
+        dbClient,
+        maxRetries: 5,
+        initialBackoffMs: 2000,
+      });
+
+      const mut = createDummyMutation({ mutationId: 'mut-persist-backoff' });
+      await queue1.enqueue(mut);
+
+      const batch1 = await queue1.preparePushBatch();
+      expect(batch1.mutations).toHaveLength(1);
+
+      // Network failure triggers backoff
+      const beforeFail = Date.now();
+      await queue1.handleNetworkFailure(batch1, new Error('Server 500'));
+
+      // Check IndexedDB directly: nextRetryAt must be persisted on the record!
+      const storedItem = await dbClient.getPendingMutation(scopeA, 'mut-persist-backoff');
+      expect(storedItem).not.toBeNull();
+      expect(storedItem?.retryCount).toBe(1);
+      expect(storedItem?.nextRetryAt).toBeGreaterThanOrEqual(beforeFail + 1900);
+
+      // SIMULATE PAGE RELOAD: Instantiate a completely new MutationQueue instance with fresh memory state
+      const reloadedQueue = new MutationQueue({
+        ownerScope: scopeA,
+        dbClient,
+        maxRetries: 5,
+        initialBackoffMs: 2000,
+      });
+
+      // Immediate push preparation at current time must SKIP the mutation because IndexedDB persisted nextRetryAt!
+      const immediateBatch = await reloadedQueue.preparePushBatch({ now: beforeFail });
+      expect(immediateBatch.mutations).toHaveLength(0);
+
+      // Once nextRetryAt elapses, reloadedQueue includes it
+      const afterBackoffBatch = await reloadedQueue.preparePushBatch({ now: beforeFail + 3000 });
+      expect(afterBackoffBatch.mutations).toHaveLength(1);
+      expect(afterBackoffBatch.mutations[0].mutationId).toBe('mut-persist-backoff');
+    });
+  });
+
+  describe('12. Atomic Tombstone Eviction and Pending Removal (P1 Remediation)', () => {
+    it('atomically evicts replica and removes pending mutation in a single IDB transaction', async () => {
+      // Stage bookmark
+      await dbClient.putBookmark({
+        ownerScope: scopeA,
+        storyId: 'story-atomic-tomb',
+        title: 'Atomic Tombstone Test',
+        createdAt: new Date().toISOString(),
+      });
+      // Stage pending mutation
+      await dbClient.enqueuePendingMutation(
+        createDummyMutation({
+          domain: SyncDomain.BOOKMARK,
+          entityId: 'story-atomic-tomb',
+          mutationId: 'mut-atomic-tomb',
+        })
+      );
+
+      // Execute atomic eviction & removal
+      await dbClient.evictReplicaAndRemovePending(
+        scopeA,
+        SyncDomain.BOOKMARK,
+        'story-atomic-tomb',
+        'mut-atomic-tomb'
+      );
+
+      // Both must be wiped
+      expect(await dbClient.getBookmark(scopeA, 'story-atomic-tomb')).toBeNull();
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-atomic-tomb')).toBeNull();
     });
   });
 });

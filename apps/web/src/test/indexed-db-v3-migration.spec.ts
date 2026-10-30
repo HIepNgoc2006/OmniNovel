@@ -833,6 +833,7 @@ describe('Task 7C.3 — Step 2: IndexedDB v3 Migration, Schema & Atomic Primitiv
         baseServerRevision: '50',
         payload: { storyId: 'story-stale' },
         rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
         rejectedAt: '2026-10-28T22:25:00.000Z',
         originalCreatedAt: '2026-10-28T22:00:00.000Z',
       };

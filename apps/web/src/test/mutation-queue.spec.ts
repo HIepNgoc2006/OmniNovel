@@ -2556,5 +2556,154 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
 
       expect(await dbClient.getPendingMutation(scopeA, 'mut-rt35-3')).not.toBeNull();
     });
+
+    it('RT-36: Mixed Partial Batch Failure (CONFLICT_MERGED + DAL error on subsequent mutation) preserves reconciliation requirement without losing delta pull', async () => {
+      let deltaPullCount = 0;
+      const queue = createTestQueue({
+        ownerScope: scopeA,
+        onAuthoritativeDeltaPullRequired: async () => {
+          deltaPullCount++;
+        },
+      });
+
+      const mutA = createDummyMutation({ mutationId: 'mut-rt36-a' });
+      const mutB = createDummyMutation({ mutationId: 'mut-rt36-b' });
+      await queue.enqueue(mutA);
+      await queue.enqueue(mutB);
+
+      const batch = await queue.preparePushBatch();
+      expect(batch.mutations).toHaveLength(2);
+
+      // mutA (CONFLICT_MERGED) succeeds in deletePendingMutation, but mutB (APPLIED) fails with DAL error
+      const origDelete = dbClient.deletePendingMutation.bind(dbClient);
+      vi.spyOn(dbClient, 'deletePendingMutation').mockImplementation(async (scope, id, opts) => {
+        if (id === 'mut-rt36-b') {
+          throw new Error('Injected DAL Disk Error for mutB');
+        }
+        return origDelete(scope, id, opts);
+      });
+
+      // Attempt 1: mutA commits, mutB throws.
+      await expect(
+        queue.processServerBatchResults({
+          batch,
+          results: [
+            { mutationId: 'mut-rt36-a', status: 'CONFLICT_MERGED', assignedRevision: null },
+            { mutationId: 'mut-rt36-b', status: 'APPLIED', assignedRevision: '2' },
+          ],
+        })
+      ).rejects.toThrow('Injected DAL Disk Error for mutB');
+
+      // Invariant: mutA committed (pending deleted), mutB uncommitted
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt36-a')).toBeNull();
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt36-b')).not.toBeNull();
+
+      // Invariant: Reconciliation requirement is preserved in queue!
+      expect(queue.hasPendingReconciliation(batch.batchId)).toBe(true);
+      const lifecycle = queue.getBatchLifecycle(batch.batchId);
+      expect(lifecycle?.reconciliationRequired).toBe(true);
+      expect(lifecycle?.reconciliationSettled).toBe(false);
+      expect(lifecycle?.state).toBe('FAILED');
+      expect(deltaPullCount).toBe(0); // Callback has not succeeded yet
+
+      // Attempt 2: Restore DAL and retry processing the batch
+      vi.restoreAllMocks();
+      const summary = await queue.processServerBatchResults({
+        batch,
+        results: [
+          { mutationId: 'mut-rt36-a', status: 'CONFLICT_MERGED', assignedRevision: null },
+          { mutationId: 'mut-rt36-b', status: 'APPLIED', assignedRevision: '2' },
+        ],
+      });
+
+      // Invariant: mutA was skipped (not replayed), mutB was applied, and delta pull was triggered!
+      expect(summary.appliedCount).toBe(1);
+      expect(deltaPullCount).toBe(1);
+      expect(queue.hasPendingReconciliation(batch.batchId)).toBe(false);
+      expect(queue.getBatchLifecycle(batch.batchId)?.state).toBe('SETTLED');
+      expect(queue.getBatchLifecycle(batch.batchId)?.reconciliationSettled).toBe(true);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt36-b')).toBeNull();
+    });
+
+    it('RT-37: Late handleNetworkFailure() does NOT mark batch SETTLED while reconciliation is pending', async () => {
+      let pullFail = true;
+      const queue = createTestQueue({
+        ownerScope: scopeA,
+        onAuthoritativeDeltaPullRequired: async () => {
+          if (pullFail) {
+            throw new Error('Reconciliation pull failed');
+          }
+        },
+      });
+
+      const mut = createDummyMutation({ mutationId: 'mut-rt37' });
+      await queue.enqueue(mut);
+      const batch = await queue.preparePushBatch();
+
+      // Step 1: mut commits CONFLICT_MERGED, but delta pull fails
+      await expect(
+        queue.processServerBatchResults({
+          batch,
+          results: [{ mutationId: 'mut-rt37', status: 'CONFLICT_MERGED', assignedRevision: null }],
+        })
+      ).rejects.toThrow(AuthoritativePullTriggerError);
+
+      expect(queue.hasPendingReconciliation(batch.batchId)).toBe(true);
+      expect(queue.getBatchLifecycle(batch.batchId)?.state).toBe('FAILED');
+
+      // Step 2: Late handleNetworkFailure runs on the same batch
+      await queue.handleNetworkFailure(batch, new Error('Late network failure'));
+
+      // Invariant: batch MUST NOT transition to SETTLED! It must remain FAILED with reconciliationRequired true!
+      const lifecycleAfterFailure = queue.getBatchLifecycle(batch.batchId);
+      expect(lifecycleAfterFailure?.state).toBe('FAILED');
+      expect(queue.hasPendingReconciliation(batch.batchId)).toBe(true);
+
+      // Step 3: Now retryBatchReconciliation runs with working pull callback
+      pullFail = false;
+      await queue.retryBatchReconciliation(batch);
+
+      // Invariant: Now batch transitions to SETTLED and pending reconciliation is cleared!
+      expect(queue.hasPendingReconciliation(batch.batchId)).toBe(false);
+      expect(queue.getBatchLifecycle(batch.batchId)?.state).toBe('SETTLED');
+      expect(queue.getBatchLifecycle(batch.batchId)?.reconciliationSettled).toBe(true);
+    });
+
+    it('RT-38: retryBatchReconciliation enforces strict preconditions (rejects batch without requirement and rejects missing callback)', async () => {
+      const queue = createTestQueue({ ownerScope: scopeA });
+
+      // Scenario 1: Called on fresh batch with no pending reconciliation
+      const mut1 = createDummyMutation({ mutationId: 'mut-rt38-1' });
+      await queue.enqueue(mut1);
+      const batch1 = await queue.preparePushBatch();
+
+      await expect(queue.retryBatchReconciliation(batch1)).rejects.toThrow(
+        /no pending authoritative reconciliation requirement found/
+      );
+
+      // Scenario 2: Batch has pending reconciliation, but no onAuthoritativeDeltaPullRequired configured
+      const queueWithoutCallback = createTestQueue({ ownerScope: scopeA });
+      const mut2 = createDummyMutation({ mutationId: 'mut-rt38-2' });
+      await queueWithoutCallback.enqueue(mut2);
+      const batch2 = await queueWithoutCallback.preparePushBatch();
+
+      // First run CONFLICT_MERGED on queueWithoutCallback -> rejects because no handler configured!
+      await expect(
+        queueWithoutCallback.processServerBatchResults({
+          batch: batch2,
+          results: [{ mutationId: 'mut-rt38-2', status: 'CONFLICT_MERGED', assignedRevision: null }],
+        })
+      ).rejects.toThrow(AuthoritativePullTriggerError);
+
+      expect(queueWithoutCallback.hasPendingReconciliation(batch2.batchId)).toBe(true);
+
+      // Now retryBatchReconciliation without callback -> must reject and NOT mark settled!
+      await expect(queueWithoutCallback.retryBatchReconciliation(batch2)).rejects.toThrow(
+        /onAuthoritativeDeltaPullRequired callback is not configured/
+      );
+
+      expect(queueWithoutCallback.hasPendingReconciliation(batch2.batchId)).toBe(true);
+      expect(queueWithoutCallback.getBatchLifecycle(batch2.batchId)?.state).toBe('FAILED');
+    });
   });
 });

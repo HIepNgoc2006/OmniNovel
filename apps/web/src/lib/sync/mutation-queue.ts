@@ -279,6 +279,23 @@ export class MutationQueue {
 
   private markBatchSettled(batchId: string): void {
     const record = this.batchLifecycle.get(batchId);
+    const hasUnresolvedReconciliation = Boolean(
+      (record?.reconciliationRequired && !record?.reconciliationSettled) ||
+      this.pendingReconciliationBatches.has(batchId)
+    );
+
+    if (hasUnresolvedReconciliation) {
+      // Settlement is blocked until reconciliation obligation is fulfilled!
+      // Keep state as FAILED to allow reconciliation retry via retryBatchReconciliation or processServerBatchResults
+      if (record) {
+        record.state = 'FAILED';
+        record.error =
+          record.error ||
+          new Error(`Batch "${batchId}" completed mutation processing but has pending authoritative reconciliation.`);
+      }
+      return;
+    }
+
     if (record) {
       record.state = 'SETTLED';
       record.completedAt = Date.now();
@@ -591,6 +608,25 @@ export class MutationQueue {
       );
     }
 
+    // Precondition 1: Verify batch actually has pending reconciliation requirement
+    const record = this.batchLifecycle.get(batch.batchId);
+    const hasPending =
+      this.pendingReconciliationBatches.has(batch.batchId) ||
+      Boolean(record?.reconciliationRequired && !record?.reconciliationSettled);
+    if (!hasPending) {
+      throw new Error(
+        `Cannot retry reconciliation for batch "${batch.batchId}": no pending authoritative reconciliation requirement found.`
+      );
+    }
+
+    // Precondition 2: Verify onAuthoritativeDeltaPullRequired callback is configured
+    if (!this.onAuthoritativeDeltaPullRequired) {
+      throw new AuthoritativePullTriggerError(
+        `Cannot retry reconciliation for scope "${batchOwnerScope}": onAuthoritativeDeltaPullRequired callback is not configured.`,
+        batchOwnerScope
+      );
+    }
+
     const claim = this.tryClaimBatchProcessing(batch, 'RECEIPT');
     if (!claim.success) {
       return;
@@ -598,26 +634,20 @@ export class MutationQueue {
 
     try {
       this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
-      if (!this.onAuthoritativeDeltaPullRequired) {
-        this.pendingReconciliationBatches.delete(batch.batchId);
-        this.markBatchSettled(batch.batchId);
-        return;
-      }
-
       await this.onAuthoritativeDeltaPullRequired(batchOwnerScope);
       this.pendingReconciliationBatches.delete(batch.batchId);
-      const record = this.batchLifecycle.get(batch.batchId);
-      if (record) {
-        record.reconciliationRequired = false;
-        record.reconciliationSettled = true;
+      const activeRecord = this.batchLifecycle.get(batch.batchId);
+      if (activeRecord) {
+        activeRecord.reconciliationRequired = false;
+        activeRecord.reconciliationSettled = true;
       }
       this.markBatchSettled(batch.batchId);
     } catch (err) {
       this.pendingReconciliationBatches.add(batch.batchId);
-      const record = this.batchLifecycle.get(batch.batchId);
-      if (record) {
-        record.reconciliationRequired = true;
-        record.reconciliationSettled = false;
+      const activeRecord = this.batchLifecycle.get(batch.batchId);
+      if (activeRecord) {
+        activeRecord.reconciliationRequired = true;
+        activeRecord.reconciliationSettled = false;
       }
       this.markBatchFailed(batch.batchId, err as Error);
       throw new AuthoritativePullTriggerError(
@@ -841,6 +871,13 @@ export class MutationQueue {
             summary.conflictMergedCount++;
             this.releaseOwnedMutation(batch, mutation.mutationId);
             deltaPullNeeded = true;
+            // Record reconciliation requirement immediately upon successful CONFLICT_MERGED commit
+            this.pendingReconciliationBatches.add(batch.batchId);
+            const record = this.batchLifecycle.get(batch.batchId);
+            if (record) {
+              record.reconciliationRequired = true;
+              record.reconciliationSettled = false;
+            }
             break;
           }
 
@@ -911,7 +948,20 @@ export class MutationQueue {
       }
 
       // P1-04 & Blocker P0: Authoritative Delta Pull Trigger & Recovery Semantics
-      if (deltaPullNeeded && this.onAuthoritativeDeltaPullRequired) {
+      if (deltaPullNeeded) {
+        if (!this.onAuthoritativeDeltaPullRequired) {
+          this.pendingReconciliationBatches.add(batch.batchId);
+          const record = this.batchLifecycle.get(batch.batchId);
+          if (record) {
+            record.reconciliationRequired = true;
+            record.reconciliationSettled = false;
+          }
+          throw new AuthoritativePullTriggerError(
+            `Authoritative delta pull required for scope "${batchOwnerScope}" after CONFLICT_MERGED, but no handler is configured.`,
+            batchOwnerScope
+          );
+        }
+
         let isAuthorityValid = false;
         try {
           this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);

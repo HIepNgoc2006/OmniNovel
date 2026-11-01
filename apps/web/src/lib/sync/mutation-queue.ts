@@ -277,6 +277,15 @@ export class MutationQueue {
     return { success: true };
   }
 
+  private hasInFlightMutationsForBatch(batchId: string): boolean {
+    for (const token of this.inFlightMap.values()) {
+      if (token.batchId === batchId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   private markBatchSettled(batchId: string): void {
     const record = this.batchLifecycle.get(batchId);
     const hasUnresolvedReconciliation = Boolean(
@@ -292,6 +301,17 @@ export class MutationQueue {
         record.error =
           record.error ||
           new Error(`Batch "${batchId}" completed mutation processing but has pending authoritative reconciliation.`);
+      }
+      return;
+    }
+
+    if (this.hasInFlightMutationsForBatch(batchId)) {
+      // Settlement is blocked while batch still owns uncommitted in-flight mutations (P0 edge-case / RT-39)
+      if (record) {
+        record.state = 'FAILED';
+        record.error =
+          record.error ||
+          new Error(`Batch "${batchId}" cannot be settled while owning unfinished in-flight mutations.`);
       }
       return;
     }
@@ -597,6 +617,21 @@ export class MutationQueue {
   }
 
   /**
+   * Checks whether the batch still owns uncommitted in-flight mutations (RT-39).
+   */
+  hasUnfinishedMutations(batch: PreparedPushBatch): boolean {
+    if (!batch || !Array.isArray(batch.mutations)) return false;
+    return batch.mutations.some((m) => this.isBatchOwner(batch, m.mutationId));
+  }
+
+  /**
+   * Verifies if a specific mutation is still owned in-flight by the given batch.
+   */
+  isMutationInFlightForBatch(batch: PreparedPushBatch, mutationId: string): boolean {
+    return this.isBatchOwner(batch, mutationId);
+  }
+
+  /**
    * Explicitly retries authoritative reconciliation for a failed batch
    * without re-processing already committed terminal mutations.
    */
@@ -641,6 +676,21 @@ export class MutationQueue {
         activeRecord.reconciliationRequired = false;
         activeRecord.reconciliationSettled = true;
       }
+
+      // Invariant (RT-39): Do NOT mark batch SETTLED if it still owns unfinished in-flight mutations.
+      // Revert state to FAILED to retain a clean resume/recovery path (via processServerBatchResults or recoverFailedBatch).
+      if (this.hasUnfinishedMutations(batch)) {
+        if (activeRecord) {
+          activeRecord.state = 'FAILED';
+          activeRecord.error =
+            activeRecord.error ||
+            new Error(
+              `Authoritative reconciliation succeeded for batch "${batch.batchId}", but batch still owns unfinished in-flight mutations.`
+            );
+        }
+        return;
+      }
+
       this.markBatchSettled(batch.batchId);
     } catch (err) {
       this.pendingReconciliationBatches.add(batch.batchId);

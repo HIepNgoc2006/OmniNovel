@@ -2705,5 +2705,164 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       expect(queueWithoutCallback.hasPendingReconciliation(batch2.batchId)).toBe(true);
       expect(queueWithoutCallback.getBatchLifecycle(batch2.batchId)?.state).toBe('FAILED');
     });
+
+    it('RT-39: Direct retryBatchReconciliation after mixed partial failure preserves unfinished in-flight mutations, refuses early settlement, and enables resume to final settlement', async () => {
+      let deltaPullCount = 0;
+      const queue = createTestQueue({
+        ownerScope: scopeA,
+        onAuthoritativeDeltaPullRequired: async () => {
+          deltaPullCount++;
+        },
+      });
+
+      const mutA = createDummyMutation({ mutationId: 'mut-rt39-a' });
+      const mutB = createDummyMutation({ mutationId: 'mut-rt39-b' });
+      await queue.enqueue(mutA);
+      await queue.enqueue(mutB);
+
+      const batch = await queue.preparePushBatch();
+      expect(batch.mutations).toHaveLength(2);
+      expect(queue.hasUnfinishedMutations(batch)).toBe(true);
+      expect(queue.isMutationInFlightForBatch(batch, 'mut-rt39-a')).toBe(true);
+      expect(queue.isMutationInFlightForBatch(batch, 'mut-rt39-b')).toBe(true);
+
+      // Step 1: Mixed partial failure.
+      // mutA commits CONFLICT_MERGED.
+      // mutB receives APPLIED but DAL delete throws disk error.
+      const origDelete = dbClient.deletePendingMutation.bind(dbClient);
+      vi.spyOn(dbClient, 'deletePendingMutation').mockImplementation(async (scope, mutationId, options) => {
+        if (mutationId === 'mut-rt39-b') {
+          throw new Error('Injected DAL Disk Error for mutB');
+        }
+        return origDelete(scope, mutationId, options);
+      });
+
+      await expect(
+        queue.processServerBatchResults({
+          batch,
+          results: [
+            { mutationId: 'mut-rt39-a', status: 'CONFLICT_MERGED', assignedRevision: null },
+            { mutationId: 'mut-rt39-b', status: 'APPLIED', assignedRevision: '2' },
+          ],
+        })
+      ).rejects.toThrow('Injected DAL Disk Error for mutB');
+
+      // Assert Step 1 Post-conditions:
+      // mutA committed and deleted from pending DB, mutB still pending
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt39-a')).toBeNull();
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt39-b')).not.toBeNull();
+
+      // mutA released from inFlightMap, mutB STILL OWNED in-flight by batch!
+      expect(queue.isMutationInFlightForBatch(batch, 'mut-rt39-a')).toBe(false);
+      expect(queue.isMutationInFlightForBatch(batch, 'mut-rt39-b')).toBe(true);
+      expect(queue.hasUnfinishedMutations(batch)).toBe(true);
+
+      // Batch is FAILED with pending reconciliation requirement
+      expect(queue.hasPendingReconciliation(batch.batchId)).toBe(true);
+      const lifecycleAfterFailure = queue.getBatchLifecycle(batch.batchId);
+      expect(lifecycleAfterFailure?.state).toBe('FAILED');
+      expect(lifecycleAfterFailure?.reconciliationRequired).toBe(true);
+      expect(lifecycleAfterFailure?.reconciliationSettled).toBe(false);
+      expect(deltaPullCount).toBe(0);
+
+      // Step 2: Direct call to retryBatchReconciliation(batch)
+      // Authoritative delta pull succeeds, clearing reconciliation obligation
+      await queue.retryBatchReconciliation(batch);
+
+      // Invariant (P0 edge-case / RT-39):
+      // 1. Reconciliation requirement is fulfilled and cleared
+      expect(deltaPullCount).toBe(1);
+      expect(queue.hasPendingReconciliation(batch.batchId)).toBe(false);
+      const lifecycleAfterReconciliation = queue.getBatchLifecycle(batch.batchId);
+      expect(lifecycleAfterReconciliation?.reconciliationRequired).toBe(false);
+      expect(lifecycleAfterReconciliation?.reconciliationSettled).toBe(true);
+
+      // 2. CRUCIAL: Batch MUST NOT be marked SETTLED because mutB is still unfinished!
+      expect(lifecycleAfterReconciliation?.state).toBe('FAILED');
+
+      // 3. mutB remains pending in DB and still owned in-flight by this batch
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt39-b')).not.toBeNull();
+      expect(queue.isMutationInFlightForBatch(batch, 'mut-rt39-b')).toBe(true);
+      expect(queue.hasUnfinishedMutations(batch)).toBe(true);
+
+      // Step 3: Resume path via processServerBatchResults(batch) after DAL recovers
+      vi.restoreAllMocks();
+      const resumeSummary = await queue.processServerBatchResults({
+        batch,
+        results: [
+          { mutationId: 'mut-rt39-a', status: 'CONFLICT_MERGED', assignedRevision: null },
+          { mutationId: 'mut-rt39-b', status: 'APPLIED', assignedRevision: '2' },
+        ],
+      });
+
+      // Invariant:
+      // mutA was skipped safely (already released and committed, no duplicate commit).
+      // mutB was successfully processed and committed.
+      // Delta pull was NOT re-triggered because reconciliationSettled is already true.
+      expect(resumeSummary.appliedCount).toBe(1);
+      expect(deltaPullCount).toBe(1);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-rt39-b')).toBeNull();
+
+      // Final settlement: Now that both reconciliation and all mutations are complete, batch is SETTLED!
+      expect(queue.isMutationInFlightForBatch(batch, 'mut-rt39-b')).toBe(false);
+      expect(queue.hasUnfinishedMutations(batch)).toBe(false);
+      expect(queue.hasPendingReconciliation(batch.batchId)).toBe(false);
+      const finalLifecycle = queue.getBatchLifecycle(batch.batchId);
+      expect(finalLifecycle?.state).toBe('SETTLED');
+      expect(finalLifecycle?.reconciliationSettled).toBe(true);
+    });
+
+    it('RT-39b: Direct retryBatchReconciliation after mixed partial failure enables recoverFailedBatch to release uncommitted mutation for fresh preparation', async () => {
+      let deltaPullCount = 0;
+      const queue = createTestQueue({
+        ownerScope: scopeA,
+        onAuthoritativeDeltaPullRequired: async () => {
+          deltaPullCount++;
+        },
+      });
+
+      const mutA = createDummyMutation({ mutationId: 'mut-rt39b-a' });
+      const mutB = createDummyMutation({ mutationId: 'mut-rt39b-b' });
+      await queue.enqueue(mutA);
+      await queue.enqueue(mutB);
+
+      const batch = await queue.preparePushBatch();
+
+      // Mixed partial failure: mutA commits CONFLICT_MERGED, mutB fails DAL delete
+      const origDelete = dbClient.deletePendingMutation.bind(dbClient);
+      vi.spyOn(dbClient, 'deletePendingMutation').mockImplementation(async (scope, mutationId, options) => {
+        if (mutationId === 'mut-rt39b-b') {
+          throw new Error('Injected Disk Error');
+        }
+        return origDelete(scope, mutationId, options);
+      });
+
+      await expect(
+        queue.processServerBatchResults({
+          batch,
+          results: [
+            { mutationId: 'mut-rt39b-a', status: 'CONFLICT_MERGED', assignedRevision: null },
+            { mutationId: 'mut-rt39b-b', status: 'APPLIED', assignedRevision: '2' },
+          ],
+        })
+      ).rejects.toThrow('Injected Disk Error');
+
+      // Direct retry reconciliation succeeds
+      await queue.retryBatchReconciliation(batch);
+      expect(deltaPullCount).toBe(1);
+      expect(queue.getBatchLifecycle(batch.batchId)?.state).toBe('FAILED');
+      expect(queue.isMutationInFlightForBatch(batch, 'mut-rt39b-b')).toBe(true);
+
+      // Instead of resuming old batch, caller chooses recoverFailedBatch(batch)
+      queue.recoverFailedBatch(batch);
+      expect(queue.isMutationInFlightForBatch(batch, 'mut-rt39b-b')).toBe(false);
+      expect(queue.hasUnfinishedMutations(batch)).toBe(false);
+
+      // Now preparePushBatch() can cleanly pick up mutB into a fresh new batch!
+      const newBatch = await queue.preparePushBatch();
+      expect(newBatch.mutations).toHaveLength(1);
+      expect(newBatch.mutations[0].mutationId).toBe('mut-rt39b-b');
+      expect(newBatch.batchId).not.toBe(batch.batchId);
+    });
   });
 });

@@ -1,6 +1,6 @@
 # 📋 Kế Hoạch Triển Khai Task 7C.3 — Web Client Sync Reconciler (`apps/web`)
 
-> **Trạng thái:** `[/] Đang Triển Khai (STEP 4 CLOSED / FROZEN CLEAN LOCAL — READY FOR STEP 5)`  
+> **Trạng thái:** `[/] Đang Triển Khai (PHASE 5.1 CLOSED / FROZEN CLEAN — HOSTED CI VERIFIED — READY FOR STORAGE COEXISTENCE DESIGN GATE)`  
 > **Cơ sở pháp lý / Baseline nghiệm thu:** Task 7C.2 FROZEN CLEAN tại baseline `4e9c4dbfb96a6b7957090d8a306485333014c550` (Hosted CI Run #40701295336).  
 > **Phạm vi:** Trực thuộc **Phase 7C: Unified Multi-Device Sync Engine**. Triển khai bộ đồng bộ Client-Side trên ứng dụng Web Next.js 16 / React 19.
 
@@ -164,7 +164,21 @@ apps/web/src/lib/
 
 ---
 
-## 6. Hồ Sơ Bằng Chứng Nghiệm Thu Step 4a.2 (Evidence Matrix)
+## 6. Hồ Sơ Bằng Chứng Nghiệm Thu Phase 5.1 & Step 4a.2 (Evidence Matrix)
+
+### Phase 5.1 — Backend Contract Remediation: Canonical Delta Payloads, History Delete & Epoch Dual Tombstones
+
+| Claim | Source File | Test / Gate | Commit SHA (Remediation / Head) | Hosted Run | Evidence Type | What This Does NOT Prove | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **C1: History Delete Idempotent Acceptance without Epoch (P0-01)** | `services/api/src/modules/sync/resolvers/history.resolver.ts` | DT-19A (`conflict-resolvers.spec.ts`) | `36a3b9d` / `e1ce7f3` | #41411013225 | Unit Conflict Resolver Matrix (26/26 PASS) | Không chứng minh client tự động cập nhật local epoch nếu không kéo delta | **PASS HOSTED** |
+| **C2: Story-wide History Delete Emits Committed Epoch (P0-01 / P0-03)** | `services/api/src/modules/sync/services/sync.service.ts` | DT-19B (`sync.service.spec.ts`, `sync-hub-concurrency.integration-spec.ts`) | `36a3b9d` / `e1ce7f3` | #41411013225 | Unit & PostgreSQL Integration Test | Không chứng minh phân quyền người dùng (đã được JwtAuthGuard kiểm soát) | **PASS HOSTED** |
+| **C3: Global History Delete UUID Normalization & Dual Tombstones (P0-03)** | `services/api/src/modules/sync/services/sync.service.ts` | DT-20A (`sync.service.spec.ts`, `sync-hub-concurrency.integration-spec.ts`) | `36a3b9d` / `e1ce7f3` | #41411013225 | Unit & Database Tombstone Verification | Không chứng minh client Web IDB v3 có thể parse nếu client chưa hỗ trợ composite key | **PASS HOSTED** |
+| **C4: Canonical History Upsert via Sync Hub (P0-02)** | `services/api/src/modules/sync/services/sync.service.ts` | DT-20B (`sync.service.spec.ts`, `sync-hub-concurrency.integration-spec.ts`) | `36a3b9d` / `e1ce7f3` | #41411013225 | Database RETURNING Max Progress & Unit/Integration Test | Không ngăn client gửi số phần trăm nhỏ hơn (server tự bảo toàn monotonically) | **PASS HOSTED** |
+| **C5: Canonical History Upsert via Stories Service (P0-02)** | `services/api/src/modules/stories/stories.service.ts` | DT-20C (`sync-hub-concurrency.integration-spec.ts`) | `36a3b9d` / `e1ce7f3` | #41411013225 | Full Database End-to-End Reading Flow Spec | Không chứng minh client offline (đây là API ghi trực tiếp khi online) | **PASS HOSTED** |
+| **C6: Full API Regression Preservation** | `services/api` | 50/50 Unit Test Suites (606 tests PASS) + 23/23 E2E Suites (290 tests PASS) | `36a3b9d` / `e1ce7f3` | #41411013225 | Full Backend Suite & TypeScript compilation | Chưa chứng minh Phase 5.2 client reconciler | **PASS HOSTED** |
+| **C7: Hosted CI Verification** | `.github/workflows/ci-cd.yml` | GitHub Actions Pipeline Run #41411013225 | `e1ce7f3` | #41411013225 | Hosted Production Infrastructure | **7/7 jobs SUCCESS (Web, Core API, Mobile, AI Worker, Security Audit, Docker Build & VPS Deploy hoàn tất trong 11m12s)** | **PASS HOSTED** |
+
+---
 
 ### Step 4a.2 — Strict Batch Lifecycle, Reconciliation Recovery & Callback Failure Remediation
 

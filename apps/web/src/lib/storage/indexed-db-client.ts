@@ -6,6 +6,8 @@ import {
   SyncDomain,
   SyncOperation,
   MutationExecutionStatus,
+  SyncChangeItem,
+  SyncChangesResponse,
 } from '@omninovel/shared';
 
 export const DB_NAME = 'omninovel_local_v2';
@@ -161,6 +163,54 @@ export class ReadyStatusTransitionForbiddenError extends Error {
     super(message);
     this.name = 'ReadyStatusTransitionForbiddenError';
   }
+}
+
+export class CheckpointConflictError extends Error {
+  constructor(message: string = 'Optimistic concurrency check failed: checkpoint mismatch.') {
+    super(message);
+    this.name = 'CheckpointConflictError';
+  }
+}
+
+export class InvalidDeltaPayloadError extends Error {
+  constructor(message: string = 'Authoritative delta page payload is invalid or malformed.') {
+    super(message);
+    this.name = 'InvalidDeltaPayloadError';
+  }
+}
+
+export interface ApplyAuthoritativeDeltaPageOptions {
+  ownerScope: string;
+  page: SyncChangesResponse;
+  expectedCheckpoint?: string;
+  checkAdmission?: () => void;
+  _testHookBeforeComplete?: (tx: IDBTransaction) => void;
+}
+
+export interface ApplyAuthoritativeDeltaResult {
+  appliedCount: number;
+  newCheckpoint: string;
+  hasMore: boolean;
+  effectiveEpochs: Record<string, number>;
+}
+
+export function isValidRevisionString(val: unknown): val is string {
+  return typeof val === 'string' && /^\d+$/.test(val);
+}
+
+export function areEpochMapsEqual(
+  a?: Record<string, number>,
+  b?: Record<string, number>,
+): boolean {
+  if (a === b) return true;
+  if (!a || !b) return !a && !b;
+  const keysA = Object.keys(a);
+  const keysB = Object.keys(b);
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (a[key] !== b[key]) return false;
+  }
+  return true;
 }
 
 export class InvalidGuestScopeException extends Error {
@@ -1294,8 +1344,8 @@ export class IndexedDbClient {
               );
             }
 
-            // Invariant 2: Checkpoint & Epoch Immutability on READY scopes via putSyncMeta:
-            // If a scope is already READY, lastSyncedServerRevision and effectiveHistoryEpochs
+            // Invariant 2: Checkpoint, Epoch & MinActiveRevision Immutability on READY scopes via putSyncMeta:
+            // If a scope is already READY, lastSyncedServerRevision, minActiveRevision, and effectiveHistoryEpochs
             // cannot be mutated via benign putSyncMeta(). Mutating checkpoints or epochs on a READY
             // scope belongs strictly to atomic delta ingestion (applyAuthoritativeDeltaPage in Step 5.2b).
             if (existing?.authoritativeBaselineStatus === 'READY') {
@@ -1308,8 +1358,16 @@ export class IndexedDbClient {
                 );
               }
               if (
+                meta.minActiveRevision !== undefined &&
+                meta.minActiveRevision !== existing.minActiveRevision
+              ) {
+                throw new ReadyStatusTransitionForbiddenError(
+                  `CHECKPOINT_MUTATION_FORBIDDEN: Mutating minActiveRevision on a READY scope via putSyncMeta is forbidden (attempted to change from "${existing.minActiveRevision}" to "${meta.minActiveRevision}"). Synchronization metadata updates require atomic delta ingestion.`
+                );
+              }
+              if (
                 meta.effectiveHistoryEpochs !== undefined &&
-                JSON.stringify(meta.effectiveHistoryEpochs) !== JSON.stringify(existing.effectiveHistoryEpochs)
+                !areEpochMapsEqual(meta.effectiveHistoryEpochs, existing.effectiveHistoryEpochs)
               ) {
                 throw new ReadyStatusTransitionForbiddenError(
                   'CHECKPOINT_MUTATION_FORBIDDEN: Mutating effectiveHistoryEpochs on a READY scope via putSyncMeta is forbidden. Epoch updates require atomic delta ingestion.'
@@ -1471,6 +1529,402 @@ export class IndexedDbClient {
         tx.onerror = () => reject(tx.error);
       } catch (err) {
         reject(err);
+      }
+    });
+  }
+
+  /**
+   * Atomic Primitive: Ingests an authoritative delta changes page into local storage.
+   * Uses a SINGLE IDB readwrite transaction over [STORE_AUTHORITATIVE_REPLICAS, STORE_SYNC_META].
+   * Enforces:
+   * 1. Checkpoint OCC guard (expectedCheckpoint validation against current lastSyncedServerRevision).
+   * 2. Decimal BigInt validation & monotonic revision progression.
+   * 3. Story-wide and Global HISTORY DELETE cascading to shadow records.
+   * 4. Epoch map progression in the same transaction.
+   * 5. Fail-closed on malformed revisions, missing epochs, or unsupported operations.
+   * NOTE: Step 5.2b DOES NOT grant READY baseline status.
+   */
+  async applyAuthoritativeDeltaPage(
+    options: ApplyAuthoritativeDeltaPageOptions
+  ): Promise<ApplyAuthoritativeDeltaResult> {
+    const { ownerScope, page, expectedCheckpoint, checkAdmission, _testHookBeforeComplete } = options;
+    assertValidScope(ownerScope);
+
+    // 1. Pre-transaction validation of page structure
+    if (!page || typeof page !== 'object' || !Array.isArray(page.changes)) {
+      throw new InvalidDeltaPayloadError('Invalid delta page: changes array is required.');
+    }
+
+    if (page.currentServerRevision !== undefined && !isValidRevisionString(page.currentServerRevision)) {
+      throw new InvalidDeltaPayloadError(
+        `Invalid currentServerRevision: "${page.currentServerRevision}" must be a decimal string.`
+      );
+    }
+
+    if (page.minActiveRevision !== undefined && !isValidRevisionString(page.minActiveRevision)) {
+      throw new InvalidDeltaPayloadError(
+        `Invalid minActiveRevision: "${page.minActiveRevision}" must be a decimal string.`
+      );
+    }
+
+    if (page.nextRevision !== null && page.nextRevision !== undefined && !isValidRevisionString(page.nextRevision)) {
+      throw new InvalidDeltaPayloadError(
+        `Invalid nextRevision: "${page.nextRevision}" must be a decimal string.`
+      );
+    }
+
+    // Validate each change item
+    let prevRev: bigint | null = null;
+    for (let i = 0; i < page.changes.length; i++) {
+      const change = page.changes[i];
+      if (!change || typeof change !== 'object') {
+        throw new InvalidDeltaPayloadError(`Delta change at index ${i} is invalid.`);
+      }
+
+      if (!isValidRevisionString(change.revision)) {
+        throw new InvalidDeltaPayloadError(
+          `Delta change at index ${i} has invalid revision: "${change.revision}". Must be a decimal string.`
+        );
+      }
+
+      const revBigInt = BigInt(change.revision);
+      if (prevRev !== null && revBigInt < prevRev) {
+        throw new InvalidDeltaPayloadError(
+          `Delta changes at index ${i} has regressive revision: "${change.revision}" < "${prevRev.toString()}". Changes must be in non-decreasing revision order.`
+        );
+      }
+      prevRev = revBigInt;
+
+      // Validate domain
+      if (
+        change.domain !== SyncDomain.BOOKMARK &&
+        change.domain !== SyncDomain.PROGRESS &&
+        change.domain !== SyncDomain.HISTORY &&
+        change.domain !== SyncDomain.PREFERENCE &&
+        change.domain !== SyncDomain.FOLLOW
+      ) {
+        throw new InvalidDeltaPayloadError(
+          `Delta change at index ${i} has unsupported domain: "${change.domain}".`
+        );
+      }
+
+      // Validate operation
+      if (
+        change.operation !== SyncOperation.UPSERT &&
+        change.operation !== SyncOperation.DELETE
+      ) {
+        throw new InvalidDeltaPayloadError(
+          `Delta change at index ${i} has unsupported operation: "${change.operation}".`
+        );
+      }
+
+      if (!change.entityId || typeof change.entityId !== 'string' || !change.entityId.trim()) {
+        throw new InvalidDeltaPayloadError(
+          `Delta change at index ${i} has missing or empty entityId.`
+        );
+      }
+
+      // Invariant: HISTORY DELETE must contain a valid positive integer epoch in payload
+      if (change.domain === SyncDomain.HISTORY && change.operation === SyncOperation.DELETE) {
+        const epoch = change.payload?.epoch;
+        if (typeof epoch !== 'number' || !Number.isInteger(epoch) || epoch <= 0) {
+          throw new InvalidDeltaPayloadError(
+            `MISSING_HISTORY_DELETE_EPOCH: HISTORY DELETE at index ${i} must contain a valid positive integer epoch in payload, got: ${JSON.stringify(epoch)}`
+          );
+        }
+      }
+    }
+
+    // Determine target checkpoint
+    let targetCheckpoint: string;
+    if (page.nextRevision !== null && page.nextRevision !== undefined) {
+      targetCheckpoint = page.nextRevision;
+    } else if (page.changes.length > 0) {
+      targetCheckpoint = page.changes[page.changes.length - 1].revision;
+    } else if (page.currentServerRevision !== undefined) {
+      targetCheckpoint = page.currentServerRevision;
+    } else {
+      throw new InvalidDeltaPayloadError('Cannot determine target checkpoint: missing nextRevision, currentServerRevision, and changes.');
+    }
+
+    // 2. Pre-transaction admission check
+    if (checkAdmission) {
+      checkAdmission();
+    }
+
+    const db = await this.getDatabase();
+
+    // Re-verify admission after async DB acquisition
+    if (checkAdmission) {
+      checkAdmission();
+    }
+
+    return new Promise<ApplyAuthoritativeDeltaResult>((resolve, reject) => {
+      let isSettled = false;
+      const fail = (err: any) => {
+        if (!isSettled) {
+          isSettled = true;
+          try {
+            tx.abort();
+          } catch (_) {}
+          reject(err);
+        }
+      };
+
+      let tx: IDBTransaction;
+      try {
+        tx = db.transaction([STORE_AUTHORITATIVE_REPLICAS, STORE_SYNC_META], 'readwrite');
+      } catch (err) {
+        reject(err);
+        return;
+      }
+
+      tx.onerror = () => fail(tx.error || new Error('Transaction error in applyAuthoritativeDeltaPage.'));
+      tx.onabort = () => fail(tx.error || new Error('Transaction aborted in applyAuthoritativeDeltaPage.'));
+
+      let result: ApplyAuthoritativeDeltaResult | null = null;
+      tx.oncomplete = () => {
+        if (!isSettled && result) {
+          isSettled = true;
+          resolve(result);
+        }
+      };
+
+      try {
+        const shadowStore = tx.objectStore(STORE_AUTHORITATIVE_REPLICAS);
+        const metaStore = tx.objectStore(STORE_SYNC_META);
+
+        const metaReq = metaStore.get(ownerScope);
+        metaReq.onerror = () => fail(metaReq.error || new Error('Failed to load sync_meta in applyAuthoritativeDeltaPage.'));
+        metaReq.onsuccess = () => {
+          try {
+            const existingMeta = metaReq.result as LocalSyncMeta | undefined;
+            const currentCheckpoint = existingMeta?.lastSyncedServerRevision ?? '0';
+
+            // 3. Checkpoint OCC Guard:
+            if (expectedCheckpoint !== undefined && expectedCheckpoint !== currentCheckpoint) {
+              fail(
+                new CheckpointConflictError(
+                  `OCC_CHECKPOINT_MISMATCH: Expected checkpoint "${expectedCheckpoint}", but current checkpoint is "${currentCheckpoint}".`
+                )
+              );
+              return;
+            }
+
+            // 4. Monotonic Advance Guard: targetCheckpoint must be >= currentCheckpoint
+            if (BigInt(targetCheckpoint) < BigInt(currentCheckpoint)) {
+              fail(
+                new InvalidDeltaPayloadError(
+                  `REGRESSIVE_CHECKPOINT: Target checkpoint "${targetCheckpoint}" is less than current checkpoint "${currentCheckpoint}".`
+                )
+              );
+              return;
+            }
+
+            const effectiveEpochs: Record<string, number> = {
+              ...(existingMeta?.effectiveHistoryEpochs || {}),
+            };
+
+            // 5. Ingest all changes
+            for (let i = 0; i < page.changes.length; i++) {
+              const change = page.changes[i];
+              const domain = change.domain;
+              const op = change.operation;
+              const payload = (change.payload || {}) as Record<string, any>;
+
+              if (domain === SyncDomain.BOOKMARK) {
+                const entityKey = String(payload.storyId || change.entityId);
+                if (op === SyncOperation.UPSERT) {
+                  const record: AuthoritativeShadowRecord = {
+                    ownerScope,
+                    domain: SyncDomain.BOOKMARK,
+                    entityKey,
+                    serverRevision: change.revision,
+                    epoch: 0,
+                    payload,
+                    isDeleted: false,
+                    updatedAt: Date.now(),
+                  };
+                  shadowStore.put(record);
+                } else {
+                  shadowStore.delete([ownerScope, SyncDomain.BOOKMARK, entityKey]);
+                }
+              } else if (domain === SyncDomain.PROGRESS) {
+                const entityKey = String(payload.storyId || change.entityId);
+                if (op === SyncOperation.UPSERT) {
+                  const epoch = typeof payload.observedHistoryEpoch === 'number'
+                    ? payload.observedHistoryEpoch
+                    : (typeof payload.epoch === 'number' ? payload.epoch : 0);
+                  const record: AuthoritativeShadowRecord = {
+                    ownerScope,
+                    domain: SyncDomain.PROGRESS,
+                    entityKey,
+                    serverRevision: change.revision,
+                    epoch,
+                    payload,
+                    isDeleted: false,
+                    updatedAt: Date.now(),
+                  };
+                  shadowStore.put(record);
+                } else {
+                  shadowStore.delete([ownerScope, SyncDomain.PROGRESS, entityKey]);
+                }
+              } else if (domain === SyncDomain.PREFERENCE) {
+                const entityKey = String(payload.key || change.entityId);
+                if (op === SyncOperation.UPSERT) {
+                  const record: AuthoritativeShadowRecord = {
+                    ownerScope,
+                    domain: SyncDomain.PREFERENCE,
+                    entityKey,
+                    serverRevision: change.revision,
+                    epoch: 0,
+                    payload,
+                    isDeleted: false,
+                    updatedAt: Date.now(),
+                  };
+                  shadowStore.put(record);
+                } else {
+                  shadowStore.delete([ownerScope, SyncDomain.PREFERENCE, entityKey]);
+                }
+              } else if (domain === SyncDomain.HISTORY) {
+                if (op === SyncOperation.UPSERT) {
+                  const storyId = String(
+                    payload.storyId || (change.entityId.includes(':') ? change.entityId.split(':')[0] : change.entityId)
+                  );
+                  const chapterId = String(
+                    payload.chapterId || (change.entityId.includes(':') ? change.entityId.split(':')[1] : '')
+                  );
+                  const entityKey = `${storyId}:${chapterId}`;
+                  const epoch = typeof payload.observedHistoryEpoch === 'number'
+                    ? payload.observedHistoryEpoch
+                    : (typeof payload.epoch === 'number' ? payload.epoch : 0);
+                  const record: AuthoritativeShadowRecord = {
+                    ownerScope,
+                    domain: SyncDomain.HISTORY,
+                    entityKey,
+                    serverRevision: change.revision,
+                    epoch,
+                    payload,
+                    isDeleted: false,
+                    updatedAt: Date.now(),
+                  };
+                  shadowStore.put(record);
+                } else if (op === SyncOperation.DELETE) {
+                  const isGlobal =
+                    change.entityId === '00000000-0000-0000-0000-000000000000' ||
+                    change.entityId === 'all';
+                  const newEpoch = payload.epoch as number;
+
+                  if (isGlobal) {
+                    // Global HISTORY DELETE:
+                    effectiveEpochs['00000000-0000-0000-0000-000000000000'] = newEpoch;
+
+                    // 1. Cascade delete ALL history shadow records for scope
+                    const hRange = IDBKeyRange.bound([ownerScope, SyncDomain.HISTORY, ''], [ownerScope, SyncDomain.HISTORY, '\uffff']);
+                    const hReq = shadowStore.openCursor(hRange);
+                    hReq.onsuccess = () => {
+                      const c = hReq.result;
+                      if (c) {
+                        c.delete();
+                        c.continue();
+                      }
+                    };
+
+                    // 2. Cascade delete ALL progress shadow records for scope
+                    const pRange = IDBKeyRange.bound([ownerScope, SyncDomain.PROGRESS, ''], [ownerScope, SyncDomain.PROGRESS, '\uffff']);
+                    const pReq = shadowStore.openCursor(pRange);
+                    pReq.onsuccess = () => {
+                      const c = pReq.result;
+                      if (c) {
+                        c.delete();
+                        c.continue();
+                      }
+                    };
+                  } else {
+                    // Story-wide HISTORY DELETE:
+                    const storyId = String(payload.storyId || change.entityId);
+                    effectiveEpochs[storyId] = newEpoch;
+
+                    // 1. Cascade delete all chapter history shadow records for this story
+                    const sRange = IDBKeyRange.bound(
+                      [ownerScope, SyncDomain.HISTORY, `${storyId}:`],
+                      [ownerScope, SyncDomain.HISTORY, `${storyId}:\uffff`]
+                    );
+                    const sReq = shadowStore.openCursor(sRange);
+                    sReq.onsuccess = () => {
+                      const c = sReq.result;
+                      if (c) {
+                        const item = c.value as AuthoritativeShadowRecord;
+                        if (
+                          item.entityKey === storyId ||
+                          item.entityKey.startsWith(`${storyId}:`) ||
+                          item.payload?.storyId === storyId
+                        ) {
+                          c.delete();
+                        }
+                        c.continue();
+                      }
+                    };
+
+                    // Delete possible direct storyId history item
+                    shadowStore.delete([ownerScope, SyncDomain.HISTORY, storyId]);
+
+                    // 2. Cascade delete progress shadow record for this story
+                    shadowStore.delete([ownerScope, SyncDomain.PROGRESS, storyId]);
+                  }
+                }
+              } else {
+                // Other domains (e.g. FOLLOW)
+                const entityKey = change.entityId;
+                if (op === SyncOperation.UPSERT) {
+                  const record: AuthoritativeShadowRecord = {
+                    ownerScope,
+                    domain,
+                    entityKey,
+                    serverRevision: change.revision,
+                    epoch: 0,
+                    payload,
+                    isDeleted: false,
+                    updatedAt: Date.now(),
+                  };
+                  shadowStore.put(record);
+                } else {
+                  shadowStore.delete([ownerScope, domain, entityKey]);
+                }
+              }
+            }
+
+            // 6. Persist updated sync_meta atomically in the same transaction
+            const updatedMeta: LocalSyncMeta = {
+              ownerScope,
+              lastSyncedServerRevision: targetCheckpoint,
+              minActiveRevision: page.minActiveRevision || existingMeta?.minActiveRevision || '0',
+              lastSyncTimestamp: new Date().toISOString(),
+              effectiveHistoryEpochs: effectiveEpochs,
+              syncState: 'IDLE',
+              // INVARIANT: Step 5.2b DOES NOT grant READY baseline status!
+              authoritativeBaselineStatus: existingMeta?.authoritativeBaselineStatus || 'UNINITIALIZED',
+              lastErrorMessage: null,
+            };
+            metaStore.put(updatedMeta);
+
+            result = {
+              appliedCount: page.changes.length,
+              newCheckpoint: targetCheckpoint,
+              hasMore: Boolean(page.hasMore),
+              effectiveEpochs,
+            };
+
+            // Test hook for simulating error/abort before commit
+            if (_testHookBeforeComplete) {
+              _testHookBeforeComplete(tx);
+            }
+          } catch (err) {
+            fail(err);
+          }
+        };
+      } catch (err) {
+        fail(err);
       }
     });
   }

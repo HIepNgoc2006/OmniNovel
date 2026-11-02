@@ -191,6 +191,33 @@ Tạo file kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-v4-migrati
 
 ---
 
-## 9. Kết Luận
+## 9. Đặc Tả & Ma Trận Kiểm Thử Bước 5.2b (Authoritative Shadow DAL & OCC Delta Ingestion)
 
-Tài liệu **Storage Coexistence Revision 2.2** đã chuẩn hóa toàn diện 5 vấn đề cốt lõi. Bước **5.2a (IndexedDB v4 Migration & Baseline Lifecycle Remediation)** đã hoàn tất triển khai và vượt qua 100% các bài kiểm thử nghiêm ngặt (20/20 tests PASS, 55/55 test files web PASS, Next.js 16 build SUCCESS). Hệ thống sẵn sàng bước vào thẩm định nghiệm thu Step 5.2a trước khi triển khai Step 5.2b.
+File kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-authoritative-delta.spec.ts`:
+
+| Mã Test | Tên Kịch Bản Kiểm Thử | Yêu Cầu Xác Minh | Kết Quả |
+| :--- | :--- | :--- | :--- |
+| **ST-01** | Atomic Delta Page Ingestion & Metadata | Ghi nhận delta page gồm BOOKMARK, PROGRESS, PREFERENCE và cập nhật sync_meta (checkpoint, minActiveRevision, timestamp) trong cùng 1 IDB transaction readwrite. | **PASS** (11ms) |
+| **ST-05A** | Monotonic Decimal BigInt Ordering | Ingest các delta items có revision tăng dần hợp lệ (ví dụ: '101', '102'). | **PASS** (2ms) |
+| **ST-05B** | Regressive Revision Rejection | Từ chối delta page nếu revisions trong trang giật lùi (ví dụ: '105' rồi đến '104') với `InvalidDeltaPayloadError`. | **PASS** (2ms) |
+| **ST-08A** | Checkpoint OCC Match | Áp dụng thành công khi `expectedCheckpoint === currentCheckpoint`. | **PASS** (2ms) |
+| **ST-08B** | Stale Checkpoint Conflict Rejection | Từ chối delta page với `CheckpointConflictError` khi expectedCheckpoint khác currentCheckpoint trong storage. | **PASS** (2ms) |
+| **ST-08C** | Regressive Target Checkpoint Rejection | Từ chối delta page với `InvalidDeltaPayloadError` nếu targetCheckpoint < currentCheckpoint. | **PASS** (1ms) |
+| **ST-09A** | Non-Numeric Revision Rejection | Từ chối payload có revision là chuỗi ký tự không phải số ('abc') với `InvalidDeltaPayloadError`. | **PASS** (1ms) |
+| **ST-09B** | Negative Revision Rejection | Từ chối payload có revision số âm ('-1') với `InvalidDeltaPayloadError`. | **PASS** (1ms) |
+| **ST-09C** | Floating-Point Revision Rejection | Từ chối payload có revision số thập phân ('10.5') với `InvalidDeltaPayloadError`. | **PASS** (2ms) |
+| **ST-11A** | Story-Wide HISTORY DELETE Cascading Eviction | Khi nhận HISTORY DELETE cho story-1 kèm epoch 2: xóa sạch mọi chapter history shadow của story-1, xóa story progress shadow của story-1, giữ nguyên story-2; cập nhật `effectiveHistoryEpochs['story-1'] = 2`. | **PASS** (4ms) |
+| **ST-11B** | Global HISTORY DELETE Cascading Eviction | Khi nhận HISTORY DELETE toàn cục (sentinel `00000000-0000-0000-0000-000000000000` hoặc alias `all`) kèm epoch 5: xóa sạch toàn bộ chapter history shadows và progress shadows của scope; cập nhật `effectiveHistoryEpochs[sentinel] = 5`. | **PASS** (3ms) |
+| **ST-11C** | HISTORY DELETE Missing Epoch Rejection | Từ chối delta item HISTORY DELETE nếu thiếu trường epoch số nguyên dương với `InvalidDeltaPayloadError`. | **PASS** (1ms) |
+| **ST-14A** | Transaction Rollback on Failure | Khi transaction gặp lỗi cố ý trước khi commit, toàn bộ thay đổi shadow và sync_meta bị rollback 100%, checkpoint giữ nguyên. | **PASS** (2ms) |
+| **ST-14B** | Authority Admission Boundary Guard | Synchronous admission guard kiểm tra sau `await getDatabase()`: nếu caller bị thu hồi thẩm quyền, abort ngay lập tức trước khi mở transaction. | **PASS** (1ms) |
+| **ST-10H-Ext** | putSyncMeta Protection on READY Scope | Kiểm tra `putSyncMeta` khóa bất biến `minActiveRevision`, checkpoint và `effectiveHistoryEpochs` trên READY scope; so sánh epoch map không phụ thuộc thứ tự key qua `areEpochMapsEqual`. | **PASS** (2ms) |
+| **ST-10-Pres** | Baseline UNINITIALIZED Preservation | Ingestion delta page cập nhật checkpoint nhưng tuyệt đối KHÔNG cấp trạng thái READY (giữ nguyên UNINITIALIZED / BOOTSTRAPPING). | **PASS** (2ms) |
+
+---
+
+## 10. Kết Luận
+
+Tài liệu **Storage Coexistence Revision 2.2** đã được hiện thực hóa qua hai giai đoạn:
+1. **Bước 5.2a (IndexedDB v4 Migration & Baseline Lifecycle Remediation):** Nghiệm thu chính thức tại commit `a1c6f4e` với 20/20 regression tests PASS và Hosted CI Run #41485048616 7/7 jobs PASS (`FROZEN CLEAN`).
+2. **Bước 5.2b (Authoritative Shadow DAL & OCC Delta Ingestion):** Triển khai hoàn tất tại `apps/web/src/lib/storage/indexed-db-client.ts`, đạt 16/16 regression tests PASS (`indexed-db-authoritative-delta.spec.ts`), 56/56 suites (802/802 tests) toàn web PASS, TypeScript 0 lỗi, Next.js 16 build SUCCESS. Không can thiệp bất kỳ dòng code nào của Step 4 (`mutation-queue.ts`). Sẵn sàng cho Gate Review.

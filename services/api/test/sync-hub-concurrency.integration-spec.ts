@@ -1135,7 +1135,7 @@ describe('Task 7C.2a: Core Sync Hub Integrity & Concurrency Remediation (Integra
       expect(payload.progressPercentage).toBe(80);
     });
 
-    it('DT-19B & DT-20A (Integration): global HISTORY DELETE should bump epoch, create dual tombstones, and emit UUID sentinel', async () => {
+    it('DT-20A (Integration): global HISTORY DELETE should bump epoch, create dual tombstones, and emit UUID sentinel', async () => {
       const userId = await createTestUser();
       const story = await createTestStory(userId);
       const clientId = uuidv4();
@@ -1212,6 +1212,244 @@ describe('Task 7C.2a: Core Sync Hub Integrity & Concurrency Remediation (Integra
         '00000000-0000-0000-0000-000000000000',
         'all',
       ]);
+    });
+
+    it('DT-19B (Integration): independent story-wide HISTORY DELETE should bump epoch, delete only targeted story reading states, and record story tombstone', async () => {
+      const userId = await createTestUser();
+      const storyA = await createTestStory(userId);
+      const storyB = await createTestStory(userId);
+      const clientId = uuidv4();
+
+      // Seed progress and read states for BOTH storyA and storyB
+      await dataSource.query(
+        `INSERT INTO reading_progress (user_id, story_id, chapter_id, reading_mode, progress_percentage, scroll_position, page_index, updated_at)
+         VALUES ($1, $2, $3, 'PAGED', 60, 0, 6, NOW()),
+                ($1, $4, $5, 'PAGED', 40, 0, 4, NOW())`,
+        [userId, storyA.storyId, storyA.chapterId, storyB.storyId, storyB.chapterId],
+      );
+      await dataSource.query(
+        `INSERT INTO chapter_read_states (user_id, chapter_id, max_progress_percentage, last_read_at)
+         VALUES ($1, $2, 60, NOW()),
+                ($1, $3, 40, NOW())`,
+        [userId, storyA.chapterId, storyB.chapterId],
+      );
+
+      // Push story-wide HISTORY DELETE targeting storyA only
+      const res = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.HISTORY,
+            entityId: storyA.storyId,
+            operation: SyncOperation.DELETE,
+            baseServerRevision: '0',
+            payload: {},
+          },
+        ],
+      });
+
+      expect(res.results[0].status).toBe('APPLIED');
+
+      // 1. Verify reading_progress: storyA deleted, storyB intact
+      const progressA = await dataSource.query(
+        `SELECT * FROM reading_progress WHERE user_id = $1 AND story_id = $2`,
+        [userId, storyA.storyId],
+      );
+      expect(progressA).toHaveLength(0);
+
+      const progressB = await dataSource.query(
+        `SELECT * FROM reading_progress WHERE user_id = $1 AND story_id = $2`,
+        [userId, storyB.storyId],
+      );
+      expect(progressB).toHaveLength(1);
+      expect(Number(progressB[0].progress_percentage)).toBe(40);
+
+      // 2. Verify chapter_read_states: storyA deleted, storyB intact
+      const statesA = await dataSource.query(
+        `SELECT * FROM chapter_read_states WHERE user_id = $1 AND chapter_id = $2`,
+        [userId, storyA.chapterId],
+      );
+      expect(statesA).toHaveLength(0);
+
+      const statesB = await dataSource.query(
+        `SELECT * FROM chapter_read_states WHERE user_id = $1 AND chapter_id = $2`,
+        [userId, storyB.chapterId],
+      );
+      expect(statesB).toHaveLength(1);
+      expect(Number(statesB[0].max_progress_percentage)).toBe(40);
+
+      // 3. Verify reading_history_epoch_counters bumped
+      const counter = await dataSource.query(
+        `SELECT epoch FROM reading_history_epoch_counters WHERE user_id = $1`,
+        [userId],
+      );
+      expect(counter).toHaveLength(1);
+      expect(counter[0].epoch).toBe(1);
+
+      // 4. Verify reading_history_tombstones recorded specifically for storyA
+      const storyTombstone = await dataSource.query(
+        `SELECT story_id, epoch FROM reading_history_tombstones WHERE user_id = $1`,
+        [userId],
+      );
+      expect(storyTombstone).toHaveLength(1);
+      expect(storyTombstone[0].story_id).toBe(storyA.storyId);
+      expect(storyTombstone[0].epoch).toBe(1);
+
+      // 5. Verify sync_change_log entityId is storyA.storyId (NOT UUID sentinel)
+      const logs = await dataSource.query(
+        `SELECT entity_id, payload FROM sync_change_log WHERE user_id = $1 AND domain = 'HISTORY'`,
+        [userId],
+      );
+      expect(logs).toHaveLength(1);
+      expect(logs[0].entity_id).toBe(storyA.storyId);
+      const payload =
+        typeof logs[0].payload === 'string'
+          ? JSON.parse(logs[0].payload)
+          : logs[0].payload;
+      expect(payload.storyId).toBe(storyA.storyId);
+      expect(payload.epoch).toBe(1);
+
+      // 6. Verify sync_tombstones recorded specifically for storyA.storyId
+      const tombstones = await dataSource.query(
+        `SELECT entity_id FROM sync_tombstones WHERE user_id = $1 AND domain = 'HISTORY'`,
+        [userId],
+      );
+      expect(tombstones).toHaveLength(1);
+      expect(tombstones[0].entity_id).toBe(storyA.storyId);
+    });
+
+    it('DT-19C (Integration): idempotent retry of HISTORY DELETE returns durable receipt without corrupting state', async () => {
+      const userId = await createTestUser();
+      const story = await createTestStory(userId);
+      const clientId = uuidv4();
+      const mutationId = uuidv4();
+
+      const mutation = {
+        clientId,
+        mutationId,
+        domain: SyncDomain.HISTORY,
+        entityId: story.storyId,
+        operation: SyncOperation.DELETE,
+        baseServerRevision: '0',
+        payload: {},
+      };
+
+      // First execution
+      const res1 = await syncService.pushMutations(userId, { mutations: [mutation] });
+      expect(res1.results[0].status).toBe('APPLIED');
+      const firstRevision = res1.results[0].assignedRevision;
+
+      // Second execution with same mutationId
+      const res2 = await syncService.pushMutations(userId, { mutations: [mutation] });
+      expect(res2.results[0].status).toBe('DEDUPLICATED');
+      expect(res2.results[0].assignedRevision).toBe(firstRevision);
+
+      // Verify epoch counters did not double bump
+      const counter = await dataSource.query(
+        `SELECT epoch FROM reading_history_epoch_counters WHERE user_id = $1`,
+        [userId],
+      );
+      expect(counter[0].epoch).toBe(1);
+
+      // Verify only one log entry in sync_change_log
+      const logs = await dataSource.query(
+        `SELECT id FROM sync_change_log WHERE user_id = $1 AND domain = 'HISTORY'`,
+        [userId],
+      );
+      expect(logs).toHaveLength(1);
+    });
+
+    it('DT-20D (Integration): HISTORY UPSERT after history clear rejects stale epoch and accepts matching new epoch', async () => {
+      const userId = await createTestUser();
+      const story = await createTestStory(userId);
+      const clientId = uuidv4();
+
+      // 1. Delete history for story to bump epoch to 1
+      const delRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.HISTORY,
+            entityId: story.storyId,
+            operation: SyncOperation.DELETE,
+            baseServerRevision: '0',
+            payload: {},
+          },
+        ],
+      });
+      expect(delRes.results[0].status).toBe('APPLIED');
+
+      // 2. Client attempts HISTORY UPSERT with stale observedHistoryEpoch: 0
+      const staleRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.HISTORY,
+            entityId: story.chapterId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '0',
+            payload: {
+              storyId: story.storyId,
+              chapterId: story.chapterId,
+              progressPercentage: 50,
+              observedHistoryEpoch: 0, // Stale! Server epoch is 1
+            },
+          },
+        ],
+      });
+      expect(staleRes.results[0].status).toBe('REJECTED_TOMBSTONE');
+      expect((staleRes.results[0] as any).reason).toBe('STALE_HISTORY_EPOCH');
+
+      // Verify chapter_read_states is NOT created
+      const statesStale = await dataSource.query(
+        `SELECT * FROM chapter_read_states WHERE user_id = $1 AND chapter_id = $2`,
+        [userId, story.chapterId],
+      );
+      expect(statesStale).toHaveLength(0);
+
+      // 3. Client attempts HISTORY UPSERT with matching observedHistoryEpoch: 1
+      const freshRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.HISTORY,
+            entityId: story.chapterId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '1',
+            payload: {
+              storyId: story.storyId,
+              chapterId: story.chapterId,
+              progressPercentage: 75,
+              observedHistoryEpoch: 1, // Matches server epoch 1!
+            },
+          },
+        ],
+      });
+      expect(freshRes.results[0].status).toBe('APPLIED');
+
+      // Verify chapter_read_states is created with canonical max_progress_percentage: 75
+      const statesFresh = await dataSource.query(
+        `SELECT max_progress_percentage FROM chapter_read_states WHERE user_id = $1 AND chapter_id = $2`,
+        [userId, story.chapterId],
+      );
+      expect(statesFresh).toHaveLength(1);
+      expect(Number(statesFresh[0].max_progress_percentage)).toBe(75);
+
+      // Verify sync_change_log recorded canonical 75%
+      const latestLog = await dataSource.query(
+        `SELECT payload FROM sync_change_log WHERE user_id = $1 AND domain = 'HISTORY' AND operation = 'UPSERT'`,
+        [userId],
+      );
+      expect(latestLog).toHaveLength(1);
+      const payload =
+        typeof latestLog[0].payload === 'string'
+          ? JSON.parse(latestLog[0].payload)
+          : latestLog[0].payload;
+      expect(payload.progressPercentage).toBe(75);
     });
   });
 });

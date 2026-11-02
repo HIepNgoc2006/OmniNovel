@@ -1,6 +1,6 @@
 # 📋 Kế Hoạch Triển Khai Task 7C.3 — Web Client Sync Reconciler (`apps/web`)
 
-> **Trạng thái:** `[/] Đang Triển Khai (PHASE 5.1 CLOSED & FULLY VERIFIED — STORAGE COEXISTENCE REVISION 2 SUBMITTED — PHASE 5.2 GATED)`  
+> **Trạng thái:** `[/] Đang Triển Khai (PHASE 5.1 CLOSED & FULLY VERIFIED — STORAGE COEXISTENCE REVISION 2.1 SUBMITTED — CONTRACT GATE PENDING)`  
 > **Cơ sở pháp lý / Baseline nghiệm thu:** Task 7C.2 FROZEN CLEAN tại baseline `4e9c4dbfb96a6b7957090d8a306485333014c550` (Hosted CI Run #40701295336).  
 > **Phạm vi:** Trực thuộc **Phase 7C: Unified Multi-Device Sync Engine**. Triển khai bộ đồng bộ Client-Side trên ứng dụng Web Next.js 16 / React 19.
 
@@ -165,10 +165,14 @@ apps/web/src/lib/
     - DT-20C: Integration test kiểm thử `StoriesService.saveReadingProgress` phát canonical delta HISTORY UPSERT từ DB RETURNING.
     - DT-20D: Integration test kiểm thử HISTORY UPSERT sau clear history từ chối stale epoch (`REJECTED_TOMBSTONE` / `STALE_HISTORY_EPOCH`) và chấp thuận matching epoch mới.
     - Toàn bộ 19/19 integration tests trong `sync-hub-concurrency.integration-spec.ts` PASS, 50/50 unit test suites (606 tests) toàn API PASS, `nest build` 0 lỗi TypeScript — **PHASE 5.1 CODE PASS & EVIDENCE DEBT FULLY RESOLVED** ✅.
-- [ ] **Bước 5.2 (Web Delta Pull Reconciler & Paginated Checkpoints):**
-  - **Gate Review Phán Quyết:** Phương án Revision 1 (`_syncStatus: 'COMMITTED' | 'DIRTY_PENDING'`) đã bị **BLOCKED** do lỗi thiết kế P0 (làm mất authoritative server payload khi server reject optimistic mutation và can thiệp trái phép vào Step 4 frozen baseline).
-  - **Kiến trúc đề xuất mới:** Đã đệ trình **Storage Coexistence Revision 2: Durable Authoritative Shadow & Optimistic Projection** (chi tiết tại [`plans/phase_07c_storage_coexistence_design_v2.md`](file:///E:/Workspace2/Doctruyen_project/plans/phase_07c_storage_coexistence_design_v2.md)).
-  - **Trạng thái:** Tạm hoãn triển khai code Delta Pull cho đến khi Revision 2 được thẩm định và phê duyệt chính thức. Step 4 Mutation Queue tiếp tục giữ nguyên trạng thái FROZEN CLEAN.
+- [ ] **Bước 5.2 (Web Delta Pull Reconciler & Phased Storage Rollout):**
+  - **Gate Review Phán Quyết:** Phương án Revision 1 (`_syncStatus`) bị BLOCKED; Kiến trúc Revision 2 (`sync_authoritative_replicas` + Projection) được ACCEPTED IN PRINCIPLE; Đã hoàn thiện toàn diện **Storage Coexistence Revision 2.1 — Tombstone-Safe Shadow, Bootstrap Baseline & Causal Projection Contract** (chi tiết tại [`plans/phase_07c_storage_coexistence_design_v2.md`](file:///E:/Workspace2/Doctruyen_project/plans/phase_07c_storage_coexistence_design_v2.md)).
+  - **Lộ trình Phased Rollout phân rã nghiêm ngặt (chờ Contract Gate Approval):**
+    - **Bước 5.2a:** IndexedDB v4 Migration & Baseline Lifecycle (`sync_meta.authoritativeBaselineStatus: 'UNINITIALIZED' | 'BOOTSTRAPPING' | 'READY'`, kiểm thử ST-07, ST-10).
+    - **Bước 5.2b:** Authoritative Shadow DAL & OCC Delta Ingestion (Single atomic transaction trên `['sync_authoritative_replicas', 'sync_meta']`, Checkpoint OCC Guard, Cascading Tombstone Eviction cho story-wide & global DELETE, kiểm thử ST-01, ST-05, ST-08, ST-09, ST-11, ST-14).
+    - **Bước 5.2c:** Pure Deterministic Causal Projection Engine & Hydration (Hàm thuần túy `Resolve(Shadow, Pending)` phục hồi sau reload không phụ thuộc RAM event, Dual-layer tombstone suppression, kiểm thử ST-02, ST-03, ST-04, ST-06, ST-12, ST-13, ST-15).
+    - **Bước 5.2d:** Delta Pull Reconciler Integration & Full Web E2E Verification (Kéo `/sync/changes`, checkpoint phân trang, tích hợp Web Locks Tab Leader).
+  - **Bảo toàn Step 4:** Tuyệt đối không can thiệp hay sửa đổi bất kỳ logic giao dịch nào của Step 4 Mutation Queue đã FROZEN CLEAN.
 - [ ] **Bước 6:** Cài đặt `apps/web/src/lib/sync/snapshot-reconciler.ts` xử lý Safe 410 Gone Full Resync với staging, hủy bỏ staging khi gặp 409 snapshot invalidation.
 - [ ] **Bước 7:** Tích hợp `apps/web/src/lib/sync/web-sync-coordinator.ts` và gắn kết với Auth/Identity/Reader hooks.
 - [ ] **Bước 8:** Chạy kiểm thử toàn diện (Vitest, Next.js build), xác minh các kịch bản nghiệm thu và đẩy Git đồng bộ.

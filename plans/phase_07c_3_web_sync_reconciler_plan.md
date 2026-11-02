@@ -165,16 +165,20 @@ apps/web/src/lib/
     - DT-20C: Integration test kiểm thử `StoriesService.saveReadingProgress` phát canonical delta HISTORY UPSERT từ DB RETURNING.
     - DT-20D: Integration test kiểm thử HISTORY UPSERT sau clear history từ chối stale epoch (`REJECTED_TOMBSTONE` / `STALE_HISTORY_EPOCH`) và chấp thuận matching epoch mới.
     - Toàn bộ 19/19 integration tests trong `sync-hub-concurrency.integration-spec.ts` PASS, 50/50 unit test suites (606 tests) toàn API PASS, `nest build` 0 lỗi TypeScript — **PHASE 5.1 CODE PASS & EVIDENCE DEBT FULLY RESOLVED** ✅.
-- [x] **Bước 5.2a (IndexedDB v4 Migration, Baseline Lifecycle & Fail-Closed Admission Remediation):**
+- [x] **Bước 5.2a (IndexedDB v4 Migration, Baseline Lifecycle & Authoritative READY Proof Boundary Remediation):**
   - **Schema Nâng Cấp:** Nâng cấp `apps/web/src/lib/storage/indexed-db-client.ts` lên `DB_VERSION = 4`, bổ sung store thứ 9 `sync_authoritative_replicas` với 2 indexes `by_scope_domain: ['ownerScope', 'domain']` và `by_scope_revision: ['ownerScope', 'serverRevision']`.
   - **100% Data Preservation:** Nâng cấp tự động từ v3 lên v4 bảo toàn 100% dữ liệu của 8 stores hiện hữu (`bookmarks`, `progress`, `history`, `preferences`, `sync_meta`, `pending_mutations`, `quarantined_mutations`, `snapshot_staging_store`); khởi tạo store thứ 9 rỗng.
-  - **P0-01 / P0-02 Remediation (Fail-Closed Admission Guard & Locked READY Transition):**
+  - **P0 Remediation (Authoritative READY Proof Boundary & Checkpoint Immutability):**
     - Mọi bản ghi `sync_meta` khi nâng cấp hoặc tạo mới với checkpoint "0" đều có `authoritativeBaselineStatus: 'UNINITIALIZED'`.
-    - `setAuthoritativeBaselineStatus(ownerScope, status)` nghiêm cấm tuyệt đối chuyển thẳng sang `'READY'` (`ReadyStatusTransitionForbiddenError`), chỉ cho phép đặt `'UNINITIALIZED'` hoặc `'BOOTSTRAPPING'`.
-    - `putSyncMeta()` ngăn chặn triệt để hành vi bypass để nâng một scope chưa xác minh lên `'READY'`.
-    - Triển khai primitive nguyên tử `finalizeAuthoritativeBaseline(ownerScope, proof)` bắt buộc cung cấp bằng chứng xác minh protocol (checkpoint verified, revision hợp lệ khác "0").
+    - `setAuthoritativeBaselineStatus(ownerScope, status)` nghiêm cấm tuyệt đối chuyển sang `'READY'` (`ReadyStatusTransitionForbiddenError`), chỉ cho phép đặt `'UNINITIALIZED'` hoặc `'BOOTSTRAPPING'`. Trạng thái `'READY'` không được cấp trong Step 5.2a mà được bảo lưu cho Step 6 verified bootstrap finalization transaction.
+    - Loại bỏ hoàn toàn các primitive giả lập hoặc test bypass khỏi production DAL (`finalizeAuthoritativeBaseline`, `_unsafeSetAuthoritativeBaselineStatusForTesting`).
+    - `putSyncMeta()` củng cố bảo vệ kép:
+      1. Cấm chuyển đổi từ non-READY sang `READY` (`ReadyStatusTransitionForbiddenError`).
+      2. Khóa bất biến checkpoint và epoch trên READY scope: cấm sửa đổi `lastSyncedServerRevision` hoặc `effectiveHistoryEpochs` của một scope đã READY thông qua `putSyncMeta` thông thường (`CHECKPOINT_MUTATION_FORBIDDEN`). Việc nâng checkpoint thuộc thẩm quyền độc quyền của atomic delta ingestion (Step 5.2b).
+      3. Cho phép cập nhật các metadata vận hành lành tính (`syncState`, `lastSyncTimestamp`, `lastErrorMessage`).
+    - Hỗ trợ tài khoản server rỗng hợp lệ tại checkpoint "0" mà không có lỗi từ chối revision giả định.
     - Đánh dấu tường minh `putAuthoritativeShadow` là internal/test-only primitive; cấm production Delta Pull gọi trực tiếp (chờ Step 5.2b `applyAuthoritativeDeltaPage`).
-  - **Bộ Kiểm Thử Toàn Diện (ST-07 & ST-10 Mở Rộng):**
+  - **Bộ Kiểm Thử Toàn Diện (ST-07 & ST-10 Mở Rộng — 20 Tests):**
     - ST-07A: 9 stores, composite keyPaths, indexes.
     - ST-07B: Bảo toàn dữ liệu 100% trên cả 8 stores v3.
     - ST-07C: onversionchange graceful shutdown.
@@ -184,9 +188,9 @@ apps/web/src/lib/
     - ST-10E: Cách ly đa scope và tenant guard.
     - ST-10F: Authoritative shadow CRUD primitives.
     - ST-10G: PurgeScope dọn sạch toàn diện cả 9 stores cho target scope, bảo toàn 100% dữ liệu 9 stores của keep scope.
-    - ST-10H: Negative admission regressions (cấm direct READY, cấm putSyncMeta bypass, từ chối checkpoint unverified, từ chối revision 0).
+    - ST-10H: Negative admission regressions (cấm direct READY, cấm putSyncMeta bypass, cấm checkpoint mutation trên READY scope, cấm epoch mutation trên READY scope, cho phép benign syncState update, hỗ trợ legitimate empty-account tại rev 0, xác nhận zero bypass methods trong production DAL).
     - ST-10I: Interrupted bootstrap durability across connection reopen (lưu bền vững BOOTSTRAPPING, duy trì fail-closed unready).
-  - **Nghiệm Thu Local:** 17/17 tests `indexed-db-v4-migration.spec.ts` PASS, 55/55 test files (783/783 tests) toàn bộ Web suite PASS, TypeScript (`tsc --noEmit`) 0 lỗi, Next.js 16 production build SUCCESS — **STEP 5.2a REMEDIATION CLOSED & FROZEN CLEAN LOCAL** ✅.
+  - **Nghiệm Thu Local:** 20/20 tests `indexed-db-v4-migration.spec.ts` PASS, 55/55 test files (786/786 tests) toàn bộ Web suite PASS, TypeScript (`tsc --noEmit`) 0 lỗi, Next.js 16 production build SUCCESS — **STEP 5.2a REMEDIATION CLOSED & FROZEN CLEAN LOCAL** ✅.
 - [ ] **Bước 5.2 (Web Delta Pull Reconciler & Phased Storage Rollout):**
   - **Gate Review Phán Quyết:** Phương án Revision 1 (`_syncStatus`) bị BLOCKED; Kiến trúc Revision 2 (`sync_authoritative_replicas` + Projection) được ACCEPTED IN PRINCIPLE; Đã hoàn thiện toàn diện **Storage Coexistence Revision 2.1 — Tombstone-Safe Shadow, Bootstrap Baseline & Causal Projection Contract** (chi tiết tại [`plans/phase_07c_storage_coexistence_design_v2.md`](file:///E:/Workspace2/Doctruyen_project/plans/phase_07c_storage_coexistence_design_v2.md)).
   - **Lộ trình Phased Rollout phân rã nghiêm ngặt (chờ Contract Gate Approval):**

@@ -25,6 +25,25 @@ import {
   ReadingMode,
 } from '@omninovel/shared';
 
+/**
+ * Test Fixture Helper: Directly seeds a raw sync_meta record into IndexedDB.
+ * Production DAL strictly forbids transitioning to READY in Step 5.2a.
+ * This helper is used exclusively in tests to verify read-path behavior, scope isolation,
+ * purge behavior, and checkpoint immutability on already-READY scopes.
+ */
+async function seedRawReadySyncMeta(
+  client: IndexedDbClient,
+  meta: LocalSyncMeta,
+): Promise<void> {
+  const db = await client.getDatabase();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(STORE_SYNC_META, 'readwrite');
+    tx.objectStore(STORE_SYNC_META).put(meta);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST-10)', () => {
   let dbClient: IndexedDbClient;
 
@@ -336,7 +355,7 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
   });
 
   describe('ST-10C & ST-10D: Admission Guard & Interrupted Bootstrap Recovery', () => {
-    it('ST-10C: isAuthoritativeReady returns false for UNINITIALIZED and BOOTSTRAPPING; true only after verified finalization', async () => {
+    it('ST-10C: isAuthoritativeReady returns false for UNINITIALIZED and BOOTSTRAPPING; true only when verified READY record exists', async () => {
       const scope = 'account:usr-stage';
 
       await dbClient.setAuthoritativeBaselineStatus(scope, 'UNINITIALIZED');
@@ -345,11 +364,20 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
       await dbClient.setAuthoritativeBaselineStatus(scope, 'BOOTSTRAPPING');
       expect(await dbClient.isAuthoritativeReady(scope)).toBe(false);
 
-      // Verified finalization unlocks READY
-      await dbClient.finalizeAuthoritativeBaseline(scope, {
-        validatedRevision: '100',
-        source: 'ZERO_TO_HEAD_REPLAY',
-        checkpointVerified: true,
+      // Direct transition to READY via production API is strictly forbidden
+      await expect(
+        dbClient.setAuthoritativeBaselineStatus(scope, 'READY')
+      ).rejects.toThrow(ReadyStatusTransitionForbiddenError);
+
+      // Verify read-path: isAuthoritativeReady returns true when storage holds a READY record
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: scope,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '100',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
       });
       expect(await dbClient.isAuthoritativeReady(scope)).toBe(true);
     });
@@ -375,10 +403,14 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
 
   describe('ST-10E: Scope Isolation & Tenant Guard', () => {
     it('mutations to baseline status on one scope do not affect other scopes or guest scopes', async () => {
-      await dbClient.finalizeAuthoritativeBaseline('account:usr-alpha', {
-        validatedRevision: '200',
-        source: 'SNAPSHOT_BOOTSTRAP',
-        checkpointVerified: true,
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: 'account:usr-alpha',
+        lastSyncedServerRevision: '200',
+        minActiveRevision: '200',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
       });
       await dbClient.setAuthoritativeBaselineStatus('guest:dev-beta', 'UNINITIALIZED');
 
@@ -623,16 +655,24 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
         updatedAt: Date.now(),
       });
 
-      // 7. Seed STORE_SYNC_META via finalizeAuthoritativeBaseline
-      await dbClient.finalizeAuthoritativeBaseline(targetScope, {
-        validatedRevision: '100',
-        source: 'SNAPSHOT_BOOTSTRAP',
-        checkpointVerified: true,
+      // 7. Seed STORE_SYNC_META directly via test fixture
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: targetScope,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '100',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
       });
-      await dbClient.finalizeAuthoritativeBaseline(keepScope, {
-        validatedRevision: '100',
-        source: 'SNAPSHOT_BOOTSTRAP',
-        checkpointVerified: true,
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: keepScope,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '100',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
       });
 
       // Purge target scope across all 9 stores
@@ -695,30 +735,149 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
       expect(await dbClient.isAuthoritativeReady(scope)).toBe(false);
     });
 
-    it('rejects finalizeAuthoritativeBaseline with unverified checkpoint', async () => {
-      const scope = 'account:usr-unverified-ckpt';
-      await expect(
-        dbClient.finalizeAuthoritativeBaseline(scope, {
-          validatedRevision: '200',
-          source: 'SNAPSHOT_BOOTSTRAP',
-          checkpointVerified: false,
-        })
-      ).rejects.toThrow(/BASELINE_FINALIZATION_REJECTED.*checkpoint/i);
+    it('rejects mutating lastSyncedServerRevision on a READY scope via putSyncMeta (CHECKPOINT_MUTATION_FORBIDDEN)', async () => {
+      const scope = 'account:usr-immutable-ckpt';
 
-      expect(await dbClient.isAuthoritativeReady(scope)).toBe(false);
+      // Seed already-READY scope
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: scope,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '100',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
+      });
+
+      // Attempt to alter lastSyncedServerRevision via putSyncMeta
+      await expect(
+        dbClient.putSyncMeta({
+          ownerScope: scope,
+          lastSyncedServerRevision: '105', // Attempted alteration
+          minActiveRevision: '100',
+          lastSyncTimestamp: new Date().toISOString(),
+          effectiveHistoryEpochs: {},
+          syncState: 'IDLE',
+          authoritativeBaselineStatus: 'READY',
+        })
+      ).rejects.toThrow(/CHECKPOINT_MUTATION_FORBIDDEN.*lastSyncedServerRevision/i);
+
+      // Verify checkpoint remains untouched at 100
+      const meta = await dbClient.getSyncMeta(scope);
+      expect(meta?.lastSyncedServerRevision).toBe('100');
+      expect(meta?.authoritativeBaselineStatus).toBe('READY');
     });
 
-    it('rejects finalizeAuthoritativeBaseline with invalid revision "0" or empty string', async () => {
-      const scope = 'account:usr-rev-0';
-      await expect(
-        dbClient.finalizeAuthoritativeBaseline(scope, {
-          validatedRevision: '0',
-          source: 'ZERO_TO_HEAD_REPLAY',
-          checkpointVerified: true,
-        })
-      ).rejects.toThrow(/BASELINE_FINALIZATION_REJECTED.*revision "0"/i);
+    it('rejects mutating effectiveHistoryEpochs on a READY scope via putSyncMeta (CHECKPOINT_MUTATION_FORBIDDEN)', async () => {
+      const scope = 'account:usr-immutable-epoch';
 
+      // Seed already-READY scope
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: scope,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '100',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: { 'story-1': 1 },
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
+      });
+
+      // Attempt to alter effectiveHistoryEpochs via putSyncMeta
+      await expect(
+        dbClient.putSyncMeta({
+          ownerScope: scope,
+          lastSyncedServerRevision: '100',
+          minActiveRevision: '100',
+          lastSyncTimestamp: new Date().toISOString(),
+          effectiveHistoryEpochs: { 'story-1': 2 }, // Attempted alteration
+          syncState: 'IDLE',
+          authoritativeBaselineStatus: 'READY',
+        })
+      ).rejects.toThrow(/CHECKPOINT_MUTATION_FORBIDDEN.*effectiveHistoryEpochs/i);
+
+      // Verify epochs remain untouched at { 'story-1': 1 }
+      const meta = await dbClient.getSyncMeta(scope);
+      expect(meta?.effectiveHistoryEpochs).toEqual({ 'story-1': 1 });
+    });
+
+    it('permits putSyncMeta to update benign sync metadata (syncState, lastSyncTimestamp, lastErrorMessage) on a READY scope', async () => {
+      const scope = 'account:usr-benign-update';
+
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: scope,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '100',
+        lastSyncTimestamp: '2026-11-01T00:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
+      });
+
+      // Update benign fields while preserving checkpoint & epochs
+      await dbClient.putSyncMeta({
+        ownerScope: scope,
+        lastSyncedServerRevision: '100', // preserved
+        minActiveRevision: '100',
+        lastSyncTimestamp: '2026-11-02T12:00:00.000Z', // updated
+        effectiveHistoryEpochs: {}, // preserved
+        syncState: 'PULLING', // updated
+        lastErrorMessage: 'Transient timeout', // updated
+        authoritativeBaselineStatus: 'READY',
+      });
+
+      const updated = await dbClient.getSyncMeta(scope);
+      expect(updated?.syncState).toBe('PULLING');
+      expect(updated?.lastSyncTimestamp).toBe('2026-11-02T12:00:00.000Z');
+      expect(updated?.lastErrorMessage).toBe('Transient timeout');
+      expect(updated?.authoritativeBaselineStatus).toBe('READY');
+      expect(updated?.lastSyncedServerRevision).toBe('100');
+    });
+
+    it('supports legitimate empty-account baseline at revision "0" without revision rejection', async () => {
+      const scope = 'account:usr-empty-acc-rev-0';
+
+      // 1. Fresh empty account starts at UNINITIALIZED
+      await dbClient.putSyncMeta({
+        ownerScope: scope,
+        lastSyncedServerRevision: '0',
+        minActiveRevision: '0',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+      expect(await dbClient.getAuthoritativeBaselineStatus(scope)).toBe('UNINITIALIZED');
       expect(await dbClient.isAuthoritativeReady(scope)).toBe(false);
+
+      // 2. An empty account can legitimately hold READY at revision "0" once verified
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: scope,
+        lastSyncedServerRevision: '0',
+        minActiveRevision: '0',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
+      });
+      expect(await dbClient.getAuthoritativeBaselineStatus(scope)).toBe('READY');
+      expect(await dbClient.isAuthoritativeReady(scope)).toBe(true);
+
+      // 3. Checkpoint "0" on READY is protected from rewrite via putSyncMeta
+      await expect(
+        dbClient.putSyncMeta({
+          ownerScope: scope,
+          lastSyncedServerRevision: '1', // Attempted alteration
+          minActiveRevision: '0',
+          lastSyncTimestamp: new Date().toISOString(),
+          effectiveHistoryEpochs: {},
+          syncState: 'IDLE',
+          authoritativeBaselineStatus: 'READY',
+        })
+      ).rejects.toThrow(/CHECKPOINT_MUTATION_FORBIDDEN/i);
+    });
+
+    it('confirms production IndexedDbClient contains NO premature finalizers or test-only bypass methods', () => {
+      expect((dbClient as any).finalizeAuthoritativeBaseline).toBeUndefined();
+      expect((dbClient as any)._unsafeSetAuthoritativeBaselineStatusForTesting).toBeUndefined();
     });
   });
 

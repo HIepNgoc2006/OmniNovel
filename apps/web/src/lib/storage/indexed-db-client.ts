@@ -9,7 +9,7 @@ import {
 } from '@omninovel/shared';
 
 export const DB_NAME = 'omninovel_local_v2';
-export const DB_VERSION = 3;
+export const DB_VERSION = 4;
 
 export const STORE_BOOKMARKS = 'bookmarks';
 export const STORE_PROGRESS = 'progress';
@@ -19,6 +19,7 @@ export const STORE_SYNC_META = 'sync_meta';
 export const STORE_PENDING_MUTATIONS = 'pending_mutations';
 export const STORE_QUARANTINED_MUTATIONS = 'quarantined_mutations';
 export const STORE_SNAPSHOT_STAGING = 'snapshot_staging_store';
+export const STORE_AUTHORITATIVE_REPLICAS = 'sync_authoritative_replicas'; // Phase 5.2a
 
 export const ALL_OBJECT_STORES = [
   STORE_BOOKMARKS,
@@ -29,6 +30,7 @@ export const ALL_OBJECT_STORES = [
   STORE_PENDING_MUTATIONS,
   STORE_QUARANTINED_MUTATIONS,
   STORE_SNAPSHOT_STAGING,
+  STORE_AUTHORITATIVE_REPLICAS,
 ] as const;
 
 export interface LocalPreference {
@@ -36,6 +38,19 @@ export interface LocalPreference {
   key: string;
   value: unknown;
   updatedAt: string;
+}
+
+export type AuthoritativeBaselineStatus = 'UNINITIALIZED' | 'BOOTSTRAPPING' | 'READY';
+
+export interface AuthoritativeShadowRecord {
+  ownerScope: string;
+  domain: SyncDomain;
+  entityKey: string;
+  serverRevision: string;
+  epoch: number;
+  payload: Record<string, any> | null;
+  isDeleted: boolean;
+  updatedAt: number;
 }
 
 export interface LocalSyncMeta {
@@ -46,6 +61,7 @@ export interface LocalSyncMeta {
   effectiveHistoryEpochs: Record<string, number>;
   syncState: 'IDLE' | 'PULLING' | 'PUSHING' | 'RECONCILING_410' | 'ERROR';
   lastErrorMessage?: string | null;
+  authoritativeBaselineStatus?: AuthoritativeBaselineStatus; // Phase 5.2a
 }
 
 export type QuarantineRejectionStatus =
@@ -253,6 +269,36 @@ export class IndexedDbClient {
             stagingStore.createIndex('by_scope_session', ['ownerScope', 'sessionId'], {
               unique: false,
             });
+          }
+
+          // 9. Authoritative Shadow Replicas Store: Composite key [ownerScope, domain, entityKey] (Phase 5.2a)
+          if (!db.objectStoreNames.contains(STORE_AUTHORITATIVE_REPLICAS)) {
+            const shadowStore = db.createObjectStore(STORE_AUTHORITATIVE_REPLICAS, {
+              keyPath: ['ownerScope', 'domain', 'entityKey'],
+            });
+            shadowStore.createIndex('by_scope_domain', ['ownerScope', 'domain'], {
+              unique: false,
+            });
+            shadowStore.createIndex('by_scope_revision', ['ownerScope', 'serverRevision'], {
+              unique: false,
+            });
+          }
+
+          // Backfill default baseline status for existing sync_meta records on migration to v4
+          if (db.objectStoreNames.contains(STORE_SYNC_META) && request.transaction) {
+            const metaStore = request.transaction.objectStore(STORE_SYNC_META);
+            const cursorReq = metaStore.openCursor();
+            cursorReq.onsuccess = () => {
+              const cursor = cursorReq.result;
+              if (cursor) {
+                const meta = cursor.value as LocalSyncMeta;
+                if (!meta.authoritativeBaselineStatus) {
+                  meta.authoritativeBaselineStatus = 'UNINITIALIZED';
+                  cursor.update(meta);
+                }
+                cursor.continue();
+              }
+            };
           }
         };
 
@@ -1201,7 +1247,17 @@ export class IndexedDbClient {
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_SYNC_META, 'readonly');
       const req = tx.objectStore(STORE_SYNC_META).get(ownerScope);
-      req.onsuccess = () => resolve((req.result as LocalSyncMeta) || null);
+      req.onsuccess = () => {
+        const meta = req.result as LocalSyncMeta | undefined;
+        if (!meta) {
+          resolve(null);
+          return;
+        }
+        resolve({
+          ...meta,
+          authoritativeBaselineStatus: meta.authoritativeBaselineStatus || 'UNINITIALIZED',
+        });
+      };
       req.onerror = () => reject(req.error);
     });
   }
@@ -1212,7 +1268,131 @@ export class IndexedDbClient {
     return new Promise((resolve, reject) => {
       try {
         const tx = db.transaction(STORE_SYNC_META, 'readwrite');
-        tx.objectStore(STORE_SYNC_META).put(meta);
+        const normalized: LocalSyncMeta = {
+          ...meta,
+          authoritativeBaselineStatus: meta.authoritativeBaselineStatus || 'UNINITIALIZED',
+        };
+        tx.objectStore(STORE_SYNC_META).put(normalized);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  // ==================== AUTHORITATIVE SHADOW & BASELINE LIFECYCLE (Phase 5.2a) ====================
+
+  async getAuthoritativeBaselineStatus(ownerScope: string): Promise<AuthoritativeBaselineStatus> {
+    assertValidScope(ownerScope);
+    const meta = await this.getSyncMeta(ownerScope);
+    return meta?.authoritativeBaselineStatus || 'UNINITIALIZED';
+  }
+
+  async setAuthoritativeBaselineStatus(
+    ownerScope: string,
+    status: AuthoritativeBaselineStatus,
+  ): Promise<void> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_SYNC_META, 'readwrite');
+        const store = tx.objectStore(STORE_SYNC_META);
+        const getReq = store.get(ownerScope);
+        getReq.onsuccess = () => {
+          const existing = getReq.result as LocalSyncMeta | undefined;
+          const updated: LocalSyncMeta = existing
+            ? { ...existing, authoritativeBaselineStatus: status }
+            : {
+                ownerScope,
+                lastSyncedServerRevision: '0',
+                minActiveRevision: '0',
+                lastSyncTimestamp: new Date(0).toISOString(),
+                effectiveHistoryEpochs: {},
+                syncState: 'IDLE',
+                authoritativeBaselineStatus: status,
+              };
+          store.put(updated);
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async isAuthoritativeReady(ownerScope: string): Promise<boolean> {
+    const status = await this.getAuthoritativeBaselineStatus(ownerScope);
+    return status === 'READY';
+  }
+
+  async getAuthoritativeShadow(
+    ownerScope: string,
+    domain: SyncDomain,
+    entityKey: string,
+  ): Promise<AuthoritativeShadowRecord | null> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_AUTHORITATIVE_REPLICAS, 'readonly');
+        const req = tx.objectStore(STORE_AUTHORITATIVE_REPLICAS).get([ownerScope, domain, entityKey]);
+        req.onsuccess = () => resolve((req.result as AuthoritativeShadowRecord) || null);
+        req.onerror = () => reject(req.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async putAuthoritativeShadow(record: AuthoritativeShadowRecord): Promise<void> {
+    assertValidScope(record.ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_AUTHORITATIVE_REPLICAS, 'readwrite');
+        tx.objectStore(STORE_AUTHORITATIVE_REPLICAS).put(record);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async getAuthoritativeShadowsByDomain(
+    ownerScope: string,
+    domain: SyncDomain,
+  ): Promise<AuthoritativeShadowRecord[]> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_AUTHORITATIVE_REPLICAS, 'readonly');
+        const store = tx.objectStore(STORE_AUTHORITATIVE_REPLICAS);
+        const index = store.index('by_scope_domain');
+        const req = index.getAll(IDBKeyRange.only([ownerScope, domain]));
+        req.onsuccess = () => resolve((req.result as AuthoritativeShadowRecord[]) || []);
+        req.onerror = () => reject(req.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async deleteAuthoritativeShadow(
+    ownerScope: string,
+    domain: SyncDomain,
+    entityKey: string,
+  ): Promise<void> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_AUTHORITATIVE_REPLICAS, 'readwrite');
+        tx.objectStore(STORE_AUTHORITATIVE_REPLICAS).delete([ownerScope, domain, entityKey]);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
       } catch (err) {
@@ -2185,6 +2365,7 @@ export class IndexedDbClient {
         STORE_PENDING_MUTATIONS,
         STORE_QUARANTINED_MUTATIONS,
         STORE_SNAPSHOT_STAGING,
+        STORE_AUTHORITATIVE_REPLICAS,
       ];
 
       const tx = db.transaction(storesToPurge, 'readwrite');
@@ -2201,6 +2382,7 @@ export class IndexedDbClient {
         STORE_PENDING_MUTATIONS,
         STORE_QUARANTINED_MUTATIONS,
         STORE_SNAPSHOT_STAGING,
+        STORE_AUTHORITATIVE_REPLICAS,
       ];
 
       for (const storeName of compositeStores) {

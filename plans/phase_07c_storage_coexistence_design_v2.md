@@ -1,24 +1,24 @@
-# 🏛️ Kiến Trúc Coexistence Revision 2.1: Tombstone-Safe Shadow, Bootstrap Baseline & Causal Projection Contract
+# 🏛️ Kiến Trúc Coexistence Revision 2.2: Tombstone-Safe Shadow, Epoch Governance & Baseline Lifecycle
 ## Đề Xuất Hoàn Thiện Tầng Lưu Trữ Client-Side Web Sync (`apps/web` — Phase 5.2)
 
-> **Tài liệu:** Thiết kế Kiến trúc Đồng Bộ Lưu Trữ Cục Bộ (Storage Coexistence RFC — Revision 2.1)  
-> **Trạng thái:** `Đã Khắc Phục Toàn Diện 5 Điểm P0 & P1 (READY FOR CONTRACT GATE APPROVAL)`  
-> **Cơ sở pháp lý:** Bản hoàn thiện tiếp thu chỉ đạo từ Gate Review Phase 5.1 & Storage Coexistence Revision 2 (Commit `647caa5`).  
-> **Mục tiêu:** Khóa toàn diện cơ chế Tombstone Suppression, Baseline Bootstrap, Causal Entity Mapping, Recovery độc lập RAM callbacks, Checkpoint OCC; bảo toàn 100% Step 4 Frozen Baseline (`mutation-queue.ts`).
+> **Tài liệu:** Thiết kế Kiến trúc Đồng Bộ Lưu Trữ Cục Bộ (Storage Coexistence RFC — Revision 2.2)  
+> **Trạng thái:** `Đã Hoàn Thiện Hợp Đồng & Phê Duyệt Bước 5.2a (APPROVED FOR 5.2a IMPLEMENTATION)`  
+> **Cơ sở pháp lý:** Phán quyết Conditional Approval từ Gate Review Storage Coexistence Revision 2.1 (Commit `f6a7349`).  
+> **Mục tiêu:** Khóa toàn diện các bất biến kỹ thuật: Baseline Lifecycle (mặc định `UNINITIALIZED`), Epoch Governance (`effectiveHistoryEpochs: Record<string, number>`), Post-Receipt Reconciliation & In-Flight Grace, Snapshot Baseline Metadata, và Triển khai Bước 5.2a (IndexedDB v4 Migration).
 
 ---
 
-## 1. Tổng Quan & Phân Tích Các Vấn Đề Cốt Lõi Được Giải Quyết
+## 1. Tổng Quan & Cập Nhật Hợp Đồng Tại Revision 2.2
 
-Trong đợt Gate Review trước, kiến trúc **Durable Authoritative Shadow + Optimistic Projection** đã được chấp thuận về mặt nguyên lý (`ACCEPTED IN PRINCIPLE`). Tuy nhiên, để đảm bảo hệ thống có thể triển khai thực tế mà không phát sinh bất kỳ kịch bản sai lệch dữ liệu nào giữa Shadow và UI, bản **Revision 2.1** giải quyết triệt để 5 lỗ hổng P0 và các điểm tinh chỉnh P1:
+Dựa trên kết quả rà soát kiến trúc tại Gate Review, Revision 2.2 hoàn thiện 5 điểm cốt lõi:
 
-| Mã vấn đề | Bản chất kỹ thuật & Rủi ro | Giải pháp kỹ thuật tại Revision 2.1 |
+| Vấn đề | Điểm bất nhất ở Revision 2.1 | Hợp đồng chuẩn hóa tại Revision 2.2 |
 | :--- | :--- | :--- |
-| **P0-01** | **HISTORY DELETE phạm vi Story/Global không xóa chapter shadows:** Shadow lưu `entityKey = ${storyId}:${chapterId}`, khi server phát DELETE truyện hoặc global, nếu chỉ lưu tombstone thì các chapter shadows cũ vẫn còn, projection đọc ra gây sống lại lịch sử đã xóa. | **Cascading Shadow Eviction & Dual-Layer Tombstone Suppression:** Xóa nguyên tử toàn bộ chapter shadows thuộc phạm vi trong transaction của Delta Pull; đồng thời áp dụng suppression guard 2 lớp (Global effective epoch + Story tombstone) ở mọi đường đọc projection. |
-| **P0-02** | **Migration v3 $\to$ v4 tạo Shadow rỗng với Checkpoint cũ $> 0$:** Nếu checkpoint đang ở `"150"`, Shadow mới rỗng, Delta Pull kéo từ `"151"` bỏ qua dữ liệu cũ, khiến projection kết luận sai là người dùng chưa có dữ liệu. | **Persistent Baseline Lifecycle (`UNINITIALIZED` $\to$ `READY`):** Gắn cờ trạng thái bootstrap trong `sync_meta`. Khi checkpoint $> 0$ và Shadow rỗng, kích hoạt quy trình kéo Snapshot Baseline (Step 6) trước khi cấp quyền `READY`. Trong thời gian bootstrap, projection đọc ở chế độ tương thích an toàn từ legacy stores. |
-| **P0-03** | **Lệch định dạng Entity Key & So sánh thứ tự chương bằng UUID:** `LocalPendingMutation.entityId` không khớp `${storyId}:${chapterId}`; UUID chương không thể dùng để so sánh tiến trình đọc. | **Canonical Entity Key Extractor & Causal Intent Rule:** Chuẩn hóa hàm trích xuất khóa theo domain; phân định rõ: cùng chapter thì so sánh monotonic percentage; khác chapter thì tôn trọng ý chí thao tác trực tiếp của người dùng (user intent) khi mutation đang pending, tự động hoàn nguyên về Shadow nếu server từ chối mà không cần đoán thứ tự UUID. |
-| **P0-04** | **Phục hồi phụ thuộc RAM callbacks (`onProjectionDirty`):** Nếu crash/reload hoặc callback không được đăng ký, projection không thể cập nhật. | **Deterministic Durable Derivation:** Projection là hàm thuần túy đọc trực tiếp từ IndexedDB bền vững (`sync_authoritative_replicas` + `pending_mutations`). RAM events chỉ là tín hiệu tối ưu độ trễ UI re-render, không phải điều kiện toàn vẹn dữ liệu. |
-| **P0-05** | **Thiếu OCC Checkpoint Guard & Epoch Tracking không an toàn:** Hai pull đồng quy có thể ghi đè checkpoint; gán epoch bừa bãi cho mọi delta làm sai lệch logic epoch server. | **Atomic Precondition OCC & Domain Epoch Governance:** Ghi checkpoint bắt buộc kiểm tra `expectedRevision === currentRevision`. Phân biệt nghiêm ngặt: `HISTORY DELETE` bắt buộc mang server epoch mới; `HISTORY UPSERT` giữ nguyên epoch hiện tại; fail-closed nếu DELETE thiếu epoch. |
+| **P0-01: Baseline Checkpoint "0"** | Revision 2.1 cho rằng `lastSyncedServerRevision === '0'` thì Shadow đã `READY`. | **Mặc định `UNINITIALIZED`:** Revision "0" chỉ chứng minh client chưa sync trên máy này, không chứng minh server không có dữ liệu (kịch bản đăng nhập thiết bị mới). Mọi account scope chưa được xác minh baseline đều bắt đầu từ `UNINITIALIZED`. Chỉ chuyển sang `READY` sau khi hoàn tất Snapshot Bootstrap hoặc Replay đầy đủ. |
+| **P0-02: Snapshot Metadata & Global Epoch** | Revision 2.1 giả định snapshot response có `snapshot.effectiveHistoryEpoch`. Thực tế response API chỉ có `chapterReadStates[].storyHistoryEpoch`. | **Epoch Contract & Tombstone Ingestion:** Đối với account đã xóa toàn bộ lịch sử (chapter list rỗng), client không suy đoán global epoch từ danh sách rỗng. Hợp đồng quy định server phát snapshot metadata chứa `effectiveHistoryEpochs` hoặc client tra cứu tombstone sentinel trong snapshot staging trước khi đóng dấu `READY`. |
+| **P0-03: Epoch Model trong `sync_meta`** | Revision 2.1 dùng trường số đơn `sync_meta.effectiveHistoryEpoch`. | **Bảo toàn `effectiveHistoryEpochs: Record<string, number>`:** Giữ nguyên mô hình map trong `LocalSyncMeta`. Khóa `00000000-0000-0000-0000-000000000000` lưu global epoch; các khóa khác lưu story epoch. Effective epoch = $\max(\text{storyEpoch}, \text{globalEpoch})$. Gán epoch chuẩn cho UPSERT sau tombstone để không bị xóa nhầm. |
+| **P0-04: Shadow Freshness sau Terminal Receipt** | Revision 2.1 giả định xóa pending mutation là Shadow lập tức có dữ liệu server mới nhất. | **Bounded In-Flight Grace & Reconciliation Obligation:** Khi nhận `APPLIED`, pending mutation được dọn nhưng Shadow chưa có revision mới. Projection duy trì trạng thái optimistic trong cửa sổ ngắn (bounded grace state) hoặc kích hoạt ngay `RECONCILIATION_REQUIRED` để kéo delta, tránh giật lùi UI (flicker). |
+| **P0-05: Anti-Tombstone Guard cho Pending Mutations** | Revision 2.1 chỉ kiểm tra epoch của pending mutation khi có `observedHistoryEpoch`. | **Causal Revision & Tombstone Guard:** Kiểm tra cả `mutation.baseServerRevision` so với `tombstone.deletedAtRevision`. Nếu mutation gửi lên dựa trên revision cũ hơn tombstone, pending mutation bị coi là stale và bị che khuất trong projection. |
 
 ---
 
@@ -33,7 +33,8 @@ Trong đợt Gate Review trước, kiến trúc **Durable Authoritative Shadow +
 │                 TẦNG 3: UI PROJECTION ENGINE (Materialized / Derived)                   │
 │   ProjectedState = PureCausalResolve(AuthoritativeShadow, DurablePendingMutations)      │
 │   • Phục hồi 100% từ IndexedDB sau F5/Reload (Không phụ thuộc RAM event)                │
-│   • Dual-Layer Tombstone & Epoch Suppression Guard                                      │
+│   • Dual-Layer Tombstone & Causal Revision Suppression Guard                            │
+│   • Bounded Reconciliation Grace State khi Shadow chưa kịp kéo revision mới             │
 └───────────────────▲─────────────────────────────────────────────────▲───────────────────┘
                     │ Reads Canonical Truth                           │ Reads Optimistic Intent
 ┌───────────────────┴─────────────────────────┐   ┌───────────────────┴───────────────────┐
@@ -53,284 +54,139 @@ Trong đợt Gate Review trước, kiến trúc **Durable Authoritative Shadow +
 
 ---
 
-## 3. Khóa Lỗ Hổng P0-01: HISTORY DELETE Scope, Cascading Eviction & Dual-Layer Suppression
+## 3. Khóa Lỗ Hổng P0-01: Baseline Lifecycle & Mặc Định `UNINITIALIZED`
 
-### 3.1 Bản chất sự khác biệt giữa Server Contract và Shadow Key
-- Core API phát 2 loại `HISTORY DELETE`:
-  1. **Story-wide DELETE:** `entityId = storyId`, payload = `{ storyId, epoch: newEpoch }`.
-  2. **Global DELETE:** `entityId = '00000000-0000-0000-0000-000000000000'` (hoặc alias `'all'`), payload = `{ epoch: newEpoch }`.
-- Trong khi đó, các bản ghi đọc lịch sử của từng chương trong `sync_authoritative_replicas` có khóa:
-  `entityKey = ${storyId}:${chapterId}`.
-
-### 3.2 Quy Trình Cascading Eviction Tại Thời Điểm Delta Pull Ghi Transaction
-Khi Delta Pull nhận delta `domain === 'HISTORY'` và `operation === 'DELETE'`:
-Trong **cùng 1 transaction `readwrite`** trên `['sync_authoritative_replicas', 'sync_meta']`:
-
-1. **Nếu là Story-wide DELETE (`entityId === storyId`):**
-   - **Xóa toàn bộ chapter shadows:** Quét store `sync_authoritative_replicas` trong phạm vi `(ownerScope, domain='HISTORY')` và xóa mọi bản ghi có `entityKey` bắt đầu bằng `${storyId}:`.
-   - **Xóa progress shadow tương ứng:** Xóa bản ghi `(ownerScope, domain='PROGRESS', entityKey=storyId)` (bởi vì trên Server, xóa lịch sử truyện đồng thời xóa `reading_progress`).
-   - **Ghi Story Tombstone Shadow:** Ghi bản ghi tombstone:
-     ```typescript
-     {
-       ownerScope,
-       domain: SyncDomain.HISTORY,
-       entityKey: storyId,
-       serverRevision: delta.revision,
-       epoch: delta.payload.epoch, // Server epoch mới
-       payload: { storyId, epoch: delta.payload.epoch },
-       isDeleted: true,
-       updatedAt: Date.now()
-     }
-     ```
-2. **Nếu là Global DELETE (`entityId === UUID_SENTINEL || entityId === 'all'`):**
-   - **Xóa toàn bộ:** Quét và xóa TOÀN BỘ bản ghi trong `sync_authoritative_replicas` có `(ownerScope, domain='HISTORY')` và `(ownerScope, domain='PROGRESS')`.
-   - **Ghi Global Tombstone Shadow:** Ghi bản ghi sentinel:
-     ```typescript
-     {
-       ownerScope,
-       domain: SyncDomain.HISTORY,
-       entityKey: '00000000-0000-0000-0000-000000000000',
-       serverRevision: delta.revision,
-       epoch: delta.payload.epoch,
-       payload: { epoch: delta.payload.epoch },
-       isDeleted: true,
-       updatedAt: Date.now()
-     }
-     ```
-   - **Cập nhật Global Epoch:** Ghi vào `sync_meta`:
-     `effectiveHistoryEpoch = delta.payload.epoch`.
-3. **Tính cô lập tuyệt đối:** Toàn bộ thao tác chỉ tác động trên `ownerScope` hiện tại. Không bao giờ ảnh hưởng đến tài khoản khác hoặc guest khác.
-
-### 3.3 Cơ Chế Dual-Layer Suppression Ở Đường Đọc Projection
-Để đảm bảo an toàn phòng thủ theo chiều sâu (Defense-in-Depth), khi Projection Engine đọc bất kỳ bản ghi lịch sử đọc nào:
-- **Lớp 1 (Global Tombstone Check):** Kiểm tra `sync_meta.effectiveHistoryEpoch`. Nếu bản ghi có `epoch < effectiveHistoryEpoch` $\implies$ Tự động bị coi là đã xóa (`null`).
-- **Lớp 2 (Story Tombstone Check):** Đọc tombstone của story tương ứng `(ownerScope, 'HISTORY', storyId)`. Nếu tồn tại và `record.serverRevision <= tombstone.serverRevision` $\implies$ Tự động bị coi là đã xóa (`null`).
-
----
-
-## 4. Khóa Lỗ Hổng P0-02: Migration v3 $\to$ v4, Baseline Lifecycle & Snapshot Bootstrap
-
-### 4.1 Bổ Sung Trạng Thái Baseline Vào `sync_meta`
+### 3.1 Vòng Đời Trạng Thái Baseline (`authoritativeBaselineStatus`)
 
 ```typescript
 export type AuthoritativeBaselineStatus = 
-  | 'UNINITIALIZED' // Shadow rỗng, cần bootstrap trước khi tin cậy
+  | 'UNINITIALIZED' // Shadow rỗng hoặc chưa được kiểm chứng, bắt buộc bootstrap
   | 'BOOTSTRAPPING'  // Đang trong tiến trình kéo snapshot nạp shadow
   | 'READY';         // Shadow đã hoàn chỉnh, projection kích hoạt đầy đủ
 ```
 
-Bảng `sync_meta` bổ sung trường: `authoritativeBaselineStatus: AuthoritativeBaselineStatus`.
-
-### 4.2 Quy Tắc Chuyển Đổi Khi Upgrade Schema (v3 $\to$ v4):
-Trong sự kiện `onupgradeneeded` (`DB_VERSION = 4`):
-1. Tạo object store `sync_authoritative_replicas` với khóa `['ownerScope', 'domain', 'entityKey']`.
-2. Khởi tạo trạng thái baseline:
-   - Nếu `sync_meta.lastSyncedServerRevision === '0'` (chưa từng sync): Gán `authoritativeBaselineStatus = 'READY'`.
-   - Nếu `sync_meta.lastSyncedServerRevision > '0'` (đã sync trước đây ở v3): Bắt buộc gán `authoritativeBaselineStatus = 'UNINITIALIZED'`. **Tuyệt đối không coi Shadow rỗng là hoàn chỉnh!**
-
-### 4.3 Quy Trình Bootstrap Baseline Khi Khởi Động Reconciler:
-Khi Web Sync Coordinator khởi động cho một `ownerScope`:
-1. Đọc `sync_meta`. Nếu `authoritativeBaselineStatus === 'UNINITIALIZED'`:
-   - Chuyển trạng thái sang `BOOTSTRAPPING`.
-   - **Trong thời gian này:** Projection Engine hoạt động ở **Degraded Compatibility Mode**:
-     - Đọc dữ liệu trực tiếp từ legacy local stores (`bookmarks`, `progress`, `history`, `preferences`).
-     - Người dùng đọc truyện, tạo bookmark bình thường; Step 4 tiếp tục ghi nhận `pending_mutations` vào hàng đợi mà không bị gián đoạn.
-2. **Kích hoạt Snapshot Bootstrap (Step 6 Protocol):**
-   - Gọi `GET /sync/snapshot` với phân trang keyset đầy đủ qua cả 4 domain.
-   - Điền toàn bộ dữ liệu authoritative từ Snapshot vào `sync_authoritative_replicas`.
-   - Ghi nhận `lastSyncedServerRevision = snapshot.snapshotRevision`.
-   - Ghi nhận `effectiveHistoryEpoch = snapshot.effectiveHistoryEpoch`.
-   - Cập nhật `authoritativeBaselineStatus = 'READY'` trong cùng transaction commit snapshot cuối cùng.
-3. Khi đã chuyển sang `READY`: Projection Engine chính thức chuyển sang chế độ chuẩn hóa: `CausalResolve(Shadow, PendingMutations)`.
-4. **Bất biến:** CẤM tuyệt đối việc tự ý copy dữ liệu từ legacy stores sang Shadow rồi gán nhãn đó là "Server Truth".
+### 3.2 Bất Biến Khởi Tạo (Admission Rules):
+1. **Thiết Bị Mới / Checkpoint "0":**
+   - Khi `sync_meta` chưa tồn tại hoặc `lastSyncedServerRevision === '0'`: trạng thái khởi tạo **BẮT BUỘC là `'UNINITIALIZED'`**.
+   - **Lý do:** Client chưa có dữ liệu không đồng nghĩa với Server chưa có dữ liệu. Người dùng đăng nhập thiết bị mới phải bootstrap trước khi Shadow được coi là `READY`.
+2. **Upgrade Từ v3 Lên v4 (Migration):**
+   - Mọi bản ghi `sync_meta` hiện hữu khi nâng cấp lên v4 đều được gán `authoritativeBaselineStatus = 'UNINITIALIZED'`.
+3. **Phục Hồi Sau Crash Giữa Chừng (`Interrupted Bootstrap`):**
+   - Nếu client bị tắt nguồn hoặc crash khi đang ở `BOOTSTRAPPING`: lần khởi động tiếp theo phát hiện trạng thái chưa `READY` $\implies$ tự động reset về `UNINITIALIZED` để khởi động lại bootstrap an toàn.
+4. **Degraded Compatibility Mode Trong Thời Gian Chưa `READY`:**
+   - Khi `authoritativeBaselineStatus !== 'READY'`:
+     - UI Projection hoạt động ở chế độ tương thích an toàn: đọc trực tiếp từ legacy stores (`bookmarks`, `progress`, `history`, `preferences`).
+     - Step 4 tiếp tục nhận mutations bình thường.
+     - Tuyệt đối cấm kích hoạt Shadow làm nguồn chân lý duy nhất cho UI khi chưa `READY`.
 
 ---
 
-## 5. Khóa Lỗ Hổng P0-03: Domain-Aware Causal Projection Contract & Entity Mapping
+## 4. Khóa Lỗ Hổng P0-02 & P0-03: Epoch Governance & Snapshot Baseline Metadata
 
-### 5.1 Bảng Ánh Xạ Khóa Chuẩn Hóa Giữa Pending Mutation và Shadow
+### 4.1 Bảo Toàn Cấu Trúc `effectiveHistoryEpochs: Record<string, number>` Trong `LocalSyncMeta`
 
-| Domain | Định dạng Khóa Shadow (`entityKey`) | Trường trích xuất từ `LocalPendingMutation` | Helper Ánh Xạ |
-| :--- | :--- | :--- | :--- |
-| `PROGRESS` | `storyId` | `mutation.entityId` (luôn là `storyId`) | `mutation.entityId` |
-| `HISTORY` | `${storyId}:${chapterId}` | `payload.storyId` và `payload.chapterId` (hoặc `mutation.entityId`) | `getCanonicalHistoryKey(mutation)` |
-| `HISTORY` *(Tombstone)* | `storyId` hoặc `00000000-0000-0000-0000-000000000000` | `mutation.entityId` | `mutation.entityId` |
-| `BOOKMARK` | `storyId` | `mutation.entityId` | `mutation.entityId` |
-| `PREFERENCE` | `key` | `mutation.entityId` | `mutation.entityId` |
-
-### 5.2 Helper Trích Xuất Khóa Chuẩn Hóa:
+Bảo toàn 100% cấu trúc hiện hữu của `LocalSyncMeta`:
 ```typescript
-export function getCanonicalEntityKey(
-  domain: SyncDomain,
-  entityId: string,
-  payload?: Record<string, any>
-): string {
-  if (domain === SyncDomain.HISTORY) {
-    if (entityId === 'all' || entityId === '00000000-0000-0000-0000-000000000000') {
-      return '00000000-0000-0000-0000-000000000000';
-    }
-    if (payload?.storyId && payload?.chapterId) {
-      return `${payload.storyId}:${payload.chapterId}`;
-    }
-  }
-  return entityId;
+export interface LocalSyncMeta {
+  ownerScope: string;
+  lastSyncedServerRevision: string;
+  minActiveRevision: string;
+  lastSyncTimestamp: string;
+  effectiveHistoryEpochs: Record<string, number>; // Map storyId -> epoch & sentinel -> epoch
+  syncState: 'IDLE' | 'PULLING' | 'PUSHING' | 'RECONCILING_410' | 'ERROR';
+  lastErrorMessage?: string | null;
+  authoritativeBaselineStatus?: AuthoritativeBaselineStatus; // Phase 5.2a
 }
 ```
 
-### 5.3 Quy Tắc Phân Giải Causal Đọc Tiến Trình (Không So Sánh UUID Chương):
-Tuyệt đối không so sánh chuỗi UUID của `chapterId` để đoán thứ tự chương.
+* **Khóa Global Sentinel:** Khóa `'00000000-0000-0000-0000-000000000000'` lưu epoch của lần xóa toàn bộ gần nhất.
+* **Khóa Story-Specific:** Mỗi `storyId` có một epoch riêng khi có `HISTORY DELETE` theo truyện.
+* **Effective Epoch của một truyện:**
+  $$\text{effectiveEpoch}(storyId) = \max\Big(\text{effectiveHistoryEpochs}[storyId] \;\text{??}\; 0,\; \text{effectiveHistoryEpochs}[\text{UUID\_SENTINEL}] \;\text{??}\; 0\Big)$$
+
+### 4.2 Gán Epoch Chuẩn Cho UPSERT Sau Tombstone
+Khi Server phát delta `HISTORY UPSERT` tại revision 101 (sau một DELETE tại revision 100 với epoch 4):
+- Bản ghi `chapter_read_states` trên server mang `epoch = 4`.
+- Shadow lưu trữ `epoch = 4`.
+- Bộ lọc suppression: Bản ghi chỉ bị che khuất nếu `record.epoch < effectiveEpoch`. Vì `4 < 4` là False, bản ghi mới tại revision 101 **được hiển thị bình thường, không bị xóa nhầm**.
+
+### 4.3 Snapshot Baseline Epoch Metadata (Chuẩn Bị Cho Step 6)
+Khi thực hiện Snapshot Bootstrap:
+- Client xử lý `chapterReadStates[]` từ snapshot, cập nhật `effectiveHistoryEpochs[storyId] = item.storyHistoryEpoch`.
+- Nếu danh sách `chapterReadStates` rỗng (account đã xóa sạch lịch sử): Client đọc các tombstones từ snapshot staging store hoặc server metadata endpoint để điền đúng `effectiveHistoryEpochs[UUID_SENTINEL]`. Không suy đoán epoch nếu thiếu bằng chứng.
+
+---
+
+## 5. Khóa Lỗ Hổng P0-04: Post-Receipt Reconciliation & Bounded Grace State
+
+### 5.1 Vấn Đề Lệch Pha (Phase Mismatch) Sau Terminal Receipt
+1. Client có mutation $M_5$ (Chương 5, offline). Shadow đang ở Chương 3 (rev 100).
+2. Server chấp nhận $M_5$, gán revision 105, trả về `APPLIED`.
+3. Step 4 xóa $M_5$ khỏi `pending_mutations`.
+4. Nếu Projection lập tức chỉ đọc Shadow (đang ở rev 100): UI sẽ bị giật lùi về Chương 3 cho đến khi Delta Pull kéo được rev 105!
+
+### 5.2 Cơ Chế Bounded In-Flight Grace & Reconciliation Trigger
+- Khi Step 4 commit receipt `APPLIED` với `assignedRevision > lastSyncedServerRevision`:
+  - Web Sync Reconciler ghi nhận cờ `reconciliationPending = true` và lập tức kích hoạt Delta Pull ưu tiên cao.
+  - Projection Engine áp dụng **Bounded Reconciliation Grace State**: tạm thời duy trì hình ảnh của mutation vừa được commit trong bộ nhớ cache projection cho đến khi Delta Pull kéo thành công revision $\ge \text{assignedRevision}$ (hoặc hết timeout 5 giây).
+  - Khi Delta Pull hoàn tất: Shadow được cập nhật lên Chương 5 (rev 105), cờ grace được giải phóng. UI chuyển đổi mượt mà 100%, không giật lùi.
+
+---
+
+## 6. Khóa Lỗ Hổng P0-05: Anti-Tombstone Guard Cho Pending Mutations
+
 Khi phân giải `PROGRESS`:
-1. Nếu có `AuthoritativeShadow` và có `PendingMutation` trong hàng đợi:
-   - **Kịch bản A (Cùng Chapter):** `shadow.chapterId === pending.payload.chapterId`:
-     $$\text{progressPercentage} = \max(\text{shadow.progressPercentage}, \text{pending.payload.progressPercentage})$$
-     Lấy vị trí cuộn / số trang tương ứng với phần trăm lớn hơn.
-   - **Kịch bản B (Khác Chapter):**
-     - Mutation trong `pending_mutations` phản ánh **ý chí thao tác trực tiếp của người dùng tại thiết bị hiện tại (active user intent)**.
-     - Chừng nào mutation còn nằm trong hàng đợi (chưa bị Server từ chối), Projection **ưu tiên hiển thị trạng thái của Pending Mutation** (chương người dùng đang đọc).
-     - **Cơ chế an toàn:** Nếu sau đó Server từ chối mutation (do xung đột epoch, tombstone hoặc server đã ở chương mới hơn): Step 4 sẽ evict mutation khỏi pending queue $\to$ Projection tự động hoàn nguyên về Authoritative Shadow mà không cần phải so sánh thứ tự UUID chương!
+1. Nếu pending mutation có `observedHistoryEpoch`:
+   - So sánh: `mutation.observedHistoryEpoch < effectiveEpoch(storyId)` $\implies$ Mutation bị coi là stale/vi phạm tombstone, bị che khuất khỏi projection.
+2. Nếu pending mutation **KHÔNG CÓ** `observedHistoryEpoch` (trường optional):
+   - So sánh nhân quả: Nếu `BigInt(mutation.baseServerRevision) < BigInt(tombstone.serverRevision)` $\implies$ Mutation được tạo ra dựa trên trạng thái trước khi xóa, bị coi là stale và **bị loại bỏ khỏi projection**, ngăn chặn hoàn toàn việc làm sống lại bản ghi đã bị xóa.
 
 ---
 
-## 6. Khóa Lỗ Hổng P0-04: Phục Hồi Sau Receipt Độc Lập Khỏi RAM Event Callbacks
+## 7. Phạm Vi Triển Khai Phê Duyệt: Bước 5.2a (IndexedDB v4 Migration)
 
-### 6.1 Bản Chất: Projection Là Hàm Thuần Túy Trên Dữ Liệu Bền Vững (Pure Function)
+Bước 5.2a được triển khai độc lập, khép kín trong `apps/web`:
 
-$$\text{ProjectedState} = \mathcal{F}_{\text{causal}}\Big(\text{IDB}(\texttt{sync\_authoritative\_replicas}),\; \text{IDB}(\texttt{pending\_mutations})\Big)$$
+### 7.1 Thay Đổi Schema (`indexed-db-client.ts`)
+* `DB_VERSION = 4`.
+* Bổ sung `STORE_AUTHORITATIVE_REPLICAS = 'sync_authoritative_replicas'`:
+  - `keyPath: ['ownerScope', 'domain', 'entityKey']`.
+  - Index `by_scope_domain: ['ownerScope', 'domain']`.
+  - Index `by_scope_revision: ['ownerScope', 'serverRevision']`.
+* Bổ sung `authoritativeBaselineStatus` vào `LocalSyncMeta`.
+* Nâng cấp `onupgradeneeded`:
+  - Khởi tạo store thứ 9 trên database mới.
+  - Nâng cấp từ v3 lên v4: giữ nguyên 100% dữ liệu của 8 stores cũ.
+  - Thiết lập `authoritativeBaselineStatus = 'UNINITIALIZED'` cho mọi scope hiện hữu.
+* Nâng cấp `purgeScope`: Xóa đồng bộ cả `STORE_AUTHORITATIVE_REPLICAS`.
+* Đăng ký listeners `onversionchange` (đóng database connection an toàn) và `onblocked`.
 
-- Cả `sync_authoritative_replicas` và `pending_mutations` đều được lưu trữ bền vững trên đĩa thông qua IndexedDB.
-- Khi Step 4 nhận terminal receipt từ Server:
-  - `APPLIED` $\implies$ Step 4 xóa mutation khỏi `pending_mutations` trong transaction IndexedDB.
-  - `REJECTED_TOMBSTONE` $\implies$ Step 4 gọi `evictReplicaAndRemovePending` xóa mutation trong transaction IndexedDB.
-  - `REJECTED_STALE` $\implies$ Step 4 chuyển mutation sang `quarantined_mutations` trong transaction IndexedDB.
-
-### 6.2 Độc Lập Khỏi RAM Callbacks:
-- Các sự kiện `onProjectionDirty`, `BroadcastChannel`, hay UI State Hook **CHỈ LÀ TÍN HIỆU TỐI ƯU HÓA ĐỘ TRỄ (Latency Optimization)** để thông báo React component render lại ngay lập tức trong tab đang mở.
-- **Nếu xảy ra Crash, Reload, F5, hoặc Event bị mất:**
-  - Lần đọc tiếp theo (khi người dùng mở lại trang, click vào truyện, chuyển tab): Projection Engine truy vấn trực tiếp từ IndexedDB.
-  - Vì mutation đã bị xóa/quarantine bền vững trong IndexedDB ở Step 4, Projection tính toán lại và trả về trạng thái chuẩn hóa của Authoritative Shadow ngay lập tức.
-  - **Bảo toàn 100% Step 4:** Hoàn toàn không cần sửa đổi bất kỳ logic callback nào trong `mutation-queue.ts`.
-
----
-
-## 7. Khóa Lỗ Hổng P0-05: Checkpoint OCC Guard & Epoch Governance Trong Delta Pull
-
-### 7.1 Checkpoint Optimistic Concurrency Control (OCC) Guard
-Để ngăn chặn hai tiến trình pull đồng quy (hoặc race condition giữa 2 tab/worker) ghi đè checkpoint:
-1. Trước khi mở transaction ghi, Reconciler đọc `expectedRevision = sync_meta.lastSyncedServerRevision`.
-2. Mở 1 transaction `readwrite` duy nhất trên `['sync_authoritative_replicas', 'sync_meta']`.
-3. Đọc lại `currentRevision = sync_meta.lastSyncedServerRevision` bên trong transaction lock:
-   - **OCC Assertion:**
-     ```typescript
-     if (currentRevision !== expectedRevision) {
-       tx.abort();
-       throw new ConcurrentPullDetectedError(
-         `OCC Checkpoint Mismatch: expected "${expectedRevision}", found "${currentRevision}". Pull transaction aborted.`
-       );
-     }
-     ```
-4. Áp dụng toàn bộ deltas và ghi đè checkpoint mới vào `sync_meta`.
-5. Transaction commit.
-
-### 7.2 Quản Lý Epoch Chặt Chẽ Theo Từng Domain & Thao Tác:
-- **`HISTORY DELETE`:**
-  - Bắt buộc kiểm tra: `delta.payload?.epoch` phải là số nguyên dương hợp lệ.
-  - Nếu thiếu: Ném lỗi `MalformedDeltaPayloadError` và fail-closed ngay lập tức.
-  - Ghi nhận `epoch = Number(delta.payload.epoch)` vào tombstone record và `sync_meta`.
-- **`HISTORY UPSERT`:**
-  - Server delta của `UPSERT` **KHÔNG TẠO RA EPOCH MỚI**.
-  - Delta chỉ mang `progressPercentage` chuẩn hóa. Trường `observedHistoryEpoch` từ client chỉ dùng cho kiểm tra lúc push, không được dùng làm epoch mới cho server replica.
-  - Shadow giữ nguyên `epoch` hiện tại của story/global.
-- **`PROGRESS`:**
-  - Ghi nhận tiến trình đọc. Kiểm tra causal: delta progress có revision phải lớn hơn tombstone revision của story đó.
+### 7.2 Các Bất Biến Giới Hạn Của Bước 5.2a
+1. **Không thực hiện Snapshot Bootstrap thật:** Chưa gọi API snapshot hay chuyển `READY`.
+2. **Không bật Shadow làm nguồn dữ liệu UI:** Giữ nguyên legacy read models cho đến khi Step 5.2c hoàn tất.
+3. **Không sửa Mutation Queue:** Step 4 giữ nguyên 100% mã nguồn đóng băng.
+4. **Scope Isolation:** Guest scope không được kích hoạt authenticated sync.
 
 ---
 
-## 8. Các Tinh Chỉnh P1 Cho IndexedDB v4
+## 8. Ma Trận Kiểm Thử Bước 5.2a (ST-07 & ST-10 Mở Rộng)
 
-1. **Xử lý Thứ Tự Decimal Strings trên Index `by_scope_revision`:**
-   - Trong IndexedDB, chuỗi được sắp xếp theo thứ tự từ điển (`"100" < "20"`).
-   - **Quy tắc bất biến:** CẤM sử dụng `IDBKeyRange.bound` trực tiếp trên decimal strings để lấy thứ tự revision.
-   - Index `by_scope_revision` CHỈ được dùng để tra cứu đẳng thức chính xác `['ownerScope', exactRevisionString]` hoặc prefix scan theo `ownerScope`.
-   - Mọi thao tác so sánh lớn hơn/nhỏ hơn giữa các revision đều phải ép kiểu qua `BigInt(...)` trong JavaScript.
-2. **Hydration Policy Cho UI Presentation:**
-   - Server delta chỉ chứa dữ liệu thuần đồng bộ (ID, progress, timestamp), không chứa metadata trình bày (tiêu đề truyện, ảnh bìa).
-   - Khi Projection Engine sinh trạng thái cho UI:
-     - Nếu có thông tin trong local metadata catalog (`stories_catalog` / local cache): tự động hydrate để trả về đối tượng `LocalReadingHistory` / `LocalReadingProgress` hoàn chỉnh.
-     - Nếu chưa có: trả về canonical projection kèm cờ `needsHydration: true` để component hiển thị skeleton / placeholder an toàn.
-3. **Quy Tắc Tránh Ghi Đè Đồng Quy Vào Local Materialized Stores (`progress`, `history`):**
-   - Projection Engine CHỈ thực hiện ghi đè ngược (materialize write-back) vào `progress` hoặc `history` khi:
-     (1) Không có bất kỳ pending mutation nào đang hoạt động cho thực thể đó, HOẶC
-     (2) Mutation vừa nhận terminal receipt và đã được dọn sạch khỏi `pending_mutations`.
-   - Ngăn chặn hoàn toàn việc ghi đè làm mất thao tác đọc người dùng vừa thực hiện.
-4. **Xử Lý Schema Upgrade Đa Tab (`onversionchange` & `onblocked`):**
-   - Trong `indexed-db-client.ts`: Đăng ký listener `db.onversionchange`:
-     Tự động đóng kết nối database (`db.close()`) và phát thông báo qua BroadcastChannel yêu cầu các tab đồng bộ reload.
-   - Bắt sự kiện `request.onblocked` khi upgrade v3 $\to$ v4 để hiển thị thông báo thân thiện yêu cầu người dùng đóng các tab OmniNovel cũ.
+Tạo file kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-v4-migration.spec.ts`:
+
+| Mã Test | Tên Kịch Bản Kiểm Thử | Yêu Cầu Xác Minh |
+| :--- | :--- | :--- |
+| **ST-07A** | Fresh Database v4 Creation | Khởi tạo DB mới: tạo đủ 9 object stores, đúng composite keyPaths và indexes. |
+| **ST-07B** | Migration v3 $\to$ v4 Data Preservation | Database v3 có sẵn dữ liệu 8 stores: nâng lên v4 bảo toàn 100% dữ liệu cũ, thêm store thứ 9 rỗng. |
+| **ST-07C** | Multi-Tab Versionchange Handling | Đang mở kết nối v3, kết nối thứ hai mở v4: kết nối cũ nhận `onversionchange` và đóng an toàn. |
+| **ST-10A** | Baseline Default UNINITIALIZED on Rev 0 | Account mới với checkpoint "0" hoặc thiếu `sync_meta`: `authoritativeBaselineStatus` là `UNINITIALIZED`. |
+| **ST-10B** | Baseline UNINITIALIZED on Rev > 0 | Nâng cấp từ v3 có checkpoint "150": `authoritativeBaselineStatus` tự động là `UNINITIALIZED`. |
+| **ST-10C** | Fail-Closed Admission Guard | `isAuthoritativeReady` trả về `false` khi `UNINITIALIZED` hoặc `BOOTSTRAPPING`; chỉ `true` khi `READY`. |
+| **ST-10D** | Interrupted Bootstrap Recovery | Scope ở `BOOTSTRAPPING` sau crash/reload: Reconciler nhận diện chưa `READY` và cho phép reset an toàn. |
+| **ST-10E** | Scope Isolation & Guest Guard | Thao tác baseline trên `account:user-1` không ảnh hưởng `guest:dev-1` hay `account:user-2`. |
+| **ST-10F** | PurgeScope Wipes 9 Stores | `purgeScope` dọn sạch cả 9 stores cho target scope, không ảnh hưởng scope khác. |
 
 ---
 
-## 9. Ma Trận Kiểm Thử Mở Rộng: ST-01 Đến ST-15
+## 9. Kết Luận
 
-Toàn bộ 15 kịch bản kiểm thử bắt buộc phải thực thi trên IndexedDB thực tế (fake-indexeddb trong Vitest có deterministic barriers) và đối soát persisted state sau khi đóng/mở lại connection:
-
-| Test ID | Mục tiêu kiểm thử | Kịch bản mô phỏng | Kết quả kỳ vọng |
-| :--- | :--- | :--- | :--- |
-| **ST-01** | Checkpoint & Shadow Atomicity | Ghi shadow gặp lỗi `QuotaExceededError` nhân tạo. | Cả shadow lẫn checkpoint trong `sync_meta` đều giữ nguyên, rollback 100%. |
-| **ST-02** | Authoritative Payload Preservation | Shadow nhận Chương 3. User có pending Chương 5. Server reject Chương 5. | Projection hoàn nguyên về Chương 3 mà không cần network request. |
-| **ST-03** | Step 4 Isolation Guard | Step 4 thực hiện `recordReadingSessionWithMutation()`. | `sync_authoritative_replicas` không bị ghi đè, `pending_mutations` nhận mutation bình thường. |
-| **ST-04** | Monotonic History Upsert Merge | Shadow có 80%. Pending mutation gửi 30%. | Projection giữ nguyên 80%. Sau khi pending flush, shadow vẫn là 80%. |
-| **ST-05** | Tombstone Eviction via Delta Pull | Delta Pull nhận `DELETE` với epoch mới. | Shadow chuyển `isDeleted = true`, projection lập tức xóa bản ghi khỏi UI. |
-| **ST-06** | Multi-Scope Tenant Isolation | Scope `account:user-1` và Scope `guest:dev-1` cùng đọc 1 truyện. | Hai shadow records và hai projection hoàn toàn tách biệt theo composite key. |
-| **ST-07** | Database v3 $\to$ v4 Migration | Nâng cấp từ database v3 có sẵn dữ liệu bookmarks, progress, history. | Toàn bộ dữ liệu cũ nguyên vẹn, store mới được khởi tạo với đúng indexes. |
-| **ST-08** | **Story-wide HISTORY DELETE Cascading** | Shadow có 3 chapters của Story A. Nhận delta DELETE Story A. | Toàn bộ 3 chapter shadows của Story A bị xóa sạch; tombstone Story A được ghi nhận. |
-| **ST-09** | **Global HISTORY DELETE Multi-Scope** | Scope A và Scope B đều có history. Nhận global DELETE tại Scope A. | Toàn bộ history/progress của Scope A bị xóa sạch; Scope B **giữ nguyên 100%**. |
-| **ST-10** | **Baseline Bootstrap Guard** | v3 có checkpoint `"150"`, nâng cấp lên v4 với Shadow rỗng. | `authoritativeBaselineStatus` là `UNINITIALIZED`, từ chối `READY`, kích hoạt snapshot bootstrap. |
-| **ST-11** | **Concurrent Pull OCC Abort** | Hai tiến trình pull cùng chạy trên checkpoint `"100"`. | Tiến trình 1 commit thành công `"105"`; Tiến trình 2 bị OCC abort với `ConcurrentPullDetectedError`. |
-| **ST-12** | **Entity Key Mismatch Mapping** | Mutation HISTORY mang entityId khác format shadow `${storyId}:${chapterId}`. | Helper ánh xạ chuẩn xác, projection tìm thấy pending mutation tương ứng. |
-| **ST-13** | **Post-Receipt Reload Determinism** | Mutation được `REJECTED_TOMBSTONE` trong IDB; kill tab ngay lập tức (không có RAM event). | Mở lại tab mới, projection đọc từ IDB và trả về trạng thái Shadow chuẩn xác 100%. |
-| **ST-14** | **In-Page Tombstone Then Upsert** | Một trang delta chứa DELETE Story A, sau đó có UPSERT Story A với epoch mới. | Xử lý tuần tự theo revision: xóa cũ, sau đó chấp thuận bản ghi mới với epoch mới. |
-| **ST-15** | **Concurrent Local Write vs Materialization** | Người dùng vừa đọc truyện (ghi local) đúng lúc projection materialization chạy. | Không bị ghi đè mất pending mutation của người dùng; pending intent được bảo toàn. |
-
----
-
-## 10. Lộ Trình Triển Khai Sau Phê Duyệt Contract Gate (Phase 5.2 Phased Rollout)
-
-Sau khi RFC Revision 2.1 được phê duyệt, Phase 5.2 sẽ được triển khai theo 4 bước phân rã nghiêm ngặt, đảm bảo không gây xáo trộn hệ thống:
-
-```
-[Contract Gate Approved] 
-       │
-       ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Bước 5.2a: IndexedDB v4 Migration & Baseline Lifecycle      │
-│ • Thêm store sync_authoritative_replicas                    │
-│ • Cập nhật sync_meta với authoritativeBaselineStatus        │
-│ • Kiểm thử ST-07, ST-10 (Vitest)                            │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Bước 5.2b: Authoritative Shadow DAL & OCC Delta Ingestion   │
-│ • Atomic write transaction: Shadow + Checkpoint + OCC Guard │
-│ • Cascading Eviction cho Story-wide & Global DELETE         │
-│ • Kiểm thử ST-01, ST-05, ST-08, ST-09, ST-11, ST-14        │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Bước 5.2c: Causal Projection Engine & Hydration             │
-│ • Pure deterministic function: Resolve(Shadow, Pending)     │
-│ • Dual-layer tombstone suppression                          │
-│ • Kiểm thử ST-02, ST-03, ST-04, ST-06, ST-12, ST-13, ST-15 │
-└──────────────────────────────┬──────────────────────────────┘
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────┐
-│ Bước 5.2d: Delta Pull Reconciler Integration                │
-│ • Kéo /sync/changes, phân trang checkpoint                  │
-│ • Tích hợp Web Locks Tab Leader (Step 3)                    │
-│ • Chạy toàn bộ 15/15 acceptance tests ST-01 đến ST-15       │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Khuyến nghị:** Phê duyệt toàn văn tài liệu **Storage Coexistence RFC Revision 2.1** để chính thức đóng Contract Gate và mở khóa cấp phép cho **Bước 5.2a**.
+Tài liệu **Storage Coexistence Revision 2.2** đã chuẩn hóa toàn diện 5 vấn đề cốt lõi. Bước **5.2a (IndexedDB v4 Migration & Baseline Lifecycle)** đã được phê duyệt có phạm vi giới hạn để bắt đầu triển khai ngay lập tức.

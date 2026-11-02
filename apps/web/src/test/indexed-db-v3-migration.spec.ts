@@ -3,6 +3,7 @@ import 'fake-indexeddb/auto';
 import {
   IndexedDbClient,
   DB_NAME,
+  DB_VERSION,
   STORE_BOOKMARKS,
   STORE_PROGRESS,
   STORE_HISTORY,
@@ -51,7 +52,7 @@ describe('Task 7C.3 — Step 2: IndexedDB v3 Migration, Schema & Atomic Primitiv
     it('creates all 8 object stores with correct composite keyPaths and indexes on a fresh database', async () => {
       const db = await dbClient.getDatabase();
       expect(db.name).toBe(DB_NAME);
-      expect(db.version).toBe(3);
+      expect(db.version).toBe(DB_VERSION);
 
       // Verify all 8 stores exist
       const storeNames = Array.from(db.objectStoreNames);
@@ -140,7 +141,7 @@ describe('Task 7C.3 — Step 2: IndexedDB v3 Migration, Schema & Atomic Primitiv
 
       // Step B: Open through IndexedDbClient, triggering onupgradeneeded from version 1 to 3
       const db = await dbClient.getDatabase();
-      expect(db.version).toBe(3);
+      expect(db.version).toBe(DB_VERSION);
 
       // Verify all new stores exist
       expect(db.objectStoreNames.contains(STORE_SYNC_META)).toBe(true);
@@ -202,7 +203,7 @@ describe('Task 7C.3 — Step 2: IndexedDB v3 Migration, Schema & Atomic Primitiv
 
       // Step B: Open through IndexedDbClient, upgrading from v2 to v3
       const db = await dbClient.getDatabase();
-      expect(db.version).toBe(3);
+      expect(db.version).toBe(DB_VERSION);
 
       // Verify all 8 stores exist
       expect(db.objectStoreNames.contains(STORE_SYNC_META)).toBe(true);

@@ -1,6 +1,6 @@
 # 📋 Kế Hoạch Triển Khai Task 7C.3 — Web Client Sync Reconciler (`apps/web`)
 
-> **Trạng thái:** `[/] Đang Triển Khai (PHASE 5.1 CLOSED & FULLY VERIFIED — STORAGE COEXISTENCE REVISION 2.1 SUBMITTED — CONTRACT GATE PENDING)`  
+> **Trạng thái:** `[/] Đang Triển Khai (PHASE 5.1 FROZEN CLEAN — STORAGE REVISION 2.2 APPROVED — PHASE 5.2a IN PROGRESS)`  
 > **Cơ sở pháp lý / Baseline nghiệm thu:** Task 7C.2 FROZEN CLEAN tại baseline `4e9c4dbfb96a6b7957090d8a306485333014c550` (Hosted CI Run #40701295336).  
 > **Phạm vi:** Trực thuộc **Phase 7C: Unified Multi-Device Sync Engine**. Triển khai bộ đồng bộ Client-Side trên ứng dụng Web Next.js 16 / React 19.
 

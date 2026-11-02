@@ -494,6 +494,49 @@ describe('Sync Conflict Resolvers (Step 2)', () => {
       expect(result.status).toBe('REJECTED_TOMBSTONE');
       expect(result.reason).toBe('STALE_HISTORY_EPOCH');
     });
+
+    it('DT-19A: should accept HISTORY DELETE operation without requiring observedHistoryEpoch', () => {
+      const deleteMutation = createMockMutation({
+        domain: SyncDomain.HISTORY,
+        operation: SyncOperation.DELETE,
+        entityId: 'story-123',
+        payload: {
+          storyId: 'story-123',
+        },
+      });
+
+      const result = resolver.resolve({
+        userId: USER_ID,
+        mutation: deleteMutation,
+        canonicalHash: 'hash',
+        serverRevision: '100',
+        minActiveRevision: '50',
+        effectiveHistoryEpoch: 5,
+      });
+
+      expect(result.status).toBe('APPLIED');
+      expect(result.message).toContain('History deletion accepted');
+    });
+
+    it('DT-19A (Global): should accept global HISTORY DELETE with entityId "all" without observedHistoryEpoch', () => {
+      const globalDeleteMutation = createMockMutation({
+        domain: SyncDomain.HISTORY,
+        operation: SyncOperation.DELETE,
+        entityId: 'all',
+        payload: {},
+      });
+
+      const result = resolver.resolve({
+        userId: USER_ID,
+        mutation: globalDeleteMutation,
+        canonicalHash: 'hash',
+        serverRevision: '100',
+        minActiveRevision: '50',
+        effectiveHistoryEpoch: 10,
+      });
+
+      expect(result.status).toBe('APPLIED');
+    });
   });
 
   describe('PreferenceConflictResolver', () => {

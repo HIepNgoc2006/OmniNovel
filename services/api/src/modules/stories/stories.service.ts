@@ -631,7 +631,7 @@ export class StoriesService {
       );
 
       // 6. Upsert chapter_read_states (Read history & completion state per chapter)
-      await manager.query(
+      const readStateRows = await manager.query(
         `INSERT INTO chapter_read_states (
           user_id, chapter_id, last_version_id, max_progress_percentage, completed_at, last_read_at
         ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::numeric, $5::timestamptz, NOW())
@@ -643,7 +643,8 @@ export class StoriesService {
             WHEN EXCLUDED.max_progress_percentage >= 80 THEN NOW()
             ELSE NULL
           END,
-          last_read_at = NOW()`,
+          last_read_at = NOW()
+        RETURNING max_progress_percentage`,
         [
           userId,
           dto.chapterId,
@@ -652,6 +653,19 @@ export class StoriesService {
           completedAt,
         ],
       );
+
+      const histRow =
+        Array.isArray(readStateRows) && Array.isArray(readStateRows[0])
+          ? readStateRows[0][0]
+          : readStateRows?.[0];
+      const actualMaxProgress = histRow
+        ? Number(histRow.max_progress_percentage ?? histRow.maxProgressPercentage)
+        : null;
+      if (actualMaxProgress === null || Number.isNaN(actualMaxProgress)) {
+        throw new Error(
+          `Failed to commit chapter_read_states max_progress_percentage for chapter ${dto.chapterId}`,
+        );
+      }
 
       if (this.syncLogEmitter) {
         await this.syncLogEmitter.emit(manager, {
@@ -681,7 +695,7 @@ export class StoriesService {
             storyId: derivedStoryId,
             chapterId: dto.chapterId,
             chapterVersionId: dto.chapterVersionId || null,
-            progressPercentage: Number(progressPercentage),
+            progressPercentage: actualMaxProgress,
             observedHistoryEpoch: currentEpoch,
           },
         });

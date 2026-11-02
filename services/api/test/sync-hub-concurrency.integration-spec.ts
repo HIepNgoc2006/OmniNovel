@@ -1027,4 +1027,191 @@ describe('Task 7C.2a: Core Sync Hub Integrity & Concurrency Remediation (Integra
       expect(state[0].current_sync_revision.toString()).toBe('1');
     });
   });
+
+  describe('DT-20: Canonical State & Epoch Alignment in Sync Deltas (Phase 5.1)', () => {
+    it('DT-20C: StoriesService.recordReadingProgress should emit HISTORY UPSERT delta with canonical committed max_progress_percentage', async () => {
+      const userId = await createTestUser();
+      const story = await createTestStory(userId);
+
+      // 1. Initial read at 70%
+      await storiesService.recordReadingProgress(userId, {
+        chapterId: story.chapterId,
+        chapterVersionId: story.versionId,
+        readingMode: 'PAGED',
+        progressPercentage: 70,
+        scrollPosition: 0,
+        pageIndex: 7,
+        anchorBlockId: null,
+        textOffset: 0,
+        writeEpoch: 0,
+      });
+
+      // 2. Second read with lower progress 30% (e.g. user re-reading earlier pages)
+      await storiesService.recordReadingProgress(userId, {
+        chapterId: story.chapterId,
+        chapterVersionId: story.versionId,
+        readingMode: 'PAGED',
+        progressPercentage: 30,
+        scrollPosition: 0,
+        pageIndex: 3,
+        anchorBlockId: null,
+        textOffset: 0,
+        writeEpoch: 0,
+      });
+
+      // 3. Verify database state: chapter_read_states.max_progress_percentage must be 70
+      const readStates = await dataSource.query(
+        `SELECT max_progress_percentage FROM chapter_read_states WHERE user_id = $1 AND chapter_id = $2`,
+        [userId, story.chapterId],
+      );
+      expect(readStates).toHaveLength(1);
+      expect(Number(readStates[0].max_progress_percentage)).toBe(70);
+
+      // 4. Verify sync_change_log: the second delta for HISTORY must emit canonical 70%, NOT 30%
+      const historyLogs = await dataSource.query(
+        `SELECT revision, payload FROM sync_change_log
+         WHERE user_id = $1 AND domain = 'HISTORY'
+         ORDER BY revision ASC`,
+        [userId],
+      );
+      expect(historyLogs.length).toBe(2);
+      const firstPayload =
+        typeof historyLogs[0].payload === 'string'
+          ? JSON.parse(historyLogs[0].payload)
+          : historyLogs[0].payload;
+      const secondPayload =
+        typeof historyLogs[1].payload === 'string'
+          ? JSON.parse(historyLogs[1].payload)
+          : historyLogs[1].payload;
+
+      expect(firstPayload.progressPercentage).toBe(70);
+      expect(secondPayload.progressPercentage).toBe(70); // Canonical committed state!
+    });
+
+    it('DT-20B (Integration): SyncService.pushMutations with HISTORY UPSERT should emit canonical max_progress_percentage', async () => {
+      const userId = await createTestUser();
+      const story = await createTestStory(userId);
+      const clientId = uuidv4();
+
+      // Seed 80% directly in chapter_read_states
+      await dataSource.query(
+        `INSERT INTO chapter_read_states (user_id, chapter_id, last_version_id, max_progress_percentage, completed_at, last_read_at)
+         VALUES ($1, $2, $3, 80, NOW(), NOW())`,
+        [userId, story.chapterId, story.versionId],
+      );
+
+      // Client sends HISTORY UPSERT with 25%
+      const res = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.HISTORY,
+            entityId: story.chapterId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '0',
+            payload: {
+              storyId: story.storyId,
+              chapterId: story.chapterId,
+              progressPercentage: 25,
+              observedHistoryEpoch: 0,
+            },
+          },
+        ],
+      });
+
+      expect(res.results[0].status).toBe('APPLIED');
+
+      // Verify sync_change_log has canonical 80%
+      const logs = await dataSource.query(
+        `SELECT payload FROM sync_change_log WHERE user_id = $1 AND domain = 'HISTORY'`,
+        [userId],
+      );
+      expect(logs).toHaveLength(1);
+      const payload =
+        typeof logs[0].payload === 'string'
+          ? JSON.parse(logs[0].payload)
+          : logs[0].payload;
+      expect(payload.progressPercentage).toBe(80);
+    });
+
+    it('DT-19B & DT-20A (Integration): global HISTORY DELETE should bump epoch, create dual tombstones, and emit UUID sentinel', async () => {
+      const userId = await createTestUser();
+      const story = await createTestStory(userId);
+      const clientId = uuidv4();
+
+      // Seed progress and read state
+      await dataSource.query(
+        `INSERT INTO reading_progress (user_id, story_id, chapter_id, reading_mode, progress_percentage, scroll_position, page_index, updated_at)
+         VALUES ($1, $2, $3, 'PAGED', 50, 0, 5, NOW())`,
+        [userId, story.storyId, story.chapterId],
+      );
+      await dataSource.query(
+        `INSERT INTO chapter_read_states (user_id, chapter_id, max_progress_percentage, last_read_at)
+         VALUES ($1, $2, 50, NOW())`,
+        [userId, story.chapterId],
+      );
+
+      // Push global HISTORY DELETE with entityId 'all'
+      const res = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.HISTORY,
+            entityId: 'all',
+            operation: SyncOperation.DELETE,
+            baseServerRevision: '0',
+            payload: {},
+          },
+        ],
+      });
+
+      expect(res.results[0].status).toBe('APPLIED');
+
+      // 1. Verify reading_progress and chapter_read_states are cleared
+      const progress = await dataSource.query(
+        `SELECT * FROM reading_progress WHERE user_id = $1`,
+        [userId],
+      );
+      expect(progress).toHaveLength(0);
+
+      const states = await dataSource.query(
+        `SELECT * FROM chapter_read_states WHERE user_id = $1`,
+        [userId],
+      );
+      expect(states).toHaveLength(0);
+
+      // 2. Verify reading_history_epoch_counters bumped to 1
+      const counter = await dataSource.query(
+        `SELECT epoch FROM reading_history_epoch_counters WHERE user_id = $1`,
+        [userId],
+      );
+      expect(counter).toHaveLength(1);
+      expect(counter[0].epoch).toBe(1);
+
+      // 3. Verify sync_change_log entityId is normalized to UUID sentinel
+      const logs = await dataSource.query(
+        `SELECT entity_id, payload FROM sync_change_log WHERE user_id = $1 AND domain = 'HISTORY'`,
+        [userId],
+      );
+      expect(logs).toHaveLength(1);
+      expect(logs[0].entity_id).toBe('00000000-0000-0000-0000-000000000000');
+      const payload =
+        typeof logs[0].payload === 'string'
+          ? JSON.parse(logs[0].payload)
+          : logs[0].payload;
+      expect(payload.epoch).toBe(1);
+
+      // 4. Verify dual tombstones exist in sync_tombstones
+      const tombstones = await dataSource.query(
+        `SELECT entity_id FROM sync_tombstones WHERE user_id = $1 AND domain = 'HISTORY' ORDER BY entity_id ASC`,
+        [userId],
+      );
+      expect(tombstones.map((t: any) => t.entity_id).sort()).toEqual([
+        '00000000-0000-0000-0000-000000000000',
+        'all',
+      ]);
+    });
+  });
 });

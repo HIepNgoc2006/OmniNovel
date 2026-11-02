@@ -933,7 +933,7 @@ export class SyncService {
             const progressPercentage = Number(payload.progressPercentage ?? 0);
             const completedAt = progressPercentage >= 80 ? new Date() : null;
 
-            await runner.query(
+            const upsertRes = await runner.query(
               `INSERT INTO chapter_read_states (
                  user_id, chapter_id, last_version_id, max_progress_percentage, completed_at, last_read_at
                ) VALUES ($1::uuid, $2::uuid, $3::uuid, $4::numeric, $5::timestamptz, NOW())
@@ -945,7 +945,8 @@ export class SyncService {
                    WHEN EXCLUDED.max_progress_percentage >= 80 THEN NOW()
                    ELSE NULL
                  END,
-                 last_read_at = NOW()`,
+                 last_read_at = NOW()
+               RETURNING max_progress_percentage`,
               [
                 userId,
                 payload.chapterId,
@@ -954,6 +955,18 @@ export class SyncService {
                 completedAt,
               ],
             );
+
+            const row = Array.isArray(upsertRes) && Array.isArray(upsertRes[0]) ? upsertRes[0][0] : upsertRes?.[0];
+            const actualMaxProgress = row ? Number(row.max_progress_percentage ?? row.maxProgressPercentage) : null;
+            if (actualMaxProgress === null || isNaN(actualMaxProgress)) {
+              throw new Error(
+                `Failed to retrieve committed max_progress_percentage from chapter_read_states for user ${userId}, chapter ${payload.chapterId}`,
+              );
+            }
+            resolution.resolvedPayload = {
+              ...payload,
+              progressPercentage: actualMaxProgress,
+            };
           } else if (mutation.operation === SyncOperation.DELETE) {
             // P0-03: HISTORY DELETE đúng ngữ nghĩa theo Phase 7B
             const counterRes = await runner.query(
@@ -968,10 +981,11 @@ export class SyncService {
             const counterRow = Array.isArray(counterRes) && Array.isArray(counterRes[0]) ? counterRes[0][0] : counterRes?.[0];
             const newEpoch = Number(counterRow?.epoch ?? 1);
 
-            if (
+            const isGlobal =
               mutation.entityId === '00000000-0000-0000-0000-000000000000' ||
-              mutation.entityId === 'all'
-            ) {
+              mutation.entityId === 'all';
+
+            if (isGlobal) {
               // Xóa toàn bộ lịch sử
               await runner.query(`DELETE FROM reading_progress WHERE user_id = $1`, [userId]);
               await runner.query(`DELETE FROM chapter_read_states WHERE user_id = $1`, [userId]);
@@ -983,6 +997,7 @@ export class SyncService {
                    deleted_at = NOW()`,
                 [userId, newEpoch],
               );
+              resolution.resolvedPayload = { epoch: newEpoch };
             } else {
               // Xóa lịch sử theo truyện
               await runner.query(
@@ -1006,6 +1021,7 @@ export class SyncService {
                    deleted_at = NOW()`,
                 [userId, mutation.entityId, newEpoch],
               );
+              resolution.resolvedPayload = { storyId: mutation.entityId, epoch: newEpoch };
             }
           }
         } else if (mutation.domain === SyncDomain.PREFERENCE) {
@@ -1030,6 +1046,12 @@ export class SyncService {
           }
         }
 
+        const changeLogEntityId =
+          mutation.domain === SyncDomain.HISTORY &&
+          (mutation.entityId === 'all' || mutation.entityId === '00000000-0000-0000-0000-000000000000')
+            ? '00000000-0000-0000-0000-000000000000'
+            : mutation.entityId;
+
         // Ghi vào sync_change_log
         await runner.query(
           `INSERT INTO sync_change_log (
@@ -1043,7 +1065,7 @@ export class SyncService {
             mutation.clientId,
             mutation.mutationId,
             mutation.domain,
-            mutation.entityId,
+            changeLogEntityId,
             mutation.operation,
             JSON.stringify(resolution.resolvedPayload || mutation.payload),
           ],
@@ -1052,7 +1074,8 @@ export class SyncService {
         // Cập nhật sync_tombstones nếu là thao tác DELETE
         if (mutation.operation === SyncOperation.DELETE) {
           const tombstoneEntityId =
-            mutation.domain === SyncDomain.HISTORY && mutation.entityId === 'all'
+            mutation.domain === SyncDomain.HISTORY &&
+            (mutation.entityId === 'all' || mutation.entityId === '00000000-0000-0000-0000-000000000000')
               ? '00000000-0000-0000-0000-000000000000'
               : mutation.entityId;
 
@@ -1068,17 +1091,20 @@ export class SyncService {
             [userId, mutation.domain, tombstoneEntityId, assignedRevStr],
           );
 
-          if (mutation.domain === SyncDomain.HISTORY && mutation.entityId === 'all') {
+          if (
+            mutation.domain === SyncDomain.HISTORY &&
+            (mutation.entityId === 'all' || mutation.entityId === '00000000-0000-0000-0000-000000000000')
+          ) {
             await runner.query(
               `INSERT INTO sync_tombstones (
                  user_id, domain, entity_id, deleted_at_revision, created_at
                ) VALUES (
-                 $1, $2, 'all', $3, NOW()
+                 $1, $2, $3, $4, NOW()
                )
                ON CONFLICT (user_id, domain, entity_id) DO UPDATE SET
                  deleted_at_revision = EXCLUDED.deleted_at_revision,
                  created_at = NOW()`,
-              [userId, mutation.domain, assignedRevStr],
+              [userId, mutation.domain, 'all', assignedRevStr],
             );
           }
         }

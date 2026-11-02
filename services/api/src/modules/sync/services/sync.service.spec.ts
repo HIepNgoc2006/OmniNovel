@@ -427,12 +427,12 @@ describe('SyncService (Step 3 Unit & Concurrency Tests)', () => {
         clientId: CLIENT_ID,
         mutationId: '55555555-5555-4555-8555-555555555555',
         domain: SyncDomain.HISTORY,
-        entityId: 'chap-10',
+        entityId: '11111111-2222-3333-4444-555555555555',
         operation: SyncOperation.UPSERT,
         baseServerRevision: '10',
         payload: {
-          storyId: 'story-1',
-          chapterId: 'chap-10',
+          storyId: '99999999-9999-4999-8999-999999999999',
+          chapterId: '11111111-2222-3333-4444-555555555555',
           progressPercentage: 100,
           observedHistoryEpoch: 0,
         },
@@ -446,7 +446,7 @@ describe('SyncService (Step 3 Unit & Concurrency Tests)', () => {
         .mockResolvedValueOnce([]) // SELECT receipts
         .mockResolvedValueOnce([]) // SELECT tombstones
         .mockResolvedValueOnce([{ effectiveEpoch: 0 }]) // SELECT epoch (0 === 0)
-        .mockResolvedValueOnce([]) // INSERT chapter_read_states
+        .mockResolvedValueOnce([{ max_progress_percentage: 100 }]) // INSERT chapter_read_states RETURNING max_progress_percentage
         .mockResolvedValueOnce([]) // INSERT sync_change_log
         .mockResolvedValueOnce([]) // INSERT receipts
         .mockResolvedValueOnce([]); // UPDATE user_sync_state
@@ -460,6 +460,148 @@ describe('SyncService (Step 3 Unit & Concurrency Tests)', () => {
       expect(executedQueries).not.toContain('user_progression');
       expect(executedQueries).not.toContain('reward_transactions');
       expect(executedQueries).not.toContain('daily_checkins');
+    });
+
+    it('DT-20B: HISTORY UPSERT should emit canonical max_progress_percentage committed in DB', async () => {
+      const mutationId = '77777777-7777-4777-8777-777777777777';
+      const mutation = {
+        clientId: CLIENT_ID,
+        mutationId,
+        domain: SyncDomain.HISTORY,
+        entityId: '11111111-2222-3333-4444-555555555555',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '10',
+        payload: {
+          storyId: '99999999-9999-4999-8999-999999999999',
+          chapterId: '11111111-2222-3333-4444-555555555555',
+          progressPercentage: 30, // Client sends 30%
+          observedHistoryEpoch: 0,
+        },
+      };
+
+      mockRunner.query
+        .mockResolvedValueOnce([]) // INSERT user_sync_state
+        .mockResolvedValueOnce([
+          { current_sync_revision: 10n, min_active_revision: 0n },
+        ]) // SELECT FOR UPDATE
+        .mockResolvedValueOnce([]) // SELECT receipts
+        .mockResolvedValueOnce([]) // SELECT tombstones
+        .mockResolvedValueOnce([{ effectiveEpoch: 0 }]) // SELECT epoch
+        .mockResolvedValueOnce([{ max_progress_percentage: 90 }]) // DB already has 90%, GREATEST returns 90
+        .mockResolvedValueOnce([]) // INSERT sync_change_log
+        .mockResolvedValueOnce([]) // INSERT receipts
+        .mockResolvedValueOnce([]); // UPDATE user_sync_state
+
+      const res = await syncService.pushMutations(USER_ID, { mutations: [mutation] });
+
+      expect(res.results[0].status).toBe('APPLIED');
+      expect(res.newServerRevision).toBe('11');
+
+      // Check the payload written to sync_change_log: must have progressPercentage: 90 (canonical), not 30
+      const changeLogCall = mockRunner.query.mock.calls.find((call: any[]) =>
+        call[0].includes('INSERT INTO sync_change_log'),
+      );
+      expect(changeLogCall).toBeDefined();
+      const changeLogPayload = JSON.parse(changeLogCall[1][7]); // payload is 8th param ($8, index 7)
+      expect(changeLogPayload.progressPercentage).toBe(90);
+    });
+
+    it('DT-19B: story-wide HISTORY DELETE should bump epoch, record tombstone, and emit payload with epoch', async () => {
+      const mutationId = '88888888-8888-4888-8888-888888888888';
+      const storyId = '99999999-9999-4999-8999-999999999999';
+      const mutation = {
+        clientId: CLIENT_ID,
+        mutationId,
+        domain: SyncDomain.HISTORY,
+        entityId: storyId,
+        operation: SyncOperation.DELETE,
+        baseServerRevision: '10',
+        payload: { storyId },
+      };
+
+      mockRunner.query
+        .mockResolvedValueOnce([]) // INSERT user_sync_state
+        .mockResolvedValueOnce([
+          { current_sync_revision: 10n, min_active_revision: 0n },
+        ]) // SELECT FOR UPDATE
+        .mockResolvedValueOnce([]) // SELECT receipts
+        .mockResolvedValueOnce([]) // SELECT tombstones
+        .mockResolvedValueOnce([]) // SELECT epoch
+        .mockResolvedValueOnce([{ epoch: 3 }]) // INSERT reading_history_epoch_counters ... RETURNING epoch
+        .mockResolvedValueOnce([]) // DELETE reading_progress
+        .mockResolvedValueOnce([]) // DELETE chapter_read_states
+        .mockResolvedValueOnce([]) // INSERT reading_history_tombstones
+        .mockResolvedValueOnce([]) // INSERT sync_tombstones
+        .mockResolvedValueOnce([]) // INSERT sync_change_log
+        .mockResolvedValueOnce([]) // INSERT receipts
+        .mockResolvedValueOnce([]); // UPDATE user_sync_state
+
+      const res = await syncService.pushMutations(USER_ID, { mutations: [mutation] });
+
+      expect(res.results[0].status).toBe('APPLIED');
+      expect(res.newServerRevision).toBe('11');
+
+      // Verify sync_change_log has payload with epoch: 3
+      const changeLogCall = mockRunner.query.mock.calls.find((call: any[]) =>
+        call[0].includes('INSERT INTO sync_change_log'),
+      );
+      expect(changeLogCall).toBeDefined();
+      const changeLogPayload = JSON.parse(changeLogCall[1][7]); // payload is 8th param ($8, index 7)
+      expect(changeLogPayload.storyId).toBe(storyId);
+      expect(changeLogPayload.epoch).toBe(3);
+    });
+
+    it('DT-20A: global HISTORY DELETE should normalize entityId to UUID sentinel and write dual tombstones', async () => {
+      const mutationId = '99999999-9999-4999-8999-999999999999';
+      const mutation = {
+        clientId: CLIENT_ID,
+        mutationId,
+        domain: SyncDomain.HISTORY,
+        entityId: 'all',
+        operation: SyncOperation.DELETE,
+        baseServerRevision: '10',
+        payload: {},
+      };
+
+      mockRunner.query
+        .mockResolvedValueOnce([]) // INSERT user_sync_state
+        .mockResolvedValueOnce([
+          { current_sync_revision: 10n, min_active_revision: 0n },
+        ]) // SELECT FOR UPDATE
+        .mockResolvedValueOnce([]) // SELECT receipts
+        .mockResolvedValueOnce([]) // SELECT tombstones
+        // No epoch query because 'all' is not UUID
+        .mockResolvedValueOnce([{ epoch: 1 }]) // INSERT reading_history_epoch_counters ... RETURNING epoch
+        .mockResolvedValueOnce([]) // DELETE ALL reading_progress
+        .mockResolvedValueOnce([]) // DELETE ALL chapter_read_states
+        .mockResolvedValueOnce([]) // INSERT reading_history_tombstones
+        .mockResolvedValueOnce([]) // INSERT sync_tombstones (sentinel UUID)
+        .mockResolvedValueOnce([]) // INSERT sync_tombstones ('all' alias)
+        .mockResolvedValueOnce([]) // INSERT sync_change_log
+        .mockResolvedValueOnce([]) // INSERT receipts
+        .mockResolvedValueOnce([]); // UPDATE user_sync_state
+
+      const res = await syncService.pushMutations(USER_ID, { mutations: [mutation] });
+
+      expect(res.results[0].status).toBe('APPLIED');
+      expect(res.newServerRevision).toBe('11');
+
+      // Verify sync_change_log entityId is normalized UUID sentinel
+      const changeLogCall = mockRunner.query.mock.calls.find((call: any[]) =>
+        call[0].includes('INSERT INTO sync_change_log'),
+      );
+      expect(changeLogCall).toBeDefined();
+      expect(changeLogCall[1][5]).toBe('00000000-0000-0000-0000-000000000000'); // entityId param $6 (index 5)
+      const changeLogPayload = JSON.parse(changeLogCall[1][7]); // payload param $8 (index 7)
+      expect(changeLogPayload.epoch).toBe(1);
+
+      // Verify sync_tombstones inserted with sentinel and alias
+      const tombstoneCalls = mockRunner.query.mock.calls.filter((call: any[]) =>
+        call[0].includes('INSERT INTO sync_tombstones'),
+      );
+      expect(tombstoneCalls.length).toBe(2);
+      expect(tombstoneCalls[0][1][2]).toBe('00000000-0000-0000-0000-000000000000');
+      expect(tombstoneCalls[1][1][2]).toBe('all');
     });
   });
 

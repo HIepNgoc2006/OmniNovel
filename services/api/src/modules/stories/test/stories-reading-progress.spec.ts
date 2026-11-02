@@ -80,7 +80,7 @@ describe('StoriesService.ReadingProgress Contract Parity (Phase 5B.0)', () => {
       .mockResolvedValueOnce([{ epoch: '0' }]) // SELECT FOR SHARE
       .mockResolvedValueOnce([{ currentEpoch: '0' }]) // resolve currentEpoch = 0
       .mockResolvedValueOnce([]) // upsert reading_progress
-      .mockResolvedValueOnce([]); // upsert chapter_read_states
+      .mockResolvedValueOnce([{ max_progress_percentage: 55.5 }]); // upsert chapter_read_states RETURNING max_progress_percentage
 
     dataSourceMock.transaction.mockImplementation(async (cb: any) => {
       return cb({ query: managerQueryMock });

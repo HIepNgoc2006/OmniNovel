@@ -1029,12 +1029,12 @@ describe('Task 7C.2a: Core Sync Hub Integrity & Concurrency Remediation (Integra
   });
 
   describe('DT-20: Canonical State & Epoch Alignment in Sync Deltas (Phase 5.1)', () => {
-    it('DT-20C: StoriesService.recordReadingProgress should emit HISTORY UPSERT delta with canonical committed max_progress_percentage', async () => {
+    it('DT-20C: StoriesService.saveReadingProgress should emit HISTORY UPSERT delta with canonical committed max_progress_percentage', async () => {
       const userId = await createTestUser();
       const story = await createTestStory(userId);
 
       // 1. Initial read at 70%
-      await storiesService.recordReadingProgress(userId, {
+      await storiesService.saveReadingProgress(userId, {
         chapterId: story.chapterId,
         chapterVersionId: story.versionId,
         readingMode: 'PAGED',
@@ -1047,7 +1047,7 @@ describe('Task 7C.2a: Core Sync Hub Integrity & Concurrency Remediation (Integra
       });
 
       // 2. Second read with lower progress 30% (e.g. user re-reading earlier pages)
-      await storiesService.recordReadingProgress(userId, {
+      await storiesService.saveReadingProgress(userId, {
         chapterId: story.chapterId,
         chapterVersionId: story.versionId,
         readingMode: 'PAGED',

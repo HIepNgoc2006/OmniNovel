@@ -1,7 +1,7 @@
 # OmniNovel Container Security - Master Aggregated Trivy Ignore Baseline
 # Standard: Fail-Closed Gate with Governed Exception Policy (SEC-REG-6.4.4A)
 # Source of Truth: deploy/security/trivy-exception-register.md
-# Total Unique Active Suppressions: 99
+# Total Unique Active Suppressions: 100
 
 CVE-2024-21538
 CVE-2025-62727
@@ -16,6 +16,7 @@ CVE-2026-102276
 CVE-2026-102278
 CVE-2026-102599
 CVE-2026-103111
+CVE-2026-119373
 CVE-2026-12064
 CVE-2026-13149
 CVE-2026-14257

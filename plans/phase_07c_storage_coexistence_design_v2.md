@@ -169,24 +169,28 @@ Bước 5.2a được triển khai độc lập, khép kín trong `apps/web`:
 
 ---
 
-## 8. Ma Trận Kiểm Thử Bước 5.2a (ST-07 & ST-10 Mở Rộng)
+## 8. Ma Trận Kiểm Thử Bước 5.2a (ST-07 & ST-10 Mở Rộng & Negative Admission Regressions)
 
 Tạo file kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-v4-migration.spec.ts`:
 
-| Mã Test | Tên Kịch Bản Kiểm Thử | Yêu Cầu Xác Minh |
-| :--- | :--- | :--- |
-| **ST-07A** | Fresh Database v4 Creation | Khởi tạo DB mới: tạo đủ 9 object stores, đúng composite keyPaths và indexes. |
-| **ST-07B** | Migration v3 $\to$ v4 Data Preservation | Database v3 có sẵn dữ liệu 8 stores: nâng lên v4 bảo toàn 100% dữ liệu cũ, thêm store thứ 9 rỗng. |
-| **ST-07C** | Multi-Tab Versionchange Handling | Đang mở kết nối v3, kết nối thứ hai mở v4: kết nối cũ nhận `onversionchange` và đóng an toàn. |
-| **ST-10A** | Baseline Default UNINITIALIZED on Rev 0 | Account mới với checkpoint "0" hoặc thiếu `sync_meta`: `authoritativeBaselineStatus` là `UNINITIALIZED`. |
-| **ST-10B** | Baseline UNINITIALIZED on Rev > 0 | Nâng cấp từ v3 có checkpoint "150": `authoritativeBaselineStatus` tự động là `UNINITIALIZED`. |
-| **ST-10C** | Fail-Closed Admission Guard | `isAuthoritativeReady` trả về `false` khi `UNINITIALIZED` hoặc `BOOTSTRAPPING`; chỉ `true` khi `READY`. |
-| **ST-10D** | Interrupted Bootstrap Recovery | Scope ở `BOOTSTRAPPING` sau crash/reload: Reconciler nhận diện chưa `READY` và cho phép reset an toàn. |
-| **ST-10E** | Scope Isolation & Guest Guard | Thao tác baseline trên `account:user-1` không ảnh hưởng `guest:dev-1` hay `account:user-2`. |
-| **ST-10F** | PurgeScope Wipes 9 Stores | `purgeScope` dọn sạch cả 9 stores cho target scope, không ảnh hưởng scope khác. |
+| Mã Test | Tên Kịch Bản Kiểm Thử | Yêu Cầu Xác Minh | Kết Quả |
+| :--- | :--- | :--- | :--- |
+| **ST-07A** | Fresh Database v4 Creation | Khởi tạo DB mới: tạo đủ 9 object stores, đúng composite keyPaths và indexes. | **PASS** (11ms) |
+| **ST-07B** | Migration v3 $\to$ v4 Data Preservation | Database v3 có sẵn dữ liệu toàn bộ 8 stores: nâng lên v4 bảo toàn 100% dữ liệu cũ, thêm store thứ 9 rỗng. | **PASS** (11ms) |
+| **ST-07C** | Multi-Tab Versionchange Handling | `dbInstance` đóng an toàn và bị nullified khi nhận event `versionchange`. | **PASS** (1ms) |
+| **ST-07D** | Real Multi-Connection Upgrade Handshake | Kết nối thực v3 nhận `onversionchange`, tự đóng an toàn, cho phép kết nối v4 nâng cấp thành công mà không bị block. | **PASS** (1ms) |
+| **ST-10A** | Baseline Default UNINITIALIZED on Rev 0 | Account mới với checkpoint "0" hoặc thiếu `sync_meta`: `authoritativeBaselineStatus` là `UNINITIALIZED`. | **PASS** (3ms) |
+| **ST-10B** | Baseline UNINITIALIZED on Rev > 0 | Nâng cấp từ v3 có checkpoint "150": `authoritativeBaselineStatus` tự động là `UNINITIALIZED`. | **PASS** (1ms) |
+| **ST-10C** | Fail-Closed Admission Guard | `isAuthoritativeReady` trả về `false` khi `UNINITIALIZED` hoặc `BOOTSTRAPPING`; chỉ `true` sau `finalizeAuthoritativeBaseline`. | **PASS** (2ms) |
+| **ST-10D** | Interrupted Bootstrap Recovery | Scope ở `BOOTSTRAPPING` sau crash/reload: Reconciler nhận diện chưa `READY` và cho phép reset an toàn về `UNINITIALIZED`. | **PASS** (2ms) |
+| **ST-10E** | Scope Isolation & Guest Guard | Thao tác baseline trên `account:usr-alpha` không ảnh hưởng `guest:dev-beta` hay `account:usr-gamma`. | **PASS** (2ms) |
+| **ST-10F** | Shadow CRUD Primitives | Thao tác `put`, `get` exact key, `get` by domain, và `delete` trên store thứ 9 (`sync_authoritative_replicas`). | **PASS** (5ms) |
+| **ST-10G** | PurgeScope Wipes All 9 Stores | `purgeScope` dọn sạch toàn bộ 9 stores cho target scope, bảo toàn 100% dữ liệu 9 stores của keep scope. | **PASS** (7ms) |
+| **ST-10H** | Negative Admission Regressions | Cấm chuyển thẳng sang `READY` qua `setAuthoritativeBaselineStatus` (`ReadyStatusTransitionForbiddenError`); cấm bypass qua `putSyncMeta`; từ chối checkpoint chưa verify hoặc rev "0". | **PASS** (7ms) |
+| **ST-10I** | Bootstrap Durability Across Connection Reopen | Trạng thái `BOOTSTRAPPING` lưu bền vững qua `dbClient.close()` và khởi tạo `IndexedDbClient` mới; duy trì fail-closed `isAuthoritativeReady = false`. | **PASS** (2ms) |
 
 ---
 
 ## 9. Kết Luận
 
-Tài liệu **Storage Coexistence Revision 2.2** đã chuẩn hóa toàn diện 5 vấn đề cốt lõi. Bước **5.2a (IndexedDB v4 Migration & Baseline Lifecycle)** đã được phê duyệt có phạm vi giới hạn để bắt đầu triển khai ngay lập tức.
+Tài liệu **Storage Coexistence Revision 2.2** đã chuẩn hóa toàn diện 5 vấn đề cốt lõi. Bước **5.2a (IndexedDB v4 Migration & Baseline Lifecycle Remediation)** đã hoàn tất triển khai và vượt qua 100% các bài kiểm thử nghiêm ngặt (17/17 tests PASS, 55/55 test files web PASS, Next.js 16 build SUCCESS). Hệ thống sẵn sàng bước vào thẩm định nghiệm thu Step 5.2a trước khi triển khai Step 5.2b.

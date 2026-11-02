@@ -17,6 +17,7 @@ import {
   LocalPendingMutation,
   AuthoritativeShadowRecord,
   AuthoritativeBaselineStatus,
+  ReadyStatusTransitionForbiddenError,
 } from '../lib/storage/indexed-db-client';
 import {
   SyncDomain,
@@ -89,7 +90,7 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
     });
   });
 
-  describe('ST-07B: Migration v3 to v4 with 100% Data Preservation', () => {
+  describe('ST-07B: Migration v3 to v4 with 100% Data Preservation Across All 8 Stores', () => {
     it('seamlessly migrates from v3 to v4, preserves all 8 stores, and initializes empty shadow store', async () => {
       // Step 1: Manually create a v3 database with 8 stores
       await new Promise<void>((resolve, reject) => {
@@ -112,7 +113,16 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
         req.onsuccess = () => {
           const v3Db = req.result;
           const seedTx = v3Db.transaction(
-            [STORE_BOOKMARKS, STORE_PROGRESS, STORE_HISTORY, STORE_PREFERENCES, STORE_SYNC_META, STORE_PENDING_MUTATIONS],
+            [
+              STORE_BOOKMARKS,
+              STORE_PROGRESS,
+              STORE_HISTORY,
+              STORE_PREFERENCES,
+              STORE_SYNC_META,
+              STORE_PENDING_MUTATIONS,
+              STORE_QUARANTINED_MUTATIONS,
+              STORE_SNAPSHOT_STAGING,
+            ],
             'readwrite',
           );
           seedTx.objectStore(STORE_BOOKMARKS).put({
@@ -161,6 +171,27 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
             createdAt: '2026-11-01T00:00:00.000Z',
             retryCount: 0,
           });
+          seedTx.objectStore(STORE_QUARANTINED_MUTATIONS).put({
+            ownerScope: 'account:usr-v3',
+            mutationId: 'mut-q-v3',
+            clientId: 'client-1',
+            domain: SyncDomain.PROGRESS,
+            entityId: 'story-v3-1',
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '140',
+            payload: { storyId: 'story-v3-1' },
+            rejectionReason: 'HTTP_409_CONFLICT',
+            rejectedAt: '2026-11-01T00:00:00.000Z',
+            triageStatus: 'PENDING',
+          });
+          seedTx.objectStore(STORE_SNAPSHOT_STAGING).put({
+            ownerScope: 'account:usr-v3',
+            sessionId: 'snap-sess-v3',
+            domain: SyncDomain.BOOKMARK,
+            entityKey: 'story-v3-1',
+            payload: { title: 'V3 Snapshot Bookmark' },
+            stagedAt: '2026-11-01T00:00:00.000Z',
+          });
           seedTx.oncomplete = () => {
             v3Db.close();
             resolve();
@@ -175,7 +206,7 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
       expect(db.version).toBe(4);
       expect(db.objectStoreNames.contains(STORE_AUTHORITATIVE_REPLICAS)).toBe(true);
 
-      // Step 3: Verify 100% preservation of all seeded data
+      // Step 3: Verify 100% preservation of all 8 seeded stores
       const bm = await dbClient.getBookmark('account:usr-v3', 'story-v3-1');
       expect(bm?.title).toBe('V3 Bookmark Title');
 
@@ -193,13 +224,20 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
       expect(pending).toHaveLength(1);
       expect(pending[0].mutationId).toBe('mut-v3-1');
 
+      const quarantined = await dbClient.getQuarantinedMutation('account:usr-v3', 'mut-q-v3');
+      expect(quarantined?.rejectionReason).toBe('HTTP_409_CONFLICT');
+
+      const snapshotItems = await dbClient.getSnapshotStagingItems('account:usr-v3', 'snap-sess-v3');
+      expect(snapshotItems).toHaveLength(1);
+      expect(snapshotItems[0].payload).toEqual({ title: 'V3 Snapshot Bookmark' });
+
       // Step 4: Verify sync_meta has authoritativeBaselineStatus = 'UNINITIALIZED' (P0-01/P0-02 Guard)
       const meta = await dbClient.getSyncMeta('account:usr-v3');
       expect(meta?.lastSyncedServerRevision).toBe('150');
       expect(meta?.effectiveHistoryEpochs).toEqual({ 'story-v3-1': 2 });
       expect(meta?.authoritativeBaselineStatus).toBe('UNINITIALIZED');
 
-      // Step 5: Verify new shadow store is empty for this scope
+      // Step 5: Verify new shadow store (store 9) is initialized empty for this scope
       const shadows = await dbClient.getAuthoritativeShadowsByDomain('account:usr-v3', SyncDomain.PROGRESS);
       expect(shadows).toHaveLength(0);
     });
@@ -217,6 +255,39 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
 
       // dbInstance should be nullified and closed
       expect(dbClient['dbInstance']).toBeNull();
+    });
+  });
+
+  describe('ST-07D: Real Multi-Connection Upgrade via onversionchange Handshake', () => {
+    it('automatically closes v3 connection on versionchange event, allowing v4 upgrade to proceed without blocking', async () => {
+      let v3VersionChangeFired = false;
+      let v3Db: IDBDatabase | null = null;
+
+      // 1. Open real v3 database connection
+      await new Promise<void>((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, 3);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          db.createObjectStore(STORE_BOOKMARKS, { keyPath: ['ownerScope', 'storyId'] });
+        };
+        req.onsuccess = () => {
+          v3Db = req.result;
+          v3Db.onversionchange = () => {
+            v3VersionChangeFired = true;
+            v3Db?.close();
+          };
+          resolve();
+        };
+        req.onerror = () => reject(req.error);
+      });
+
+      expect(v3Db).not.toBeNull();
+
+      // 2. Open via dbClient (requests v4)
+      const v4Db = await dbClient.getDatabase();
+      expect(v4Db.version).toBe(4);
+      expect(v3VersionChangeFired).toBe(true);
+      expect(v4Db.objectStoreNames.contains(STORE_AUTHORITATIVE_REPLICAS)).toBe(true);
     });
   });
 
@@ -265,7 +336,7 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
   });
 
   describe('ST-10C & ST-10D: Admission Guard & Interrupted Bootstrap Recovery', () => {
-    it('ST-10C: isAuthoritativeReady returns false for UNINITIALIZED and BOOTSTRAPPING; true only for READY', async () => {
+    it('ST-10C: isAuthoritativeReady returns false for UNINITIALIZED and BOOTSTRAPPING; true only after verified finalization', async () => {
       const scope = 'account:usr-stage';
 
       await dbClient.setAuthoritativeBaselineStatus(scope, 'UNINITIALIZED');
@@ -274,7 +345,12 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
       await dbClient.setAuthoritativeBaselineStatus(scope, 'BOOTSTRAPPING');
       expect(await dbClient.isAuthoritativeReady(scope)).toBe(false);
 
-      await dbClient.setAuthoritativeBaselineStatus(scope, 'READY');
+      // Verified finalization unlocks READY
+      await dbClient.finalizeAuthoritativeBaseline(scope, {
+        validatedRevision: '100',
+        source: 'ZERO_TO_HEAD_REPLAY',
+        checkpointVerified: true,
+      });
       expect(await dbClient.isAuthoritativeReady(scope)).toBe(true);
     });
 
@@ -299,7 +375,11 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
 
   describe('ST-10E: Scope Isolation & Tenant Guard', () => {
     it('mutations to baseline status on one scope do not affect other scopes or guest scopes', async () => {
-      await dbClient.setAuthoritativeBaselineStatus('account:usr-alpha', 'READY');
+      await dbClient.finalizeAuthoritativeBaseline('account:usr-alpha', {
+        validatedRevision: '200',
+        source: 'SNAPSHOT_BOOTSTRAP',
+        checkpointVerified: true,
+      });
       await dbClient.setAuthoritativeBaselineStatus('guest:dev-beta', 'UNINITIALIZED');
 
       expect(await dbClient.getAuthoritativeBaselineStatus('account:usr-alpha')).toBe('READY');
@@ -381,7 +461,7 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
       const targetScope = 'account:purge-me';
       const keepScope = 'account:keep-me';
 
-      // Seed both scopes in bookmark, progress, shadow, and meta
+      // 1. Seed STORE_BOOKMARKS and STORE_PENDING_MUTATIONS
       await dbClient.putBookmarkWithMutation(
         { ownerScope: targetScope, storyId: 'story-p1', title: 'P1', createdAt: new Date().toISOString() },
         {
@@ -397,7 +477,6 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
           retryCount: 0,
         },
       );
-
       await dbClient.putBookmarkWithMutation(
         { ownerScope: keepScope, storyId: 'story-k1', title: 'K1', createdAt: new Date().toISOString() },
         {
@@ -414,6 +493,115 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
         },
       );
 
+      // 2. Seed STORE_PROGRESS and STORE_HISTORY via recordReadingSession
+      await dbClient.recordReadingSession(
+        {
+          ownerScope: targetScope,
+          storyId: 'story-p1',
+          chapterId: 'chap-1',
+          progressPercentage: 50,
+          readingMode: ReadingMode.WEBTOON,
+          scrollPosition: 0,
+          pageIndex: 0,
+          deviceTimestamp: Date.now(),
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          ownerScope: targetScope,
+          storyId: 'story-p1',
+          chapterId: 'chap-1',
+          storyTitle: 'Story Title P1',
+          chapterNumber: 1,
+          progressPercentage: 50,
+          lastReadAt: new Date().toISOString(),
+        },
+      );
+      await dbClient.recordReadingSession(
+        {
+          ownerScope: keepScope,
+          storyId: 'story-k1',
+          chapterId: 'chap-1',
+          progressPercentage: 90,
+          readingMode: ReadingMode.WEBTOON,
+          scrollPosition: 0,
+          pageIndex: 0,
+          deviceTimestamp: Date.now(),
+          updatedAt: new Date().toISOString(),
+        },
+        {
+          ownerScope: keepScope,
+          storyId: 'story-k1',
+          chapterId: 'chap-1',
+          storyTitle: 'Story Title K1',
+          chapterNumber: 1,
+          progressPercentage: 90,
+          lastReadAt: new Date().toISOString(),
+        },
+      );
+
+      // 3. Seed STORE_PREFERENCES
+      await dbClient.putPreference({
+        ownerScope: targetScope,
+        key: 'theme',
+        value: 'dark',
+        updatedAt: new Date().toISOString(),
+      });
+      await dbClient.putPreference({
+        ownerScope: keepScope,
+        key: 'theme',
+        value: 'light',
+        updatedAt: new Date().toISOString(),
+      });
+
+      // 4. Seed STORE_QUARANTINED_MUTATIONS
+      await dbClient.quarantineMutation({
+        ownerScope: targetScope,
+        mutationId: 'mut-p3-q',
+        clientId: 'client-1',
+        domain: SyncDomain.PROGRESS,
+        entityId: 'story-p1',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '0',
+        payload: { storyId: 'story-p1' },
+        rejectionReason: 'TEST_REJECTION',
+        rejectedAt: new Date().toISOString(),
+      });
+      await dbClient.quarantineMutation({
+        ownerScope: keepScope,
+        mutationId: 'mut-k3-q',
+        clientId: 'client-1',
+        domain: SyncDomain.PROGRESS,
+        entityId: 'story-k1',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '0',
+        payload: { storyId: 'story-k1' },
+        rejectionReason: 'TEST_REJECTION',
+        rejectedAt: new Date().toISOString(),
+      });
+
+      // 5. Seed STORE_SNAPSHOT_STAGING
+      await dbClient.stageSnapshotItems([
+        {
+          ownerScope: targetScope,
+          sessionId: 'sess-p',
+          domain: SyncDomain.BOOKMARK,
+          entityKey: 'story-p1',
+          payload: { storyId: 'story-p1' },
+          stagedAt: new Date().toISOString(),
+        },
+      ]);
+      await dbClient.stageSnapshotItems([
+        {
+          ownerScope: keepScope,
+          sessionId: 'sess-k',
+          domain: SyncDomain.BOOKMARK,
+          entityKey: 'story-k1',
+          payload: { storyId: 'story-k1' },
+          stagedAt: new Date().toISOString(),
+        },
+      ]);
+
+      // 6. Seed STORE_AUTHORITATIVE_REPLICAS (store 9)
       await dbClient.putAuthoritativeShadow({
         ownerScope: targetScope,
         domain: SyncDomain.PROGRESS,
@@ -424,7 +612,6 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
         isDeleted: false,
         updatedAt: Date.now(),
       });
-
       await dbClient.putAuthoritativeShadow({
         ownerScope: keepScope,
         domain: SyncDomain.PROGRESS,
@@ -436,24 +623,131 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
         updatedAt: Date.now(),
       });
 
-      await dbClient.setAuthoritativeBaselineStatus(targetScope, 'READY');
-      await dbClient.setAuthoritativeBaselineStatus(keepScope, 'READY');
+      // 7. Seed STORE_SYNC_META via finalizeAuthoritativeBaseline
+      await dbClient.finalizeAuthoritativeBaseline(targetScope, {
+        validatedRevision: '100',
+        source: 'SNAPSHOT_BOOTSTRAP',
+        checkpointVerified: true,
+      });
+      await dbClient.finalizeAuthoritativeBaseline(keepScope, {
+        validatedRevision: '100',
+        source: 'SNAPSHOT_BOOTSTRAP',
+        checkpointVerified: true,
+      });
 
-      // Purge target scope
+      // Purge target scope across all 9 stores
       await dbClient.purgeScope(targetScope);
 
-      // Verify target scope is completely empty
+      // Verify target scope is completely empty across all 9 stores
       expect(await dbClient.getBookmark(targetScope, 'story-p1')).toBeNull();
-      expect(await dbClient.getAuthoritativeShadow(targetScope, SyncDomain.PROGRESS, 'story-p1')).toBeNull();
+      expect(await dbClient.getProgress(targetScope, 'story-p1')).toBeNull();
+      expect(await dbClient.getHistory(targetScope)).toHaveLength(0);
+      expect(await dbClient.getPreference(targetScope, 'theme')).toBeNull();
       expect(await dbClient.getPendingMutations(targetScope)).toHaveLength(0);
+      expect(await dbClient.getQuarantinedMutation(targetScope, 'mut-p3-q')).toBeNull();
+      expect(await dbClient.getSnapshotStagingItems(targetScope, 'sess-p')).toHaveLength(0);
+      expect(await dbClient.getAuthoritativeShadow(targetScope, SyncDomain.PROGRESS, 'story-p1')).toBeNull();
       expect(await dbClient.getSyncMeta(targetScope)).toBeNull();
       expect(await dbClient.getAuthoritativeBaselineStatus(targetScope)).toBe('UNINITIALIZED');
 
-      // Verify keep scope is 100% untouched
+      // Verify keep scope is 100% untouched across all 9 stores
       expect(await dbClient.getBookmark(keepScope, 'story-k1')).not.toBeNull();
-      expect(await dbClient.getAuthoritativeShadow(keepScope, SyncDomain.PROGRESS, 'story-k1')).not.toBeNull();
+      expect(await dbClient.getProgress(keepScope, 'story-k1')).not.toBeNull();
+      expect(await dbClient.getHistory(keepScope)).toHaveLength(1);
+      expect(await dbClient.getPreference(keepScope, 'theme')).not.toBeNull();
       expect(await dbClient.getPendingMutations(keepScope)).toHaveLength(1);
+      expect(await dbClient.getQuarantinedMutation(keepScope, 'mut-k3-q')).not.toBeNull();
+      expect(await dbClient.getSnapshotStagingItems(keepScope, 'sess-k')).toHaveLength(1);
+      expect(await dbClient.getAuthoritativeShadow(keepScope, SyncDomain.PROGRESS, 'story-k1')).not.toBeNull();
+      expect(await dbClient.getSyncMeta(keepScope)).not.toBeNull();
       expect(await dbClient.getAuthoritativeBaselineStatus(keepScope)).toBe('READY');
+    });
+  });
+
+  describe('ST-10H: Negative Regressions & Baseline Admission Rejections', () => {
+    it('rejects direct transition to READY via setAuthoritativeBaselineStatus with ReadyStatusTransitionForbiddenError', async () => {
+      const scope = 'account:usr-forbidden-ready';
+      await expect(
+        dbClient.setAuthoritativeBaselineStatus(scope, 'READY')
+      ).rejects.toThrow(ReadyStatusTransitionForbiddenError);
+
+      const status = await dbClient.getAuthoritativeBaselineStatus(scope);
+      expect(status).toBe('UNINITIALIZED');
+      expect(await dbClient.isAuthoritativeReady(scope)).toBe(false);
+    });
+
+    it('rejects bypass attempt to set READY via putSyncMeta on unverified scope', async () => {
+      const scope = 'account:usr-bypass-attempt';
+      await expect(
+        dbClient.putSyncMeta({
+          ownerScope: scope,
+          lastSyncedServerRevision: '100',
+          minActiveRevision: '50',
+          lastSyncTimestamp: new Date().toISOString(),
+          effectiveHistoryEpochs: {},
+          syncState: 'IDLE',
+          authoritativeBaselineStatus: 'READY',
+        })
+      ).rejects.toThrow(ReadyStatusTransitionForbiddenError);
+
+      const meta = await dbClient.getSyncMeta(scope);
+      expect(meta).toBeNull();
+      expect(await dbClient.isAuthoritativeReady(scope)).toBe(false);
+    });
+
+    it('rejects finalizeAuthoritativeBaseline with unverified checkpoint', async () => {
+      const scope = 'account:usr-unverified-ckpt';
+      await expect(
+        dbClient.finalizeAuthoritativeBaseline(scope, {
+          validatedRevision: '200',
+          source: 'SNAPSHOT_BOOTSTRAP',
+          checkpointVerified: false,
+        })
+      ).rejects.toThrow(/BASELINE_FINALIZATION_REJECTED.*checkpoint/i);
+
+      expect(await dbClient.isAuthoritativeReady(scope)).toBe(false);
+    });
+
+    it('rejects finalizeAuthoritativeBaseline with invalid revision "0" or empty string', async () => {
+      const scope = 'account:usr-rev-0';
+      await expect(
+        dbClient.finalizeAuthoritativeBaseline(scope, {
+          validatedRevision: '0',
+          source: 'ZERO_TO_HEAD_REPLAY',
+          checkpointVerified: true,
+        })
+      ).rejects.toThrow(/BASELINE_FINALIZATION_REJECTED.*revision "0"/i);
+
+      expect(await dbClient.isAuthoritativeReady(scope)).toBe(false);
+    });
+  });
+
+  describe('ST-10I: Interrupted Bootstrap Durability Across Connection Reopen', () => {
+    it('preserves BOOTSTRAPPING state across client restart and maintains fail-closed unready status', async () => {
+      const scope = 'account:usr-interrupted-bootstrap';
+
+      // 1. Enter BOOTSTRAPPING
+      await dbClient.setAuthoritativeBaselineStatus(scope, 'BOOTSTRAPPING');
+      expect(await dbClient.getAuthoritativeBaselineStatus(scope)).toBe('BOOTSTRAPPING');
+      expect(await dbClient.isAuthoritativeReady(scope)).toBe(false);
+
+      // 2. Close connection (simulating browser reload / client crash)
+      dbClient.close();
+
+      // 3. Open new client instance
+      const reconnectedClient = new IndexedDbClient();
+      try {
+        const persistedStatus = await reconnectedClient.getAuthoritativeBaselineStatus(scope);
+        expect(persistedStatus).toBe('BOOTSTRAPPING');
+        expect(await reconnectedClient.isAuthoritativeReady(scope)).toBe(false);
+
+        // 4. Clean recovery: Reconciler detects stale BOOTSTRAPPING and resets to UNINITIALIZED
+        await reconnectedClient.setAuthoritativeBaselineStatus(scope, 'UNINITIALIZED');
+        expect(await reconnectedClient.getAuthoritativeBaselineStatus(scope)).toBe('UNINITIALIZED');
+        expect(await reconnectedClient.isAuthoritativeReady(scope)).toBe(false);
+      } finally {
+        reconnectedClient.close();
+      }
     });
   });
 });

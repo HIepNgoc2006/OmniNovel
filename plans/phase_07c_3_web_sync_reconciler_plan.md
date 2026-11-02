@@ -165,13 +165,35 @@ apps/web/src/lib/
     - DT-20C: Integration test kiểm thử `StoriesService.saveReadingProgress` phát canonical delta HISTORY UPSERT từ DB RETURNING.
     - DT-20D: Integration test kiểm thử HISTORY UPSERT sau clear history từ chối stale epoch (`REJECTED_TOMBSTONE` / `STALE_HISTORY_EPOCH`) và chấp thuận matching epoch mới.
     - Toàn bộ 19/19 integration tests trong `sync-hub-concurrency.integration-spec.ts` PASS, 50/50 unit test suites (606 tests) toàn API PASS, `nest build` 0 lỗi TypeScript — **PHASE 5.1 CODE PASS & EVIDENCE DEBT FULLY RESOLVED** ✅.
+- [x] **Bước 5.2a (IndexedDB v4 Migration, Baseline Lifecycle & Fail-Closed Admission Remediation):**
+  - **Schema Nâng Cấp:** Nâng cấp `apps/web/src/lib/storage/indexed-db-client.ts` lên `DB_VERSION = 4`, bổ sung store thứ 9 `sync_authoritative_replicas` với 2 indexes `by_scope_domain: ['ownerScope', 'domain']` và `by_scope_revision: ['ownerScope', 'serverRevision']`.
+  - **100% Data Preservation:** Nâng cấp tự động từ v3 lên v4 bảo toàn 100% dữ liệu của 8 stores hiện hữu (`bookmarks`, `progress`, `history`, `preferences`, `sync_meta`, `pending_mutations`, `quarantined_mutations`, `snapshot_staging_store`); khởi tạo store thứ 9 rỗng.
+  - **P0-01 / P0-02 Remediation (Fail-Closed Admission Guard & Locked READY Transition):**
+    - Mọi bản ghi `sync_meta` khi nâng cấp hoặc tạo mới với checkpoint "0" đều có `authoritativeBaselineStatus: 'UNINITIALIZED'`.
+    - `setAuthoritativeBaselineStatus(ownerScope, status)` nghiêm cấm tuyệt đối chuyển thẳng sang `'READY'` (`ReadyStatusTransitionForbiddenError`), chỉ cho phép đặt `'UNINITIALIZED'` hoặc `'BOOTSTRAPPING'`.
+    - `putSyncMeta()` ngăn chặn triệt để hành vi bypass để nâng một scope chưa xác minh lên `'READY'`.
+    - Triển khai primitive nguyên tử `finalizeAuthoritativeBaseline(ownerScope, proof)` bắt buộc cung cấp bằng chứng xác minh protocol (checkpoint verified, revision hợp lệ khác "0").
+    - Đánh dấu tường minh `putAuthoritativeShadow` là internal/test-only primitive; cấm production Delta Pull gọi trực tiếp (chờ Step 5.2b `applyAuthoritativeDeltaPage`).
+  - **Bộ Kiểm Thử Toàn Diện (ST-07 & ST-10 Mở Rộng):**
+    - ST-07A: 9 stores, composite keyPaths, indexes.
+    - ST-07B: Bảo toàn dữ liệu 100% trên cả 8 stores v3.
+    - ST-07C: onversionchange graceful shutdown.
+    - ST-07D: Real multi-connection upgrade handshake qua onversionchange.
+    - ST-10A/B: UNINITIALIZED default cho missing meta, checkpoint 0, checkpoint > 0.
+    - ST-10C/D: Fail-closed admission guard và interrupted bootstrap recovery.
+    - ST-10E: Cách ly đa scope và tenant guard.
+    - ST-10F: Authoritative shadow CRUD primitives.
+    - ST-10G: PurgeScope dọn sạch toàn diện cả 9 stores cho target scope, bảo toàn 100% dữ liệu 9 stores của keep scope.
+    - ST-10H: Negative admission regressions (cấm direct READY, cấm putSyncMeta bypass, từ chối checkpoint unverified, từ chối revision 0).
+    - ST-10I: Interrupted bootstrap durability across connection reopen (lưu bền vững BOOTSTRAPPING, duy trì fail-closed unready).
+  - **Nghiệm Thu Local:** 17/17 tests `indexed-db-v4-migration.spec.ts` PASS, 55/55 test files (783/783 tests) toàn bộ Web suite PASS, TypeScript (`tsc --noEmit`) 0 lỗi, Next.js 16 production build SUCCESS — **STEP 5.2a REMEDIATION CLOSED & FROZEN CLEAN LOCAL** ✅.
 - [ ] **Bước 5.2 (Web Delta Pull Reconciler & Phased Storage Rollout):**
   - **Gate Review Phán Quyết:** Phương án Revision 1 (`_syncStatus`) bị BLOCKED; Kiến trúc Revision 2 (`sync_authoritative_replicas` + Projection) được ACCEPTED IN PRINCIPLE; Đã hoàn thiện toàn diện **Storage Coexistence Revision 2.1 — Tombstone-Safe Shadow, Bootstrap Baseline & Causal Projection Contract** (chi tiết tại [`plans/phase_07c_storage_coexistence_design_v2.md`](file:///E:/Workspace2/Doctruyen_project/plans/phase_07c_storage_coexistence_design_v2.md)).
   - **Lộ trình Phased Rollout phân rã nghiêm ngặt (chờ Contract Gate Approval):**
-    - **Bước 5.2a:** IndexedDB v4 Migration & Baseline Lifecycle (`sync_meta.authoritativeBaselineStatus: 'UNINITIALIZED' | 'BOOTSTRAPPING' | 'READY'`, kiểm thử ST-07, ST-10).
-    - **Bước 5.2b:** Authoritative Shadow DAL & OCC Delta Ingestion (Single atomic transaction trên `['sync_authoritative_replicas', 'sync_meta']`, Checkpoint OCC Guard, Cascading Tombstone Eviction cho story-wide & global DELETE, kiểm thử ST-01, ST-05, ST-08, ST-09, ST-11, ST-14).
-    - **Bước 5.2c:** Pure Deterministic Causal Projection Engine & Hydration (Hàm thuần túy `Resolve(Shadow, Pending)` phục hồi sau reload không phụ thuộc RAM event, Dual-layer tombstone suppression, kiểm thử ST-02, ST-03, ST-04, ST-06, ST-12, ST-13, ST-15).
-    - **Bước 5.2d:** Delta Pull Reconciler Integration & Full Web E2E Verification (Kéo `/sync/changes`, checkpoint phân trang, tích hợp Web Locks Tab Leader).
+    - [x] **Bước 5.2a:** IndexedDB v4 Migration & Baseline Lifecycle Remediation (`sync_meta.authoritativeBaselineStatus: 'UNINITIALIZED' | 'BOOTSTRAPPING' | 'READY'`, kiểm thử ST-07, ST-10A–I).
+    - [ ] **Bước 5.2b:** Authoritative Shadow DAL & OCC Delta Ingestion (Single atomic transaction trên `['sync_authoritative_replicas', 'sync_meta']`, Checkpoint OCC Guard, Cascading Tombstone Eviction cho story-wide & global DELETE, kiểm thử ST-01, ST-05, ST-08, ST-09, ST-11, ST-14).
+    - [ ] **Bước 5.2c:** Pure Deterministic Causal Projection Engine & Hydration (Hàm thuần túy `Resolve(Shadow, Pending)` phục hồi sau reload không phụ thuộc RAM event, Dual-layer tombstone suppression, kiểm thử ST-02, ST-03, ST-04, ST-06, ST-12, ST-13, ST-15).
+    - [ ] **Bước 5.2d:** Delta Pull Reconciler Integration & Full Web E2E Verification (Kéo `/sync/changes`, checkpoint phân trang, tích hợp Web Locks Tab Leader).
   - **Bảo toàn Step 4:** Tuyệt đối không can thiệp hay sửa đổi bất kỳ logic giao dịch nào của Step 4 Mutation Queue đã FROZEN CLEAN.
 - [ ] **Bước 6:** Cài đặt `apps/web/src/lib/sync/snapshot-reconciler.ts` xử lý Safe 410 Gone Full Resync với staging, hủy bỏ staging khi gặp 409 snapshot invalidation.
 - [ ] **Bước 7:** Tích hợp `apps/web/src/lib/sync/web-sync-coordinator.ts` và gắn kết với Auth/Identity/Reader hooks.

@@ -42,6 +42,13 @@ export interface LocalPreference {
 
 export type AuthoritativeBaselineStatus = 'UNINITIALIZED' | 'BOOTSTRAPPING' | 'READY';
 
+export interface AuthoritativeBaselineProof {
+  validatedRevision: string;
+  source: 'SNAPSHOT_BOOTSTRAP' | 'ZERO_TO_HEAD_REPLAY';
+  checkpointVerified: boolean;
+  effectiveEpochs?: Record<string, number>;
+}
+
 export interface AuthoritativeShadowRecord {
   ownerScope: string;
   domain: SyncDomain;
@@ -151,6 +158,15 @@ export class QuotaExceededStorageError extends Error {
   constructor(message: string = 'IndexedDB storage quota exceeded.') {
     super(message);
     this.name = 'QuotaExceededStorageError';
+  }
+}
+
+export class ReadyStatusTransitionForbiddenError extends Error {
+  constructor(
+    message: string = 'Transition to READY baseline status is forbidden without atomic baseline proof verification. Direct transition via setAuthoritativeBaselineStatus or unverified putSyncMeta is locked.'
+  ) {
+    super(message);
+    this.name = 'ReadyStatusTransitionForbiddenError';
   }
 }
 
@@ -1268,13 +1284,35 @@ export class IndexedDbClient {
     return new Promise((resolve, reject) => {
       try {
         const tx = db.transaction(STORE_SYNC_META, 'readwrite');
-        const normalized: LocalSyncMeta = {
-          ...meta,
-          authoritativeBaselineStatus: meta.authoritativeBaselineStatus || 'UNINITIALIZED',
+        const store = tx.objectStore(STORE_SYNC_META);
+        const getReq = store.get(meta.ownerScope);
+        getReq.onsuccess = () => {
+          try {
+            const existing = getReq.result as LocalSyncMeta | undefined;
+            const targetStatus =
+              meta.authoritativeBaselineStatus ??
+              existing?.authoritativeBaselineStatus ??
+              'UNINITIALIZED';
+            if (targetStatus === 'READY' && existing?.authoritativeBaselineStatus !== 'READY') {
+              throw new ReadyStatusTransitionForbiddenError(
+                'Cannot transition baseline status to READY via putSyncMeta without atomic baseline proof verification.'
+              );
+            }
+            const normalized: LocalSyncMeta = {
+              ...meta,
+              authoritativeBaselineStatus: targetStatus,
+            };
+            store.put(normalized);
+          } catch (err) {
+            try {
+              tx.abort();
+            } catch (_) {}
+            reject(err);
+          }
         };
-        tx.objectStore(STORE_SYNC_META).put(normalized);
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('putSyncMeta transaction aborted.'));
       } catch (err) {
         reject(err);
       }
@@ -1289,7 +1327,107 @@ export class IndexedDbClient {
     return meta?.authoritativeBaselineStatus || 'UNINITIALIZED';
   }
 
+  /**
+   * Sets local baseline status.
+   * STRICT INVARIANT: Direct transition to 'READY' is forbidden; callers can only set
+   * 'UNINITIALIZED' or 'BOOTSTRAPPING'. Finalizing 'READY' requires `finalizeAuthoritativeBaseline`.
+   */
   async setAuthoritativeBaselineStatus(
+    ownerScope: string,
+    status: AuthoritativeBaselineStatus,
+  ): Promise<void> {
+    assertValidScope(ownerScope);
+    if (status === 'READY') {
+      throw new ReadyStatusTransitionForbiddenError(
+        'Transition to READY baseline status is forbidden without atomic baseline proof verification. Direct transition via setAuthoritativeBaselineStatus is locked.'
+      );
+    }
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_SYNC_META, 'readwrite');
+        const store = tx.objectStore(STORE_SYNC_META);
+        const getReq = store.get(ownerScope);
+        getReq.onsuccess = () => {
+          const existing = getReq.result as LocalSyncMeta | undefined;
+          const updated: LocalSyncMeta = existing
+            ? { ...existing, authoritativeBaselineStatus: status }
+            : {
+                ownerScope,
+                lastSyncedServerRevision: '0',
+                minActiveRevision: '0',
+                lastSyncTimestamp: new Date(0).toISOString(),
+                effectiveHistoryEpochs: {},
+                syncState: 'IDLE',
+                authoritativeBaselineStatus: status,
+              };
+          store.put(updated);
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('setAuthoritativeBaselineStatus transaction aborted.'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * Atomic Primitive: Finalizes authoritative baseline status to READY with protocol verification proof.
+   * Validates that revision is present, non-zero, and checkpoint is verified before granting READY status.
+   */
+  async finalizeAuthoritativeBaseline(
+    ownerScope: string,
+    proof: AuthoritativeBaselineProof,
+  ): Promise<void> {
+    assertValidScope(ownerScope);
+    if (!proof.checkpointVerified) {
+      throw new Error('BASELINE_FINALIZATION_REJECTED: Checkpoint verification failed or missing.');
+    }
+    if (!proof.validatedRevision || proof.validatedRevision === '0') {
+      throw new Error('BASELINE_FINALIZATION_REJECTED: Cannot finalize READY status on empty or unverified revision "0".');
+    }
+
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_SYNC_META, 'readwrite');
+        const store = tx.objectStore(STORE_SYNC_META);
+        const getReq = store.get(ownerScope);
+        getReq.onsuccess = () => {
+          const existing = getReq.result as LocalSyncMeta | undefined;
+          const updated: LocalSyncMeta = existing
+            ? {
+                ...existing,
+                authoritativeBaselineStatus: 'READY',
+                lastSyncedServerRevision: proof.validatedRevision,
+                effectiveHistoryEpochs: proof.effectiveEpochs || existing.effectiveHistoryEpochs || {},
+              }
+            : {
+                ownerScope,
+                lastSyncedServerRevision: proof.validatedRevision,
+                minActiveRevision: proof.validatedRevision,
+                lastSyncTimestamp: new Date().toISOString(),
+                effectiveHistoryEpochs: proof.effectiveEpochs || {},
+                syncState: 'IDLE',
+                authoritativeBaselineStatus: 'READY',
+              };
+          store.put(updated);
+        };
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('finalizeAuthoritativeBaseline transaction aborted.'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * Internal / Test-Only: Direct baseline status override for testing fail-closed admission.
+   * @internal
+   */
+  async _unsafeSetAuthoritativeBaselineStatusForTesting(
     ownerScope: string,
     status: AuthoritativeBaselineStatus,
   ): Promise<void> {
@@ -1317,6 +1455,7 @@ export class IndexedDbClient {
         };
         tx.oncomplete = () => resolve();
         tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('_unsafeSetAuthoritativeBaselineStatusForTesting aborted.'));
       } catch (err) {
         reject(err);
       }
@@ -1347,6 +1486,12 @@ export class IndexedDbClient {
     });
   }
 
+  /**
+   * Internal/Test-Only Primitive: Direct authoritative shadow write.
+   * WARNING: Production Delta Pull (Step 5.2b) MUST NOT call this directly.
+   * Production delta ingestion must use `applyAuthoritativeDeltaPage` to enforce
+   * atomic shadow writes, tombstone cascades, causal projection, and OCC server revision updates.
+   */
   async putAuthoritativeShadow(record: AuthoritativeShadowRecord): Promise<void> {
     assertValidScope(record.ownerScope);
     const db = await this.getDatabase();

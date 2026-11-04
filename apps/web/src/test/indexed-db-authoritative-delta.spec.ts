@@ -41,8 +41,8 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
     it('atomically commits shadow records and checkpoint in a single IDB transaction', async () => {
       const scope = 'account:usr-atomic-1';
       const page: SyncChangesResponse = {
-        currentServerRevision: '100',
-        minActiveRevision: '50',
+        currentServerRevision: '105',
+        minActiveRevision: '0',
         nextRevision: '105',
         hasMore: false,
         changes: [
@@ -93,6 +93,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
 
       const result = await dbClient.applyAuthoritativeDeltaPage({
         ownerScope: scope,
+        expectedCheckpoint: '0',
         page,
       });
 
@@ -120,7 +121,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       // Verify sync_meta checkpoint
       const meta = await dbClient.getSyncMeta(scope);
       expect(meta?.lastSyncedServerRevision).toBe('105');
-      expect(meta?.minActiveRevision).toBe('50');
+      expect(meta?.minActiveRevision).toBe('0');
       expect(meta?.syncState).toBe('IDLE');
 
       // Invariant: Baseline status is NOT granted READY by delta ingestion!
@@ -131,8 +132,8 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
     it('rolls back completely if transaction aborts: neither shadows nor checkpoint are committed', async () => {
       const scope = 'account:usr-rollback-1';
       const page: SyncChangesResponse = {
-        currentServerRevision: '100',
-        minActiveRevision: '50',
+        currentServerRevision: '105',
+        minActiveRevision: '0',
         nextRevision: '105',
         hasMore: false,
         changes: [
@@ -150,6 +151,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       await expect(
         dbClient.applyAuthoritativeDeltaPage({
           ownerScope: scope,
+          expectedCheckpoint: '0',
           page,
           _testHookBeforeComplete: (tx) => {
             tx.abort();
@@ -333,9 +335,10 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       // 1. Seed Story A (3 chapters + progress) and Story B (2 chapters + progress)
       await dbClient.applyAuthoritativeDeltaPage({
         ownerScope: scope,
+        expectedCheckpoint: '0',
         page: {
-          currentServerRevision: '100',
-          minActiveRevision: '50',
+          currentServerRevision: '105',
+          minActiveRevision: '0',
           nextRevision: '105',
           hasMore: false,
           changes: [
@@ -437,9 +440,10 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       // Seed Story A and Story B
       await dbClient.applyAuthoritativeDeltaPage({
         ownerScope: scope,
+        expectedCheckpoint: '0',
         page: {
-          currentServerRevision: '100',
-          minActiveRevision: '50',
+          currentServerRevision: '103',
+          minActiveRevision: '0',
           nextRevision: '103',
           hasMore: false,
           changes: [
@@ -515,6 +519,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
 
       const result = await dbClient.applyAuthoritativeDeltaPage({
         ownerScope: scope,
+        expectedCheckpoint: '0',
         page: {
           currentServerRevision: bigRev2,
           minActiveRevision: bigRev1,
@@ -547,6 +552,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
         await expect(
           dbClient.applyAuthoritativeDeltaPage({
             ownerScope: scope,
+            expectedCheckpoint: '0',
             page: {
               currentServerRevision: '100',
               minActiveRevision: '50',
@@ -576,6 +582,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       await expect(
         dbClient.applyAuthoritativeDeltaPage({
           ownerScope: scope,
+          expectedCheckpoint: '200',
           page: {
             currentServerRevision: '150',
             minActiveRevision: '100',
@@ -600,6 +607,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       await expect(
         dbClient.applyAuthoritativeDeltaPage({
           ownerScope: scope,
+          expectedCheckpoint: '0',
           page: {
             currentServerRevision: '100',
             minActiveRevision: '50',
@@ -623,6 +631,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       await expect(
         dbClient.applyAuthoritativeDeltaPage({
           ownerScope: scope,
+          expectedCheckpoint: '0',
           page: {
             currentServerRevision: '100',
             minActiveRevision: '50',
@@ -649,6 +658,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       await expect(
         dbClient.applyAuthoritativeDeltaPage({
           ownerScope: scope,
+          expectedCheckpoint: '0',
           page: {
             currentServerRevision: '100',
             minActiveRevision: '50',
@@ -671,6 +681,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       await expect(
         dbClient.applyAuthoritativeDeltaPage({
           ownerScope: scope,
+          expectedCheckpoint: '0',
           page: {
             currentServerRevision: '100',
             minActiveRevision: '50',
@@ -697,6 +708,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       await expect(
         dbClient.applyAuthoritativeDeltaPage({
           ownerScope: scope,
+          expectedCheckpoint: '0',
           page: {
             currentServerRevision: '110',
             minActiveRevision: '50',
@@ -733,6 +745,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       // 1. Initial valid commit at checkpoint 50
       await dbClient.applyAuthoritativeDeltaPage({
         ownerScope: scope,
+        expectedCheckpoint: '0',
         page: {
           currentServerRevision: '50',
           minActiveRevision: '10',
@@ -803,6 +816,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       // Ingest scope A at rev 100
       await dbClient.applyAuthoritativeDeltaPage({
         ownerScope: scopeA,
+        expectedCheckpoint: '0',
         page: {
           currentServerRevision: '100',
           minActiveRevision: '10',
@@ -824,6 +838,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       // Ingest scope B at rev 200
       await dbClient.applyAuthoritativeDeltaPage({
         ownerScope: scopeB,
+        expectedCheckpoint: '0',
         page: {
           currentServerRevision: '200',
           minActiveRevision: '10',
@@ -862,6 +877,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       await expect(
         dbClient.applyAuthoritativeDeltaPage({
           ownerScope: scope,
+          expectedCheckpoint: '0',
           checkAdmission: () => {
             throw new Error('ADMISSION_REJECTED: User logged out');
           },
@@ -886,6 +902,741 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
 
       expect(await dbClient.getSyncMeta(scope)).toBeNull();
       expect(await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'b1')).toBeNull();
+    });
+  });
+
+  describe('P0-01 Remediation: Mandatory OCC Checkpoint Guard', () => {
+    it('P0-01A: rejects delta ingestion when expectedCheckpoint is omitted or undefined', async () => {
+      const scope = 'account:usr-p0-01-omitted';
+      const page: SyncChangesResponse = {
+        currentServerRevision: '100',
+        minActiveRevision: '0',
+        nextRevision: '100',
+        hasMore: false,
+        changes: [],
+      };
+
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          page,
+        } as any)
+      ).rejects.toThrow(/MANDATORY_OCC_CHECKPOINT_REQUIRED/i);
+    });
+
+    it('P0-01B: rejects delta ingestion when expectedCheckpoint is non-numeric or malformed', async () => {
+      const scope = 'account:usr-p0-01-bad-str';
+      const page: SyncChangesResponse = {
+        currentServerRevision: '100',
+        minActiveRevision: '0',
+        nextRevision: '100',
+        hasMore: false,
+        changes: [],
+      };
+
+      for (const badCkpt of ['abc', '-1', '1.5', '', '  ', null as any]) {
+        await expect(
+          dbClient.applyAuthoritativeDeltaPage({
+            ownerScope: scope,
+            expectedCheckpoint: badCkpt,
+            page,
+          })
+        ).rejects.toThrow(/MANDATORY_OCC_CHECKPOINT_REQUIRED/i);
+      }
+    });
+
+    it('P0-01C: rejects delta ingestion with CheckpointConflictError when expectedCheckpoint mismatches storage', async () => {
+      const scope = 'account:usr-p0-01-mismatch';
+      await dbClient.putSyncMeta({
+        ownerScope: scope,
+        lastSyncedServerRevision: '150',
+        minActiveRevision: '0',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      const page: SyncChangesResponse = {
+        currentServerRevision: '200',
+        minActiveRevision: '0',
+        nextRevision: '200',
+        hasMore: false,
+        changes: [],
+      };
+
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '149', // Mismatched! Current is 150
+          page,
+        })
+      ).rejects.toThrow(CheckpointConflictError);
+    });
+  });
+
+  describe('P0-02 Remediation: Delta Page Consistency & Server Boundaries', () => {
+    it('P0-02A: rejects delta page when hasMore is true but nextRevision is null or missing', async () => {
+      const scope = 'account:usr-p0-02-hasmore-null';
+      const page: SyncChangesResponse = {
+        currentServerRevision: '200',
+        minActiveRevision: '0',
+        nextRevision: null, // Invalid: hasMore true requires valid nextRevision
+        hasMore: true,
+        changes: [
+          {
+            revision: '150',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'b1',
+            operation: SyncOperation.UPSERT,
+            payload: {},
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '0',
+          page,
+        })
+      ).rejects.toThrow(/INCONSISTENT_DELTA_PAGE/i);
+    });
+
+    it('P0-02B: rejects delta page when a change has revision <= expectedCheckpoint', async () => {
+      const scope = 'account:usr-p0-02-stale-change';
+      await dbClient.putSyncMeta({
+        ownerScope: scope,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '0',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      const page: SyncChangesResponse = {
+        currentServerRevision: '110',
+        minActiveRevision: '0',
+        nextRevision: '110',
+        hasMore: false,
+        changes: [
+          {
+            revision: '100', // Stale! revision == expectedCheckpoint (must be > expectedCheckpoint)
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'b1',
+            operation: SyncOperation.UPSERT,
+            payload: {},
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '100',
+          page,
+        })
+      ).rejects.toThrow(/INCONSISTENT_DELTA_PAGE/i);
+    });
+
+    it('P0-02C: rejects delta page when a change has revision > targetCheckpoint', async () => {
+      const scope = 'account:usr-p0-02-future-change';
+      const page: SyncChangesResponse = {
+        currentServerRevision: '200',
+        minActiveRevision: '0',
+        nextRevision: '150', // Target checkpoint is 150
+        hasMore: true,
+        changes: [
+          {
+            revision: '155', // Anomaly! 155 > targetCheckpoint 150
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'b1',
+            operation: SyncOperation.UPSERT,
+            payload: {},
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '0',
+          page,
+        })
+      ).rejects.toThrow(/INCONSISTENT_DELTA_PAGE/i);
+    });
+
+    it('P0-02D: rejects delta page when targetCheckpoint exceeds currentServerRevision', async () => {
+      const scope = 'account:usr-p0-02-server-bound';
+      const page: SyncChangesResponse = {
+        currentServerRevision: '100',
+        minActiveRevision: '0',
+        nextRevision: '120', // Anomaly! 120 > currentServerRevision 100
+        hasMore: false,
+        changes: [],
+      };
+
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '0',
+          page,
+        })
+      ).rejects.toThrow(/INCONSISTENT_DELTA_PAGE/i);
+    });
+
+    it('P0-02E: rejects delta page when client checkpoint has fallen behind minActiveRevision (Compacted Gap)', async () => {
+      const scope = 'account:usr-p0-02-gap';
+      await dbClient.putSyncMeta({
+        ownerScope: scope,
+        lastSyncedServerRevision: '50',
+        minActiveRevision: '10',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      // Server retention window has pruned everything before revision 80!
+      const page: SyncChangesResponse = {
+        currentServerRevision: '150',
+        minActiveRevision: '80', // Gap! client checkpoint 50 < server minActiveRevision 80
+        nextRevision: '150',
+        hasMore: false,
+        changes: [
+          {
+            revision: '85',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'b1',
+            operation: SyncOperation.UPSERT,
+            payload: {},
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '50',
+          page,
+        })
+      ).rejects.toThrow(/COMPACTED_RETENTION_GAP/i);
+    });
+  });
+
+  describe('P1-01 Remediation: HISTORY Epoch Monotonicity Guard', () => {
+    it('P1-01A: rejects global HISTORY DELETE when incoming epoch <= current global epoch', async () => {
+      const scope = 'account:usr-p1-01-global-monotonic';
+      // Seed initial global epoch = 5
+      await dbClient.putSyncMeta({
+        ownerScope: scope,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '0',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {
+          '00000000-0000-0000-0000-000000000000': 5,
+        },
+        syncState: 'IDLE',
+      });
+
+      // Attempt to apply global delete with stale epoch = 4
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '100',
+          page: {
+            currentServerRevision: '110',
+            minActiveRevision: '0',
+            nextRevision: '110',
+            hasMore: false,
+            changes: [
+              {
+                revision: '105',
+                domain: SyncDomain.HISTORY,
+                entityId: '00000000-0000-0000-0000-000000000000',
+                operation: SyncOperation.DELETE,
+                payload: { epoch: 4 }, // Stale! 4 < 5
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          },
+        })
+      ).rejects.toThrow(/NON_MONOTONIC_HISTORY_EPOCH/i);
+
+      // Attempt to apply global delete with equal epoch = 5
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '100',
+          page: {
+            currentServerRevision: '110',
+            minActiveRevision: '0',
+            nextRevision: '110',
+            hasMore: false,
+            changes: [
+              {
+                revision: '105',
+                domain: SyncDomain.HISTORY,
+                entityId: '00000000-0000-0000-0000-000000000000',
+                operation: SyncOperation.DELETE,
+                payload: { epoch: 5 }, // Stale! 5 <= 5
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          },
+        })
+      ).rejects.toThrow(/NON_MONOTONIC_HISTORY_EPOCH/i);
+    });
+
+    it('P1-01B: rejects story-wide HISTORY DELETE when incoming epoch <= current story epoch', async () => {
+      const scope = 'account:usr-p1-01-story-monotonic';
+      // Seed story-A epoch = 10
+      await dbClient.putSyncMeta({
+        ownerScope: scope,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '0',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {
+          'story-A': 10,
+        },
+        syncState: 'IDLE',
+      });
+
+      // Attempt to apply delete with epoch 8 (stale)
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '100',
+          page: {
+            currentServerRevision: '110',
+            minActiveRevision: '0',
+            nextRevision: '110',
+            hasMore: false,
+            changes: [
+              {
+                revision: '105',
+                domain: SyncDomain.HISTORY,
+                entityId: 'story-A',
+                operation: SyncOperation.DELETE,
+                payload: { storyId: 'story-A', epoch: 8 },
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          },
+        })
+      ).rejects.toThrow(/NON_MONOTONIC_HISTORY_EPOCH/i);
+
+      // Attempt to apply delete with epoch 10 (equal)
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '100',
+          page: {
+            currentServerRevision: '110',
+            minActiveRevision: '0',
+            nextRevision: '110',
+            hasMore: false,
+            changes: [
+              {
+                revision: '105',
+                domain: SyncDomain.HISTORY,
+                entityId: 'story-A',
+                operation: SyncOperation.DELETE,
+                payload: { storyId: 'story-A', epoch: 10 },
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          },
+        })
+      ).rejects.toThrow(/NON_MONOTONIC_HISTORY_EPOCH/i);
+    });
+
+    it('P1-01C: rejects story-wide HISTORY DELETE when incoming epoch <= current global epoch', async () => {
+      const scope = 'account:usr-p1-01-global-dominance';
+      // Global epoch = 12, story-A epoch = 0
+      await dbClient.putSyncMeta({
+        ownerScope: scope,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '0',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {
+          '00000000-0000-0000-0000-000000000000': 12,
+        },
+        syncState: 'IDLE',
+      });
+
+      // Attempt story-A delete with epoch = 11 (less than global epoch 12)
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '100',
+          page: {
+            currentServerRevision: '110',
+            minActiveRevision: '0',
+            nextRevision: '110',
+            hasMore: false,
+            changes: [
+              {
+                revision: '105',
+                domain: SyncDomain.HISTORY,
+                entityId: 'story-A',
+                operation: SyncOperation.DELETE,
+                payload: { storyId: 'story-A', epoch: 11 }, // < 12!
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          },
+        })
+      ).rejects.toThrow(/NON_MONOTONIC_HISTORY_EPOCH/i);
+    });
+
+    it('P1-01D: rejects intra-page non-monotonic HISTORY DELETE progression', async () => {
+      const scope = 'account:usr-p1-01-intra-page';
+
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '0',
+          page: {
+            currentServerRevision: '110',
+            minActiveRevision: '0',
+            nextRevision: '110',
+            hasMore: false,
+            changes: [
+              {
+                revision: '101',
+                domain: SyncDomain.HISTORY,
+                entityId: 'story-A',
+                operation: SyncOperation.DELETE,
+                payload: { storyId: 'story-A', epoch: 5 },
+                createdAt: new Date().toISOString(),
+              },
+              {
+                revision: '102',
+                domain: SyncDomain.HISTORY,
+                entityId: 'story-A',
+                operation: SyncOperation.DELETE,
+                payload: { storyId: 'story-A', epoch: 4 }, // Non-monotonic within same page! 4 <= 5
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          },
+        })
+      ).rejects.toThrow(/NON_MONOTONIC_HISTORY_EPOCH/i);
+    });
+
+    it('P1-01E: accepts strictly increasing HISTORY DELETE epochs and updates epoch map atomically', async () => {
+      const scope = 'account:usr-p1-01-increasing';
+
+      const result = await dbClient.applyAuthoritativeDeltaPage({
+        ownerScope: scope,
+        expectedCheckpoint: '0',
+        page: {
+          currentServerRevision: '110',
+          minActiveRevision: '0',
+          nextRevision: '110',
+          hasMore: false,
+          changes: [
+            {
+              revision: '101',
+              domain: SyncDomain.HISTORY,
+              entityId: 'story-A',
+              operation: SyncOperation.DELETE,
+              payload: { storyId: 'story-A', epoch: 3 },
+              createdAt: new Date().toISOString(),
+            },
+            {
+              revision: '105',
+              domain: SyncDomain.HISTORY,
+              entityId: 'story-A',
+              operation: SyncOperation.DELETE,
+              payload: { storyId: 'story-A', epoch: 7 }, // Strictly increasing: 7 > 3
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        },
+      });
+
+      expect(result.effectiveEpochs['story-A']).toBe(7);
+      const meta = await dbClient.getSyncMeta(scope);
+      expect(meta?.effectiveHistoryEpochs['story-A']).toBe(7);
+    });
+  });
+
+  describe('P1-02 Remediation: Concurrent Transaction Isolation & OCC Race', () => {
+    it('P1-02A: exactly one transaction succeeds and competing transaction fails with CheckpointConflictError in concurrent race', async () => {
+      const scope = 'account:usr-p1-02-concurrent-race';
+
+      // Setup initial checkpoint at 100
+      await dbClient.putSyncMeta({
+        ownerScope: scope,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '0',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      const page1: SyncChangesResponse = {
+        currentServerRevision: '120',
+        minActiveRevision: '0',
+        nextRevision: '110',
+        hasMore: true,
+        changes: [
+          {
+            revision: '105',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'story-race-1',
+            operation: SyncOperation.UPSERT,
+            payload: { title: 'Winner 1' },
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      const page2: SyncChangesResponse = {
+        currentServerRevision: '120',
+        minActiveRevision: '0',
+        nextRevision: '120',
+        hasMore: false,
+        changes: [
+          {
+            revision: '115',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'story-race-2',
+            operation: SyncOperation.UPSERT,
+            payload: { title: 'Winner 2' },
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      // Launch both concurrent transactions with the same expectedCheckpoint = '100'
+      const p1 = dbClient.applyAuthoritativeDeltaPage({
+        ownerScope: scope,
+        expectedCheckpoint: '100',
+        page: page1,
+      });
+      p1.catch(() => {});
+
+      const p2 = dbClient.applyAuthoritativeDeltaPage({
+        ownerScope: scope,
+        expectedCheckpoint: '100',
+        page: page2,
+      });
+      p2.catch(() => {});
+
+      const results = await Promise.allSettled([p1, p2]);
+
+      const fulfilled = results.filter((r) => r.status === 'fulfilled');
+      const rejected = results.filter((r) => r.status === 'rejected');
+
+      expect(fulfilled).toHaveLength(1);
+      expect(rejected).toHaveLength(1);
+
+      // Verify the failure reason is CheckpointConflictError
+      const rejectedResult = rejected[0] as PromiseRejectedResult;
+      expect(rejectedResult.reason).toBeInstanceOf(CheckpointConflictError);
+
+      // Verify database consistency
+      const meta = await dbClient.getSyncMeta(scope);
+      expect(['110', '120']).toContain(meta?.lastSyncedServerRevision);
+    });
+
+    it('P1-02B: interleaved concurrent execution with delayed commit triggers deterministic CheckpointConflictError', async () => {
+      const scope = 'account:usr-p1-02-interleaved';
+
+      await dbClient.putSyncMeta({
+        ownerScope: scope,
+        lastSyncedServerRevision: '50',
+        minActiveRevision: '0',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      const pageA: SyncChangesResponse = {
+        currentServerRevision: '100',
+        minActiveRevision: '0',
+        nextRevision: '70',
+        hasMore: true,
+        changes: [
+          {
+            revision: '60',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'story-interleaved-A',
+            operation: SyncOperation.UPSERT,
+            payload: { title: 'Story A' },
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      const pageB: SyncChangesResponse = {
+        currentServerRevision: '100',
+        minActiveRevision: '0',
+        nextRevision: '80',
+        hasMore: false,
+        changes: [
+          {
+            revision: '75',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'story-interleaved-B',
+            operation: SyncOperation.UPSERT,
+            payload: { title: 'Story B' },
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      // Start transaction A
+      const resultA = await dbClient.applyAuthoritativeDeltaPage({
+        ownerScope: scope,
+        expectedCheckpoint: '50',
+        page: pageA,
+      });
+      expect(resultA.newCheckpoint).toBe('70');
+
+      // Now transaction B, launched with stale checkpoint '50', MUST fail
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '50', // Stale!
+          page: pageB,
+        })
+      ).rejects.toThrow(CheckpointConflictError);
+
+      // Verify Story A exists and Story B does not
+      expect(await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-interleaved-A')).not.toBeNull();
+      expect(await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-interleaved-B')).toBeNull();
+    });
+
+    it('P1-02C: concurrent transactions on different scopes execute simultaneously without interference', async () => {
+      const scope1 = 'account:usr-p1-02-scope-1';
+      const scope2 = 'account:usr-p1-02-scope-2';
+
+      // Both start at checkpoint '0'
+      const page1: SyncChangesResponse = {
+        currentServerRevision: '50',
+        minActiveRevision: '0',
+        nextRevision: '50',
+        hasMore: false,
+        changes: [
+          {
+            revision: '40',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'story-s1',
+            operation: SyncOperation.UPSERT,
+            payload: { title: 'Scope 1 Story' },
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      const page2: SyncChangesResponse = {
+        currentServerRevision: '60',
+        minActiveRevision: '0',
+        nextRevision: '60',
+        hasMore: false,
+        changes: [
+          {
+            revision: '45',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'story-s2',
+            operation: SyncOperation.UPSERT,
+            payload: { title: 'Scope 2 Story' },
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      // Concurrently run on two different scopes
+      const [res1, res2] = await Promise.all([
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope1,
+          expectedCheckpoint: '0',
+          page: page1,
+        }),
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope2,
+          expectedCheckpoint: '0',
+          page: page2,
+        }),
+      ]);
+
+      expect(res1.newCheckpoint).toBe('50');
+      expect(res2.newCheckpoint).toBe('60');
+
+      // Verify scope 1
+      expect((await dbClient.getSyncMeta(scope1))?.lastSyncedServerRevision).toBe('50');
+      expect(await dbClient.getAuthoritativeShadow(scope1, SyncDomain.BOOKMARK, 'story-s1')).not.toBeNull();
+      expect(await dbClient.getAuthoritativeShadow(scope1, SyncDomain.BOOKMARK, 'story-s2')).toBeNull();
+
+      // Verify scope 2
+      expect((await dbClient.getSyncMeta(scope2))?.lastSyncedServerRevision).toBe('60');
+      expect(await dbClient.getAuthoritativeShadow(scope2, SyncDomain.BOOKMARK, 'story-s2')).not.toBeNull();
+      expect(await dbClient.getAuthoritativeShadow(scope2, SyncDomain.BOOKMARK, 'story-s1')).toBeNull();
+    });
+
+    it('P1-02D: concurrent read during or after delta commit returns strictly committed snapshot', async () => {
+      const scope = 'account:usr-p1-02-read-isolation';
+
+      await dbClient.applyAuthoritativeDeltaPage({
+        ownerScope: scope,
+        expectedCheckpoint: '0',
+        page: {
+          currentServerRevision: '100',
+          minActiveRevision: '0',
+          nextRevision: '100',
+          hasMore: false,
+          changes: [
+            {
+              revision: '90',
+              domain: SyncDomain.BOOKMARK,
+              entityId: 'story-read-isolation',
+              operation: SyncOperation.UPSERT,
+              payload: { title: 'Version 1' },
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        },
+      });
+
+      // Attempt second ingestion that fails OCC
+      const failingPromise = dbClient.applyAuthoritativeDeltaPage({
+        ownerScope: scope,
+        expectedCheckpoint: '99', // Mismatch!
+        page: {
+          currentServerRevision: '150',
+          minActiveRevision: '0',
+          nextRevision: '150',
+          hasMore: false,
+          changes: [
+            {
+              revision: '140',
+              domain: SyncDomain.BOOKMARK,
+              entityId: 'story-read-isolation',
+              operation: SyncOperation.UPSERT,
+              payload: { title: 'Version 2 (Dirty)' },
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        },
+      });
+      failingPromise.catch(() => {});
+
+      // Concurrent read while failingPromise is in flight
+      const readRecord = await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-read-isolation');
+      expect(readRecord?.payload?.title).toBe('Version 1'); // Never dirty!
+
+      await expect(failingPromise).rejects.toThrow(CheckpointConflictError);
+
+      // Read after rejection
+      const postReadRecord = await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-read-isolation');
+      expect(postReadRecord?.payload?.title).toBe('Version 1');
+      expect((await dbClient.getSyncMeta(scope))?.lastSyncedServerRevision).toBe('100');
     });
   });
 });

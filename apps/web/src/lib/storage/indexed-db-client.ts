@@ -182,7 +182,7 @@ export class InvalidDeltaPayloadError extends Error {
 export interface ApplyAuthoritativeDeltaPageOptions {
   ownerScope: string;
   page: SyncChangesResponse;
-  expectedCheckpoint?: string;
+  expectedCheckpoint: string;
   checkAdmission?: () => void;
   _testHookBeforeComplete?: (tx: IDBTransaction) => void;
 }
@@ -1550,30 +1550,89 @@ export class IndexedDbClient {
     const { ownerScope, page, expectedCheckpoint, checkAdmission, _testHookBeforeComplete } = options;
     assertValidScope(ownerScope);
 
-    // 1. Pre-transaction validation of page structure
+    // 1. Pre-transaction validation of mandatory OCC checkpoint
+    if (
+      expectedCheckpoint === undefined ||
+      expectedCheckpoint === null ||
+      typeof expectedCheckpoint !== 'string' ||
+      !isValidRevisionString(expectedCheckpoint)
+    ) {
+      throw new InvalidDeltaPayloadError(
+        `MANDATORY_OCC_CHECKPOINT_REQUIRED: expectedCheckpoint is mandatory and must be a valid decimal string, got: ${JSON.stringify(expectedCheckpoint)}`
+      );
+    }
+
+    // 2. Pre-transaction validation of page structure and metadata
     if (!page || typeof page !== 'object' || !Array.isArray(page.changes)) {
       throw new InvalidDeltaPayloadError('Invalid delta page: changes array is required.');
     }
 
-    if (page.currentServerRevision !== undefined && !isValidRevisionString(page.currentServerRevision)) {
+    if (typeof page.currentServerRevision !== 'string' || !isValidRevisionString(page.currentServerRevision)) {
       throw new InvalidDeltaPayloadError(
         `Invalid currentServerRevision: "${page.currentServerRevision}" must be a decimal string.`
       );
     }
 
-    if (page.minActiveRevision !== undefined && !isValidRevisionString(page.minActiveRevision)) {
+    if (typeof page.minActiveRevision !== 'string' || !isValidRevisionString(page.minActiveRevision)) {
       throw new InvalidDeltaPayloadError(
         `Invalid minActiveRevision: "${page.minActiveRevision}" must be a decimal string.`
       );
     }
 
-    if (page.nextRevision !== null && page.nextRevision !== undefined && !isValidRevisionString(page.nextRevision)) {
+    if (typeof page.hasMore !== 'boolean') {
       throw new InvalidDeltaPayloadError(
-        `Invalid nextRevision: "${page.nextRevision}" must be a decimal string.`
+        `Invalid delta page: hasMore must be a boolean, got ${typeof page.hasMore}.`
       );
     }
 
-    // Validate each change item
+    if (page.hasMore) {
+      if (page.nextRevision === null || page.nextRevision === undefined || !isValidRevisionString(page.nextRevision)) {
+        throw new InvalidDeltaPayloadError(
+          'INCONSISTENT_DELTA_PAGE: hasMore is true, but nextRevision is null, undefined, or not a valid decimal string.'
+        );
+      }
+    } else {
+      if (page.nextRevision !== null && page.nextRevision !== undefined && !isValidRevisionString(page.nextRevision)) {
+        throw new InvalidDeltaPayloadError(
+          `Invalid nextRevision: "${page.nextRevision}" must be a decimal string or null.`
+        );
+      }
+    }
+
+    // 3. Compaction Retention Gap Guard:
+    // If client has an established checkpoint (> '0') that has fallen behind server minActiveRevision,
+    // the history was pruned on server and delta sync cannot bridge this gap. Must trigger snapshot resync.
+    if (expectedCheckpoint !== '0' && BigInt(expectedCheckpoint) < BigInt(page.minActiveRevision)) {
+      throw new InvalidDeltaPayloadError(
+        `COMPACTED_RETENTION_GAP: Client checkpoint "${expectedCheckpoint}" is older than server minActiveRevision "${page.minActiveRevision}". History has been pruned; delta sync cannot bridge this gap. Full resync required.`
+      );
+    }
+
+    // 4. Determine target checkpoint and enforce server boundary
+    let targetCheckpoint: string;
+    if (page.nextRevision !== null && page.nextRevision !== undefined) {
+      targetCheckpoint = page.nextRevision;
+    } else {
+      targetCheckpoint = page.currentServerRevision;
+    }
+
+    const expCkptBigInt = BigInt(expectedCheckpoint);
+    const targetCkptBigInt = BigInt(targetCheckpoint);
+    const currentServerRevBigInt = BigInt(page.currentServerRevision);
+
+    if (targetCkptBigInt > currentServerRevBigInt) {
+      throw new InvalidDeltaPayloadError(
+        `INCONSISTENT_DELTA_PAGE: targetCheckpoint "${targetCheckpoint}" exceeds currentServerRevision "${page.currentServerRevision}".`
+      );
+    }
+
+    if (targetCkptBigInt < expCkptBigInt) {
+      throw new InvalidDeltaPayloadError(
+        `REGRESSIVE_CHECKPOINT: Target checkpoint "${targetCheckpoint}" is less than expected checkpoint "${expectedCheckpoint}".`
+      );
+    }
+
+    // 5. Validate each change item
     let prevRev: bigint | null = null;
     for (let i = 0; i < page.changes.length; i++) {
       const change = page.changes[i];
@@ -1588,6 +1647,22 @@ export class IndexedDbClient {
       }
 
       const revBigInt = BigInt(change.revision);
+
+      // Boundary: changes must be strictly after expectedCheckpoint
+      if (revBigInt <= expCkptBigInt) {
+        throw new InvalidDeltaPayloadError(
+          `INCONSISTENT_DELTA_PAGE: Delta change at index ${i} has revision "${change.revision}" <= expectedCheckpoint "${expectedCheckpoint}". Delta page cannot contain changes already synced.`
+        );
+      }
+
+      // Boundary: changes must not exceed targetCheckpoint
+      if (revBigInt > targetCkptBigInt) {
+        throw new InvalidDeltaPayloadError(
+          `INCONSISTENT_DELTA_PAGE: Delta change at index ${i} has revision "${change.revision}" > targetCheckpoint "${targetCheckpoint}".`
+        );
+      }
+
+      // Ordering: changes within page must be in non-decreasing revision order
       if (prevRev !== null && revBigInt < prevRev) {
         throw new InvalidDeltaPayloadError(
           `Delta changes at index ${i} has regressive revision: "${change.revision}" < "${prevRev.toString()}". Changes must be in non-decreasing revision order.`
@@ -1633,18 +1708,6 @@ export class IndexedDbClient {
           );
         }
       }
-    }
-
-    // Determine target checkpoint
-    let targetCheckpoint: string;
-    if (page.nextRevision !== null && page.nextRevision !== undefined) {
-      targetCheckpoint = page.nextRevision;
-    } else if (page.changes.length > 0) {
-      targetCheckpoint = page.changes[page.changes.length - 1].revision;
-    } else if (page.currentServerRevision !== undefined) {
-      targetCheckpoint = page.currentServerRevision;
-    } else {
-      throw new InvalidDeltaPayloadError('Cannot determine target checkpoint: missing nextRevision, currentServerRevision, and changes.');
     }
 
     // 2. Pre-transaction admission check
@@ -1701,8 +1764,8 @@ export class IndexedDbClient {
             const existingMeta = metaReq.result as LocalSyncMeta | undefined;
             const currentCheckpoint = existingMeta?.lastSyncedServerRevision ?? '0';
 
-            // 3. Checkpoint OCC Guard:
-            if (expectedCheckpoint !== undefined && expectedCheckpoint !== currentCheckpoint) {
+            // 3. Mandatory Checkpoint OCC Guard:
+            if (expectedCheckpoint !== currentCheckpoint) {
               fail(
                 new CheckpointConflictError(
                   `OCC_CHECKPOINT_MISMATCH: Expected checkpoint "${expectedCheckpoint}", but current checkpoint is "${currentCheckpoint}".`
@@ -1816,6 +1879,16 @@ export class IndexedDbClient {
                   const newEpoch = payload.epoch as number;
 
                   if (isGlobal) {
+                    const currentGlobalEpoch = effectiveEpochs['00000000-0000-0000-0000-000000000000'] || 0;
+                    if (newEpoch <= currentGlobalEpoch) {
+                      fail(
+                        new InvalidDeltaPayloadError(
+                          `NON_MONOTONIC_HISTORY_EPOCH: Incoming global HISTORY DELETE epoch (${newEpoch}) must be strictly greater than current global epoch (${currentGlobalEpoch}).`
+                        )
+                      );
+                      return;
+                    }
+
                     // Global HISTORY DELETE:
                     effectiveEpochs['00000000-0000-0000-0000-000000000000'] = newEpoch;
 
@@ -1843,6 +1916,18 @@ export class IndexedDbClient {
                   } else {
                     // Story-wide HISTORY DELETE:
                     const storyId = String(payload.storyId || change.entityId);
+                    const currentStoryEpoch = effectiveEpochs[storyId] || 0;
+                    const currentGlobalEpoch = effectiveEpochs['00000000-0000-0000-0000-000000000000'] || 0;
+                    const currentEffectiveEpoch = Math.max(currentStoryEpoch, currentGlobalEpoch);
+                    if (newEpoch <= currentEffectiveEpoch) {
+                      fail(
+                        new InvalidDeltaPayloadError(
+                          `NON_MONOTONIC_HISTORY_EPOCH: Incoming story HISTORY DELETE epoch (${newEpoch}) for story "${storyId}" must be strictly greater than current effective epoch (${currentEffectiveEpoch}).`
+                        )
+                      );
+                      return;
+                    }
+
                     effectiveEpochs[storyId] = newEpoch;
 
                     // 1. Cascade delete all chapter history shadow records for this story

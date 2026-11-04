@@ -191,9 +191,9 @@ Tạo file kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-v4-migrati
 
 ---
 
-## 9. Đặc Tả & Ma Trận Kiểm Thử Bước 5.2b (Authoritative Shadow DAL & OCC Delta Ingestion)
+## 9. Đặc Tả & Ma Trận Kiểm Thử Bước 5.2b (Authoritative Shadow DAL, OCC Delta Ingestion & Remediation)
 
-File kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-authoritative-delta.spec.ts`:
+File kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-authoritative-delta.spec.ts` (**33/33 tests PASS**):
 
 | Mã Test | Tên Kịch Bản Kiểm Thử | Yêu Cầu Xác Minh | Kết Quả |
 | :--- | :--- | :--- | :--- |
@@ -213,11 +213,28 @@ File kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-authoritative-de
 | **ST-14B** | Authority Admission Boundary Guard | Synchronous admission guard kiểm tra sau `await getDatabase()`: nếu caller bị thu hồi thẩm quyền, abort ngay lập tức trước khi mở transaction. | **PASS** (1ms) |
 | **ST-10H-Ext** | putSyncMeta Protection on READY Scope | Kiểm tra `putSyncMeta` khóa bất biến `minActiveRevision`, checkpoint và `effectiveHistoryEpochs` trên READY scope; so sánh epoch map không phụ thuộc thứ tự key qua `areEpochMapsEqual`. | **PASS** (2ms) |
 | **ST-10-Pres** | Baseline UNINITIALIZED Preservation | Ingestion delta page cập nhật checkpoint nhưng tuyệt đối KHÔNG cấp trạng thái READY (giữ nguyên UNINITIALIZED / BOOTSTRAPPING). | **PASS** (2ms) |
+| **P0-01A** | Mandatory expectedCheckpoint Required | Ném `InvalidDeltaPayloadError` với `MANDATORY_OCC_CHECKPOINT_REQUIRED` khi `expectedCheckpoint` bị bỏ sót hoặc undefined. | **PASS** (1ms) |
+| **P0-01B** | Malformed expectedCheckpoint Rejection | Ném `InvalidDeltaPayloadError` khi `expectedCheckpoint` là chuỗi phi số ('abc', '-1', '1.5'). | **PASS** (1ms) |
+| **P0-01C** | Checkpoint Conflict on Storage Mismatch | Ném `CheckpointConflictError` khi `expectedCheckpoint` khác `currentCheckpoint` trong IndexedDB. | **PASS** (2ms) |
+| **P0-02A** | Inconsistent hasMore vs nextRevision | Ném `InvalidDeltaPayloadError` với `INCONSISTENT_DELTA_PAGE` khi `hasMore === true` nhưng `nextRevision` là null hoặc thiếu. | **PASS** (1ms) |
+| **P0-02B** | Inconsistent Stale Change Revision | Ném `InvalidDeltaPayloadError` khi item revision `<= expectedCheckpoint` (thay đổi cũ đã sync). | **PASS** (2ms) |
+| **P0-02C** | Inconsistent Change Exceeding Target | Ném `InvalidDeltaPayloadError` khi item revision `> targetCheckpoint`. | **PASS** (1ms) |
+| **P0-02D** | Target Checkpoint Exceeding Server Rev | Ném `InvalidDeltaPayloadError` khi `targetCheckpoint > currentServerRevision`. | **PASS** (1ms) |
+| **P0-02E** | Compacted Retention Gap Guard | Ném `InvalidDeltaPayloadError` với `COMPACTED_RETENTION_GAP` khi checkpoint client > 0 rơi ra sau `minActiveRevision` server (cần full 410 resync). | **PASS** (2ms) |
+| **P1-01A** | Global HISTORY DELETE Monotonic Epoch | Từ chối global delete khi incoming epoch `<= currentGlobalEpoch` với `NON_MONOTONIC_HISTORY_EPOCH`. | **PASS** (2ms) |
+| **P1-01B** | Story HISTORY DELETE Monotonic Epoch | Từ chối story delete khi incoming epoch `<= currentStoryEpoch` với `NON_MONOTONIC_HISTORY_EPOCH`. | **PASS** (2ms) |
+| **P1-01C** | Story HISTORY DELETE vs Global Dominance | Từ chối story delete khi incoming epoch `<= currentGlobalEpoch` với `NON_MONOTONIC_HISTORY_EPOCH`. | **PASS** (2ms) |
+| **P1-01D** | Intra-Page Monotonic Epoch Progression | Từ chối delta page chứa các delete cùng truyện có epoch không tăng dần (`newEpoch <= prevEpoch`). | **PASS** (1ms) |
+| **P1-01E** | Monotonic Epoch Progression Acceptance | Chấp thuận các epoch tăng dần liên tục và ghi nhận atomically vào `effectiveHistoryEpochs`. | **PASS** (2ms) |
+| **P1-02A** | Concurrent OCC Race Conflict | 2 transaction đồng quy cùng `expectedCheckpoint`: đúng 1 thành công, transaction thứ hai fail `CheckpointConflictError`, không dirty state. | **PASS** (3ms) |
+| **P1-02B** | Interleaved Delayed Commit Race | Transaction thứ hai bắt đầu với checkpoint cũ bị chặn đứng bởi `CheckpointConflictError` sau khi transaction thứ nhất commit. | **PASS** (2ms) |
+| **P1-02C** | Multi-Scope Concurrent Isolation | Ingestion đồng thời trên 2 scope khác nhau thành công 100% không ảnh hưởng checkpoint hoặc shadow của nhau. | **PASS** (3ms) |
+| **P1-02D** | Concurrent Read Consistency | Đọc shadow trong và sau transaction thất bại luôn trả về dữ liệu committed sạch, không bao giờ đọc dirty state. | **PASS** (2ms) |
 
 ---
 
 ## 10. Kết Luận
 
-Tài liệu **Storage Coexistence Revision 2.2** đã được hiện thực hóa qua hai giai đoạn:
+Tài liệu **Storage Coexistence Revision 2.2** đã được hiện thực hóa qua các giai đoạn:
 1. **Bước 5.2a (IndexedDB v4 Migration & Baseline Lifecycle Remediation):** Nghiệm thu chính thức tại commit `a1c6f4e` với 20/20 regression tests PASS và Hosted CI Run #41485048616 7/7 jobs PASS (`FROZEN CLEAN`).
-2. **Bước 5.2b (Authoritative Shadow DAL & OCC Delta Ingestion):** Triển khai hoàn tất tại `apps/web/src/lib/storage/indexed-db-client.ts`, đạt 16/16 regression tests PASS (`indexed-db-authoritative-delta.spec.ts`), 56/56 suites (802/802 tests) toàn web PASS, TypeScript 0 lỗi, Next.js 16 build SUCCESS. Không can thiệp bất kỳ dòng code nào của Step 4 (`mutation-queue.ts`). Sẵn sàng cho Gate Review.
+2. **Bước 5.2b (Authoritative Shadow DAL & OCC Delta Ingestion Remediation):** Khắc phục toàn diện 4 vấn đề kỹ thuật (P0-01 Bắt buộc OCC Checkpoint, P0-02 Delta Page Consistency, P1-01 HISTORY Epoch Monotonicity, P1-02 Concurrent Transaction Isolation), đạt **33/33 regression tests PASS** (`indexed-db-authoritative-delta.spec.ts`), 56/56 suites (**819/819 tests**) toàn web PASS, TypeScript 0 lỗi, Next.js 16 build SUCCESS. Không can thiệp bất kỳ dòng code nào của Step 4 (`mutation-queue.ts`). Sẵn sàng cho Gate Review tái nghiệm thu.

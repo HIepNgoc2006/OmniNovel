@@ -195,16 +195,27 @@ apps/web/src/lib/
   - **Gate Review Phán Quyết:** Phương án Revision 1 (`_syncStatus`) bị BLOCKED; Kiến trúc Revision 2 (`sync_authoritative_replicas` + Projection) được ACCEPTED IN PRINCIPLE; Đã hoàn thiện toàn diện **Storage Coexistence Revision 2.1 — Tombstone-Safe Shadow, Bootstrap Baseline & Causal Projection Contract** (chi tiết tại [`plans/phase_07c_storage_coexistence_design_v2.md`](file:///E:/Workspace2/Doctruyen_project/plans/phase_07c_storage_coexistence_design_v2.md)).
   - **Lộ trình Phased Rollout phân rã nghiêm ngặt (chờ Contract Gate Approval):**
     - [x] **Bước 5.2a:** IndexedDB v4 Migration & Baseline Lifecycle Remediation (`sync_meta.authoritativeBaselineStatus: 'UNINITIALIZED' | 'BOOTSTRAPPING' | 'READY'`, kiểm thử ST-07, ST-10A–I).
-    - [x] **Bước 5.2b:** Authoritative Shadow DAL & OCC Delta Ingestion (`apps/web/src/lib/storage/indexed-db-client.ts`, primitive `applyAuthoritativeDeltaPage`):
-      - Single atomic `readwrite` transaction trên cả 2 stores `[STORE_AUTHORITATIVE_REPLICAS, STORE_SYNC_META]`.
-      - Checkpoint OCC Guard: đối soát nghiêm ngặt `expectedCheckpoint === currentCheckpoint`, ném `CheckpointConflictError` nếu lệch checkpoint.
-      - Kiểm tra định dạng Decimal BigInt và thứ tự không giật lùi (`BigInt(targetCheckpoint) >= BigInt(currentCheckpoint)` và `revisions[i] >= revisions[i-1]`).
-      - Story-wide `HISTORY DELETE`: Xóa triệt để mọi chapter history shadow và story progress shadow của truyện, cập nhật `effectiveHistoryEpochs[storyId] = newEpoch`.
-      - Global `HISTORY DELETE`: Xóa toàn bộ history shadow và toàn bộ progress shadow của scope, cập nhật `effectiveHistoryEpochs['00000000-0000-0000-0000-000000000000'] = newEpoch`.
-      - Async Authority Boundary Guard: Kiểm tra thẩm quyền trước khi lấy DB và sau khi `await getDatabase()` ngay trước khi mở transaction (`checkAdmission`).
+    - [x] **Bước 5.2b (Remediation & Hardening):** Authoritative Shadow DAL & OCC Delta Ingestion (`apps/web/src/lib/storage/indexed-db-client.ts`, primitive `applyAuthoritativeDeltaPage`):
+      - **P0-01 Remediation (Bắt buộc OCC Checkpoint):** `expectedCheckpoint` là bắt buộc (mandatory `string`), kiểm tra regex decimal; cấm hoàn toàn bypass OCC; đối soát nghiêm ngặt `expectedCheckpoint === currentCheckpoint`, ném `CheckpointConflictError` nếu lệch checkpoint (`P0-01A–D`).
+      - **P0-02 Remediation (Delta Page Consistency & Server Boundaries):**
+        - Bắt buộc `currentServerRevision`, `minActiveRevision`, `hasMore`.
+        - Khi `hasMore: true`, bắt buộc `nextRevision !== null` và là decimal string (`P0-02A`).
+        - Khóa cận trên server: `targetCheckpoint <= currentServerRevision` (`P0-02D`).
+        - Khóa cận items: mọi change phải có `expectedCheckpoint < revision <= targetCheckpoint` (`P0-02B, P0-02C`).
+        - Compaction retention gap guard: ném `COMPACTED_RETENTION_GAP` nếu client checkpoint > 0 rơi ra sau `minActiveRevision` (`P0-02E`).
+      - **P1-01 Remediation (HISTORY Epoch Monotonicity Guard):**
+        - Global HISTORY DELETE bắt buộc `newEpoch > currentGlobalEpoch` (`P1-01A`).
+        - Story-wide HISTORY DELETE bắt buộc `newEpoch > max(currentStoryEpoch, currentGlobalEpoch)` (`P1-01B, P1-01C`).
+        - Chặn đứng intra-page non-monotonic epoch progression (`P1-01D`).
+        - Xóa cascade sạch chapter history shadows + progress shadow; cập nhật `effectiveHistoryEpochs` (`P1-01E`).
+      - **P1-02 Remediation (Concurrent Transaction Isolation & OCC Race):**
+        - Race đồng quy cùng `expectedCheckpoint`: đúng 1 transaction thành công, transaction cạnh tranh nhận `CheckpointConflictError`, không làm bẩn dữ liệu (`P1-02A`).
+        - Interleaved commit delay test: kiểm tra trễ commit phát hiện stale checkpoint và fail OCC (`P1-02B`).
+        - Concurrent transactions đa scope: chạy đồng thời độc lập, cách ly tuyệt đối (`P1-02C`).
+        - Concurrent read-after-write isolation: đọc luôn trả snapshot đã commit, không đọc dirty state (`P1-02D`).
       - Củng cố `putSyncMeta()`: Bảo vệ kép `minActiveRevision`, `lastSyncedServerRevision` và `effectiveHistoryEpochs` (so sánh không phụ thuộc thứ tự key qua `areEpochMapsEqual`) trên `READY` scopes.
       - Fail-Closed Baseline Boundary: Ingestion delta page tuyệt đối KHÔNG tự ý cấp trạng thái `READY`, bảo lưu cho Step 6 verified bootstrap finalization.
-      - Bộ kiểm thử ST-01, ST-05, ST-08, ST-09, ST-11, ST-14 đạt 16/16 tests PASS (`src/test/indexed-db-authoritative-delta.spec.ts`).
+      - Bộ kiểm thử toàn diện đạt **33/33 tests PASS** (`src/test/indexed-db-authoritative-delta.spec.ts`).
     - [ ] **Bước 5.2c:** Pure Deterministic Causal Projection Engine & Hydration (Hàm thuần túy `Resolve(Shadow, Pending)` phục hồi sau reload không phụ thuộc RAM event, Dual-layer tombstone suppression, kiểm thử ST-02, ST-03, ST-04, ST-06, ST-12, ST-13, ST-15).
     - [ ] **Bước 5.2d:** Delta Pull Reconciler Integration & Full Web E2E Verification (Kéo `/sync/changes`, checkpoint phân trang, tích hợp Web Locks Tab Leader).
   - **Bảo toàn Step 4:** Tuyệt đối không can thiệp hay sửa đổi bất kỳ logic giao dịch nào của Step 4 Mutation Queue đã FROZEN CLEAN.
@@ -251,17 +262,18 @@ apps/web/src/lib/
 
 ---
 
-### Step 5.2b — Authoritative Shadow DAL & OCC Delta Ingestion
+### Step 5.2b — Authoritative Shadow DAL, OCC Delta Ingestion & Remediation Matrix
 
 | Claim | Source File | Test / Gate | Commit SHA | Hosted Run | Evidence Type | What This Does NOT Prove | Status |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| **C1: Atomic Ingestion & Rollback (ST-01, ST-14)** | `apps/web/src/lib/storage/indexed-db-client.ts` | ST-01, ST-14 (`indexed-db-authoritative-delta.spec.ts`) | `HEAD` | Hosted CI Pending | Single atomic readwrite transaction & transactional abort test (`tx.abort()`) | Không phục hồi phần cứng đĩa nếu IndexedDB bị corrupt vật lý | **PASS LOCAL** |
-| **C2: Monotonic Decimal BigInt & Regression Guard (ST-05, ST-09)** | `apps/web/src/lib/storage/indexed-db-client.ts` | ST-05A/B, ST-09A/B/C (`indexed-db-authoritative-delta.spec.ts`) | `HEAD` | Hosted CI Pending | Unit & BigInt validation error tests (`InvalidDeltaPayloadError`) | Không thay thế server validation trên backend | **PASS LOCAL** |
-| **C3: Checkpoint OCC Guard (ST-08)** | `apps/web/src/lib/storage/indexed-db-client.ts` | ST-08A/B/C (`indexed-db-authoritative-delta.spec.ts`) | `HEAD` | Hosted CI Pending | Stale/higher checkpoint mismatch rejection tests (`CheckpointConflictError`) | Không ngăn chặn race trên 2 thiết bị khác nhau | **PASS LOCAL** |
-| **C4: Cascading Tombstone Eviction for Story-Wide & Global History (ST-11)** | `apps/web/src/lib/storage/indexed-db-client.ts` | ST-11A/B/C (`indexed-db-authoritative-delta.spec.ts`) | `HEAD` | Hosted CI Pending | Story-wide and Global HISTORY DELETE cascading shadow eviction & epoch bump tests | Không chứng minh UI projection đã filter (chờ Step 5.2c) | **PASS LOCAL** |
-| **C5: Authority Admission & Boundary Guard (ST-14B)** | `apps/web/src/lib/storage/indexed-db-client.ts` | ST-14B (`indexed-db-authoritative-delta.spec.ts`) | `HEAD` | Hosted CI Pending | Synchronous admission guard rejection test before opening transaction | Không thể rollback nếu transaction đã commit trước khi authority bị hủy | **PASS LOCAL** |
-| **C6: Hardened putSyncMeta Protection on READY Scopes** | `apps/web/src/lib/storage/indexed-db-client.ts` | ST-10H (`indexed-db-v4-migration.spec.ts`) | `HEAD` | Hosted CI Pending | Multi-field mutation lock test (`minActiveRevision`, checkpoint, order-independent epoch) | Không ngăn sửa đổi metadata lành tính (`syncState`, `lastSyncTimestamp`) | **PASS LOCAL** |
-| **C7: Complete Web Verification (56 suites, 802 tests, Typecheck 0, Build SUCCESS)** | `apps/web` | Full Web Test Suite + Typecheck + Next 16 Build | `HEAD` | Hosted CI Pending | 802/802 Vitest PASS, tsc --noEmit 0 errors, next build Turbopack SUCCESS | Chưa chứng minh E2E sync pull qua mạng thật (chờ Step 5.2d) | **PASS LOCAL** |
+| **C1: Mandatory OCC Checkpoint Guard (P0-01)** | `apps/web/src/lib/storage/indexed-db-client.ts` | P0-01A–D, ST-05 (`indexed-db-authoritative-delta.spec.ts`) | `HEAD` | Hosted CI Pending | Mandatory string validation & OCC conflict rejection tests (`CheckpointConflictError`) | Không ngăn chặn race trên 2 thiết bị khác nhau | **PASS LOCAL** |
+| **C2: Delta Page Consistency & Server Boundaries (P0-02)** | `apps/web/src/lib/storage/indexed-db-client.ts` | P0-02A–F, ST-09 (`indexed-db-authoritative-delta.spec.ts`) | `HEAD` | Hosted CI Pending | Page metadata, item boundary, server upper bound & retention gap tests (`COMPACTED_RETENTION_GAP`) | Không thay thế server validation trên backend | **PASS LOCAL** |
+| **C3: HISTORY Epoch Monotonicity Guard (P1-01)** | `apps/web/src/lib/storage/indexed-db-client.ts` | P1-01A–E, ST-11 (`indexed-db-authoritative-delta.spec.ts`) | `HEAD` | Hosted CI Pending | Strict epoch monotonicity rejection tests for global, story-wide, and intra-page deletes | Không chứng minh UI projection đã filter (chờ Step 5.2c) | **PASS LOCAL** |
+| **C4: Concurrent Transaction Isolation & OCC Race (P1-02)** | `apps/web/src/lib/storage/indexed-db-client.ts` | P1-02A–D (`indexed-db-authoritative-delta.spec.ts`) | `HEAD` | Hosted CI Pending | True concurrent race, delayed commit interleaving, multi-scope isolation & read consistency | Không chứng minh crash an toàn khi mất điện đĩa cứng đột ngột | **PASS LOCAL** |
+| **C5: Atomic Ingestion & Rollback (ST-01, ST-14)** | `apps/web/src/lib/storage/indexed-db-client.ts` | ST-01, ST-14 (`indexed-db-authoritative-delta.spec.ts`) | `HEAD` | Hosted CI Pending | Single atomic readwrite transaction & transactional abort test (`tx.abort()`) | Không phục hồi phần cứng đĩa nếu IndexedDB bị corrupt vật lý | **PASS LOCAL** |
+| **C6: Cascading Tombstone Eviction for Story-Wide & Global History (ST-11)** | `apps/web/src/lib/storage/indexed-db-client.ts` | ST-11A/B/C (`indexed-db-authoritative-delta.spec.ts`) | `HEAD` | Hosted CI Pending | Story-wide and Global HISTORY DELETE cascading shadow eviction & epoch bump tests | Không chứng minh UI projection đã filter (chờ Step 5.2c) | **PASS LOCAL** |
+| **C7: Authority Admission & Boundary Guard (ST-14B)** | `apps/web/src/lib/storage/indexed-db-client.ts` | ST-14B (`indexed-db-authoritative-delta.spec.ts`) | `HEAD` | Hosted CI Pending | Synchronous admission guard rejection test before opening transaction | Không thể rollback nếu transaction đã commit trước khi authority bị hủy | **PASS LOCAL** |
+| **C8: Complete Web Verification (56 suites, 819 tests, Typecheck 0, Build SUCCESS)** | `apps/web` | Full Web Test Suite + Typecheck + Next 16 Build | `HEAD` | Hosted CI Pending | 819/819 Vitest PASS (33 delta tests), tsc --noEmit 0 errors, next build Turbopack SUCCESS | Chưa chứng minh E2E sync pull qua mạng thật (chờ Step 5.2d) | **PASS LOCAL** |
 
 ---
 

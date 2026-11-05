@@ -10,6 +10,7 @@ import {
   ReadyStatusTransitionForbiddenError,
   AuthoritativeShadowRecord,
   LocalSyncMeta,
+  ApplyAuthoritativeDeltaResult,
 } from '../lib/storage/indexed-db-client';
 import {
   SyncDomain,
@@ -43,7 +44,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page: SyncChangesResponse = {
         currentServerRevision: '105',
         minActiveRevision: '0',
-        nextRevision: '105',
+        nextRevision: null,
         hasMore: false,
         changes: [
           {
@@ -134,7 +135,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page: SyncChangesResponse = {
         currentServerRevision: '105',
         minActiveRevision: '0',
-        nextRevision: '105',
+        nextRevision: null,
         hasMore: false,
         changes: [
           {
@@ -186,7 +187,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page: SyncChangesResponse = {
         currentServerRevision: '110',
         minActiveRevision: '50',
-        nextRevision: '110',
+        nextRevision: null,
         hasMore: false,
         changes: [
           {
@@ -227,7 +228,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page: SyncChangesResponse = {
         currentServerRevision: '110',
         minActiveRevision: '50',
-        nextRevision: '110',
+        nextRevision: null,
         hasMore: false,
         changes: [
           {
@@ -274,7 +275,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page1: SyncChangesResponse = {
         currentServerRevision: '110',
         minActiveRevision: '50',
-        nextRevision: '110',
+        nextRevision: null,
         hasMore: false,
         changes: [
           {
@@ -291,7 +292,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page2: SyncChangesResponse = {
         currentServerRevision: '120',
         minActiveRevision: '50',
-        nextRevision: '120',
+        nextRevision: null,
         hasMore: false,
         changes: [
           {
@@ -339,7 +340,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
         page: {
           currentServerRevision: '105',
           minActiveRevision: '0',
-          nextRevision: '105',
+          nextRevision: null,
           hasMore: false,
           changes: [
             // Story A
@@ -402,7 +403,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
         page: {
           currentServerRevision: '106',
           minActiveRevision: '50',
-          nextRevision: '106',
+          nextRevision: null,
           hasMore: false,
           changes: [
             {
@@ -444,7 +445,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
         page: {
           currentServerRevision: '103',
           minActiveRevision: '0',
-          nextRevision: '103',
+          nextRevision: null,
           hasMore: false,
           changes: [
             {
@@ -482,7 +483,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
         page: {
           currentServerRevision: '104',
           minActiveRevision: '50',
-          nextRevision: '104',
+          nextRevision: null,
           hasMore: false,
           changes: [
             {
@@ -523,7 +524,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
         page: {
           currentServerRevision: bigRev2,
           minActiveRevision: bigRev1,
-          nextRevision: bigRev2,
+          nextRevision: null,
           hasMore: false,
           changes: [
             {
@@ -586,7 +587,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '150',
             minActiveRevision: '100',
-            nextRevision: '150',
+            nextRevision: null,
             hasMore: false,
             changes: [],
           },
@@ -611,7 +612,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '100',
             minActiveRevision: '50',
-            nextRevision: '100',
+            nextRevision: null,
             hasMore: false,
             changes: [
               {
@@ -635,7 +636,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '100',
             minActiveRevision: '50',
-            nextRevision: '100',
+            nextRevision: null,
             hasMore: false,
             changes: [
               {
@@ -662,7 +663,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '100',
             minActiveRevision: '50',
-            nextRevision: '100',
+            nextRevision: null,
             hasMore: false,
             changes: [
               {
@@ -685,7 +686,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '100',
             minActiveRevision: '50',
-            nextRevision: '100',
+            nextRevision: null,
             hasMore: false,
             changes: [
               {
@@ -712,7 +713,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '110',
             minActiveRevision: '50',
-            nextRevision: '110',
+            nextRevision: null,
             hasMore: false,
             changes: [
               {
@@ -749,7 +750,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
         page: {
           currentServerRevision: '50',
           minActiveRevision: '10',
-          nextRevision: '50',
+          nextRevision: null,
           hasMore: false,
           changes: [
             {
@@ -772,7 +773,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '60',
             minActiveRevision: '10',
-            nextRevision: '60',
+            nextRevision: null,
             hasMore: false,
             changes: [
               {
@@ -820,7 +821,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
         page: {
           currentServerRevision: '100',
           minActiveRevision: '10',
-          nextRevision: '100',
+          nextRevision: null,
           hasMore: false,
           changes: [
             {
@@ -842,7 +843,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
         page: {
           currentServerRevision: '200',
           minActiveRevision: '10',
-          nextRevision: '200',
+          nextRevision: null,
           hasMore: false,
           changes: [
             {
@@ -884,7 +885,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '100',
             minActiveRevision: '50',
-            nextRevision: '100',
+            nextRevision: null,
             hasMore: false,
             changes: [
               {
@@ -911,7 +912,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page: SyncChangesResponse = {
         currentServerRevision: '100',
         minActiveRevision: '0',
-        nextRevision: '100',
+        nextRevision: null,
         hasMore: false,
         changes: [],
       };
@@ -929,7 +930,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page: SyncChangesResponse = {
         currentServerRevision: '100',
         minActiveRevision: '0',
-        nextRevision: '100',
+        nextRevision: null,
         hasMore: false,
         changes: [],
       };
@@ -959,7 +960,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page: SyncChangesResponse = {
         currentServerRevision: '200',
         minActiveRevision: '0',
-        nextRevision: '200',
+        nextRevision: null,
         hasMore: false,
         changes: [],
       };
@@ -1017,7 +1018,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page: SyncChangesResponse = {
         currentServerRevision: '110',
         minActiveRevision: '0',
-        nextRevision: '110',
+        nextRevision: null,
         hasMore: false,
         changes: [
           {
@@ -1073,9 +1074,18 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page: SyncChangesResponse = {
         currentServerRevision: '100',
         minActiveRevision: '0',
-        nextRevision: '120', // Anomaly! 120 > currentServerRevision 100
-        hasMore: false,
-        changes: [],
+        nextRevision: '120',
+        hasMore: true,
+        changes: [
+          {
+            revision: '120', // matches cursor, but 120 > currentServerRevision 100!
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'b1',
+            operation: SyncOperation.UPSERT,
+            payload: {},
+            createdAt: new Date().toISOString(),
+          },
+        ],
       };
 
       await expect(
@@ -1102,7 +1112,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page: SyncChangesResponse = {
         currentServerRevision: '150',
         minActiveRevision: '80', // Gap! client checkpoint 50 < server minActiveRevision 80
-        nextRevision: '150',
+        nextRevision: null,
         hasMore: false,
         changes: [
           {
@@ -1149,7 +1159,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '110',
             minActiveRevision: '0',
-            nextRevision: '110',
+            nextRevision: null,
             hasMore: false,
             changes: [
               {
@@ -1173,7 +1183,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '110',
             minActiveRevision: '0',
-            nextRevision: '110',
+            nextRevision: null,
             hasMore: false,
             changes: [
               {
@@ -1212,7 +1222,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '110',
             minActiveRevision: '0',
-            nextRevision: '110',
+            nextRevision: null,
             hasMore: false,
             changes: [
               {
@@ -1236,7 +1246,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '110',
             minActiveRevision: '0',
-            nextRevision: '110',
+            nextRevision: null,
             hasMore: false,
             changes: [
               {
@@ -1275,7 +1285,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '110',
             minActiveRevision: '0',
-            nextRevision: '110',
+            nextRevision: null,
             hasMore: false,
             changes: [
               {
@@ -1302,7 +1312,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
           page: {
             currentServerRevision: '110',
             minActiveRevision: '0',
-            nextRevision: '110',
+            nextRevision: null,
             hasMore: false,
             changes: [
               {
@@ -1336,7 +1346,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
         page: {
           currentServerRevision: '110',
           minActiveRevision: '0',
-          nextRevision: '110',
+          nextRevision: null,
           hasMore: false,
           changes: [
             {
@@ -1365,6 +1375,303 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
     });
   });
 
+  describe('P0-03 Remediation: Delta Pagination Cursor Integrity & Server Contract Alignment', () => {
+    it('P0-03A: rejects delta page when hasMore is true but changes array is empty', async () => {
+      const scope = 'account:usr-p0-03-empty-hasmore';
+      const page: SyncChangesResponse = {
+        currentServerRevision: '200',
+        minActiveRevision: '0',
+        nextRevision: '150',
+        hasMore: true,
+        changes: [],
+      };
+
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '0',
+          page,
+        })
+      ).rejects.toThrow(/INCONSISTENT_DELTA_PAGE: hasMore is true, but changes array is empty/i);
+
+      // Verify no metadata change
+      const meta = await dbClient.getSyncMeta(scope);
+      expect(meta).toBeNull();
+    });
+
+    it('P0-03B: rejects delta page when hasMore is true and cursor exceeds last change revision (potential skipped deltas)', async () => {
+      const scope = 'account:usr-p0-03-cursor-exceeds';
+      await dbClient.putSyncMeta({
+        ownerScope: scope,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '0',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      // Cursor is 150, but changes only contains revision 101!
+      // If accepted, next pull with after=150 would skip revisions 102..150 permanently.
+      const page: SyncChangesResponse = {
+        currentServerRevision: '200',
+        minActiveRevision: '0',
+        nextRevision: '150',
+        hasMore: true,
+        changes: [
+          {
+            revision: '101',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'story-101',
+            operation: SyncOperation.UPSERT,
+            payload: { title: 'Story 101' },
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '100',
+          page,
+        })
+      ).rejects.toThrow(/does not match last change revision/i);
+
+      // Verify rollback / zero mutation: checkpoint remains 100, no shadow written
+      const meta = await dbClient.getSyncMeta(scope);
+      expect(meta?.lastSyncedServerRevision).toBe('100');
+      const shadow = await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-101');
+      expect(shadow).toBeNull();
+    });
+
+    it('P0-03C: rejects delta page when hasMore is true and cursor is less than last change revision', async () => {
+      const scope = 'account:usr-p0-03-cursor-lagging';
+      const page: SyncChangesResponse = {
+        currentServerRevision: '200',
+        minActiveRevision: '0',
+        nextRevision: '101', // Cursor lags behind last change 105!
+        hasMore: true,
+        changes: [
+          {
+            revision: '101',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'story-101',
+            operation: SyncOperation.UPSERT,
+            payload: {},
+            createdAt: new Date().toISOString(),
+          },
+          {
+            revision: '105',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'story-105',
+            operation: SyncOperation.UPSERT,
+            payload: {},
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '0',
+          page,
+        })
+      ).rejects.toThrow(/does not match last change revision/i);
+
+      expect(await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-101')).toBeNull();
+      expect(await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-105')).toBeNull();
+    });
+
+    it('P0-03D: rejects delta page when hasMore is false but nextRevision is not null', async () => {
+      const scope = 'account:usr-p0-03-hasmore-false-nonnull';
+      await dbClient.putSyncMeta({
+        ownerScope: scope,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '0',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      const page: SyncChangesResponse = {
+        currentServerRevision: '150',
+        minActiveRevision: '0',
+        nextRevision: '150', // Non-null when hasMore is false!
+        hasMore: false,
+        changes: [
+          {
+            revision: '120',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'story-120',
+            operation: SyncOperation.UPSERT,
+            payload: { title: 'Story 120' },
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '100',
+          page,
+        })
+      ).rejects.toThrow(/hasMore is false, but nextRevision is not null/i);
+
+      // Verify checkpoint remains 100, story-120 was not written
+      const meta = await dbClient.getSyncMeta(scope);
+      expect(meta?.lastSyncedServerRevision).toBe('100');
+      expect(await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-120')).toBeNull();
+    });
+
+    it('P0-03E: successfully advances checkpoint to nextRevision when hasMore is true and cursor matches last change exactly', async () => {
+      const scope = 'account:usr-p0-03-valid-page-more';
+      const page: SyncChangesResponse = {
+        currentServerRevision: '200',
+        minActiveRevision: '0',
+        nextRevision: '105',
+        hasMore: true,
+        changes: [
+          {
+            revision: '101',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'story-p1',
+            operation: SyncOperation.UPSERT,
+            payload: { title: 'P1' },
+            createdAt: new Date().toISOString(),
+          },
+          {
+            revision: '105',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'story-p2',
+            operation: SyncOperation.UPSERT,
+            payload: { title: 'P2' },
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      const result = await dbClient.applyAuthoritativeDeltaPage({
+        ownerScope: scope,
+        expectedCheckpoint: '0',
+        page,
+      });
+
+      expect(result.appliedCount).toBe(2);
+      expect(result.newCheckpoint).toBe('105');
+      expect(result.hasMore).toBe(true);
+
+      const meta = await dbClient.getSyncMeta(scope);
+      expect(meta?.lastSyncedServerRevision).toBe('105');
+      expect(await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-p1')).not.toBeNull();
+      expect(await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-p2')).not.toBeNull();
+    });
+
+    it('P0-03F: successfully advances checkpoint to currentServerRevision when hasMore is false and nextRevision is null', async () => {
+      const scope = 'account:usr-p0-03-valid-page-final';
+      await dbClient.putSyncMeta({
+        ownerScope: scope,
+        lastSyncedServerRevision: '105',
+        minActiveRevision: '0',
+        lastSyncTimestamp: new Date().toISOString(),
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      const page: SyncChangesResponse = {
+        currentServerRevision: '120',
+        minActiveRevision: '0',
+        nextRevision: null,
+        hasMore: false,
+        changes: [
+          {
+            revision: '110',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'story-final',
+            operation: SyncOperation.UPSERT,
+            payload: { title: 'Final Page' },
+            createdAt: new Date().toISOString(),
+          },
+        ],
+      };
+
+      const result = await dbClient.applyAuthoritativeDeltaPage({
+        ownerScope: scope,
+        expectedCheckpoint: '105',
+        page,
+      });
+
+      expect(result.appliedCount).toBe(1);
+      expect(result.newCheckpoint).toBe('120'); // Advanced to currentServerRevision
+      expect(result.hasMore).toBe(false);
+
+      const meta = await dbClient.getSyncMeta(scope);
+      expect(meta?.lastSyncedServerRevision).toBe('120');
+      expect(await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-final')).not.toBeNull();
+    });
+
+    it('P0-03G: rollback verification: rejecting invalid cursor preserves prior checkpoint and shadow records atomically', async () => {
+      const scope = 'account:usr-p0-03-rollback-test';
+      // Seed initial state at checkpoint 50
+      await dbClient.applyAuthoritativeDeltaPage({
+        ownerScope: scope,
+        expectedCheckpoint: '0',
+        page: {
+          currentServerRevision: '50',
+          minActiveRevision: '0',
+          nextRevision: null,
+          hasMore: false,
+          changes: [
+            {
+              revision: '50',
+              domain: SyncDomain.BOOKMARK,
+              entityId: 'story-seed',
+              operation: SyncOperation.UPSERT,
+              payload: { title: 'Seeded Story' },
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        },
+      });
+
+      // Attempt invalid delta with cursor > last change revision
+      await expect(
+        dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '50',
+          page: {
+            currentServerRevision: '200',
+            minActiveRevision: '0',
+            nextRevision: '150', // Cursor mismatch: 150 != 101
+            hasMore: true,
+            changes: [
+              {
+                revision: '101',
+                domain: SyncDomain.BOOKMARK,
+                entityId: 'story-should-rollback',
+                operation: SyncOperation.UPSERT,
+                payload: { title: 'Should Not Exist' },
+                createdAt: new Date().toISOString(),
+              },
+            ],
+          },
+        })
+      ).rejects.toThrow(/does not match last change revision/i);
+
+      // Verify atomic preservation of prior checkpoint and shadows
+      const meta = await dbClient.getSyncMeta(scope);
+      expect(meta?.lastSyncedServerRevision).toBe('50');
+
+      const seedShadow = await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-seed');
+      expect(seedShadow).not.toBeNull();
+      expect(seedShadow?.payload?.title).toBe('Seeded Story');
+
+      const rejectedShadow = await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-should-rollback');
+      expect(rejectedShadow).toBeNull();
+    });
+  });
+
   describe('P1-02 Remediation: Concurrent Transaction Isolation & OCC Race', () => {
     it('P1-02A: exactly one transaction succeeds and competing transaction fails with CheckpointConflictError in concurrent race', async () => {
       const scope = 'account:usr-p1-02-concurrent-race';
@@ -1382,7 +1689,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page1: SyncChangesResponse = {
         currentServerRevision: '120',
         minActiveRevision: '0',
-        nextRevision: '110',
+        nextRevision: '105',
         hasMore: true,
         changes: [
           {
@@ -1399,7 +1706,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page2: SyncChangesResponse = {
         currentServerRevision: '120',
         minActiveRevision: '0',
-        nextRevision: '120',
+        nextRevision: null,
         hasMore: false,
         changes: [
           {
@@ -1440,80 +1747,207 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const rejectedResult = rejected[0] as PromiseRejectedResult;
       expect(rejectedResult.reason).toBeInstanceOf(CheckpointConflictError);
 
-      // Verify database consistency
+      // Verify shadow records of both winner and loser:
+      const p1Won = results[0].status === 'fulfilled';
+      const shadow1 = await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-race-1');
+      const shadow2 = await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-race-2');
       const meta = await dbClient.getSyncMeta(scope);
-      expect(['110', '120']).toContain(meta?.lastSyncedServerRevision);
+
+      if (p1Won) {
+        expect(shadow1).not.toBeNull();
+        expect(shadow1?.payload?.title).toBe('Winner 1');
+        expect(shadow2).toBeNull(); // Losing transaction shadow must NOT exist
+        expect(meta?.lastSyncedServerRevision).toBe('105');
+      } else {
+        expect(shadow2).not.toBeNull();
+        expect(shadow2?.payload?.title).toBe('Winner 2');
+        expect(shadow1).toBeNull(); // Losing transaction shadow must NOT exist
+        expect(meta?.lastSyncedServerRevision).toBe('120');
+      }
     });
 
-    it('P1-02B: interleaved concurrent execution with delayed commit triggers deterministic CheckpointConflictError', async () => {
-      const scope = 'account:usr-p1-02-interleaved';
+    it('P1-02B: two independent IndexedDbClient instances racing on same database results in exactly one success, one OCC conflict, and zero dirty shadow', async () => {
+      const scope = 'account:usr-p1-02-independent-clients';
+      const client1 = new IndexedDbClient();
+      const client2 = new IndexedDbClient();
 
-      await dbClient.putSyncMeta({
-        ownerScope: scope,
-        lastSyncedServerRevision: '50',
-        minActiveRevision: '0',
-        lastSyncTimestamp: new Date().toISOString(),
-        effectiveHistoryEpochs: {},
-        syncState: 'IDLE',
-      });
-
-      const pageA: SyncChangesResponse = {
-        currentServerRevision: '100',
-        minActiveRevision: '0',
-        nextRevision: '70',
-        hasMore: true,
-        changes: [
-          {
-            revision: '60',
-            domain: SyncDomain.BOOKMARK,
-            entityId: 'story-interleaved-A',
-            operation: SyncOperation.UPSERT,
-            payload: { title: 'Story A' },
-            createdAt: new Date().toISOString(),
-          },
-        ],
-      };
-
-      const pageB: SyncChangesResponse = {
-        currentServerRevision: '100',
-        minActiveRevision: '0',
-        nextRevision: '80',
-        hasMore: false,
-        changes: [
-          {
-            revision: '75',
-            domain: SyncDomain.BOOKMARK,
-            entityId: 'story-interleaved-B',
-            operation: SyncOperation.UPSERT,
-            payload: { title: 'Story B' },
-            createdAt: new Date().toISOString(),
-          },
-        ],
-      };
-
-      // Start transaction A
-      const resultA = await dbClient.applyAuthoritativeDeltaPage({
-        ownerScope: scope,
-        expectedCheckpoint: '50',
-        page: pageA,
-      });
-      expect(resultA.newCheckpoint).toBe('70');
-
-      // Now transaction B, launched with stale checkpoint '50', MUST fail
-      await expect(
-        dbClient.applyAuthoritativeDeltaPage({
+      try {
+        await client1.putSyncMeta({
           ownerScope: scope,
-          expectedCheckpoint: '50', // Stale!
-          page: pageB,
-        })
-      ).rejects.toThrow(CheckpointConflictError);
+          lastSyncedServerRevision: '50',
+          minActiveRevision: '0',
+          lastSyncTimestamp: new Date().toISOString(),
+          effectiveHistoryEpochs: {},
+          syncState: 'IDLE',
+        });
 
-      // Verify Story A exists and Story B does not
-      expect(await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-interleaved-A')).not.toBeNull();
-      expect(await dbClient.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-interleaved-B')).toBeNull();
+        const pageA: SyncChangesResponse = {
+          currentServerRevision: '100',
+          minActiveRevision: '0',
+          nextRevision: '60',
+          hasMore: true,
+          changes: [
+            {
+              revision: '60',
+              domain: SyncDomain.BOOKMARK,
+              entityId: 'story-client1-A',
+              operation: SyncOperation.UPSERT,
+              payload: { title: 'Client 1 Story' },
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        };
+
+        const pageB: SyncChangesResponse = {
+          currentServerRevision: '100',
+          minActiveRevision: '0',
+          nextRevision: '75',
+          hasMore: true,
+          changes: [
+            {
+              revision: '75',
+              domain: SyncDomain.BOOKMARK,
+              entityId: 'story-client2-B',
+              operation: SyncOperation.UPSERT,
+              payload: { title: 'Client 2 Story' },
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        };
+
+        const p1 = client1.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '50',
+          page: pageA,
+        });
+        p1.catch(() => {});
+
+        const p2 = client2.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '50',
+          page: pageB,
+        });
+        p2.catch(() => {});
+
+        const results = await Promise.allSettled([p1, p2]);
+        const fulfilled = results.filter((r) => r.status === 'fulfilled');
+        const rejected = results.filter((r) => r.status === 'rejected');
+
+        expect(fulfilled).toHaveLength(1);
+        expect(rejected).toHaveLength(1);
+        expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(CheckpointConflictError);
+
+        const client1Won = results[0].status === 'fulfilled';
+        const shadowA = await client1.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-client1-A');
+        const shadowB = await client1.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-client2-B');
+        const meta = await client1.getSyncMeta(scope);
+
+        if (client1Won) {
+          expect(shadowA).not.toBeNull();
+          expect(shadowA?.payload?.title).toBe('Client 1 Story');
+          expect(shadowB).toBeNull(); // Loser's shadow must NOT exist
+          expect(meta?.lastSyncedServerRevision).toBe('60');
+        } else {
+          expect(shadowB).not.toBeNull();
+          expect(shadowB?.payload?.title).toBe('Client 2 Story');
+          expect(shadowA).toBeNull(); // Loser's shadow must NOT exist
+          expect(meta?.lastSyncedServerRevision).toBe('75');
+        }
+      } finally {
+        client1.close();
+        client2.close();
+      }
     });
 
-    it('P1-02C: concurrent transactions on different scopes execute simultaneously without interference', async () => {
+    it('P1-02C: delayed-commit interleaving with deterministic coordination enforces OCC rollback and zero dirty shadow', async () => {
+      const scope = 'account:usr-p1-02-interleaved-delayed-commit';
+      const clientA = new IndexedDbClient();
+      const clientB = new IndexedDbClient();
+
+      try {
+        await clientA.putSyncMeta({
+          ownerScope: scope,
+          lastSyncedServerRevision: '50',
+          minActiveRevision: '0',
+          lastSyncTimestamp: new Date().toISOString(),
+          effectiveHistoryEpochs: {},
+          syncState: 'IDLE',
+        });
+
+        const pageA: SyncChangesResponse = {
+          currentServerRevision: '100',
+          minActiveRevision: '0',
+          nextRevision: '70',
+          hasMore: true,
+          changes: [
+            {
+              revision: '70',
+              domain: SyncDomain.BOOKMARK,
+              entityId: 'story-interleaved-A',
+              operation: SyncOperation.UPSERT,
+              payload: { title: 'Story A' },
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        };
+
+        const pageB: SyncChangesResponse = {
+          currentServerRevision: '100',
+          minActiveRevision: '0',
+          nextRevision: null,
+          hasMore: false,
+          changes: [
+            {
+              revision: '80',
+              domain: SyncDomain.BOOKMARK,
+              entityId: 'story-interleaved-B',
+              operation: SyncOperation.UPSERT,
+              payload: { title: 'Story B' },
+              createdAt: new Date().toISOString(),
+            },
+          ],
+        };
+
+        let promiseB: Promise<ApplyAuthoritativeDeltaResult> | null = null;
+
+        // Client A launches and in its _testHookBeforeComplete (while A's transaction is active in DB,
+        // before commit), client B initiates transaction with stale expectedCheckpoint '50'.
+        const promiseA = clientA.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '50',
+          page: pageA,
+          _testHookBeforeComplete: () => {
+            // Interleaving barrier: Client B initiates concurrent transaction against the same DB
+            // using the checkpoint it observed ('50') before client A commits '70'.
+            promiseB = clientB.applyAuthoritativeDeltaPage({
+              ownerScope: scope,
+              expectedCheckpoint: '50',
+              page: pageB,
+            });
+            promiseB.catch(() => {});
+          },
+        });
+
+        const resultA = await promiseA;
+        expect(resultA.newCheckpoint).toBe('70');
+
+        expect(promiseB).not.toBeNull();
+        await expect(promiseB!).rejects.toThrow(CheckpointConflictError);
+
+        // Verify Story A exists and Story B does NOT exist in shadow store
+        expect(await clientA.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-interleaved-A')).not.toBeNull();
+        expect(await clientA.getAuthoritativeShadow(scope, SyncDomain.BOOKMARK, 'story-interleaved-B')).toBeNull();
+
+        // Verify checkpoint remains at Client A's committed revision ('70')
+        const meta = await clientA.getSyncMeta(scope);
+        expect(meta?.lastSyncedServerRevision).toBe('70');
+      } finally {
+        clientA.close();
+        clientB.close();
+      }
+    });
+
+    it('P1-02D: concurrent transactions on different scopes execute simultaneously without interference', async () => {
       const scope1 = 'account:usr-p1-02-scope-1';
       const scope2 = 'account:usr-p1-02-scope-2';
 
@@ -1521,7 +1955,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page1: SyncChangesResponse = {
         currentServerRevision: '50',
         minActiveRevision: '0',
-        nextRevision: '50',
+        nextRevision: null,
         hasMore: false,
         changes: [
           {
@@ -1538,7 +1972,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       const page2: SyncChangesResponse = {
         currentServerRevision: '60',
         minActiveRevision: '0',
-        nextRevision: '60',
+        nextRevision: null,
         hasMore: false,
         changes: [
           {
@@ -1580,7 +2014,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
       expect(await dbClient.getAuthoritativeShadow(scope2, SyncDomain.BOOKMARK, 'story-s1')).toBeNull();
     });
 
-    it('P1-02D: concurrent read during or after delta commit returns strictly committed snapshot', async () => {
+    it('P1-02E: concurrent read during or after delta commit returns strictly committed snapshot', async () => {
       const scope = 'account:usr-p1-02-read-isolation';
 
       await dbClient.applyAuthoritativeDeltaPage({
@@ -1589,7 +2023,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
         page: {
           currentServerRevision: '100',
           minActiveRevision: '0',
-          nextRevision: '100',
+          nextRevision: null,
           hasMore: false,
           changes: [
             {
@@ -1611,7 +2045,7 @@ describe('Phase 5.2b — Authoritative Shadow DAL & Atomic Delta Ingestion (ST-0
         page: {
           currentServerRevision: '150',
           minActiveRevision: '0',
-          nextRevision: '150',
+          nextRevision: null,
           hasMore: false,
           changes: [
             {

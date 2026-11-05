@@ -1585,16 +1585,37 @@ export class IndexedDbClient {
       );
     }
 
+    // P0-03 Delta Pagination Cursor Integrity:
+    // Core API getChanges() contract:
+    // - If hasMore === true: changes must not be empty, nextRevision must be a valid decimal string,
+    //   and nextRevision must strictly equal the revision of the last change in the page.
+    // - If hasMore === false: nextRevision must be null.
     if (page.hasMore) {
+      if (page.changes.length === 0) {
+        throw new InvalidDeltaPayloadError(
+          'INCONSISTENT_DELTA_PAGE: hasMore is true, but changes array is empty.'
+        );
+      }
       if (page.nextRevision === null || page.nextRevision === undefined || !isValidRevisionString(page.nextRevision)) {
         throw new InvalidDeltaPayloadError(
           'INCONSISTENT_DELTA_PAGE: hasMore is true, but nextRevision is null, undefined, or not a valid decimal string.'
         );
       }
-    } else {
-      if (page.nextRevision !== null && page.nextRevision !== undefined && !isValidRevisionString(page.nextRevision)) {
+      const lastChange = page.changes[page.changes.length - 1];
+      if (!lastChange || !isValidRevisionString(lastChange.revision)) {
         throw new InvalidDeltaPayloadError(
-          `Invalid nextRevision: "${page.nextRevision}" must be a decimal string or null.`
+          'INCONSISTENT_DELTA_PAGE: Last change in page is invalid or missing revision.'
+        );
+      }
+      if (page.nextRevision !== lastChange.revision) {
+        throw new InvalidDeltaPayloadError(
+          `INCONSISTENT_DELTA_PAGE: nextRevision "${page.nextRevision}" does not match last change revision "${lastChange.revision}" when hasMore is true.`
+        );
+      }
+    } else {
+      if (page.nextRevision !== null) {
+        throw new InvalidDeltaPayloadError(
+          `INCONSISTENT_DELTA_PAGE: hasMore is false, but nextRevision is not null (got: ${JSON.stringify(page.nextRevision)}). Core API contract requires nextRevision to be null when hasMore is false.`
         );
       }
     }
@@ -1609,12 +1630,9 @@ export class IndexedDbClient {
     }
 
     // 4. Determine target checkpoint and enforce server boundary
-    let targetCheckpoint: string;
-    if (page.nextRevision !== null && page.nextRevision !== undefined) {
-      targetCheckpoint = page.nextRevision;
-    } else {
-      targetCheckpoint = page.currentServerRevision;
-    }
+    const targetCheckpoint: string = page.hasMore
+      ? (page.nextRevision as string)
+      : page.currentServerRevision;
 
     const expCkptBigInt = BigInt(expectedCheckpoint);
     const targetCkptBigInt = BigInt(targetCheckpoint);

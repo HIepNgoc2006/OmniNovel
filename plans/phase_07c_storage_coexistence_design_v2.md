@@ -221,15 +221,23 @@ File kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-authoritative-de
 | **P0-02C** | Inconsistent Change Exceeding Target | Ném `InvalidDeltaPayloadError` khi item revision `> targetCheckpoint`. | **PASS** (1ms) |
 | **P0-02D** | Target Checkpoint Exceeding Server Rev | Ném `InvalidDeltaPayloadError` khi `targetCheckpoint > currentServerRevision`. | **PASS** (1ms) |
 | **P0-02E** | Compacted Retention Gap Guard | Ném `InvalidDeltaPayloadError` với `COMPACTED_RETENTION_GAP` khi checkpoint client > 0 rơi ra sau `minActiveRevision` server (cần full 410 resync). | **PASS** (2ms) |
+| **P0-03A** | Empty Changes Array on hasMore=true | Ném `InvalidDeltaPayloadError` khi `hasMore=true` nhưng mảng `changes` rỗng. | **PASS** (1ms) |
+| **P0-03B** | Cursor Overshoots Last Change Revision | Ném `InvalidDeltaPayloadError` khi `hasMore=true` nhưng `nextRevision` vượt quá revision của change cuối cùng (ngăn ngừa bỏ sót delta 102..150). | **PASS** (2ms) |
+| **P0-03C** | Cursor Lags Behind Last Change Revision | Ném `InvalidDeltaPayloadError` khi `hasMore=true` nhưng `nextRevision < lastChange.revision`. | **PASS** (1ms) |
+| **P0-03D** | Trailing Non-Null Cursor on hasMore=false | Ném `InvalidDeltaPayloadError` khi `hasMore=false` nhưng `nextRevision !== null` (tuân thủ hợp đồng Core API). | **PASS** (2ms) |
+| **P0-03E** | Exact Cursor Match Acceptance (hasMore=true) | Chấp thuận checkpoint cập nhật chính xác theo `nextRevision` khi trùng khớp với change cuối cùng của trang. | **PASS** (2ms) |
+| **P0-03F** | Catchup Checkpoint Acceptance (hasMore=false) | Chấp thuận checkpoint cập nhật lên `currentServerRevision` khi trang cuối cùng kết thúc với `nextRevision=null`. | **PASS** (2ms) |
+| **P0-03G** | Atomic Rollback on Cursor Invalidation | Xác minh rollback toàn vẹn: khi cursor sai lệch, checkpoint và shadow trước đó được bảo toàn 100%, không sinh dirty state. | **PASS** (2ms) |
 | **P1-01A** | Global HISTORY DELETE Monotonic Epoch | Từ chối global delete khi incoming epoch `<= currentGlobalEpoch` với `NON_MONOTONIC_HISTORY_EPOCH`. | **PASS** (2ms) |
 | **P1-01B** | Story HISTORY DELETE Monotonic Epoch | Từ chối story delete khi incoming epoch `<= currentStoryEpoch` với `NON_MONOTONIC_HISTORY_EPOCH`. | **PASS** (2ms) |
 | **P1-01C** | Story HISTORY DELETE vs Global Dominance | Từ chối story delete khi incoming epoch `<= currentGlobalEpoch` với `NON_MONOTONIC_HISTORY_EPOCH`. | **PASS** (2ms) |
 | **P1-01D** | Intra-Page Monotonic Epoch Progression | Từ chối delta page chứa các delete cùng truyện có epoch không tăng dần (`newEpoch <= prevEpoch`). | **PASS** (1ms) |
 | **P1-01E** | Monotonic Epoch Progression Acceptance | Chấp thuận các epoch tăng dần liên tục và ghi nhận atomically vào `effectiveHistoryEpochs`. | **PASS** (2ms) |
-| **P1-02A** | Concurrent OCC Race Conflict | 2 transaction đồng quy cùng `expectedCheckpoint`: đúng 1 thành công, transaction thứ hai fail `CheckpointConflictError`, không dirty state. | **PASS** (3ms) |
-| **P1-02B** | Interleaved Delayed Commit Race | Transaction thứ hai bắt đầu với checkpoint cũ bị chặn đứng bởi `CheckpointConflictError` sau khi transaction thứ nhất commit. | **PASS** (2ms) |
-| **P1-02C** | Multi-Scope Concurrent Isolation | Ingestion đồng thời trên 2 scope khác nhau thành công 100% không ảnh hưởng checkpoint hoặc shadow của nhau. | **PASS** (3ms) |
-| **P1-02D** | Concurrent Read Consistency | Đọc shadow trong và sau transaction thất bại luôn trả về dữ liệu committed sạch, không bao giờ đọc dirty state. | **PASS** (2ms) |
+| **P1-02A** | Concurrent OCC Race Conflict & Full Shadow Verification | 2 transaction đồng quy cùng `expectedCheckpoint`: đúng 1 thành công, transaction thứ hai fail `CheckpointConflictError`, kiểm chứng đầy đủ shadow record người thắng tồn tại và người thua không tồn tại. | **PASS** (3ms) |
+| **P1-02B** | Two Independent IndexedDbClient Instances Race | Hai instance `IndexedDbClient` hoàn toàn độc lập truy cập cùng database: đúng 1 transaction thắng, 1 transaction dính OCC conflict, zero dirty shadow từ loser. | **PASS** (3ms) |
+| **P1-02C** | Delayed-Commit Interleaving with Deterministic Coordination | Điều phối barrier xác định: transaction B khởi tạo dựa trên checkpoint cũ trong khi transaction A đang in-flight trước khi commit; transaction B bị chặn đứng bởi `CheckpointConflictError` và rollback sạch sẽ. | **PASS** (2ms) |
+| **P1-02D** | Multi-Scope Concurrent Isolation | Ingestion đồng thời trên 2 scope khác nhau thành công 100% không ảnh hưởng checkpoint hoặc shadow của nhau. | **PASS** (3ms) |
+| **P1-02E** | Concurrent Read Consistency | Đọc shadow trong và sau transaction thất bại luôn trả về dữ liệu committed sạch, không bao giờ đọc dirty state. | **PASS** (2ms) |
 
 ---
 
@@ -237,4 +245,4 @@ File kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-authoritative-de
 
 Tài liệu **Storage Coexistence Revision 2.2** đã được hiện thực hóa qua các giai đoạn:
 1. **Bước 5.2a (IndexedDB v4 Migration & Baseline Lifecycle Remediation):** Nghiệm thu chính thức tại commit `a1c6f4e` với 20/20 regression tests PASS và Hosted CI Run #41485048616 7/7 jobs PASS (`FROZEN CLEAN`).
-2. **Bước 5.2b (Authoritative Shadow DAL & OCC Delta Ingestion Remediation):** Khắc phục toàn diện 4 vấn đề kỹ thuật (P0-01 Bắt buộc OCC Checkpoint, P0-02 Delta Page Consistency, P1-01 HISTORY Epoch Monotonicity, P1-02 Concurrent Transaction Isolation), đạt **33/33 regression tests PASS** (`indexed-db-authoritative-delta.spec.ts`), 56/56 suites (**819/819 tests**) toàn web PASS, TypeScript 0 lỗi, Next.js 16 build SUCCESS. Không can thiệp bất kỳ dòng code nào của Step 4 (`mutation-queue.ts`). Sẵn sàng cho Gate Review tái nghiệm thu.
+2. **Bước 5.2b (Authoritative Shadow DAL & OCC Delta Ingestion Final Remediation):** Khắc phục triệt để 5 nhóm vấn đề kỹ thuật (P0-01 Mandatory OCC Checkpoint, P0-02 Delta Page Consistency, P0-03 Pagination Cursor Integrity, P1-01 HISTORY Epoch Monotonicity, P1-02 Complete Concurrent Evidence & Independent Client Race), đạt **41/41 regression tests PASS** (`indexed-db-authoritative-delta.spec.ts`), 56/56 suites (**827/827 tests**) toàn web PASS, TypeScript 0 lỗi, Next.js 16 build Turbopack SUCCESS. Giải quyết dứt điểm Security Gate AI Worker Trivy Findings qua quy trình Governed Lifecycle Exception Policy SEC-REG-6.4.4A (`12/12 test scenarios PASS`). Giữ nguyên 100% mã nguồn Step 4 (`mutation-queue.ts`). Sẵn sàng cho Final Gate Review đóng băng Step 5.2b.

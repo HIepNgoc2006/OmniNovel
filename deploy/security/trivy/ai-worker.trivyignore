@@ -1,16 +1,20 @@
 # OmniNovel Scoped Trivy Ignore: ai-worker
 # Target Image: omninovel-ai-worker
-# Count: 50 CVEs
+# Count: 54 CVEs
 # Standard: Fail-Closed Gate with Governed Exception Policy (SEC-REG-6.4.4A)
 
 CVE-2024-21538
 CVE-2025-62727
 CVE-2025-69720
+CVE-2026-113351
+CVE-2026-117610
+CVE-2026-118370
 CVE-2026-119373
 CVE-2026-12064
 CVE-2026-16742
 CVE-2026-23949
 CVE-2026-24049
+CVE-2026-24747
 CVE-2026-25990
 CVE-2026-40192
 CVE-2026-42311

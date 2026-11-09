@@ -137,8 +137,10 @@ describe('HmacCursorHelper', () => {
       );
 
       const [payloadB64, sig] = cursor.split('.');
-      const alteredSig =
-        sig.slice(0, -2) + (sig.endsWith('a') ? 'b' : 'a') + sig.slice(-1);
+      const secondLastChar = sig[sig.length - 2];
+      const tamperedChar = secondLastChar === 'a' ? 'b' : 'a';
+      const alteredSig = sig.slice(0, -2) + tamperedChar + sig.slice(-1);
+      expect(alteredSig).not.toBe(sig);
 
       expect(() =>
         HmacCursorHelper.verifyAndDecodeCursor(

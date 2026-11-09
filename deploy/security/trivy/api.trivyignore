@@ -1,6 +1,6 @@
 # OmniNovel Scoped Trivy Ignore: api
 # Target Image: omninovel-api
-# Count: 36 CVEs
+# Count: 34 CVEs
 # Standard: Fail-Closed Gate with Governed Exception Policy (SEC-REG-6.4.4A)
 
 CVE-2025-64756
@@ -9,7 +9,6 @@ CVE-2026-102278
 CVE-2026-102599
 CVE-2026-13149
 CVE-2026-14257
-CVE-2026-14456
 CVE-2026-2359
 CVE-2026-23745
 CVE-2026-23950
@@ -22,7 +21,6 @@ CVE-2026-29786
 CVE-2026-31802
 CVE-2026-3304
 CVE-2026-3520
-CVE-2026-45447
 CVE-2026-4800
 CVE-2026-48815
 CVE-2026-5079

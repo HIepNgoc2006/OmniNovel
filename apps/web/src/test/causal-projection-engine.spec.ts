@@ -11,6 +11,8 @@ import {
 import {
   IndexedDbClient,
   STORE_SYNC_META,
+  InvalidDeltaPayloadError,
+  ReadyStatusTransitionForbiddenError,
   LocalSyncMeta,
   LocalPendingMutation,
   LocalPreference,
@@ -2116,6 +2118,222 @@ describe('Phase 5.2c — Pure Deterministic Causal Projection Engine & Hydration
       await expect(hydrator.materializeToLegacyStores(scope)).rejects.toThrow(
         IndexedDbUnavailableError,
       );
+    });
+  });
+
+  describe('10. Step 5.2c P1-B: Post-GC Stale Pending Suppression via minActiveRevision Watermark', () => {
+    const buildShadow = (
+      overrides: Partial<AuthoritativeShadowRecord> & { ownerScope: string; entityKey: string },
+    ): AuthoritativeShadowRecord => ({
+      domain: SyncDomain.BOOKMARK,
+      serverRevision: '100',
+      epoch: 0,
+      payload: {},
+      isDeleted: false,
+      updatedAt: 1_730_419_200_000,
+      ...overrides,
+    });
+
+    const buildMutation = (
+      overrides: Partial<LocalPendingMutation> & { ownerScope: string; mutationId: string },
+    ): LocalPendingMutation => ({
+      clientId: 'web-tab-1',
+      domain: SyncDomain.BOOKMARK,
+      entityId: 'story-1',
+      operation: SyncOperation.UPSERT,
+      baseServerRevision: '100',
+      payload: { storyId: 'story-1' },
+      createdAt: '2026-11-05T10:00:00.000Z',
+      retryCount: 0,
+      ...overrides,
+    });
+
+    it('suppresses post-GC stale PENDING mutations (baseRev < minActiveRevision) across UPSERT and DELETE while preserving valid >= minActiveRevision mutations and GRACE entries', () => {
+      const targetScope = 'account:usr-p1b-proj';
+      const safePlus1 = '9007199254740992';
+      const safePlus2 = '9007199254740993';
+
+      const res = resolveCausalProjection({
+        ownerScope: targetScope,
+        syncedServerRevision: safePlus2,
+        minActiveRevision: safePlus2,
+        effectiveHistoryEpochs: {},
+        // Post-GC: zero tombstones remain for old entities, only current authoritative shadows remain
+        tombstoneRevisions: {},
+        shadows: [
+          buildShadow({
+            ownerScope: targetScope,
+            domain: SyncDomain.BOOKMARK,
+            entityKey: 'bm-shadow-keep',
+            serverRevision: safePlus2,
+            payload: { storyId: 'bm-shadow-keep', title: 'Server Active Bookmark' },
+          }),
+        ],
+        graceEntries: [
+          {
+            ownerScope: targetScope,
+            assignedRevision: '9007199254740999',
+            recordedAtMs: 999_000,
+            expiresAtMs: 2_000_000,
+            mutation: buildMutation({
+              ownerScope: targetScope,
+              mutationId: 'grace-applied',
+              domain: SyncDomain.PREFERENCE,
+              entityId: 'theme',
+              operation: SyncOperation.UPSERT,
+              baseServerRevision: safePlus1,
+              payload: { key: 'theme', value: 'amoled' },
+            }),
+          },
+        ],
+        nowMs: 1_000_000,
+        pendingMutations: [
+          // Stale UPSERT (by 1 bit below BigInt watermark) on previously GC'd deleted bookmark -> MUST suppress
+          buildMutation({
+            ownerScope: targetScope,
+            mutationId: 'mut-stale-bm-upsert',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'bm-gc-deleted',
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: safePlus1,
+            payload: { storyId: 'bm-gc-deleted', title: 'Ghost Post-GC Bookmark' },
+          }),
+          // Stale DELETE (< watermark) on currently active shadow -> MUST NOT mask active shadow!
+          buildMutation({
+            ownerScope: targetScope,
+            mutationId: 'mut-stale-bm-delete',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'bm-shadow-keep',
+            operation: SyncOperation.DELETE,
+            baseServerRevision: safePlus1,
+            payload: { storyId: 'bm-shadow-keep' },
+          }),
+          // Stale PROGRESS (< watermark) -> MUST suppress
+          buildMutation({
+            ownerScope: targetScope,
+            mutationId: 'mut-stale-prog',
+            domain: SyncDomain.PROGRESS,
+            entityId: 'prog-gc',
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '70',
+            payload: { storyId: 'prog-gc', chapterId: 'c1', progressPercentage: 55 },
+          }),
+          // Valid UPSERT (=== minActiveRevision) -> MUST apply
+          buildMutation({
+            ownerScope: targetScope,
+            mutationId: 'mut-valid-at-edge',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'bm-new-valid',
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: safePlus2,
+            payload: { storyId: 'bm-new-valid', title: 'Valid Edge Bookmark' },
+          }),
+        ],
+      });
+
+      expect(res.suppressedMutationCount).toBe(3);
+      expect(res.activeGraceCount).toBe(1);
+      expect(res.bookmarks.map((b) => b.storyId)).toEqual(['bm-new-valid', 'bm-shadow-keep']);
+      expect(res.progress).toHaveLength(0);
+      expect(res.preferences.map((p) => p.key)).toEqual(['theme']);
+      // Stale mutations MUST NOT protect keys in protectedPending
+      expect(res.protectedPending.BOOKMARK).toEqual(['bm-new-valid']);
+      expect(res.protectedPending.PROGRESS).toEqual([]);
+    });
+
+    it('fails closed with InvalidDeltaPayloadError when minActiveRevision is malformed', () => {
+      expect(() =>
+        resolveCausalProjection({
+          ownerScope: 'account:usr-bad-watermark',
+          syncedServerRevision: '100',
+          minActiveRevision: '12.5-bad',
+          shadows: [],
+          pendingMutations: [],
+        }),
+      ).toThrow(InvalidDeltaPayloadError);
+    });
+
+    it('hydrates and materializes post-GC suppression on READY scope while keeping DEGRADED_COMPATIBILITY isolated and READY locked', async () => {
+      const readyScope = 'account:usr-p1b-ready-hydrator';
+      const uninitScope = 'account:usr-p1b-uninit-hydrator';
+
+      // Seed UNINITIALIZED (DEGRADED_COMPATIBILITY) scope with legacy bookmark & minActiveRevision=100
+      await dbClient.putSyncMeta({
+        ownerScope: uninitScope,
+        lastSyncedServerRevision: '120',
+        minActiveRevision: '100',
+        lastSyncTimestamp: '2026-11-05T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'UNINITIALIZED',
+      });
+      await dbClient.putBookmarkWithMutation(
+        {
+          ownerScope: uninitScope,
+          storyId: 'bm-uninit-legacy',
+          title: 'Degraded Compatibility Legacy',
+          createdAt: '2026-11-05T09:00:00.000Z',
+        },
+        buildMutation({
+          ownerScope: uninitScope,
+          mutationId: 'mut-uninit-70',
+          domain: SyncDomain.BOOKMARK,
+          entityId: 'bm-uninit-legacy',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '70',
+          payload: { storyId: 'bm-uninit-legacy', title: 'Degraded Compatibility Legacy' },
+        }),
+      );
+
+      // Seed READY scope directly (test-only store write; READY API lock still enforced)
+      await seedRawReadySyncMeta(
+        dbClient,
+        makeReadyMeta(readyScope, {
+          lastSyncedServerRevision: '120',
+          minActiveRevision: '100',
+        }),
+      );
+      await dbClient.putBookmarkWithMutation(
+        {
+          ownerScope: readyScope,
+          storyId: 'bm-stale-legacy',
+          title: 'Stale Legacy Should Clean On Materialize',
+          createdAt: '2026-11-05T09:00:00.000Z',
+        },
+        buildMutation({
+          ownerScope: readyScope,
+          mutationId: 'mut-ready-70',
+          domain: SyncDomain.BOOKMARK,
+          entityId: 'bm-stale-legacy',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '70',
+          payload: { storyId: 'bm-stale-legacy', title: 'Stale Legacy Should Clean On Materialize' },
+        }),
+      );
+
+      const hydrator = new SyncProjectionHydrator(dbClient);
+
+      // READY scope suppresses stale pending after GC AND cleans stale legacy replica during materialization
+      const readyHydrated = await hydrator.hydrateScope(readyScope);
+      expect(readyHydrated.mode).toBe('AUTHORITATIVE_PROJECTION');
+      expect(readyHydrated.baselineStatus).toBe('READY');
+      expect(readyHydrated.bookmarks).toHaveLength(0);
+      expect(readyHydrated.suppressedMutationCount).toBe(1);
+
+      const matRes = await hydrator.materializeToLegacyStores(readyScope);
+      expect(matRes.materialized).toBe(true);
+      expect(matRes.deletedCounts.bookmarks).toBe(1);
+      expect(await dbClient.getBookmark(readyScope, 'bm-stale-legacy')).toBeNull();
+
+      // UNINITIALIZED stays strictly DEGRADED_COMPATIBILITY, never claims READY, and READY lock stays sealed
+      const uninitHydrated = await hydrator.hydrateScope(uninitScope);
+      expect(uninitHydrated.mode).toBe('DEGRADED_COMPATIBILITY');
+      expect(uninitHydrated.baselineStatus).toBe('UNINITIALIZED');
+      expect(uninitHydrated.bookmarks.map((b) => b.storyId)).toEqual(['bm-uninit-legacy']);
+
+      await expect(
+        dbClient.setAuthoritativeBaselineStatus(uninitScope, 'READY'),
+      ).rejects.toThrow(ReadyStatusTransitionForbiddenError);
     });
   });
 });

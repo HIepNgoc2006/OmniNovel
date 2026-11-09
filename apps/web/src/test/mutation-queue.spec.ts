@@ -7,12 +7,16 @@ import {
   STORE_PROGRESS,
   STORE_HISTORY,
   STORE_PREFERENCES,
+  STORE_SYNC_META,
   STORE_PENDING_MUTATIONS,
   STORE_QUARANTINED_MUTATIONS,
+  InvalidDeltaPayloadError,
   LocalPendingMutation,
   LocalQuarantinedMutation,
   LocalPreference,
+  LocalSyncMeta,
   CausalTriageProof,
+  QuarantineRejectionStatus,
 } from '../lib/storage/indexed-db-client';
 import {
   MutationQueue,
@@ -34,6 +38,7 @@ import {
   LocalReadingProgress,
   LocalReadingHistory,
   MutationResultItem,
+  SyncChangesResponse,
 } from '@omninovel/shared';
 
 describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated)', () => {
@@ -2863,6 +2868,922 @@ describe('Task 7C.3 — Step 4: Mutation Queue & Quarantine Triaging (Remediated
       expect(newBatch.mutations).toHaveLength(1);
       expect(newBatch.mutations[0].mutationId).toBe('mut-rt39b-b');
       expect(newBatch.batchId).not.toBe(batch.batchId);
+    });
+  });
+
+  describe('16. Step 5.2c P1-A & P1-B Targeted Safety Remediation (DISCARDED Guard & Post-GC Watermark)', () => {
+    it.each<QuarantineRejectionStatus>([
+      'MANUAL',
+      'EXCEEDED_MAX_RETRIES',
+      'DOMAIN_NOT_SUPPORTED',
+      'REJECTED_TOMBSTONE',
+    ])(
+      'P1-A: hard-blocks requeue for DISCARDED mutation with rejectionStatus=%s in both queue and IDB transaction without resurrecting local replica',
+      async (rejectionStatus) => {
+        const queue = createTestQueue({ ownerScope: scopeA });
+        const mutId = `mut-discarded-${rejectionStatus.toLowerCase()}`;
+        const storyId = `story-discarded-${rejectionStatus.toLowerCase()}`;
+
+        await dbClient.quarantineMutation({
+          ownerScope: scopeA,
+          mutationId: mutId,
+          clientId: 'client-p1a',
+          domain: SyncDomain.BOOKMARK,
+          entityId: storyId,
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '150',
+          payload: { storyId, title: 'Should Never Resurrect' },
+          rejectionReason: `Discarded after ${rejectionStatus}`,
+          rejectionStatus,
+          rejectedAt: '2026-11-05T10:00:00.000Z',
+          triageStatus: 'DISCARDED',
+          originalCreatedAt: '2026-11-05T09:50:00.000Z',
+        });
+
+        const approvedProof: CausalTriageProof = {
+          observedEpoch: 2,
+          validatedRevision: '500',
+          triageApproved: true,
+          triageReason: 'Attempted override of DISCARDED decision',
+        };
+
+        await expect(queue.requeue(mutId)).rejects.toThrow(RequeueProhibitedError);
+        await expect(queue.requeue(mutId)).rejects.toThrow(/DISCARDED/i);
+        await expect(queue.requeue(mutId, approvedProof)).rejects.toThrow(RequeueProhibitedError);
+        await expect(
+          dbClient.requeueQuarantinedMutation(scopeA, mutId),
+        ).rejects.toThrow(/REQUEUE_PROHIBITED:.*DISCARDED/);
+        await expect(
+          dbClient.requeueQuarantinedMutation(scopeA, mutId, approvedProof),
+        ).rejects.toThrow(/REQUEUE_PROHIBITED:.*DISCARDED/);
+
+        // Prove: zero pending created, quarantine intact, zero local replica resurrected
+        expect(await dbClient.getPendingMutation(scopeA, mutId)).toBeNull();
+        expect(await dbClient.getPendingMutations(scopeA)).toHaveLength(0);
+        const persistedQ = await dbClient.getQuarantinedMutation(scopeA, mutId);
+        expect(persistedQ).not.toBeNull();
+        expect(persistedQ?.triageStatus).toBe('DISCARDED');
+        expect(persistedQ?.rejectionStatus).toBe(rejectionStatus);
+        expect(await dbClient.getBookmark(scopeA, storyId)).toBeNull();
+        expect(
+          await dbClient.getAuthoritativeShadow(scopeA, SyncDomain.BOOKMARK, storyId),
+        ).toBeNull();
+      },
+    );
+
+    it('P1-A: enforces DISCARDED guard inside IDB readwrite transaction even under TOCTOU race and preserves valid requeue branches', async () => {
+      const queue = createTestQueue({ ownerScope: scopeA });
+
+      // 1. TOCTOU race test: entry starts as PENDING when pre-checked, becomes DISCARDED before IDB tx reads it
+      await dbClient.quarantineMutation({
+        ownerScope: scopeA,
+        mutationId: 'mut-toctou-discard',
+        clientId: 'client-p1a',
+        domain: SyncDomain.PREFERENCE,
+        entityId: 'reader_theme',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '200',
+        payload: { key: 'reader_theme', value: 'sepia' },
+        rejectionReason: 'EXCEEDED_MAX_RETRIES: timeout',
+        rejectionStatus: 'EXCEEDED_MAX_RETRIES',
+        rejectedAt: '2026-11-05T10:00:00.000Z',
+        triageStatus: 'PENDING',
+        originalCreatedAt: '2026-11-05T09:50:00.000Z',
+      });
+
+      const origGetQ = dbClient.getQuarantinedMutation.bind(dbClient);
+      vi.spyOn(dbClient, 'getQuarantinedMutation').mockImplementationOnce(async (scope, id) => {
+        const snapshotBeforeTx = await origGetQ(scope, id);
+        // Simulate concurrent tab/user discarding the item BEFORE the IDB requeue transaction executes
+        const db = await dbClient.getDatabase();
+        await new Promise<void>((resolve, reject) => {
+          const wTx = db.transaction(STORE_QUARANTINED_MUTATIONS, 'readwrite');
+          wTx.objectStore(STORE_QUARANTINED_MUTATIONS).put({
+            ...snapshotBeforeTx!,
+            triageStatus: 'DISCARDED',
+          });
+          wTx.oncomplete = () => resolve();
+          wTx.onerror = () => reject(wTx.error);
+        });
+        return snapshotBeforeTx;
+      });
+
+      await expect(queue.requeue('mut-toctou-discard')).rejects.toThrow(RequeueProhibitedError);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-toctou-discard')).toBeNull();
+      expect((await dbClient.getQuarantinedMutation(scopeA, 'mut-toctou-discard'))?.triageStatus).toBe(
+        'DISCARDED',
+      );
+      expect(await dbClient.getPreference(scopeA, 'reader_theme')).toBeNull();
+
+      // 2. Valid requeue branches ONLY permit triageStatus === 'PENDING' with retryable rejections when baseRev >= minActiveRevision
+      await dbClient.putSyncMeta({
+        ownerScope: scopeA,
+        lastSyncedServerRevision: '150',
+        minActiveRevision: '100',
+        lastSyncTimestamp: '2026-11-05T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      for (const [id, status] of [
+        ['mut-valid-retry', 'EXCEEDED_MAX_RETRIES'],
+        ['mut-valid-manual-pending', 'MANUAL'],
+      ] as const) {
+        await dbClient.quarantineMutation({
+          ownerScope: scopeA,
+          mutationId: id,
+          clientId: 'client-p1a',
+          domain: SyncDomain.BOOKMARK,
+          entityId: `story-${id}`,
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '100',
+          payload: { storyId: `story-${id}`, title: id },
+          rejectionReason: status,
+          rejectionStatus: status,
+          rejectedAt: '2026-11-05T10:05:00.000Z',
+          triageStatus: 'PENDING',
+          originalCreatedAt: '2026-11-05T10:00:00.000Z',
+        });
+
+        await queue.requeue(id);
+        expect(await dbClient.getQuarantinedMutation(scopeA, id)).toBeNull();
+        const restored = await dbClient.getPendingMutation(scopeA, id);
+        expect(restored).not.toBeNull();
+        expect(restored?.retryCount).toBe(0);
+      }
+
+      // P1-C: Terminal APPROVED (even with MANUAL) and non-retryable DOMAIN_NOT_SUPPORTED remain blocked
+      for (const [id, status, triageStatus] of [
+        ['mut-blocked-manual-approved', 'MANUAL', 'APPROVED'],
+        ['mut-blocked-domain-pending', 'DOMAIN_NOT_SUPPORTED', 'PENDING'],
+      ] as const) {
+        await dbClient.quarantineMutation({
+          ownerScope: scopeA,
+          mutationId: id,
+          clientId: 'client-p1a',
+          domain: SyncDomain.BOOKMARK,
+          entityId: `story-${id}`,
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '100',
+          payload: { storyId: `story-${id}`, title: id },
+          rejectionReason: status,
+          rejectionStatus: status,
+          rejectedAt: '2026-11-05T10:05:00.000Z',
+          triageStatus,
+          originalCreatedAt: '2026-11-05T10:00:00.000Z',
+        });
+
+        await expect(queue.requeue(id)).rejects.toThrow(RequeueProhibitedError);
+        expect(await dbClient.getPendingMutation(scopeA, id)).toBeNull();
+        expect(await dbClient.getQuarantinedMutation(scopeA, id)).not.toBeNull();
+      }
+    });
+
+    it('P1-B: blocks push and atomically quarantines stale pending (baseRev < minActiveRevision) with sync_meta while preserving full metadata and cross-scope isolation', async () => {
+      const quarantinedEvents: LocalQuarantinedMutation[] = [];
+      const queueA = createTestQueue({
+        ownerScope: scopeA,
+        onMutationQuarantined: (_scope, item) => {
+          quarantinedEvents.push(item);
+        },
+      });
+      const queueB = createTestQueue({ ownerScope: scopeB });
+
+      const metaA: LocalSyncMeta = {
+        ownerScope: scopeA,
+        lastSyncedServerRevision: '120',
+        minActiveRevision: '100',
+        lastSyncTimestamp: '2026-11-05T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      };
+      await dbClient.putSyncMeta(metaA);
+      await dbClient.putSyncMeta({
+        ownerScope: scopeB,
+        lastSyncedServerRevision: '60',
+        minActiveRevision: '40',
+        lastSyncTimestamp: '2026-11-05T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      const richPayload = {
+        storyId: 'story-slow-70',
+        title: 'Offline Unconfirmed Bookmark',
+        nested: { tags: ['fantasy'], page: 12 },
+      };
+      const staleMutA = createDummyMutation({
+        ownerScope: scopeA,
+        mutationId: 'mut-stale-70',
+        clientId: 'slow-tab-1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'story-slow-70',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '70',
+        payload: richPayload,
+        createdAt: '2026-11-05T08:00:00.000Z',
+      });
+      const validMutA = createDummyMutation({
+        ownerScope: scopeA,
+        mutationId: 'mut-valid-100',
+        clientId: 'active-tab-2',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'story-valid-100',
+        baseServerRevision: '100',
+        payload: { storyId: 'story-valid-100', title: 'Valid Edge Watermark' },
+        createdAt: '2026-11-05T09:00:00.000Z',
+      });
+      const validMutB = createDummyMutation({
+        ownerScope: scopeB,
+        mutationId: 'mut-scope-b-50',
+        baseServerRevision: '50', // >= scopeB minActiveRevision(40), < scopeA minActiveRevision(100)
+        createdAt: '2026-11-05T08:30:00.000Z',
+      });
+
+      await queueA.enqueue(staleMutA);
+      await queueA.enqueue(validMutA);
+      await queueB.enqueue(validMutB);
+
+      // Leader aborted check must not mutate pending -> quarantine
+      const abortCtrl = new AbortController();
+      abortCtrl.abort();
+      const abortedBatch = await queueA.preparePushBatch({ leaderSignal: abortCtrl.signal });
+      expect(abortedBatch.mutations).toHaveLength(0);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-stale-70')).not.toBeNull();
+
+      // Active preparePushBatch filters + atomically quarantines stale mutation
+      const batchA = await queueA.preparePushBatch();
+      expect(batchA.mutations.map((m) => m.mutationId)).toEqual(['mut-valid-100']);
+
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-stale-70')).toBeNull();
+      const quarantined = await dbClient.getQuarantinedMutation(scopeA, 'mut-stale-70');
+      expect(quarantined).not.toBeNull();
+      expect(quarantined).toMatchObject({
+        ownerScope: scopeA,
+        mutationId: 'mut-stale-70',
+        clientId: 'slow-tab-1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'story-slow-70',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '70',
+        payload: richPayload,
+        rejectionStatus: 'REJECTED_STALE',
+        triageStatus: 'PENDING',
+        originalCreatedAt: '2026-11-05T08:00:00.000Z',
+      });
+      expect(quarantined?.rejectionReason).toMatch(/BASE_REVISION_EXPIRED/);
+      expect(quarantinedEvents).toHaveLength(1);
+      expect(quarantinedEvents[0].mutationId).toBe('mut-stale-70');
+
+      // Quarantined stale mutation is ALSO blocked from requeue (queue + IDB tx)
+      await expect(queueA.requeue('mut-stale-70')).rejects.toThrow(RequeueProhibitedError);
+      await expect(
+        dbClient.requeueQuarantinedMutation(scopeA, 'mut-stale-70'),
+      ).rejects.toThrow(/REQUEUE_PROHIBITED/);
+
+      // Cross-scope isolation: scopeB mutation at rev 50 >= 40 remains pushable and unquarantined
+      expect(await dbClient.getQuarantinedMutations(scopeB)).toHaveLength(0);
+      const batchB = await queueB.preparePushBatch();
+      expect(batchB.mutations.map((m) => m.mutationId)).toEqual(['mut-scope-b-50']);
+    });
+
+    it('P1-B: blocks requeue of transient EXCEEDED_MAX_RETRIES item once minActiveRevision exceeds its baseServerRevision (including TOCTOU race)', async () => {
+      const queue = createTestQueue({ ownerScope: scopeA });
+
+      await dbClient.putSyncMeta({
+        ownerScope: scopeA,
+        lastSyncedServerRevision: '120',
+        minActiveRevision: '100',
+        lastSyncTimestamp: '2026-11-05T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      await dbClient.quarantineMutation({
+        ownerScope: scopeA,
+        mutationId: 'mut-transient-old-75',
+        clientId: 'client-p1b',
+        domain: SyncDomain.PROGRESS,
+        entityId: 'story-75',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '75',
+        payload: { storyId: 'story-75', chapterId: 'c1', progressPercentage: 40 },
+        rejectionReason: 'EXCEEDED_MAX_RETRIES: offline',
+        rejectionStatus: 'EXCEEDED_MAX_RETRIES',
+        rejectedAt: '2026-11-05T10:00:00.000Z',
+        triageStatus: 'PENDING',
+        originalCreatedAt: '2026-11-05T09:00:00.000Z',
+      });
+
+      await expect(queue.requeue('mut-transient-old-75')).rejects.toThrow(RequeueProhibitedError);
+      await expect(
+        dbClient.requeueQuarantinedMutation(scopeA, 'mut-transient-old-75'),
+      ).rejects.toThrow(/REQUEUE_PROHIBITED/);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-transient-old-75')).toBeNull();
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-transient-old-75')).not.toBeNull();
+
+      // TOCTOU race: syncMeta watermark advances from 50 -> 100 after pre-check read but before IDB tx commit
+      await dbClient.putSyncMeta({
+        ownerScope: scopeA,
+        lastSyncedServerRevision: '120',
+        minActiveRevision: '50',
+        lastSyncTimestamp: '2026-11-05T10:01:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+      const origGetMeta = dbClient.getSyncMeta.bind(dbClient);
+      vi.spyOn(dbClient, 'getSyncMeta').mockImplementationOnce(async (scope) => {
+        const snap = await origGetMeta(scope);
+        const db = await dbClient.getDatabase();
+        await new Promise<void>((resolve, reject) => {
+          const wTx = db.transaction(STORE_SYNC_META, 'readwrite');
+          wTx.objectStore(STORE_SYNC_META).put({
+            ...snap!,
+            minActiveRevision: '100',
+          });
+          wTx.oncomplete = () => resolve();
+          wTx.onerror = () => reject(wTx.error);
+        });
+        return snap;
+      });
+
+      await expect(queue.requeue('mut-transient-old-75')).rejects.toThrow(RequeueProhibitedError);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-transient-old-75')).toBeNull();
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-transient-old-75')).not.toBeNull();
+    });
+
+    it('P1-B: handles 64-bit BigInt watermarks, tx.abort()/admission rollback, and fail-closed invalid revisions', async () => {
+      const safePlus1 = '9007199254740992';
+      const safePlus2 = '9007199254740993';
+
+      await dbClient.putSyncMeta({
+        ownerScope: scopeA,
+        lastSyncedServerRevision: safePlus2,
+        minActiveRevision: safePlus2,
+        lastSyncTimestamp: '2026-11-05T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      const mut64Stale = createDummyMutation({
+        ownerScope: scopeA,
+        mutationId: 'mut-64-stale',
+        baseServerRevision: safePlus1,
+      });
+      const mut64Edge = createDummyMutation({
+        ownerScope: scopeA,
+        mutationId: 'mut-64-edge',
+        baseServerRevision: safePlus2,
+      });
+      await dbClient.enqueuePendingMutation(mut64Stale);
+      await dbClient.enqueuePendingMutation(mut64Edge);
+
+      // Rollback via tx.abort() must leave both pending items untouched and quarantine empty
+      await expect(
+        dbClient.quarantineStalePendingMutationsByWatermark(scopeA, {
+          _testHookBeforeComplete: (tx) => tx.abort(),
+        }),
+      ).rejects.toThrow();
+      expect(await dbClient.getPendingMutations(scopeA)).toHaveLength(2);
+      expect(await dbClient.getQuarantinedMutations(scopeA)).toHaveLength(0);
+
+      // Admission revocation before commit must roll back cleanly
+      await expect(
+        dbClient.quarantineStalePendingMutationsByWatermark(scopeA, {
+          checkAdmission: () => {
+            throw new Error('WATERMARK_ADMISSION_REVOKED');
+          },
+        }),
+      ).rejects.toThrow('WATERMARK_ADMISSION_REVOKED');
+      expect(await dbClient.getPendingMutations(scopeA)).toHaveLength(2);
+
+      // Requeue transaction rollback via tx.abort() preserves quarantine and creates zero pending records
+      await dbClient.quarantineMutation({
+        ownerScope: scopeA,
+        mutationId: 'mut-requeue-abort',
+        clientId: 'client-p1b',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'story-abort',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: safePlus2,
+        payload: { storyId: 'story-abort', title: 'Rollback Requeue' },
+        rejectionReason: 'EXCEEDED_MAX_RETRIES: transient',
+        rejectionStatus: 'EXCEEDED_MAX_RETRIES',
+        rejectedAt: '2026-11-05T10:00:00.000Z',
+        triageStatus: 'PENDING',
+        originalCreatedAt: '2026-11-05T09:55:00.000Z',
+      });
+      await expect(
+        dbClient.requeueQuarantinedMutation(scopeA, 'mut-requeue-abort', undefined, {
+          _testHookBeforeComplete: (tx) => tx.abort(),
+        }),
+      ).rejects.toThrow();
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-requeue-abort')).toBeNull();
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-requeue-abort')).not.toBeNull();
+      await dbClient.deleteQuarantinedMutation(scopeA, 'mut-requeue-abort');
+
+      // Valid sweep with BigInt: mut64Stale (< safePlus2) quarantined, mut64Edge (=== safePlus2) pushable
+      const queue = createTestQueue({ ownerScope: scopeA });
+      const batch = await queue.preparePushBatch();
+      expect(batch.mutations.map((m) => m.mutationId)).toEqual(['mut-64-edge']);
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-64-stale')).not.toBeNull();
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-64-stale')).toBeNull();
+
+      // Fail-closed on corrupt minActiveRevision
+      await dbClient.putSyncMeta({
+        ownerScope: scopeA,
+        lastSyncedServerRevision: safePlus2,
+        minActiveRevision: 'corrupt-decimal',
+        lastSyncTimestamp: '2026-11-05T10:01:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+      await expect(queue.preparePushBatch()).rejects.toThrow(InvalidDeltaPayloadError);
+    });
+  });
+
+  describe('17. Step 5.2c Final Safety Closure: P1-C (APPROVED Terminal State) & P1-D (Watermark Race During Batch Prep)', () => {
+    it('P1-C REPRO/GUARD: hard-blocks requeue for APPROVED + MANUAL even with triageApproved=true and preserves replacement metadata', async () => {
+      const queue = createTestQueue({ ownerScope: scopeA });
+
+      await dbClient.putSyncMeta({
+        ownerScope: scopeA,
+        lastSyncedServerRevision: '200',
+        minActiveRevision: '100',
+        lastSyncTimestamp: '2026-11-09T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      const approvedProof: CausalTriageProof = {
+        observedEpoch: 2,
+        validatedRevision: '200',
+        triageApproved: true,
+        triageReason: 'USER_REAPPLIED_AS_NEW_MUTATION',
+        evidence: {
+          replacementMutationId: 'mut-replacement-999',
+        },
+      };
+
+      await dbClient.quarantineMutation({
+        ownerScope: scopeA,
+        mutationId: 'mut-p1c-approved-manual',
+        clientId: 'client-p1c',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'story-p1c-manual',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '150',
+        payload: { storyId: 'story-p1c-manual', title: 'Terminal Approved Record' },
+        rejectionReason: 'MANUAL',
+        rejectionStatus: 'MANUAL',
+        rejectedAt: '2026-11-09T10:05:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: approvedProof,
+        originalCreatedAt: '2026-11-09T09:50:00.000Z',
+      });
+
+      await expect(queue.requeue('mut-p1c-approved-manual')).rejects.toThrow(RequeueProhibitedError);
+      await expect(queue.requeue('mut-p1c-approved-manual')).rejects.toThrow(/APPROVED/i);
+      await expect(queue.requeue('mut-p1c-approved-manual', approvedProof)).rejects.toThrow(
+        RequeueProhibitedError,
+      );
+      await expect(
+        dbClient.requeueQuarantinedMutation(scopeA, 'mut-p1c-approved-manual'),
+      ).rejects.toThrow(/REQUEUE_PROHIBITED:.*APPROVED/);
+      await expect(
+        dbClient.requeueQuarantinedMutation(scopeA, 'mut-p1c-approved-manual', approvedProof),
+      ).rejects.toThrow(/REQUEUE_PROHIBITED:.*APPROVED/);
+
+      // Legacy mutationId must NEVER re-enter pending_mutations or resurrect legacy store
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-p1c-approved-manual')).toBeNull();
+      expect(await dbClient.getPendingMutations(scopeA)).toHaveLength(0);
+      const persistedQ = await dbClient.getQuarantinedMutation(scopeA, 'mut-p1c-approved-manual');
+      expect(persistedQ).not.toBeNull();
+      expect(persistedQ?.triageStatus).toBe('APPROVED');
+      expect(persistedQ?.rejectionStatus).toBe('MANUAL');
+      expect(persistedQ?.causalEvidence).toEqual(approvedProof);
+      expect(await dbClient.getBookmark(scopeA, 'story-p1c-manual')).toBeNull();
+    });
+
+    it.each<{
+      label: string;
+      rejectionStatus: QuarantineRejectionStatus;
+      triageStatus: LocalQuarantinedMutation['triageStatus'];
+    }>([
+      { label: 'APPROVED + EXCEEDED_MAX_RETRIES', rejectionStatus: 'EXCEEDED_MAX_RETRIES', triageStatus: 'APPROVED' },
+      { label: 'APPROVED + DOMAIN_NOT_SUPPORTED', rejectionStatus: 'DOMAIN_NOT_SUPPORTED', triageStatus: 'APPROVED' },
+      { label: 'APPROVED + REJECTED_TOMBSTONE', rejectionStatus: 'REJECTED_TOMBSTONE', triageStatus: 'APPROVED' },
+      { label: 'APPROVED + REJECTED_STALE', rejectionStatus: 'REJECTED_STALE', triageStatus: 'APPROVED' },
+      { label: 'PENDING + DOMAIN_NOT_SUPPORTED (non-retryable)', rejectionStatus: 'DOMAIN_NOT_SUPPORTED', triageStatus: 'PENDING' },
+      { label: 'PENDING + CONFLICT_MERGED (non-retryable)', rejectionStatus: 'CONFLICT_MERGED', triageStatus: 'PENDING' },
+      { label: 'PENDING + CORRUPT_STATUS', rejectionStatus: 'CORRUPT_STATUS' as QuarantineRejectionStatus, triageStatus: 'PENDING' },
+      { label: 'CORRUPT_TRIAGE + MANUAL', rejectionStatus: 'MANUAL', triageStatus: 'CORRUPT_TRIAGE' as any },
+    ])(
+      'P1-C fail-closed blocks requeue for $label even when triageApproved=true is passed',
+      async ({ rejectionStatus, triageStatus }) => {
+        const queue = createTestQueue({ ownerScope: scopeA });
+        const mutId = `mut-p1c-block-${String(triageStatus)}-${rejectionStatus}`.toLowerCase();
+
+        await dbClient.putSyncMeta({
+          ownerScope: scopeA,
+          lastSyncedServerRevision: '200',
+          minActiveRevision: '100',
+          lastSyncTimestamp: '2026-11-09T10:00:00.000Z',
+          effectiveHistoryEpochs: {},
+          syncState: 'IDLE',
+        });
+
+        await dbClient.quarantineMutation({
+          ownerScope: scopeA,
+          mutationId: mutId,
+          clientId: 'client-p1c',
+          domain: SyncDomain.BOOKMARK,
+          entityId: `story-${mutId}`,
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '150',
+          payload: { storyId: `story-${mutId}` },
+          rejectionReason: `Seeded ${rejectionStatus}`,
+          rejectionStatus,
+          rejectedAt: '2026-11-09T10:05:00.000Z',
+          triageStatus,
+          originalCreatedAt: '2026-11-09T09:50:00.000Z',
+        });
+
+        const proof: CausalTriageProof = {
+          observedEpoch: 1,
+          validatedRevision: '250',
+          triageApproved: true,
+          triageReason: 'Bypass attempt',
+          evidence: { replacementMutationId: 'mut-new-attempt' },
+        };
+
+        await expect(queue.requeue(mutId, proof)).rejects.toThrow(RequeueProhibitedError);
+        await expect(dbClient.requeueQuarantinedMutation(scopeA, mutId, proof)).rejects.toThrow(
+          /REQUEUE_PROHIBITED:/,
+        );
+        expect(await dbClient.getPendingMutation(scopeA, mutId)).toBeNull();
+        expect((await dbClient.getQuarantinedMutation(scopeA, mutId))?.triageStatus).toBe(triageStatus);
+      },
+    );
+
+    it('P1-C TOCTOU: enforces APPROVED guard inside IDB readwrite tx if mutated between pre-check and tx commit', async () => {
+      const queue = createTestQueue({ ownerScope: scopeA });
+
+      await dbClient.putSyncMeta({
+        ownerScope: scopeA,
+        lastSyncedServerRevision: '200',
+        minActiveRevision: '100',
+        lastSyncTimestamp: '2026-11-09T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      await dbClient.quarantineMutation({
+        ownerScope: scopeA,
+        mutationId: 'mut-toctou-approve',
+        clientId: 'client-p1c',
+        domain: SyncDomain.PREFERENCE,
+        entityId: 'reader_font',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '150',
+        payload: { key: 'reader_font', value: 'serif' },
+        rejectionReason: 'Manual audit hold',
+        rejectionStatus: 'MANUAL',
+        rejectedAt: '2026-11-09T10:00:00.000Z',
+        triageStatus: 'PENDING',
+        originalCreatedAt: '2026-11-09T09:55:00.000Z',
+      });
+
+      const origGetQ = dbClient.getQuarantinedMutation.bind(dbClient);
+      vi.spyOn(dbClient, 'getQuarantinedMutation').mockImplementationOnce(async (scope, id) => {
+        const snapshotBeforeTx = await origGetQ(scope, id);
+        const db = await dbClient.getDatabase();
+        await new Promise<void>((resolve, reject) => {
+          const wTx = db.transaction(STORE_QUARANTINED_MUTATIONS, 'readwrite');
+          wTx.objectStore(STORE_QUARANTINED_MUTATIONS).put({
+            ...snapshotBeforeTx!,
+            triageStatus: 'APPROVED',
+            causalEvidence: {
+              triageApproved: true,
+              validatedRevision: '200',
+              triageReason: 'USER_REAPPLIED_AS_NEW_MUTATION',
+              evidence: { replacementMutationId: 'mut-new-race-1' },
+            },
+          });
+          wTx.oncomplete = () => resolve();
+          wTx.onerror = () => reject(wTx.error);
+        });
+        return snapshotBeforeTx;
+      });
+
+      await expect(
+        queue.requeue('mut-toctou-approve', { triageApproved: true, validatedRevision: '200' }),
+      ).rejects.toThrow(RequeueProhibitedError);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-toctou-approve')).toBeNull();
+      expect((await dbClient.getQuarantinedMutation(scopeA, 'mut-toctou-approve'))?.triageStatus).toBe(
+        'APPROVED',
+      );
+      expect(await dbClient.getPreference(scopeA, 'reader_font')).toBeNull();
+    });
+
+    it('P1-D RACE: sweep reads minActiveRevision=10, concurrent delta updates minActiveRevision=100, pending(baseRev=70) MUST NOT be returned as valid', async () => {
+      const quarantinedEvents: LocalQuarantinedMutation[] = [];
+      const queue = createTestQueue({
+        ownerScope: scopeA,
+        onMutationQuarantined: (_scope, mut) => {
+          quarantinedEvents.push(mut);
+        },
+      });
+
+      await dbClient.putSyncMeta({
+        ownerScope: scopeA,
+        lastSyncedServerRevision: '100',
+        minActiveRevision: '10',
+        lastSyncTimestamp: '2026-11-09T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      const staleDraftPayload = {
+        storyId: 'story-draft-70',
+        title: 'Unconfirmed Offline Bookmark 70',
+        nested: { chapter: 14 },
+      };
+      await queue.enqueue(
+        createDummyMutation({
+          ownerScope: scopeA,
+          mutationId: 'mut-race-70',
+          clientId: 'slow-tab-race',
+          entityId: 'story-draft-70',
+          baseServerRevision: '70',
+          payload: staleDraftPayload,
+          createdAt: '2026-11-09T08:00:00.000Z',
+        }),
+      );
+      await queue.enqueue(
+        createDummyMutation({
+          ownerScope: scopeA,
+          mutationId: 'mut-valid-120',
+          entityId: 'story-valid-120',
+          baseServerRevision: '120',
+          payload: { storyId: 'story-valid-120', title: 'Valid Fresh Bookmark' },
+          createdAt: '2026-11-09T09:00:00.000Z',
+        }),
+      );
+
+      // Deterministic race: TX1 sweep reads minActiveRevision='10', then before selection completes,
+      // another tab/delta updates sync_meta.minActiveRevision='100'.
+      const origGetPending = dbClient.getPendingMutations.bind(dbClient);
+      vi.spyOn(dbClient, 'getPendingMutations').mockImplementationOnce(async (scope, limit) => {
+        const snapshot = await origGetPending(scope, limit);
+        const page: SyncChangesResponse = {
+          changes: [],
+          currentServerRevision: '120',
+          minActiveRevision: '100',
+          hasMore: false,
+          nextRevision: null,
+        };
+        await dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          page,
+          expectedCheckpoint: '100',
+        });
+        return snapshot;
+      });
+
+      const batch = await queue.preparePushBatch();
+
+      expect(batch.mutations.map((m) => m.mutationId)).toEqual(['mut-valid-120']);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-race-70')).toBeNull();
+
+      // Offline user data must be preserved via atomic quarantine, NEVER deleted
+      const quarantined = await dbClient.getQuarantinedMutation(scopeA, 'mut-race-70');
+      expect(quarantined).not.toBeNull();
+      expect(quarantined).toMatchObject({
+        mutationId: 'mut-race-70',
+        baseServerRevision: '70',
+        payload: staleDraftPayload,
+        rejectionStatus: 'REJECTED_STALE',
+        triageStatus: 'PENDING',
+        originalCreatedAt: '2026-11-09T08:00:00.000Z',
+      });
+      expect(quarantined?.rejectionReason).toMatch(/minActiveRevision.*100/);
+      expect(quarantinedEvents.map((m) => m.mutationId)).toEqual(['mut-race-70']);
+
+      const status = await queue.getStatus();
+      expect(status.inFlightCount).toBe(1);
+    });
+
+    it('P1-D RACE: followUpSweep lateStaleDetected path must NOT return baseRev=70 quarantined under new minActiveRevision=100', async () => {
+      const queue = createTestQueue({ ownerScope: scopeA });
+
+      await dbClient.putSyncMeta({
+        ownerScope: scopeA,
+        lastSyncedServerRevision: '50',
+        minActiveRevision: '10',
+        lastSyncTimestamp: '2026-11-09T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      await queue.enqueue(
+        createDummyMutation({
+          mutationId: 'mut-late-70',
+          entityId: 'story-late-70',
+          baseServerRevision: '70',
+          payload: { storyId: 'story-late-70', title: 'Late Stale 70' },
+          createdAt: '2026-11-09T08:00:00.000Z',
+        }),
+      );
+      await queue.enqueue(
+        createDummyMutation({
+          mutationId: 'mut-fresh-150',
+          entityId: 'story-fresh-150',
+          baseServerRevision: '150',
+          createdAt: '2026-11-09T09:00:00.000Z',
+        }),
+      );
+
+      // Inject both a late slow-tab pending(baseRev='5' < 10) AND watermark bump(minActiveRevision='100')
+      // between initial sweep and pending read so legacy followUpSweep triggers AND still returns mut-late-70.
+      const origGetPending = dbClient.getPendingMutations.bind(dbClient);
+      vi.spyOn(dbClient, 'getPendingMutations').mockImplementationOnce(async (scope, limit) => {
+        await dbClient.enqueuePendingMutation(
+          createDummyMutation({
+            mutationId: 'mut-late-5',
+            entityId: 'story-late-5',
+            baseServerRevision: '5',
+            createdAt: '2026-11-09T07:00:00.000Z',
+          }),
+        );
+        await dbClient.putSyncMeta({
+          ownerScope: scope,
+          lastSyncedServerRevision: '150',
+          minActiveRevision: '100',
+          lastSyncTimestamp: '2026-11-09T10:01:00.000Z',
+          effectiveHistoryEpochs: {},
+          syncState: 'IDLE',
+        });
+        return origGetPending(scope, limit);
+      });
+
+      const batch = await queue.preparePushBatch();
+      expect(batch.mutations.map((m) => m.mutationId)).toEqual(['mut-fresh-150']);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-late-5')).toBeNull();
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-late-70')).toBeNull();
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-late-5')).not.toBeNull();
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-late-70')).not.toBeNull();
+    });
+
+    it('P1-D: handles late watermark update + scope switch, leader revocation, tx.abort() rollback, and 64-bit BigInt', async () => {
+      // 1. Late watermark + scope switch during batch prep -> empty batch, zero inFlight leak, pending untouched
+      const identityProvider = createStaticIdentityProvider(scopeA);
+      const queue = createTestQueue({ ownerScope: scopeA, identityStateProvider: identityProvider });
+
+      await dbClient.putSyncMeta({
+        ownerScope: scopeA,
+        lastSyncedServerRevision: '10',
+        minActiveRevision: '10',
+        lastSyncTimestamp: '2026-11-09T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+      await queue.enqueue(
+        createDummyMutation({
+          mutationId: 'mut-switch-70',
+          baseServerRevision: '70',
+          createdAt: '2026-11-09T08:00:00.000Z',
+        }),
+      );
+
+      const origGetPending = dbClient.getPendingMutations.bind(dbClient);
+      vi.spyOn(dbClient, 'getPendingMutations').mockImplementationOnce(async (scope, limit) => {
+        const res = await origGetPending(scope, limit);
+        await dbClient.putSyncMeta({
+          ownerScope: scope,
+          lastSyncedServerRevision: '120',
+          minActiveRevision: '100',
+          lastSyncTimestamp: '2026-11-09T10:01:00.000Z',
+          effectiveHistoryEpochs: {},
+          syncState: 'IDLE',
+        });
+        identityProvider.setScope(scopeB);
+        queue.setActiveScope(scopeB);
+        return res;
+      });
+
+      const switchBatch = await queue.preparePushBatch();
+      expect(switchBatch.mutations).toHaveLength(0);
+      expect((await queue.getStatus()).inFlightCount).toBe(0);
+      // Scope A offline pending data is NOT deleted or quarantined by aborted prep
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-switch-70')).not.toBeNull();
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-switch-70')).toBeNull();
+
+      // Switch back to scopeA for leader revocation + tx.abort() + BigInt checks
+      identityProvider.setScope(scopeA);
+      queue.setActiveScope(scopeA);
+      await dbClient.putSyncMeta({
+        ownerScope: scopeA,
+        lastSyncedServerRevision: '10',
+        minActiveRevision: '10',
+        lastSyncTimestamp: '2026-11-09T10:02:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+
+      // 2. Late watermark + leaderSignal revocation after getPendingMutations -> empty batch, offline data preserved
+      const abortCtrl = new AbortController();
+      vi.spyOn(dbClient, 'getPendingMutations').mockImplementationOnce(async (scope, limit) => {
+        const res = await origGetPending(scope, limit);
+        await dbClient.putSyncMeta({
+          ownerScope: scope,
+          lastSyncedServerRevision: '120',
+          minActiveRevision: '100',
+          lastSyncTimestamp: '2026-11-09T10:03:00.000Z',
+          effectiveHistoryEpochs: {},
+          syncState: 'IDLE',
+        });
+        abortCtrl.abort('Leader stepped down');
+        return res;
+      });
+
+      const leaderAbortedBatch = await queue.preparePushBatch({ leaderSignal: abortCtrl.signal });
+      expect(leaderAbortedBatch.mutations).toHaveLength(0);
+      expect((await queue.getStatus()).inFlightCount).toBe(0);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-switch-70')).not.toBeNull();
+
+      // 3. Atomic selection tx.abort() & checkAdmission mid-tx revocation rollback preserve pending & quarantine untouched
+      await expect(
+        dbClient.selectEligiblePendingBatchAtomic(scopeA, {
+          limit: 50,
+          now: Date.now(),
+          _testHookBeforeComplete: (tx) => tx.abort(),
+        }),
+      ).rejects.toThrow();
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-switch-70')).not.toBeNull();
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-switch-70')).toBeNull();
+
+      let admissionCalls = 0;
+      await expect(
+        dbClient.selectEligiblePendingBatchAtomic(scopeA, {
+          limit: 50,
+          now: Date.now(),
+          checkAdmission: () => {
+            admissionCalls += 1;
+            if (admissionCalls > 1) {
+              throw new ScopeTransitioningError('Revoked inside selection tx');
+            }
+          },
+        }),
+      ).rejects.toThrow(ScopeTransitioningError);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-switch-70')).not.toBeNull();
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-switch-70')).toBeNull();
+
+      // 4. 64-bit BigInt race above Number.MAX_SAFE_INTEGER ('9007199254740992' vs '9007199254740993')
+      await dbClient.deletePendingMutation(scopeA, 'mut-switch-70');
+      const rev91 = '9007199254740991';
+      const rev92 = '9007199254740992';
+      const rev93 = '9007199254740993';
+      await dbClient.putSyncMeta({
+        ownerScope: scopeA,
+        lastSyncedServerRevision: rev91,
+        minActiveRevision: rev91,
+        lastSyncTimestamp: '2026-11-09T10:04:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+      });
+      await queue.enqueue(
+        createDummyMutation({
+          mutationId: 'mut-bigint-stale-92',
+          baseServerRevision: rev92,
+          createdAt: '2026-11-09T08:00:00.000Z',
+        }),
+      );
+      await queue.enqueue(
+        createDummyMutation({
+          mutationId: 'mut-bigint-edge-93',
+          baseServerRevision: rev93,
+          createdAt: '2026-11-09T09:00:00.000Z',
+        }),
+      );
+
+      vi.spyOn(dbClient, 'getPendingMutations').mockImplementationOnce(async (scope, limit) => {
+        const res = await origGetPending(scope, limit);
+        await dbClient.putSyncMeta({
+          ownerScope: scope,
+          lastSyncedServerRevision: rev93,
+          minActiveRevision: rev93,
+          lastSyncTimestamp: '2026-11-09T10:05:00.000Z',
+          effectiveHistoryEpochs: {},
+          syncState: 'IDLE',
+        });
+        return res;
+      });
+
+      const bigIntBatch = await queue.preparePushBatch();
+      expect(bigIntBatch.mutations.map((m) => m.mutationId)).toEqual(['mut-bigint-edge-93']);
+      expect(await dbClient.getPendingMutation(scopeA, 'mut-bigint-stale-92')).toBeNull();
+      expect(await dbClient.getQuarantinedMutation(scopeA, 'mut-bigint-stale-92')).not.toBeNull();
     });
   });
 });

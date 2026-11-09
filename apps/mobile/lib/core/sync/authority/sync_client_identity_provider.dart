@@ -92,4 +92,37 @@ class SyncClientIdentityProvider {
 
     return normalizedClientId;
   }
+
+  /// Kiểm chứng fail-closed rằng [candidateClientId] đúng chuẩn RFC4122 UUIDv4,
+  /// không va chạm với `userId`/`guestProfileId`/`jwtSessionId`, và **trùng khớp tuyệt đối**
+  /// với danh tính thiết bị bền vững từ [InstallationIdentityProvider] (chặn giả mạo hoặc
+  /// tự sinh UUID ngẫu nhiên theo từng mutation).
+  Future<void> assertMatchesClientIdentity(
+    String candidateClientId, {
+    String? currentUserId,
+    String? currentGuestProfileId,
+    String? jwtSessionId,
+    String? accessToken,
+  }) async {
+    if (!isValidUuidV4(candidateClientId)) {
+      throw InvalidClientIdentityException(
+        candidateClientId,
+        'INVALID_CLIENT_IDENTITY: candidate clientId "$candidateClientId" must be a valid RFC4122 UUIDv4.',
+      );
+    }
+
+    final expectedClientId = await getOrCreateClientId(
+      currentUserId: currentUserId,
+      currentGuestProfileId: currentGuestProfileId,
+      jwtSessionId: jwtSessionId,
+      accessToken: accessToken,
+    );
+
+    if (candidateClientId.trim().toLowerCase() != expectedClientId) {
+      throw InvalidClientIdentityException(
+        candidateClientId,
+        'CLIENT_ID_SPOOFING_REJECTED: Mutation clientId "$candidateClientId" does not match durable device identity "$expectedClientId".',
+      );
+    }
+  }
 }

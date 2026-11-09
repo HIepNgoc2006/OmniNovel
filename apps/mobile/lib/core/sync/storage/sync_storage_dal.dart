@@ -5,6 +5,7 @@ import 'package:sqflite/sqflite.dart';
 import '../../identity/guest_profile_identity_provider.dart';
 import '../../storage/local_library_models.dart';
 import '../../storage/offline_database.dart';
+import '../authority/sync_client_identity_provider.dart';
 import '../authority/sync_write_admission.dart';
 import '../errors/sync_storage_exceptions.dart';
 import '../models/sync_models.dart';
@@ -34,16 +35,22 @@ class SyncStorageDal {
   final Database? _customDb;
   final Future<Database> Function()? _asyncDbProvider;
   final Duration _busyRetryTimeout;
+  final SyncClientIdentityProvider? _clientIdentityProvider;
+  final GuestProfileIdentityProvider? _guestProfileProvider;
 
   SyncStorageDal({
     OfflineDatabase? offlineDatabase,
     Database? customDb,
     Future<Database> Function()? asyncDatabaseProvider,
     Duration busyRetryTimeout = defaultBusyRetryTimeout,
+    SyncClientIdentityProvider? clientIdentityProvider,
+    GuestProfileIdentityProvider? guestProfileProvider,
   })  : _offlineDatabase = offlineDatabase,
         _customDb = customDb,
         _asyncDbProvider = asyncDatabaseProvider,
-        _busyRetryTimeout = busyRetryTimeout {
+        _busyRetryTimeout = busyRetryTimeout,
+        _clientIdentityProvider = clientIdentityProvider,
+        _guestProfileProvider = guestProfileProvider {
     if (_offlineDatabase == null &&
         _customDb == null &&
         _asyncDbProvider == null) {
@@ -59,6 +66,29 @@ class SyncStorageDal {
       );
     }
   }
+
+  /// Constructor dành cho production DI wiring (Stage 2+): bắt buộc truyền
+  /// [SyncClientIdentityProvider] non-null để DAL khóa cứng mọi `clientId` truyền vào
+  /// theo danh tính cài đặt bền vững và chặn triệt để random/spoofed UUID từ caller (`P1-M08`).
+  factory SyncStorageDal.bound({
+    OfflineDatabase? offlineDatabase,
+    Database? customDb,
+    Future<Database> Function()? asyncDatabaseProvider,
+    Duration busyRetryTimeout = defaultBusyRetryTimeout,
+    required SyncClientIdentityProvider clientIdentityProvider,
+    GuestProfileIdentityProvider? guestProfileProvider,
+  }) {
+    return SyncStorageDal(
+      offlineDatabase: offlineDatabase,
+      customDb: customDb,
+      asyncDatabaseProvider: asyncDatabaseProvider,
+      busyRetryTimeout: busyRetryTimeout,
+      clientIdentityProvider: clientIdentityProvider,
+      guestProfileProvider: guestProfileProvider,
+    );
+  }
+
+  bool get hasBoundClientIdentity => _clientIdentityProvider != null;
 
   Future<Database> _acquireDatabase() async {
     final asyncProvider = _asyncDbProvider;
@@ -178,7 +208,11 @@ class SyncStorageDal {
     );
   }
 
-  void _validateClientIdForAccountScope(String ownerScope, String clientId) {
+  void _validateClientIdForAccountScope(
+    String ownerScope,
+    String clientId, {
+    AccountWriteAdmission? admission,
+  }) {
     assertAccountScope(ownerScope);
     if (!isValidUuidV4(clientId)) {
       throw InvalidClientIdentityException(
@@ -186,21 +220,82 @@ class SyncStorageDal {
         'INVALID_CLIENT_IDENTITY: clientId "$clientId" must be a valid RFC4122 UUIDv4.',
       );
     }
+    final normalizedClientId = clientId.trim().toLowerCase();
     final accountUserId = ownerScope.substring('account:'.length).trim();
-    if (clientId.trim().toLowerCase() == accountUserId.toLowerCase()) {
+    if (normalizedClientId == accountUserId.toLowerCase()) {
       throw InvalidClientIdentityException(
         clientId,
         'CLIENT_ID_IDENTITY_COLLISION: clientId "$clientId" must not match account userId "$accountUserId".',
       );
     }
+    if (admission is SyncAuthorityContextProvider) {
+      final snap = (admission as SyncAuthorityContextProvider).readAuthoritySnapshot();
+      final jwtSid = snap.jwtSessionId?.trim();
+      if (jwtSid != null &&
+          jwtSid.isNotEmpty &&
+          normalizedClientId == jwtSid.toLowerCase()) {
+        throw InvalidClientIdentityException(
+          clientId,
+          'CLIENT_ID_IDENTITY_COLLISION: clientId "$clientId" must not match active JWT sessionId "$jwtSid".',
+        );
+      }
+      final guestId = snap.currentGuestProfileId?.trim();
+      if (guestId != null &&
+          guestId.isNotEmpty &&
+          normalizedClientId == guestId.toLowerCase()) {
+        throw InvalidClientIdentityException(
+          clientId,
+          'CLIENT_ID_IDENTITY_COLLISION: clientId "$clientId" must not match guestProfileId "$guestId".',
+        );
+      }
+    }
   }
 
-  void _validatePendingMutationFields(PendingMutationRecord mutation) {
+  Future<void> _assertBoundClientIdentityIfConfigured(
+    String ownerScope,
+    String clientId, {
+    AccountWriteAdmission? admission,
+  }) async {
+    _validateClientIdForAccountScope(
+      ownerScope,
+      clientId,
+      admission: admission,
+    );
+    final provider = _clientIdentityProvider;
+    if (provider == null) return;
+
+    final accountUserId = ownerScope.substring('account:'.length).trim();
+    String? jwtSid;
+    String? guestId;
+    if (admission is SyncAuthorityContextProvider) {
+      final snap =
+          (admission as SyncAuthorityContextProvider).readAuthoritySnapshot();
+      jwtSid = snap.jwtSessionId;
+      guestId = snap.currentGuestProfileId;
+    }
+    guestId ??= await _guestProfileProvider?.getOrCreateGuestProfileId();
+
+    await provider.assertMatchesClientIdentity(
+      clientId,
+      currentUserId: accountUserId,
+      currentGuestProfileId: guestId,
+      jwtSessionId: jwtSid,
+    );
+  }
+
+  void _validatePendingMutationFields(
+    PendingMutationRecord mutation, {
+    AccountWriteAdmission? admission,
+  }) {
     assertAccountScope(mutation.ownerScope);
     if (mutation.mutationId.trim().isEmpty) {
       throw ArgumentError('mutationId must be a non-empty string.');
     }
-    _validateClientIdForAccountScope(mutation.ownerScope, mutation.clientId);
+    _validateClientIdForAccountScope(
+      mutation.ownerScope,
+      mutation.clientId,
+      admission: admission,
+    );
     if (mutation.entityId.trim().isEmpty) {
       throw ArgumentError('entityId must be a non-empty string.');
     }
@@ -221,8 +316,9 @@ class SyncStorageDal {
     Transaction txn,
     PendingMutationRecord mutation, {
     bool preserveSequenceIfAvailable = false,
+    AccountWriteAdmission? admission,
   }) async {
-    _validatePendingMutationFields(mutation);
+    _validatePendingMutationFields(mutation, admission: admission);
 
     int assignedSeqNo;
     if (preserveSequenceIfAvailable && mutation.sequenceNo > 0) {
@@ -309,7 +405,15 @@ class SyncStorageDal {
       );
     }
     normalizeSyncReadingMode(progress.readingMode);
-    _validatePendingMutationFields(mutation);
+    _validatePendingMutationFields(mutation, admission: admission);
+    if (_clientIdentityProvider != null) {
+      admission.assertAdmitted(mutation.ownerScope);
+      await _assertBoundClientIdentityIfConfigured(
+        mutation.ownerScope,
+        mutation.clientId,
+        admission: admission,
+      );
+    }
 
     return _runWriteTransaction<PendingMutationRecord>(
       targetScope: mutation.ownerScope,
@@ -351,7 +455,11 @@ class SyncStorageDal {
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
 
-        final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        final persisted = await _insertPendingMutationInTxn(
+          txn,
+          mutation,
+          admission: admission,
+        );
 
         if (onBeforeCommitHook != null) {
           await onBeforeCommitHook(txn);
@@ -391,7 +499,15 @@ class SyncStorageDal {
         'EntityId mismatch: expected "${bookmark.storyId}", got "${mutation.entityId}".',
       );
     }
-    _validatePendingMutationFields(mutation);
+    _validatePendingMutationFields(mutation, admission: admission);
+    if (_clientIdentityProvider != null) {
+      admission.assertAdmitted(mutation.ownerScope);
+      await _assertBoundClientIdentityIfConfigured(
+        mutation.ownerScope,
+        mutation.clientId,
+        admission: admission,
+      );
+    }
 
     return _runWriteTransaction<PendingMutationRecord>(
       targetScope: mutation.ownerScope,
@@ -402,7 +518,11 @@ class SyncStorageDal {
           bookmark.toMap(),
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
-        final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        final persisted = await _insertPendingMutationInTxn(
+          txn,
+          mutation,
+          admission: admission,
+        );
         if (onBeforeCommitHook != null) {
           await onBeforeCommitHook(txn);
         }
@@ -442,7 +562,15 @@ class SyncStorageDal {
         'EntityId mismatch: expected "$storyId", got "${mutation.entityId}".',
       );
     }
-    _validatePendingMutationFields(mutation);
+    _validatePendingMutationFields(mutation, admission: admission);
+    if (_clientIdentityProvider != null) {
+      admission.assertAdmitted(ownerScope);
+      await _assertBoundClientIdentityIfConfigured(
+        ownerScope,
+        mutation.clientId,
+        admission: admission,
+      );
+    }
 
     return _runWriteTransaction<PendingMutationRecord>(
       targetScope: ownerScope,
@@ -453,7 +581,11 @@ class SyncStorageDal {
           where: 'owner_scope = ? AND story_id = ?',
           whereArgs: <Object?>[ownerScope, storyId],
         );
-        final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        final persisted = await _insertPendingMutationInTxn(
+          txn,
+          mutation,
+          admission: admission,
+        );
         if (onBeforeCommitHook != null) {
           await onBeforeCommitHook(txn);
         }
@@ -492,7 +624,15 @@ class SyncStorageDal {
         'EntityId mismatch: expected "${preference.prefKey}", got "${mutation.entityId}".',
       );
     }
-    _validatePendingMutationFields(mutation);
+    _validatePendingMutationFields(mutation, admission: admission);
+    if (_clientIdentityProvider != null) {
+      admission.assertAdmitted(mutation.ownerScope);
+      await _assertBoundClientIdentityIfConfigured(
+        mutation.ownerScope,
+        mutation.clientId,
+        admission: admission,
+      );
+    }
 
     return _runWriteTransaction<PendingMutationRecord>(
       targetScope: preference.ownerScope,
@@ -503,7 +643,11 @@ class SyncStorageDal {
           preference.toMap(),
           conflictAlgorithm: ConflictAlgorithm.replace,
         );
-        final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        final persisted = await _insertPendingMutationInTxn(
+          txn,
+          mutation,
+          admission: admission,
+        );
         if (onBeforeCommitHook != null) {
           await onBeforeCommitHook(txn);
         }
@@ -543,7 +687,15 @@ class SyncStorageDal {
         'EntityId mismatch: expected "$storyId", got "${mutation.entityId}".',
       );
     }
-    _validatePendingMutationFields(mutation);
+    _validatePendingMutationFields(mutation, admission: admission);
+    if (_clientIdentityProvider != null) {
+      admission.assertAdmitted(ownerScope);
+      await _assertBoundClientIdentityIfConfigured(
+        ownerScope,
+        mutation.clientId,
+        admission: admission,
+      );
+    }
 
     return _runWriteTransaction<PendingMutationRecord>(
       targetScope: ownerScope,
@@ -559,7 +711,11 @@ class SyncStorageDal {
           where: 'owner_scope = ? AND story_id = ?',
           whereArgs: <Object?>[ownerScope, storyId],
         );
-        final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        final persisted = await _insertPendingMutationInTxn(
+          txn,
+          mutation,
+          admission: admission,
+        );
         if (onBeforeCommitHook != null) {
           await onBeforeCommitHook(txn);
         }
@@ -599,7 +755,15 @@ class SyncStorageDal {
         'EntityId mismatch for clearAllHistory: expected "$kGlobalHistoryAlias" or "$kGlobalHistorySentinelUuid", got "${mutation.entityId}".',
       );
     }
-    _validatePendingMutationFields(mutation);
+    _validatePendingMutationFields(mutation, admission: admission);
+    if (_clientIdentityProvider != null) {
+      admission.assertAdmitted(ownerScope);
+      await _assertBoundClientIdentityIfConfigured(
+        ownerScope,
+        mutation.clientId,
+        admission: admission,
+      );
+    }
 
     return _runWriteTransaction<PendingMutationRecord>(
       targetScope: ownerScope,
@@ -615,7 +779,11 @@ class SyncStorageDal {
           where: 'owner_scope = ?',
           whereArgs: <Object?>[ownerScope],
         );
-        final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        final persisted = await _insertPendingMutationInTxn(
+          txn,
+          mutation,
+          admission: admission,
+        );
         if (onBeforeCommitHook != null) {
           await onBeforeCommitHook(txn);
         }
@@ -632,12 +800,24 @@ class SyncStorageDal {
     required AccountWriteAdmission admission,
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
-    _validatePendingMutationFields(mutation);
+    _validatePendingMutationFields(mutation, admission: admission);
+    if (_clientIdentityProvider != null) {
+      admission.assertAdmitted(mutation.ownerScope);
+      await _assertBoundClientIdentityIfConfigured(
+        mutation.ownerScope,
+        mutation.clientId,
+        admission: admission,
+      );
+    }
     return _runWriteTransaction<PendingMutationRecord>(
       targetScope: mutation.ownerScope,
       admission: admission,
       action: (txn) async {
-        final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        final persisted = await _insertPendingMutationInTxn(
+          txn,
+          mutation,
+          admission: admission,
+        );
         if (onBeforeCommitHook != null) {
           await onBeforeCommitHook(txn);
         }
@@ -909,10 +1089,22 @@ class SyncStorageDal {
     if (record.mutationId.trim().isEmpty) {
       throw ArgumentError('mutationId must be a non-empty string.');
     }
-    _validateClientIdForAccountScope(record.ownerScope, record.clientId);
+    _validateClientIdForAccountScope(
+      record.ownerScope,
+      record.clientId,
+      admission: admission,
+    );
     if (!isValidRevisionString(record.baseServerRevision)) {
       throw ArgumentError(
         'Invalid baseServerRevision "${record.baseServerRevision}". Expected canonical 64-bit BIGINT decimal string.',
+      );
+    }
+    if (_clientIdentityProvider != null) {
+      admission.assertAdmitted(record.ownerScope);
+      await _assertBoundClientIdentityIfConfigured(
+        record.ownerScope,
+        record.clientId,
+        admission: admission,
       );
     }
 
@@ -1025,6 +1217,12 @@ class SyncStorageDal {
           );
         }
 
+        await _assertBoundClientIdentityIfConfigured(
+          ownerScope,
+          q.clientId,
+          admission: admission,
+        );
+
         await txn.delete(
           'quarantined_mutations',
           where: 'owner_scope = ? AND mutation_id = ?',
@@ -1052,6 +1250,7 @@ class SyncStorageDal {
           txn,
           restored,
           preserveSequenceIfAvailable: true,
+          admission: admission,
         );
       },
     );
@@ -2159,10 +2358,35 @@ class SyncStorageDal {
 
   // ==================== LIFECYCLE-PROTECTED SCOPE PURGE (P0-M05) ====================
 
-  /// Dọn sạch toàn bộ dữ liệu Sync + Local Library cache của Account [ownerScope]
-  /// theo [reason] hợp lệ (`AccountPurgeReason`), trong 1 SQLite transaction với 4 hàng rào [admission].
+  static const List<String> _accountFullScopeTables = <String>[
+    'sync_meta',
+    'sync_mutation_sequences',
+    'sync_authoritative_replicas',
+    'pending_mutations',
+    'quarantined_mutations',
+    'snapshot_staging_store',
+    'local_preferences',
+    'local_library_bookmarks',
+    'local_reading_progress',
+    'local_reading_history',
+  ];
+
+  static const List<String> _accountSyncCacheTablesOnly = <String>[
+    'sync_meta',
+    'sync_authoritative_replicas',
+    'snapshot_staging_store',
+  ];
+
+  /// Dọn dữ liệu Sync / Local Library cache của Account đang active [ownerScope]
+  /// theo đúng ngữ nghĩa [reason] (`AccountPurgeReason`), trong 1 SQLite transaction với 4 hàng rào [admission]:
+  /// - [AccountPurgeReason.fullResyncReset]: chỉ xóa `sync_meta`, `sync_authoritative_replicas`,
+  ///   `snapshot_staging_store`; **bảo toàn** `pending_mutations`, `quarantined_mutations`,
+  ///   `sync_mutation_sequences` và 4 bảng `local_*` để tránh mất chỉnh sửa cục bộ chưa đẩy.
+  /// - [AccountPurgeReason.signOutReset] & [AccountPurgeReason.accountDeleted]:
+  ///   xóa toàn bộ 10 bảng scoped theo `account:<userId>` (khi session vẫn đang active, tức
+  ///   chạy **trước** `AuthService.logout()`).
   ///
-  /// TUYỆT ĐỐI bảo toàn:
+  /// TUYỆT ĐỐI bảo toàn ở mọi reason:
   /// - `offline_chapters`, `download_tasks`, `offline_deletion_tombstones`
   /// - `guest_claim_recovery_journal`
   /// - Mọi scope khác (`guest:*` hoặc `account:*`).
@@ -2173,23 +2397,15 @@ class SyncStorageDal {
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
     assertAccountScope(ownerScope);
+    final tablesToPurge = reason == AccountPurgeReason.fullResyncReset
+        ? _accountSyncCacheTablesOnly
+        : _accountFullScopeTables;
+
     await _runWriteTransaction<void>(
       targetScope: ownerScope,
       admission: admission,
       action: (txn) async {
-        const scopedTables = <String>[
-          'sync_meta',
-          'sync_mutation_sequences',
-          'sync_authoritative_replicas',
-          'pending_mutations',
-          'quarantined_mutations',
-          'snapshot_staging_store',
-          'local_preferences',
-          'local_library_bookmarks',
-          'local_reading_progress',
-          'local_reading_history',
-        ];
-        for (final table in scopedTables) {
+        for (final table in tablesToPurge) {
           await txn.delete(
             table,
             where: 'owner_scope = ?',
@@ -2203,10 +2419,105 @@ class SyncStorageDal {
     );
   }
 
+  /// Thu hồi bộ đệm cục bộ của **một Account đã tách (detached/inactive)** (`account:<userId>`)
+  /// thông qua capability tách kiểu [DetachedAccountEvictionAdmission] — giải quyết kịch bản
+  /// `handleSessionExpired()`, crash sau `AuthService.logout()`, hoặc đổi tài khoản (`user-A -> user-B`)
+  /// mà không tạo deadlock dọn rác và cũng không nới lỏng [AccountWriteAdmission].
+  ///
+  /// Bảo vệ fail-closed:
+  /// - Chặn `GuestClaim` đang chạy (`transitioning`) hoặc `bootstrapping` qua 4 hàng rào.
+  /// - Chặn nếu `targetUserId` vẫn đang active/authenticated (`activeScope == ownerScope`).
+  /// - Chặn (`PurgeProhibitedError`) nếu còn bản ghi `guest_claim_recovery_journal` của `userId`.
+  /// - Mặc định (`discardUnsyncedMutations == false`): chặn (`PurgeProhibitedError`) nếu còn
+  ///   `pending_mutations` hoặc `quarantined_mutations` chưa đồng bộ để `handleSessionExpired()`
+  ///   không làm mất dữ liệu offline của người dùng.
+  /// - Bảo toàn 100% `offline_chapters`, `download_tasks`, `offline_deletion_tombstones`,
+  ///   `guest_claim_recovery_journal`, và mọi scope khác.
+  Future<void> evictDetachedAccountScope({
+    required String ownerScope,
+    required DetachedAccountEvictionAdmission admission,
+    bool discardUnsyncedMutations = false,
+    Future<void> Function(Transaction txn)? onBeforeCommitHook,
+  }) async {
+    assertAccountScope(ownerScope);
+    final userId = ownerScope.substring('account:'.length);
+
+    Future<void> assertDetachedEvictionSafe(Transaction txn) async {
+      final journalRows = await txn.query(
+        'guest_claim_recovery_journal',
+        columns: const <String>['claim_id', 'phase'],
+        where: 'user_id = ?',
+        whereArgs: <Object?>[userId],
+        limit: 1,
+      );
+      if (journalRows.isNotEmpty) {
+        throw PurgeProhibitedError(
+          'PURGE_PROHIBITED: Detached account "$ownerScope" still has entries in guest_claim_recovery_journal (phase=${journalRows.first['phase']}).',
+        );
+      }
+
+      if (!discardUnsyncedMutations) {
+        final pendingRows = await txn.query(
+          'pending_mutations',
+          columns: const <String>['mutation_id'],
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[ownerScope],
+          limit: 1,
+        );
+        if (pendingRows.isNotEmpty) {
+          throw PurgeProhibitedError(
+            'PURGE_PROHIBITED: Detached account "$ownerScope" has unsent pending_mutations (UNSYNCED_MUTATIONS_PRESENT).',
+          );
+        }
+        final quarantinedRows = await txn.query(
+          'quarantined_mutations',
+          columns: const <String>['mutation_id'],
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[ownerScope],
+          limit: 1,
+        );
+        if (quarantinedRows.isNotEmpty) {
+          throw PurgeProhibitedError(
+            'PURGE_PROHIBITED: Detached account "$ownerScope" has quarantined_mutations pending triage (UNSYNCED_MUTATIONS_PRESENT).',
+          );
+        }
+      }
+    }
+
+    await _runWriteTransaction<void>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        await assertDetachedEvictionSafe(txn);
+
+        for (final table in _accountFullScopeTables) {
+          await txn.delete(
+            table,
+            where: 'owner_scope = ?',
+            whereArgs: <Object?>[ownerScope],
+          );
+        }
+
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+
+        await assertDetachedEvictionSafe(txn);
+      },
+    );
+  }
+
   /// Dọn dữ liệu cục bộ của Guest [guestScope] (`guest:<guestProfileId>`) theo
   /// [reason] lifecycle hợp lệ (`GuestLifecyclePurgeReason`).
   ///
-  /// Bảo vệ fail-closed `P0-M05`:
+  /// Ràng buộc theo [reason] (`P0-M05` / Purge Lifecycle):
+  /// - [GuestLifecyclePurgeReason.userClearedGuestData]: Bắt buộc dùng [GuestLocalWriteAdmission]
+  ///   (chỉ Guest đang active mới được xóa dữ liệu của chính mình).
+  /// - [GuestLifecyclePurgeReason.verifiedUnusedGuestEviction]: Chấp nhận [UnusedGuestEvictionAdmission]
+  ///   (thu hồi Guest cũ sau `onLogout()` xoay ID hoặc sau khi đã sang Account mà không tạo deadlock)
+  ///   hoặc [GuestLocalWriteAdmission]; cấm evict scope đang trùng Guest active hiện tại.
+  ///
+  /// Bảo vệ fail-closed kép (trước khi xóa & ngay trước khi commit):
   /// - Cấm tuyệt đối xóa nếu `guestProfileId` đang có bản ghi trong `guest_claim_recovery_journal`
   ///   (dù ở pha `prepared`, `committing`, hay `committedServer`).
   /// - Cấm tuyệt đối xóa nếu `guestProfileId` nằm trong danh sách cách ly của [guestProfileProvider]
@@ -2217,33 +2528,46 @@ class SyncStorageDal {
   Future<void> purgeGuestLocalScope({
     required String guestScope,
     required GuestLifecyclePurgeReason reason,
-    required GuestLocalWriteAdmission admission,
+    required GuestPurgeAdmission admission,
     required GuestProfileIdentityProvider guestProfileProvider,
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
     assertGuestScope(guestScope);
     admission.assertAdmitted(guestScope);
 
-    final guestProfileId = guestScope.substring('guest:'.length);
-    final preQuarantined = await guestProfileProvider.listQuarantinedGuestScopes();
-    if (preQuarantined.contains(guestProfileId)) {
-      throw PurgeProhibitedError(
-        'PURGE_PROHIBITED: Guest scope "$guestScope" is quarantined and cannot be purged.',
+    if (reason == GuestLifecyclePurgeReason.userClearedGuestData &&
+        admission is! GuestLocalWriteAdmission) {
+      throw const PurgeProhibitedError(
+        'PURGE_PROHIBITED: GuestLifecyclePurgeReason.userClearedGuestData requires an active GuestLocalWriteAdmission.',
       );
     }
 
-    await _runWriteTransaction<void>(
-      targetScope: guestScope,
-      admission: admission,
-      action: (txn) async {
-        final quarantined =
-            await guestProfileProvider.listQuarantinedGuestScopes();
-        if (quarantined.contains(guestProfileId)) {
-          throw PurgeProhibitedError(
-            'PURGE_PROHIBITED: Guest scope "$guestScope" is quarantined and cannot be purged.',
-          );
-        }
+    final guestProfileId = guestScope.substring('guest:'.length);
 
+    Future<void> assertGuestPurgeAllowed(Transaction? txn) async {
+      final quarantined =
+          await guestProfileProvider.listQuarantinedGuestScopes();
+      if (quarantined.contains(guestProfileId)) {
+        throw PurgeProhibitedError(
+          'PURGE_PROHIBITED: Guest scope "$guestScope" is quarantined and cannot be purged.',
+        );
+      }
+
+      if (reason == GuestLifecyclePurgeReason.verifiedUnusedGuestEviction &&
+          admission is UnusedGuestEvictionAdmission) {
+        final snap = admission.readAuthoritySnapshot();
+        if (!snap.isAuthenticated) {
+          final currentGuestId =
+              await guestProfileProvider.getOrCreateGuestProfileId();
+          if (guestProfileId == currentGuestId) {
+            throw PurgeProhibitedError(
+              'PURGE_PROHIBITED: Cannot run verifiedUnusedGuestEviction on active persisted guestProfileId "$guestProfileId".',
+            );
+          }
+        }
+      }
+
+      if (txn != null) {
         final journalRows = await txn.query(
           'guest_claim_recovery_journal',
           columns: const <String>['claim_id', 'phase'],
@@ -2256,6 +2580,16 @@ class SyncStorageDal {
             'PURGE_PROHIBITED: Guest scope "$guestScope" has active/recoverable entries in guest_claim_recovery_journal (phase=${journalRows.first['phase']}).',
           );
         }
+      }
+    }
+
+    await assertGuestPurgeAllowed(null);
+
+    await _runWriteTransaction<void>(
+      targetScope: guestScope,
+      admission: admission,
+      action: (txn) async {
+        await assertGuestPurgeAllowed(txn);
 
         const guestLocalTables = <String>[
           'local_preferences',
@@ -2274,6 +2608,13 @@ class SyncStorageDal {
         if (onBeforeCommitHook != null) {
           await onBeforeCommitHook(txn);
         }
+
+        // Pre-commit quarantine + claim journal re-check:
+        // Đảm bảo nếu quarantine hoặc recovery journal xuất hiện xen kẽ giữa các
+        // `await txn.delete` hoặc trong `onBeforeCommitHook`, SQLite transaction sẽ
+        // abort & rollback 100%. (Lưu ý: không triệt tiêu tuyệt đối được cửa sổ sau
+        // callback return tới COMMIT vật lý do SharedPreferences nằm ngoài SQLite lock.)
+        await assertGuestPurgeAllowed(txn);
       },
     );
   }

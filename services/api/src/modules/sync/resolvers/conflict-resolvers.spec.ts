@@ -4,7 +4,7 @@ import { HistoryConflictResolver } from './history.resolver';
 import { PreferenceConflictResolver } from './preference.resolver';
 import { FollowConflictResolver } from './follow.resolver';
 import { ConflictResolverDispatcher } from './conflict-resolver.dispatcher';
-import { SyncDomain, SyncOperation } from '../interfaces/sync.types';
+import { ReadingMode, SyncDomain, SyncOperation } from '../interfaces/sync.types';
 import { ClientMutationDto } from '../dto/client-mutation.dto';
 
 describe('Sync Conflict Resolvers (Step 2)', () => {
@@ -215,6 +215,199 @@ describe('Sync Conflict Resolvers (Step 2)', () => {
       });
 
       expect(result.status).toBe('APPLIED');
+    });
+
+    it('Task A: Case 1 CONFLICT_MERGED must preserve full server NOVEL record and never leak losing readingMode, anchorBlockId, or textOffset', () => {
+      const mutation = createMockMutation({
+        domain: SyncDomain.PROGRESS,
+        entityId: 'story-novel-1',
+        payload: {
+          storyId: 'story-novel-1',
+          chapterId: 'chap-1',
+          chapterVersionId: 'v1',
+          readingMode: ReadingMode.PAGED,
+          pageIndex: 9,
+          scrollPosition: 450,
+          progressPercentage: 25,
+          anchorBlockId: 'losing-block-9',
+          textOffset: 99,
+          forceRewind: false,
+          observedHistoryEpoch: 0,
+        },
+      });
+
+      const result = resolver.resolve({
+        userId: USER_ID,
+        mutation,
+        canonicalHash: 'hash',
+        serverRevision: '100',
+        minActiveRevision: '50',
+        existingRecord: {
+          chapter_id: 'chap-1',
+          chapter_version_id: 'v1',
+          reading_mode: ReadingMode.NOVEL,
+          page_index: 1,
+          scroll_position: '0.00',
+          progress_percentage: '72.50',
+          anchor_block_id: 'para-42',
+          text_offset: 318,
+        },
+      });
+
+      expect(result.status).toBe('CONFLICT_MERGED');
+      expect(result.reason).toBe('MONOTONIC_PROGRESS_PRESERVED');
+      expect(result.resolvedPayload).toEqual({
+        storyId: 'story-novel-1',
+        chapterId: 'chap-1',
+        chapterVersionId: 'v1',
+        readingMode: ReadingMode.NOVEL,
+        pageIndex: 1,
+        scrollPosition: 0,
+        progressPercentage: 72.5,
+        anchorBlockId: 'para-42',
+        textOffset: 318,
+      });
+      expect(result.resolvedPayload).not.toHaveProperty('forceRewind');
+      expect(result.resolvedPayload).not.toHaveProperty('observedHistoryEpoch');
+    });
+
+    it('Task A: Case 1 CONFLICT_MERGED must preserve server textOffset = 0 when incoming losing mutation sends non-zero textOffset or omits chapterVersionId', () => {
+      const mutation = createMockMutation({
+        domain: SyncDomain.PROGRESS,
+        entityId: 'story-novel-zero',
+        payload: {
+          storyId: 'story-novel-zero',
+          chapterId: 'chap-1',
+          readingMode: ReadingMode.WEBTOON,
+          pageIndex: 4,
+          scrollPosition: 800,
+          progressPercentage: 15,
+          anchorBlockId: 'stale-block',
+          textOffset: 240,
+          forceRewind: false,
+        },
+      });
+
+      const result = resolver.resolve({
+        userId: USER_ID,
+        mutation,
+        canonicalHash: 'hash',
+        serverRevision: '100',
+        minActiveRevision: '50',
+        existingRecord: {
+          chapter_id: 'chap-1',
+          chapter_version_id: null,
+          reading_mode: ReadingMode.NOVEL,
+          page_index: 1,
+          scroll_position: '0.00',
+          progress_percentage: '60.00',
+          anchor_block_id: 'para-1',
+          text_offset: 0,
+        },
+      });
+
+      expect(result.status).toBe('CONFLICT_MERGED');
+      expect(result.resolvedPayload).toEqual({
+        storyId: 'story-novel-zero',
+        chapterId: 'chap-1',
+        chapterVersionId: null,
+        readingMode: ReadingMode.NOVEL,
+        pageIndex: 1,
+        scrollPosition: 0,
+        progressPercentage: 60,
+        anchorBlockId: 'para-1',
+        textOffset: 0,
+      });
+    });
+
+    it('Task A: Case 1 CONFLICT_MERGED must not copy NOVEL anchorBlockId/textOffset onto server WEBTOON record with null NOVEL fields', () => {
+      const mutation = createMockMutation({
+        domain: SyncDomain.PROGRESS,
+        entityId: 'story-webtoon-1',
+        payload: {
+          storyId: 'story-webtoon-1',
+          chapterId: 'chap-1',
+          chapterVersionId: 'v1',
+          readingMode: ReadingMode.NOVEL,
+          pageIndex: 1,
+          scrollPosition: 0,
+          progressPercentage: 30,
+          anchorBlockId: 'para-9',
+          textOffset: 120,
+          forceRewind: false,
+        },
+      });
+
+      const result = resolver.resolve({
+        userId: USER_ID,
+        mutation,
+        canonicalHash: 'hash',
+        serverRevision: '100',
+        minActiveRevision: '50',
+        existingRecord: {
+          chapter_id: 'chap-1',
+          chapter_version_id: 'v1',
+          reading_mode: ReadingMode.WEBTOON,
+          page_index: 1,
+          scroll_position: '1400.50',
+          progress_percentage: '85.00',
+          anchor_block_id: null,
+          text_offset: null,
+        },
+      });
+
+      expect(result.status).toBe('CONFLICT_MERGED');
+      expect(result.resolvedPayload).toEqual({
+        storyId: 'story-webtoon-1',
+        chapterId: 'chap-1',
+        chapterVersionId: 'v1',
+        readingMode: ReadingMode.WEBTOON,
+        pageIndex: 1,
+        scrollPosition: 1400.5,
+        progressPercentage: 85,
+        anchorBlockId: null,
+        textOffset: null,
+      });
+    });
+
+    it('Task A: forceRewind = true on same-chapter NOVEL conflict accepts incoming rewind position and textOffset = 0', () => {
+      const mutation = createMockMutation({
+        domain: SyncDomain.PROGRESS,
+        entityId: 'story-novel-rewind',
+        payload: {
+          storyId: 'story-novel-rewind',
+          chapterId: 'chap-1',
+          chapterVersionId: 'v1',
+          readingMode: ReadingMode.NOVEL,
+          pageIndex: 1,
+          scrollPosition: 0,
+          progressPercentage: 10,
+          anchorBlockId: 'para-2',
+          textOffset: 0,
+          forceRewind: true,
+        },
+      });
+
+      const result = resolver.resolve({
+        userId: USER_ID,
+        mutation,
+        canonicalHash: 'hash',
+        serverRevision: '100',
+        minActiveRevision: '50',
+        existingRecord: {
+          chapter_id: 'chap-1',
+          chapter_version_id: 'v1',
+          reading_mode: ReadingMode.NOVEL,
+          page_index: 1,
+          scroll_position: '0.00',
+          progress_percentage: '85.00',
+          anchor_block_id: 'para-90',
+          text_offset: 500,
+        },
+      });
+
+      expect(result.status).toBe('APPLIED');
+      expect(result.resolvedPayload).toBeUndefined();
     });
 
     it('should preserve higher server progress when version layout mismatch has lower incoming progress without forceRewind', () => {

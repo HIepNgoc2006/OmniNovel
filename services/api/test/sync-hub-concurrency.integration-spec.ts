@@ -18,7 +18,7 @@ import {
   PreferenceConflictResolver,
   ProgressConflictResolver,
 } from '../src/modules/sync/resolvers';
-import { SyncDomain, SyncOperation } from '../src/modules/sync/interfaces/sync.types';
+import { ReadingMode, SyncDomain, SyncOperation } from '../src/modules/sync/interfaces/sync.types';
 import { StoriesService } from '../src/modules/stories/stories.service';
 import { RedisService } from '../src/redis/redis.service';
 import { ConfigService } from '@nestjs/config';
@@ -1450,6 +1450,432 @@ describe('Task 7C.2a: Core Sync Hub Integrity & Concurrency Remediation (Integra
           ? JSON.parse(latestLog[0].payload)
           : latestLog[0].payload;
       expect(payload.progressPercentage).toBe(75);
+    });
+  });
+
+  describe('Core API Sync Data Integrity Remediation (Tasks A, B, C)', () => {
+    it('Task C (Integration): should preserve textOffset = 0 on write/read in reading_progress, getSnapshot, getChanges, and forceRewind', async () => {
+      const userId = await createTestUser();
+      const story = await createTestStory(userId);
+      const clientId = uuidv4();
+
+      // 1. Push PROGRESS UPSERT with NOVEL position and textOffset = 0
+      const pushZeroRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.PROGRESS,
+            entityId: story.storyId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '0',
+            payload: {
+              storyId: story.storyId,
+              chapterId: story.chapterId,
+              chapterVersionId: story.versionId,
+              readingMode: ReadingMode.NOVEL,
+              pageIndex: 1,
+              scrollPosition: 0,
+              progressPercentage: 45,
+              anchorBlockId: 'para-intro',
+              textOffset: 0,
+            },
+          },
+        ],
+      });
+      expect(pushZeroRes.results[0].status).toBe('APPLIED');
+      expect(pushZeroRes.newServerRevision).toBe('1');
+
+      // Assert DB row strictly stores 0 (NOT NULL)
+      const rowsAfterFirst = await dataSource.query(
+        `SELECT reading_mode, anchor_block_id, text_offset FROM reading_progress WHERE user_id = $1 AND story_id = $2`,
+        [userId, story.storyId],
+      );
+      expect(rowsAfterFirst).toHaveLength(1);
+      expect(rowsAfterFirst[0].reading_mode).toBe(ReadingMode.NOVEL);
+      expect(rowsAfterFirst[0].anchor_block_id).toBe('para-intro');
+      expect(rowsAfterFirst[0].text_offset).toBe(0);
+
+      // Assert getSnapshot preserves numeric textOffset = 0
+      const snap1 = await syncService.getSnapshot(userId, {});
+      expect(snap1.data.readingProgress).toHaveLength(1);
+      expect(snap1.data.readingProgress[0].textOffset).toBe(0);
+      expect(snap1.data.readingProgress[0].anchorBlockId).toBe('para-intro');
+
+      // Assert getChanges emits textOffset = 0
+      const changes1 = await syncService.getChanges(userId, { after: '0', limit: 10 });
+      expect(changes1.changes).toHaveLength(1);
+      expect(changes1.changes[0].payload.textOffset).toBe(0);
+
+      // 2. Advance to non-zero textOffset = 275, then forceRewind back to textOffset = 0
+      const pushAdvanceRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.PROGRESS,
+            entityId: story.storyId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '1',
+            payload: {
+              storyId: story.storyId,
+              chapterId: story.chapterId,
+              chapterVersionId: story.versionId,
+              readingMode: ReadingMode.NOVEL,
+              pageIndex: 1,
+              scrollPosition: 0,
+              progressPercentage: 70,
+              anchorBlockId: 'para-mid',
+              textOffset: 275,
+            },
+          },
+        ],
+      });
+      expect(pushAdvanceRes.results[0].status).toBe('APPLIED');
+
+      const pushRewindZeroRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.PROGRESS,
+            entityId: story.storyId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '2',
+            payload: {
+              storyId: story.storyId,
+              chapterId: story.chapterId,
+              chapterVersionId: story.versionId,
+              readingMode: ReadingMode.NOVEL,
+              pageIndex: 1,
+              scrollPosition: 0,
+              progressPercentage: 15,
+              anchorBlockId: 'para-start',
+              textOffset: 0,
+              forceRewind: true,
+            },
+          },
+        ],
+      });
+      expect(pushRewindZeroRes.results[0].status).toBe('APPLIED');
+
+      const rowsAfterRewind = await dataSource.query(
+        `SELECT progress_percentage, anchor_block_id, text_offset FROM reading_progress WHERE user_id = $1 AND story_id = $2`,
+        [userId, story.storyId],
+      );
+      expect(Number(rowsAfterRewind[0].progress_percentage)).toBe(15);
+      expect(rowsAfterRewind[0].anchor_block_id).toBe('para-start');
+      expect(rowsAfterRewind[0].text_offset).toBe(0);
+    });
+
+    it('Task A + C (Integration): same-chapter CONFLICT_MERGED Case 1 must preserve full server NOVEL position and textOffset = 0 in PostgreSQL & delta log', async () => {
+      const userId = await createTestUser();
+      const story = await createTestStory(userId);
+      const clientA = uuidv4();
+      const clientB = uuidv4();
+
+      // 1. Device A commits authoritative NOVEL position at 80% with textOffset = 0
+      const winRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId: clientA,
+            mutationId: uuidv4(),
+            domain: SyncDomain.PROGRESS,
+            entityId: story.storyId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '0',
+            payload: {
+              storyId: story.storyId,
+              chapterId: story.chapterId,
+              chapterVersionId: story.versionId,
+              readingMode: ReadingMode.NOVEL,
+              pageIndex: 1,
+              scrollPosition: 0,
+              progressPercentage: 80,
+              anchorBlockId: 'para-server-winner',
+              textOffset: 0,
+            },
+          },
+        ],
+      });
+      expect(winRes.results[0].status).toBe('APPLIED');
+      expect(winRes.newServerRevision).toBe('1');
+
+      // 2. Stale Device B sends losing mutation (same chapter & version, lower progress, different readingMode/anchorBlockId/textOffset, no forceRewind)
+      const conflictRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId: clientB,
+            mutationId: uuidv4(),
+            domain: SyncDomain.PROGRESS,
+            entityId: story.storyId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '0',
+            payload: {
+              storyId: story.storyId,
+              chapterId: story.chapterId,
+              chapterVersionId: story.versionId,
+              readingMode: ReadingMode.PAGED,
+              pageIndex: 4,
+              scrollPosition: 900,
+              progressPercentage: 30,
+              anchorBlockId: 'losing-block',
+              textOffset: 123,
+              forceRewind: false,
+            },
+          },
+        ],
+      });
+      expect(conflictRes.results[0].status).toBe('CONFLICT_MERGED');
+      expect(conflictRes.newServerRevision).toBe('2');
+
+      // Assert DB row did NOT leak losing readingMode, anchorBlockId, or textOffset
+      const dbRow = await dataSource.query(
+        `SELECT chapter_id, chapter_version_id, reading_mode, page_index, scroll_position, progress_percentage, anchor_block_id, text_offset
+         FROM reading_progress WHERE user_id = $1 AND story_id = $2`,
+        [userId, story.storyId],
+      );
+      expect(dbRow).toHaveLength(1);
+      expect(dbRow[0].chapter_id).toBe(story.chapterId);
+      expect(dbRow[0].chapter_version_id).toBe(story.versionId);
+      expect(dbRow[0].reading_mode).toBe(ReadingMode.NOVEL);
+      expect(dbRow[0].page_index).toBe(1);
+      expect(Number(dbRow[0].scroll_position)).toBe(0);
+      expect(Number(dbRow[0].progress_percentage)).toBe(80);
+      expect(dbRow[0].anchor_block_id).toBe('para-server-winner');
+      expect(dbRow[0].text_offset).toBe(0);
+
+      // Assert sync_change_log rev 2 preserved canonical server state without losing fields or forceRewind
+      const changes = await syncService.getChanges(userId, { after: '1', limit: 10 });
+      expect(changes.changes).toHaveLength(1);
+      expect(changes.changes[0].payload).toEqual({
+        storyId: story.storyId,
+        chapterId: story.chapterId,
+        chapterVersionId: story.versionId,
+        readingMode: ReadingMode.NOVEL,
+        pageIndex: 1,
+        scrollPosition: 0,
+        progressPercentage: 80,
+        anchorBlockId: 'para-server-winner',
+        textOffset: 0,
+      });
+
+      // 3. Explicit forceRewind: true on same chapter/version succeeds and updates position
+      const rewindRes = await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId: clientB,
+            mutationId: uuidv4(),
+            domain: SyncDomain.PROGRESS,
+            entityId: story.storyId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '2',
+            payload: {
+              storyId: story.storyId,
+              chapterId: story.chapterId,
+              chapterVersionId: story.versionId,
+              readingMode: ReadingMode.NOVEL,
+              pageIndex: 1,
+              scrollPosition: 0,
+              progressPercentage: 10,
+              anchorBlockId: 'para-rewound',
+              textOffset: 42,
+              forceRewind: true,
+            },
+          },
+        ],
+      });
+      expect(rewindRes.results[0].status).toBe('APPLIED');
+      expect(rewindRes.newServerRevision).toBe('3');
+
+      const dbRowAfterRewind = await dataSource.query(
+        `SELECT progress_percentage, anchor_block_id, text_offset FROM reading_progress WHERE user_id = $1 AND story_id = $2`,
+        [userId, story.storyId],
+      );
+      expect(Number(dbRowAfterRewind[0].progress_percentage)).toBe(10);
+      expect(dbRowAfterRewind[0].anchor_block_id).toBe('para-rewound');
+      expect(dbRowAfterRewind[0].text_offset).toBe(42);
+    });
+
+    it('Task B (Integration): getChanges should isolate concurrent commits inside REPEATABLE READ READ ONLY and never emit revisions > currentServerRevision', async () => {
+      const userId = await createTestUser();
+      const story1 = await createTestStory(userId);
+      const story2 = await createTestStory(userId);
+      const story3 = await createTestStory(userId);
+      const clientId = uuidv4();
+
+      // Seed revisions 1 and 2
+      await syncService.pushMutations(userId, {
+        mutations: [
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.BOOKMARK,
+            entityId: story1.storyId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '0',
+            payload: { storyId: story1.storyId },
+          },
+          {
+            clientId,
+            mutationId: uuidv4(),
+            domain: SyncDomain.BOOKMARK,
+            entityId: story2.storyId,
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '0',
+            payload: { storyId: story2.storyId },
+          },
+        ],
+      });
+
+      // Deterministically commit revision 3 AFTER getChanges snapshots user_sync_state (at rev 2)
+      // and BEFORE getChanges queries sync_change_log.
+      const origCreateQueryRunner = dataSource.createQueryRunner.bind(dataSource);
+      let pushedConcurrentRev3 = false;
+      const createQrSpy = jest
+        .spyOn(dataSource, 'createQueryRunner')
+        .mockImplementationOnce((...args: any[]) => {
+          const realRunner = origCreateQueryRunner(...args);
+          const origQuery = realRunner.query.bind(realRunner);
+          realRunner.query = (async (sql: string, parameters?: any[]) => {
+            const result = await origQuery(sql, parameters);
+            if (!pushedConcurrentRev3 && sql.includes('FROM user_sync_state')) {
+              pushedConcurrentRev3 = true;
+              await syncService.pushMutations(userId, {
+                mutations: [
+                  {
+                    clientId,
+                    mutationId: uuidv4(),
+                    domain: SyncDomain.BOOKMARK,
+                    entityId: story3.storyId,
+                    operation: SyncOperation.UPSERT,
+                    baseServerRevision: '2',
+                    payload: { storyId: story3.storyId },
+                  },
+                ],
+              });
+            }
+            return result;
+          }) as any;
+          return realRunner;
+        });
+
+      try {
+        const pullDuringConcurrentPush = await syncService.getChanges(userId, {
+          after: '0',
+          limit: 50,
+        });
+
+        expect(pushedConcurrentRev3).toBe(true);
+        // Must pin currentServerRevision = '2' and MUST NOT leak committed rev 3!
+        expect(pullDuringConcurrentPush.currentServerRevision).toBe('2');
+        expect(pullDuringConcurrentPush.changes.map((c) => c.revision)).toEqual(['1', '2']);
+      } finally {
+        createQrSpy.mockRestore();
+      }
+
+      // Subsequent pull cleanly sees rev 3
+      const nextPull = await syncService.getChanges(userId, { after: '2', limit: 50 });
+      expect(nextPull.currentServerRevision).toBe('3');
+      expect(nextPull.changes.map((c) => c.revision)).toEqual(['3']);
+
+      // Concurrent push + pull stress burst on real Postgres: invariant revision <= currentServerRevision always holds
+      const concurrentOps: Promise<any>[] = [];
+      for (let i = 0; i < 4; i++) {
+        const extraStory = await createTestStory(userId);
+        concurrentOps.push(
+          syncService.pushMutations(userId, {
+            mutations: [
+              {
+                clientId,
+                mutationId: uuidv4(),
+                domain: SyncDomain.BOOKMARK,
+                entityId: extraStory.storyId,
+                operation: SyncOperation.UPSERT,
+                baseServerRevision: '0',
+                payload: { storyId: extraStory.storyId },
+              },
+            ],
+          }),
+        );
+        concurrentOps.push(syncService.getChanges(userId, { after: '0', limit: 50 }));
+      }
+
+      const concurrentResults = await Promise.all(concurrentOps);
+      for (const item of concurrentResults) {
+        if ('changes' in item) {
+          const srvRev = BigInt(item.currentServerRevision);
+          for (const ch of item.changes) {
+            expect(BigInt(ch.revision)).toBeLessThanOrEqual(srvRev);
+          }
+        }
+      }
+    });
+
+    it('Task B (Integration): getChanges enforces exact HTTP 400 SYNC_REVISION_AHEAD and HTTP 410 SYNC_REVISION_EXPIRED boundaries against PostgreSQL', async () => {
+      const userId = await createTestUser();
+      const stories = [
+        await createTestStory(userId),
+        await createTestStory(userId),
+        await createTestStory(userId),
+        await createTestStory(userId),
+      ];
+      const clientId = uuidv4();
+
+      // Create revisions 1..4
+      await syncService.pushMutations(userId, {
+        mutations: stories.map((s) => ({
+          clientId,
+          mutationId: uuidv4(),
+          domain: SyncDomain.BOOKMARK,
+          entityId: s.storyId,
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '0',
+          payload: { storyId: s.storyId },
+        })),
+      });
+
+      // Advance GC watermark min_active_revision = 2 while current_sync_revision = 4
+      await dataSource.query(
+        `UPDATE user_sync_state SET min_active_revision = 2 WHERE user_id = $1`,
+        [userId],
+      );
+
+      // 1. after < minActiveRevision (0 and 1) => HTTP 410 SYNC_REVISION_EXPIRED
+      for (const expiredCursor of ['0', '1']) {
+        let caught: any = null;
+        try {
+          await syncService.getChanges(userId, { after: expiredCursor, limit: 50 });
+        } catch (err) {
+          caught = err;
+        }
+        expect(caught).toBeTruthy();
+        expect(caught.getStatus()).toBe(410);
+        expect(caught.getResponse().code).toBe('SYNC_REVISION_EXPIRED');
+      }
+
+      // 2. after === minActiveRevision ('2') => 200 OK returning revisions 3 & 4
+      const exactMinRes = await syncService.getChanges(userId, { after: '2', limit: 50 });
+      expect(exactMinRes.minActiveRevision).toBe('2');
+      expect(exactMinRes.currentServerRevision).toBe('4');
+      expect(exactMinRes.changes.map((c) => c.revision)).toEqual(['3', '4']);
+
+      // 3. after === currentServerRevision ('4') => 200 OK returning empty changes
+      const exactMaxRes = await syncService.getChanges(userId, { after: '4', limit: 50 });
+      expect(exactMaxRes.changes).toEqual([]);
+      expect(exactMaxRes.hasMore).toBe(false);
+      expect(exactMaxRes.nextRevision).toBeNull();
+
+      // 4. after > currentServerRevision ('5') => HTTP 400 SYNC_REVISION_AHEAD
+      let aheadErr: any = null;
+      try {
+        await syncService.getChanges(userId, { after: '5', limit: 50 });
+      } catch (err) {
+        aheadErr = err;
+      }
+      expect(aheadErr).toBeTruthy();
+      expect(aheadErr.getStatus()).toBe(400);
+      expect(aheadErr.getResponse().code).toBe('SYNC_REVISION_AHEAD');
     });
   });
 });

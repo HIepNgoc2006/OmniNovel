@@ -13,6 +13,7 @@ import {
   STORE_QUARANTINED_MUTATIONS,
   STORE_SNAPSHOT_STAGING,
   STORE_AUTHORITATIVE_REPLICAS,
+  STORE_TOMBSTONES,
   LocalSyncMeta,
   LocalPendingMutation,
   AuthoritativeShadowRecord,
@@ -63,14 +64,14 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
     vi.restoreAllMocks();
   });
 
-  describe('ST-07A: Fresh Database v4 Creation & Store Verification', () => {
-    it('creates all 9 object stores with correct composite keyPaths and indexes on a fresh database', async () => {
+  describe('ST-07A: Fresh Database Creation & Store Verification (Upgraded through v5)', () => {
+    it('creates all 10 object stores with correct composite keyPaths and indexes on a fresh database', async () => {
       const db = await dbClient.getDatabase();
       expect(db.name).toBe(DB_NAME);
-      expect(db.version).toBe(4);
+      expect(db.version).toBe(DB_VERSION);
 
       const storeNames = Array.from(db.objectStoreNames);
-      expect(storeNames).toHaveLength(9);
+      expect(storeNames).toHaveLength(10);
       expect(storeNames).toContain(STORE_BOOKMARKS);
       expect(storeNames).toContain(STORE_PROGRESS);
       expect(storeNames).toContain(STORE_HISTORY);
@@ -80,6 +81,7 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
       expect(storeNames).toContain(STORE_QUARANTINED_MUTATIONS);
       expect(storeNames).toContain(STORE_SNAPSHOT_STAGING);
       expect(storeNames).toContain(STORE_AUTHORITATIVE_REPLICAS);
+      expect(storeNames).toContain(STORE_TOMBSTONES);
 
       const tx = db.transaction(storeNames, 'readonly');
 
@@ -220,10 +222,11 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
         req.onerror = () => reject(req.error);
       });
 
-      // Step 2: Open through IndexedDbClient, upgrading from v3 to v4
+      // Step 2: Open through IndexedDbClient, upgrading from v3 through current DB_VERSION (5)
       const db = await dbClient.getDatabase();
-      expect(db.version).toBe(4);
+      expect(db.version).toBe(DB_VERSION);
       expect(db.objectStoreNames.contains(STORE_AUTHORITATIVE_REPLICAS)).toBe(true);
+      expect(db.objectStoreNames.contains(STORE_TOMBSTONES)).toBe(true);
 
       // Step 3: Verify 100% preservation of all 8 seeded stores
       const bm = await dbClient.getBookmark('account:usr-v3', 'story-v3-1');
@@ -269,7 +272,7 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
 
       // Trigger onversionchange handler manually
       if (db.onversionchange) {
-        db.onversionchange(new IDBVersionChangeEvent('versionchange', { oldVersion: 4, newVersion: 5 }));
+        db.onversionchange(new IDBVersionChangeEvent('versionchange', { oldVersion: DB_VERSION, newVersion: DB_VERSION + 1 }));
       }
 
       // dbInstance should be nullified and closed
@@ -278,7 +281,7 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
   });
 
   describe('ST-07D: Real Multi-Connection Upgrade via onversionchange Handshake', () => {
-    it('automatically closes v3 connection on versionchange event, allowing v4 upgrade to proceed without blocking', async () => {
+    it('automatically closes v3 connection on versionchange event, allowing upgrade through current version to proceed without blocking', async () => {
       let v3VersionChangeFired = false;
       let v3Db: IDBDatabase | null = null;
 
@@ -302,11 +305,12 @@ describe('Phase 5.2a — IndexedDB v4 Migration & Baseline Lifecycle (ST-07 & ST
 
       expect(v3Db).not.toBeNull();
 
-      // 2. Open via dbClient (requests v4)
-      const v4Db = await dbClient.getDatabase();
-      expect(v4Db.version).toBe(4);
+      // 2. Open via dbClient (requests current DB_VERSION)
+      const upgradedDb = await dbClient.getDatabase();
+      expect(upgradedDb.version).toBe(DB_VERSION);
       expect(v3VersionChangeFired).toBe(true);
-      expect(v4Db.objectStoreNames.contains(STORE_AUTHORITATIVE_REPLICAS)).toBe(true);
+      expect(upgradedDb.objectStoreNames.contains(STORE_AUTHORITATIVE_REPLICAS)).toBe(true);
+      expect(upgradedDb.objectStoreNames.contains(STORE_TOMBSTONES)).toBe(true);
     });
   });
 

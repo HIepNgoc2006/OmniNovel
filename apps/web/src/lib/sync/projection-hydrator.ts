@@ -7,6 +7,7 @@ import {
 import {
   AuthoritativeBaselineStatus,
   AuthoritativeShadowRecord,
+  AuthoritativeTombstoneRecord,
   IndexedDbClient,
   LocalPendingMutation,
   LocalPreference,
@@ -18,6 +19,7 @@ import {
   STORE_PREFERENCES,
   STORE_PROGRESS,
   STORE_SYNC_META,
+  STORE_TOMBSTONES,
   assertValidScope,
   indexedDbClient,
   isValidRevisionString,
@@ -89,11 +91,60 @@ export interface MaterializeResult {
 interface ScopedDatabaseSnapshot {
   syncMeta: LocalSyncMeta | null;
   shadows: AuthoritativeShadowRecord[];
+  tombstones: AuthoritativeTombstoneRecord[];
   pendingMutations: LocalPendingMutation[];
   legacyBookmarks: LocalBookmark[];
   legacyProgress: LocalReadingProgress[];
   legacyHistory: LocalReadingHistory[];
   legacyPreferences: LocalPreference[];
+}
+
+/**
+ * Monotonically merges durable tombstones committed in IndexedDB (`STORE_TOMBSTONES`)
+ * with optional caller-provided `tombstoneRevisions` using `BigInt`.
+ * Caller overrides can elevate or introduce tombstone entries, but CANNOT downgrade
+ * or erase durable tombstones persisted in IndexedDB.
+ */
+function mergeTombstoneRevisions(
+  storedTombstones: AuthoritativeTombstoneRecord[],
+  overrideTombstones?: Partial<Record<SyncDomain, Record<string, string>>>,
+): Partial<Record<SyncDomain, Record<string, string>>> | undefined {
+  if (storedTombstones.length === 0 && !overrideTombstones) {
+    return undefined;
+  }
+
+  const merged: Partial<Record<SyncDomain, Record<string, string>>> = {};
+
+  const applyEntry = (domain: SyncDomain, entityKey: string, revision: string) => {
+    if (!entityKey || !isValidRevisionString(revision)) {
+      return;
+    }
+    let domainMap = merged[domain];
+    if (!domainMap) {
+      domainMap = {};
+      merged[domain] = domainMap;
+    }
+    const existing = domainMap[entityKey];
+    if (!existing || BigInt(revision) > BigInt(existing)) {
+      domainMap[entityKey] = revision;
+    }
+  };
+
+  for (const record of storedTombstones) {
+    applyEntry(record.domain, record.entityKey, record.deletedAtRevision);
+  }
+
+  if (overrideTombstones) {
+    for (const domainKey of Object.keys(overrideTombstones) as SyncDomain[]) {
+      const domainEntries = overrideTombstones[domainKey];
+      if (!domainEntries) continue;
+      for (const [entityKey, revision] of Object.entries(domainEntries)) {
+        applyEntry(domainKey, entityKey, revision);
+      }
+    }
+  }
+
+  return Object.keys(merged).length > 0 ? merged : undefined;
 }
 
 function parseIsoMs(iso?: string): number {
@@ -138,12 +189,13 @@ function readScopedSnapshotInTransaction(
   onLoaded: (snapshot: ScopedDatabaseSnapshot) => void,
   onError: (err: unknown) => void,
 ): void {
-  let remaining = 7;
+  let remaining = 8;
   let aborted = false;
 
   const snapshot: ScopedDatabaseSnapshot = {
     syncMeta: null,
     shadows: [],
+    tombstones: [],
     pendingMutations: [],
     legacyBookmarks: [],
     legacyProgress: [],
@@ -181,6 +233,16 @@ function readScopedSnapshotInTransaction(
       ownerScope,
       (items) => {
         snapshot.shadows = items;
+        finishOne();
+      },
+      fail,
+    );
+
+    scanCompositeStoreByScope<AuthoritativeTombstoneRecord>(
+      tx.objectStore(STORE_TOMBSTONES),
+      ownerScope,
+      (items) => {
+        snapshot.tombstones = items;
         finishOne();
       },
       fail,
@@ -452,6 +514,7 @@ export class SyncProjectionHydrator {
           [
             STORE_SYNC_META,
             STORE_AUTHORITATIVE_REPLICAS,
+            STORE_TOMBSTONES,
             STORE_PENDING_MUTATIONS,
             STORE_BOOKMARKS,
             STORE_PROGRESS,
@@ -554,7 +617,7 @@ export class SyncProjectionHydrator {
       shadows: snapshot.shadows,
       pendingMutations: snapshot.pendingMutations,
       graceEntries: activeGrace,
-      tombstoneRevisions: options?.tombstoneRevisions,
+      tombstoneRevisions: mergeTombstoneRevisions(snapshot.tombstones, options?.tombstoneRevisions),
       catalog,
       nowMs,
     });
@@ -616,6 +679,7 @@ export class SyncProjectionHydrator {
           [
             STORE_SYNC_META,
             STORE_AUTHORITATIVE_REPLICAS,
+            STORE_TOMBSTONES,
             STORE_PENDING_MUTATIONS,
             STORE_BOOKMARKS,
             STORE_PROGRESS,
@@ -672,7 +736,7 @@ export class SyncProjectionHydrator {
               shadows: snapshot.shadows,
               pendingMutations: snapshot.pendingMutations,
               graceEntries: activeGrace,
-              tombstoneRevisions: options?.tombstoneRevisions,
+              tombstoneRevisions: mergeTombstoneRevisions(snapshot.tombstones, options?.tombstoneRevisions),
               catalog,
               nowMs,
             });

@@ -11,7 +11,7 @@ import {
 } from '@omninovel/shared';
 
 export const DB_NAME = 'omninovel_local_v2';
-export const DB_VERSION = 4;
+export const DB_VERSION = 5;
 
 export const STORE_BOOKMARKS = 'bookmarks';
 export const STORE_PROGRESS = 'progress';
@@ -22,6 +22,7 @@ export const STORE_PENDING_MUTATIONS = 'pending_mutations';
 export const STORE_QUARANTINED_MUTATIONS = 'quarantined_mutations';
 export const STORE_SNAPSHOT_STAGING = 'snapshot_staging_store';
 export const STORE_AUTHORITATIVE_REPLICAS = 'sync_authoritative_replicas'; // Phase 5.2a
+export const STORE_TOMBSTONES = 'sync_tombstones'; // Phase 5.2b P1-01
 
 export const ALL_OBJECT_STORES = [
   STORE_BOOKMARKS,
@@ -33,6 +34,7 @@ export const ALL_OBJECT_STORES = [
   STORE_QUARANTINED_MUTATIONS,
   STORE_SNAPSHOT_STAGING,
   STORE_AUTHORITATIVE_REPLICAS,
+  STORE_TOMBSTONES,
 ] as const;
 
 export interface LocalPreference {
@@ -53,6 +55,28 @@ export interface AuthoritativeShadowRecord {
   payload: Record<string, any> | null;
   isDeleted: boolean;
   updatedAt: number;
+}
+
+export interface AuthoritativeTombstoneRecord {
+  ownerScope: string;
+  domain: SyncDomain;
+  entityKey: string;
+  deletedAtRevision: string;
+  epoch?: number;
+  updatedAt: number;
+}
+
+export interface GcTombstonesOptions {
+  maxEvictableRevision?: string;
+  checkAdmission?: () => void;
+  _testHookBeforeComplete?: (tx: IDBTransaction) => void;
+}
+
+export interface GcTombstonesResult {
+  scannedCount: number;
+  deletedCount: number;
+  retainedCount: number;
+  safeGcFloor: string;
 }
 
 export interface LocalSyncMeta {
@@ -194,8 +218,21 @@ export interface ApplyAuthoritativeDeltaResult {
   effectiveEpochs: Record<string, number>;
 }
 
+export const GLOBAL_HISTORY_SENTINEL = '00000000-0000-0000-0000-000000000000';
+
 export function isValidRevisionString(val: unknown): val is string {
   return typeof val === 'string' && /^\d+$/.test(val);
+}
+
+function maxRevisionString(a: string | undefined | null, b: string | undefined | null): string | null {
+  const validA = isValidRevisionString(a);
+  const validB = isValidRevisionString(b);
+  if (validA && validB) {
+    return BigInt(a) >= BigInt(b) ? a : b;
+  }
+  if (validA) return a;
+  if (validB) return b;
+  return null;
 }
 
 export function areEpochMapsEqual(
@@ -259,7 +296,7 @@ export class IndexedDbClient {
       try {
         const request = indexedDB.open(DB_NAME, DB_VERSION);
 
-        request.onupgradeneeded = () => {
+        request.onupgradeneeded = (event: IDBVersionChangeEvent) => {
           const db = request.result;
 
           // 1. Bookmarks Store: Composite key [ownerScope, storyId]
@@ -343,7 +380,22 @@ export class IndexedDbClient {
             });
           }
 
-          // Backfill default baseline status for existing sync_meta records on migration to v4
+          // 10. Durable Authoritative Tombstones Store: Composite key [ownerScope, domain, entityKey] (Phase 5.2b P1-01)
+          // Note: No lexicographic range index on deletedAtRevision string; comparisons strictly use BigInt in memory.
+          if (!db.objectStoreNames.contains(STORE_TOMBSTONES)) {
+            const tombstoneStore = db.createObjectStore(STORE_TOMBSTONES, {
+              keyPath: ['ownerScope', 'domain', 'entityKey'],
+            });
+            tombstoneStore.createIndex('by_scope_domain', ['ownerScope', 'domain'], {
+              unique: false,
+            });
+          }
+
+          // Fail-closed baseline reset on upgrade from any pre-v5 schema (< 5):
+          // Historical non-epoch tombstones were not persisted independently prior to v5,
+          // so all upgraded scopes must reset authoritativeBaselineStatus to 'UNINITIALIZED'
+          // while preserving lastSyncedServerRevision, minActiveRevision, effectiveHistoryEpochs, etc.
+          const isUpgradeFromPreV5 = event.oldVersion > 0 && event.oldVersion < 5;
           if (db.objectStoreNames.contains(STORE_SYNC_META) && request.transaction) {
             const metaStore = request.transaction.objectStore(STORE_SYNC_META);
             const cursorReq = metaStore.openCursor();
@@ -351,7 +403,7 @@ export class IndexedDbClient {
               const cursor = cursorReq.result;
               if (cursor) {
                 const meta = cursor.value as LocalSyncMeta;
-                if (!meta.authoritativeBaselineStatus) {
+                if (isUpgradeFromPreV5 || !meta.authoritativeBaselineStatus) {
                   meta.authoritativeBaselineStatus = 'UNINITIALIZED';
                   cursor.update(meta);
                 }
@@ -1533,16 +1585,411 @@ export class IndexedDbClient {
     });
   }
 
+  // ==================== DURABLE TOMBSTONE REPOSITORY & BOUNDED GC (P1-01) ====================
+
+  async getAuthoritativeTombstone(
+    ownerScope: string,
+    domain: SyncDomain,
+    entityKey: string,
+  ): Promise<AuthoritativeTombstoneRecord | null> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_TOMBSTONES, 'readonly');
+        const req = tx.objectStore(STORE_TOMBSTONES).get([ownerScope, domain, entityKey]);
+        req.onsuccess = () => resolve((req.result as AuthoritativeTombstoneRecord) || null);
+        req.onerror = () => reject(req.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async getAuthoritativeTombstonesByDomain(
+    ownerScope: string,
+    domain: SyncDomain,
+  ): Promise<AuthoritativeTombstoneRecord[]> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_TOMBSTONES, 'readonly');
+        const store = tx.objectStore(STORE_TOMBSTONES);
+        const index = store.index('by_scope_domain');
+        const req = index.getAll(IDBKeyRange.only([ownerScope, domain]));
+        req.onsuccess = () => resolve((req.result as AuthoritativeTombstoneRecord[]) || []);
+        req.onerror = () => reject(req.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  async getAllAuthoritativeTombstones(ownerScope: string): Promise<AuthoritativeTombstoneRecord[]> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      try {
+        const tx = db.transaction(STORE_TOMBSTONES, 'readonly');
+        const store = tx.objectStore(STORE_TOMBSTONES);
+        const range = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+        const req = store.openCursor(range);
+        const results: AuthoritativeTombstoneRecord[] = [];
+        req.onsuccess = () => {
+          const cursor = req.result;
+          if (cursor) {
+            const rec = cursor.value as AuthoritativeTombstoneRecord;
+            if (rec && rec.ownerScope === ownerScope) {
+              results.push(rec);
+            }
+            cursor.continue();
+          } else {
+            resolve(results);
+          }
+        };
+        req.onerror = () => reject(req.error);
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * Internal/Test-Only Primitive: Persists a tombstone record with BigInt monotonicity.
+   * Never downgrades an existing tombstone with a strictly greater deletedAtRevision.
+   */
+  async putAuthoritativeTombstone(record: AuthoritativeTombstoneRecord): Promise<void> {
+    assertValidScope(record.ownerScope);
+    if (!isValidRevisionString(record.deletedAtRevision)) {
+      throw new InvalidDeltaPayloadError(
+        `Invalid tombstone deletedAtRevision: "${record.deletedAtRevision}" must be a decimal string.`
+      );
+    }
+
+    const db = await this.getDatabase();
+    return new Promise((resolve, reject) => {
+      let isSettled = false;
+      const fail = (err: unknown) => {
+        if (!isSettled) {
+          isSettled = true;
+          try {
+            tx.abort();
+          } catch (_) {}
+          reject(err);
+        }
+      };
+
+      let tx: IDBTransaction;
+      try {
+        tx = db.transaction(STORE_TOMBSTONES, 'readwrite');
+      } catch (err) {
+        reject(err);
+        return;
+      }
+
+      tx.oncomplete = () => {
+        if (!isSettled) {
+          isSettled = true;
+          resolve();
+        }
+      };
+      tx.onerror = () => fail(tx.error || new Error('Transaction error in putAuthoritativeTombstone.'));
+      tx.onabort = () => fail(tx.error || new Error('Transaction aborted in putAuthoritativeTombstone.'));
+
+      try {
+        const store = tx.objectStore(STORE_TOMBSTONES);
+        const getReq = store.get([record.ownerScope, record.domain, record.entityKey]);
+        getReq.onerror = () => fail(getReq.error || new Error('Failed to read tombstone in putAuthoritativeTombstone.'));
+        getReq.onsuccess = () => {
+          try {
+            const existing = getReq.result as AuthoritativeTombstoneRecord | undefined;
+            if (existing) {
+              if (!isValidRevisionString(existing.deletedAtRevision)) {
+                fail(
+                  new InvalidDeltaPayloadError(
+                    `Corrupt existing tombstone deletedAtRevision: "${existing.deletedAtRevision}".`
+                  )
+                );
+                return;
+              }
+              if (BigInt(existing.deletedAtRevision) > BigInt(record.deletedAtRevision)) {
+                return; // Monotonic guard: preserve higher existing revision
+              }
+            }
+            store.put(record);
+          } catch (err) {
+            fail(err);
+          }
+        };
+      } catch (err) {
+        fail(err);
+      }
+    });
+  }
+
+  /**
+   * Bounded Atomic Tombstone Garbage Collection (P1-01):
+   * Locks [STORE_TOMBSTONES, STORE_PENDING_MUTATIONS, STORE_QUARANTINED_MUTATIONS, STORE_SYNC_META]
+   * in a single IDB readwrite transaction and fails closed on any invalid decimal revision.
+   *
+   * safeGcFloor = min(
+   *   syncedRev,
+   *   minActiveRevision,
+   *   min(non-discarded queue baseServerRevisions) ?? syncedRev,
+   *   options.maxEvictableRevision ?? syncedRev
+   * )
+   *
+   * Deletes tombstone iff BigInt(deletedAtRevision) <= safeGcFloor.
+   */
+  async gcAuthoritativeTombstones(
+    ownerScope: string,
+    options?: GcTombstonesOptions,
+  ): Promise<GcTombstonesResult> {
+    assertValidScope(ownerScope);
+
+    if (
+      options?.maxEvictableRevision !== undefined &&
+      !isValidRevisionString(options.maxEvictableRevision)
+    ) {
+      throw new InvalidDeltaPayloadError(
+        `Invalid maxEvictableRevision in GC: "${options.maxEvictableRevision}" must be a decimal string.`
+      );
+    }
+
+    options?.checkAdmission?.();
+    const db = await this.getDatabase();
+    options?.checkAdmission?.();
+
+    return new Promise<GcTombstonesResult>((resolve, reject) => {
+      let isSettled = false;
+      const fail = (err: unknown) => {
+        if (!isSettled) {
+          isSettled = true;
+          try {
+            tx.abort();
+          } catch (_) {}
+          reject(err);
+        }
+      };
+
+      let tx: IDBTransaction;
+      try {
+        tx = db.transaction(
+          [
+            STORE_TOMBSTONES,
+            STORE_PENDING_MUTATIONS,
+            STORE_QUARANTINED_MUTATIONS,
+            STORE_SYNC_META,
+          ],
+          'readwrite',
+        );
+      } catch (err) {
+        reject(err);
+        return;
+      }
+
+      let result: GcTombstonesResult | null = null;
+      tx.onerror = () => fail(tx.error || new Error('Transaction error in gcAuthoritativeTombstones.'));
+      tx.onabort = () => fail(tx.error || new Error('Transaction aborted in gcAuthoritativeTombstones.'));
+      tx.oncomplete = () => {
+        if (!isSettled && result) {
+          isSettled = true;
+          resolve(result);
+        }
+      };
+
+      try {
+        const tombstoneStore = tx.objectStore(STORE_TOMBSTONES);
+        const pendingStore = tx.objectStore(STORE_PENDING_MUTATIONS);
+        const quarantinedStore = tx.objectStore(STORE_QUARANTINED_MUTATIONS);
+        const metaStore = tx.objectStore(STORE_SYNC_META);
+
+        let remaining = 4;
+        let syncMeta: LocalSyncMeta | null = null;
+        const pendingItems: LocalPendingMutation[] = [];
+        const quarantinedItems: LocalQuarantinedMutation[] = [];
+        const tombstoneItems: AuthoritativeTombstoneRecord[] = [];
+
+        const scanScopeStore = <T extends { ownerScope: string }>(
+          store: IDBObjectStore,
+          target: T[],
+          label: string,
+        ) => {
+          const range = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+          const req = store.openCursor(range);
+          req.onerror = () => fail(req.error || new Error(`Failed scanning ${label} in tombstone GC.`));
+          req.onsuccess = () => {
+            try {
+              const cursor = req.result;
+              if (cursor) {
+                const item = cursor.value as T;
+                if (item && item.ownerScope === ownerScope) {
+                  target.push(item);
+                }
+                cursor.continue();
+              } else {
+                onSubTaskComplete();
+              }
+            } catch (err) {
+              fail(err);
+            }
+          };
+        };
+
+        const evaluateAndPrune = () => {
+          try {
+            options?.checkAdmission?.();
+
+            let syncedRev = 0n;
+            let minActiveRev = 0n;
+
+            if (syncMeta) {
+              if (!isValidRevisionString(syncMeta.lastSyncedServerRevision)) {
+                fail(
+                  new InvalidDeltaPayloadError(
+                    `Invalid lastSyncedServerRevision during tombstone GC: "${syncMeta.lastSyncedServerRevision}".`
+                  )
+                );
+                return;
+              }
+              syncedRev = BigInt(syncMeta.lastSyncedServerRevision);
+
+              if (syncMeta.minActiveRevision !== undefined && syncMeta.minActiveRevision !== null) {
+                if (!isValidRevisionString(syncMeta.minActiveRevision)) {
+                  fail(
+                    new InvalidDeltaPayloadError(
+                      `Invalid minActiveRevision during tombstone GC: "${syncMeta.minActiveRevision}".`
+                    )
+                  );
+                  return;
+                }
+                minActiveRev = BigInt(syncMeta.minActiveRevision);
+              }
+            }
+
+            const floorCandidates: bigint[] = [syncedRev, minActiveRev];
+
+            if (options?.maxEvictableRevision !== undefined) {
+              if (!isValidRevisionString(options.maxEvictableRevision)) {
+                fail(
+                  new InvalidDeltaPayloadError(
+                    `Invalid maxEvictableRevision during tombstone GC: "${options.maxEvictableRevision}".`
+                  )
+                );
+                return;
+              }
+              floorCandidates.push(BigInt(options.maxEvictableRevision));
+            }
+
+            for (const pending of pendingItems) {
+              if (!isValidRevisionString(pending.baseServerRevision)) {
+                fail(
+                  new InvalidDeltaPayloadError(
+                    `Invalid pending baseServerRevision during tombstone GC: "${pending.baseServerRevision}" (mutationId="${pending.mutationId}").`
+                  )
+                );
+                return;
+              }
+              floorCandidates.push(BigInt(pending.baseServerRevision));
+            }
+
+            for (const q of quarantinedItems) {
+              if (!isValidRevisionString(q.baseServerRevision)) {
+                fail(
+                  new InvalidDeltaPayloadError(
+                    `Invalid quarantined baseServerRevision during tombstone GC: "${q.baseServerRevision}" (mutationId="${q.mutationId}").`
+                  )
+                );
+                return;
+              }
+              if (q.triageStatus !== 'DISCARDED') {
+                floorCandidates.push(BigInt(q.baseServerRevision));
+              }
+            }
+
+            // Fail-closed validation of all tombstone revisions before issuing any delete
+            for (const tomb of tombstoneItems) {
+              if (!isValidRevisionString(tomb.deletedAtRevision)) {
+                fail(
+                  new InvalidDeltaPayloadError(
+                    `Invalid tombstone deletedAtRevision during GC: "${tomb.deletedAtRevision}" (${tomb.domain}:${tomb.entityKey}).`
+                  )
+                );
+                return;
+              }
+            }
+
+            let safeGcFloor = floorCandidates[0];
+            for (let i = 1; i < floorCandidates.length; i++) {
+              if (floorCandidates[i] < safeGcFloor) {
+                safeGcFloor = floorCandidates[i];
+              }
+            }
+
+            let deletedCount = 0;
+            let retainedCount = 0;
+            for (const tomb of tombstoneItems) {
+              if (BigInt(tomb.deletedAtRevision) <= safeGcFloor) {
+                tombstoneStore.delete([ownerScope, tomb.domain, tomb.entityKey]);
+                deletedCount += 1;
+              } else {
+                retainedCount += 1;
+              }
+            }
+
+            result = {
+              scannedCount: tombstoneItems.length,
+              deletedCount,
+              retainedCount,
+              safeGcFloor: safeGcFloor.toString(),
+            };
+
+            if (options?._testHookBeforeComplete) {
+              options._testHookBeforeComplete(tx);
+            }
+          } catch (err) {
+            fail(err);
+          }
+        };
+
+        const onSubTaskComplete = () => {
+          if (isSettled) return;
+          remaining -= 1;
+          if (remaining === 0) {
+            evaluateAndPrune();
+          }
+        };
+
+        const metaReq = metaStore.get(ownerScope);
+        metaReq.onerror = () => fail(metaReq.error || new Error('Failed loading sync_meta in tombstone GC.'));
+        metaReq.onsuccess = () => {
+          syncMeta = (metaReq.result as LocalSyncMeta | undefined) ?? null;
+          onSubTaskComplete();
+        };
+
+        scanScopeStore<LocalPendingMutation>(pendingStore, pendingItems, STORE_PENDING_MUTATIONS);
+        scanScopeStore<LocalQuarantinedMutation>(quarantinedStore, quarantinedItems, STORE_QUARANTINED_MUTATIONS);
+        scanScopeStore<AuthoritativeTombstoneRecord>(tombstoneStore, tombstoneItems, STORE_TOMBSTONES);
+      } catch (err) {
+        fail(err);
+      }
+    });
+  }
+
   /**
    * Atomic Primitive: Ingests an authoritative delta changes page into local storage.
-   * Uses a SINGLE IDB readwrite transaction over [STORE_AUTHORITATIVE_REPLICAS, STORE_SYNC_META].
+   * Uses a SINGLE IDB readwrite transaction over [STORE_AUTHORITATIVE_REPLICAS, STORE_TOMBSTONES, STORE_SYNC_META].
    * Enforces:
    * 1. Checkpoint OCC guard (expectedCheckpoint validation against current lastSyncedServerRevision).
    * 2. Decimal BigInt validation & monotonic revision progression.
-   * 3. Story-wide and Global HISTORY DELETE cascading to shadow records.
-   * 4. Epoch map progression in the same transaction.
-   * 5. Fail-closed on malformed revisions, missing epochs, or unsupported operations.
-   * NOTE: Step 5.2b DOES NOT grant READY baseline status.
+   * 3. Durable independent STORE_TOMBSTONES persistence with BigInt monotonicity and delete lineage preservation.
+   * 4. Story-wide and Global HISTORY DELETE cascading to shadow records BEFORE surviving in-page upserts (FIFO-safe).
+   * 5. Temporary client compatibility epoch inference ONLY for epoch-less PROGRESS UPSERT payloads
+   *    (does NOT establish independent server causality; explicit numeric epochs are preserved fail-closed).
+   * 6. Epoch map progression in the same transaction.
+   * 7. Fail-closed on malformed revisions, missing HISTORY DELETE epochs, or unsupported operations.
+   * NOTE: Step 5.2b / P1-01 DOES NOT grant READY baseline status.
    */
   async applyAuthoritativeDeltaPage(
     options: ApplyAuthoritativeDeltaPageOptions
@@ -1652,6 +2099,7 @@ export class IndexedDbClient {
 
     // 5. Validate each change item
     let prevRev: bigint | null = null;
+    let hasAnyDeletes = false;
     for (let i = 0; i < page.changes.length; i++) {
       const change = page.changes[i];
       if (!change || typeof change !== 'object') {
@@ -1711,6 +2159,10 @@ export class IndexedDbClient {
         );
       }
 
+      if (change.operation === SyncOperation.DELETE) {
+        hasAnyDeletes = true;
+      }
+
       if (!change.entityId || typeof change.entityId !== 'string' || !change.entityId.trim()) {
         throw new InvalidDeltaPayloadError(
           `Delta change at index ${i} has missing or empty entityId.`
@@ -1754,7 +2206,10 @@ export class IndexedDbClient {
 
       let tx: IDBTransaction;
       try {
-        tx = db.transaction([STORE_AUTHORITATIVE_REPLICAS, STORE_SYNC_META], 'readwrite');
+        tx = db.transaction(
+          [STORE_AUTHORITATIVE_REPLICAS, STORE_TOMBSTONES, STORE_SYNC_META],
+          'readwrite',
+        );
       } catch (err) {
         reject(err);
         return;
@@ -1773,7 +2228,409 @@ export class IndexedDbClient {
 
       try {
         const shadowStore = tx.objectStore(STORE_AUTHORITATIVE_REPLICAS);
+        const tombstoneStore = tx.objectStore(STORE_TOMBSTONES);
         const metaStore = tx.objectStore(STORE_SYNC_META);
+
+        const executeDeltaWithTombstones = (
+          existingMeta: LocalSyncMeta | undefined,
+          existingTombstones: Map<string, AuthoritativeTombstoneRecord>,
+        ) => {
+          try {
+            const effectiveEpochs: Record<string, number> = {
+              ...(existingMeta?.effectiveHistoryEpochs || {}),
+            };
+
+            // Phase A: Chronological in-memory planner over page.changes
+            // Tracks active upserts vs deletes, monotonic tombstones (preserving delete lineage across
+            // DELETE@80 -> UPSERT@85), epoch transitions, and deferred cascade scopes.
+            const pendingUpserts = new Map<string, AuthoritativeShadowRecord>();
+            const directShadowDeletes = new Map<string, { domain: SyncDomain; entityKey: string }>();
+            const pendingTombstones = new Map<string, AuthoritativeTombstoneRecord>();
+            let runGlobalCascade = false;
+            const storyCascadeIds = new Set<string>();
+
+            const recordPendingTombstone = (
+              domain: SyncDomain,
+              entityKey: string,
+              revision: string,
+              epoch?: number,
+            ) => {
+              const composite = `${domain}::${entityKey}`;
+              const prevRecord = pendingTombstones.get(composite) ?? existingTombstones.get(composite);
+              if (prevRecord) {
+                if (!isValidRevisionString(prevRecord.deletedAtRevision)) {
+                  throw new InvalidDeltaPayloadError(
+                    `Corrupt existing tombstone deletedAtRevision: "${prevRecord.deletedAtRevision}" (${domain}:${entityKey}).`
+                  );
+                }
+                if (BigInt(prevRecord.deletedAtRevision) > BigInt(revision)) {
+                  return;
+                }
+              }
+              const prevRev = prevRecord?.deletedAtRevision;
+              const finalRev = maxRevisionString(prevRev, revision) ?? revision;
+              const mergedEpoch = epoch !== undefined ? epoch : prevRecord?.epoch;
+              pendingTombstones.set(composite, {
+                ownerScope,
+                domain,
+                entityKey,
+                deletedAtRevision: finalRev,
+                ...(mergedEpoch !== undefined ? { epoch: mergedEpoch } : {}),
+                updatedAt: Date.now(),
+              });
+            };
+
+            for (let i = 0; i < page.changes.length; i++) {
+              const change = page.changes[i];
+              const domain = change.domain;
+              const op = change.operation;
+              const payload = (change.payload || {}) as Record<string, any>;
+
+              if (domain === SyncDomain.BOOKMARK) {
+                const entityKey = String(payload.storyId || change.entityId);
+                const composite = `${SyncDomain.BOOKMARK}::${entityKey}`;
+                if (op === SyncOperation.UPSERT) {
+                  directShadowDeletes.delete(composite);
+                  pendingUpserts.set(composite, {
+                    ownerScope,
+                    domain: SyncDomain.BOOKMARK,
+                    entityKey,
+                    serverRevision: change.revision,
+                    epoch: 0,
+                    payload,
+                    isDeleted: false,
+                    updatedAt: Date.now(),
+                  });
+                } else {
+                  pendingUpserts.delete(composite);
+                  directShadowDeletes.set(composite, { domain: SyncDomain.BOOKMARK, entityKey });
+                  recordPendingTombstone(SyncDomain.BOOKMARK, entityKey, change.revision);
+                }
+              } else if (domain === SyncDomain.PROGRESS) {
+                const entityKey = String(payload.storyId || change.entityId);
+                const composite = `${SyncDomain.PROGRESS}::${entityKey}`;
+                if (op === SyncOperation.UPSERT) {
+                  // Temporary client compatibility inference ONLY when PROGRESS omits numeric
+                  // observedHistoryEpoch & epoch (e.g. StoriesService/SnapshotDto).
+                  // Explicit numeric values (including 0) are preserved verbatim to fail closed if stale.
+                  // Compatibility inference does NOT prove independent server causality.
+                  const hasExplicitObsEpoch =
+                    typeof payload.observedHistoryEpoch === 'number' &&
+                    Number.isFinite(payload.observedHistoryEpoch);
+                  const hasExplicitEpoch =
+                    typeof payload.epoch === 'number' &&
+                    Number.isFinite(payload.epoch);
+                  const inferredEpoch = Math.max(
+                    effectiveEpochs[entityKey] || 0,
+                    effectiveEpochs[GLOBAL_HISTORY_SENTINEL] || 0,
+                    effectiveEpochs['all'] || 0,
+                  );
+                  const epoch = hasExplicitObsEpoch
+                    ? (payload.observedHistoryEpoch as number)
+                    : hasExplicitEpoch
+                      ? (payload.epoch as number)
+                      : inferredEpoch;
+
+                  directShadowDeletes.delete(composite);
+                  pendingUpserts.set(composite, {
+                    ownerScope,
+                    domain: SyncDomain.PROGRESS,
+                    entityKey,
+                    serverRevision: change.revision,
+                    epoch,
+                    payload,
+                    isDeleted: false,
+                    updatedAt: Date.now(),
+                  });
+                } else {
+                  pendingUpserts.delete(composite);
+                  directShadowDeletes.set(composite, { domain: SyncDomain.PROGRESS, entityKey });
+                  recordPendingTombstone(SyncDomain.PROGRESS, entityKey, change.revision);
+                }
+              } else if (domain === SyncDomain.PREFERENCE) {
+                const entityKey = String(payload.key || change.entityId);
+                const composite = `${SyncDomain.PREFERENCE}::${entityKey}`;
+                if (op === SyncOperation.UPSERT) {
+                  directShadowDeletes.delete(composite);
+                  pendingUpserts.set(composite, {
+                    ownerScope,
+                    domain: SyncDomain.PREFERENCE,
+                    entityKey,
+                    serverRevision: change.revision,
+                    epoch: 0,
+                    payload,
+                    isDeleted: false,
+                    updatedAt: Date.now(),
+                  });
+                } else {
+                  pendingUpserts.delete(composite);
+                  directShadowDeletes.set(composite, { domain: SyncDomain.PREFERENCE, entityKey });
+                  recordPendingTombstone(SyncDomain.PREFERENCE, entityKey, change.revision);
+                }
+              } else if (domain === SyncDomain.HISTORY) {
+                if (op === SyncOperation.UPSERT) {
+                  const storyId = String(
+                    payload.storyId || (change.entityId.includes(':') ? change.entityId.split(':')[0] : change.entityId)
+                  );
+                  const chapterId = String(
+                    payload.chapterId || (change.entityId.includes(':') ? change.entityId.split(':')[1] : '')
+                  );
+                  const entityKey = `${storyId}:${chapterId}`;
+                  const composite = `${SyncDomain.HISTORY}::${entityKey}`;
+                  const epoch =
+                    typeof payload.observedHistoryEpoch === 'number' &&
+                    Number.isFinite(payload.observedHistoryEpoch)
+                      ? payload.observedHistoryEpoch
+                      : typeof payload.epoch === 'number' && Number.isFinite(payload.epoch)
+                        ? payload.epoch
+                        : 0;
+                  directShadowDeletes.delete(composite);
+                  pendingUpserts.set(composite, {
+                    ownerScope,
+                    domain: SyncDomain.HISTORY,
+                    entityKey,
+                    serverRevision: change.revision,
+                    epoch,
+                    payload,
+                    isDeleted: false,
+                    updatedAt: Date.now(),
+                  });
+                } else if (op === SyncOperation.DELETE) {
+                  const isGlobal =
+                    change.entityId === GLOBAL_HISTORY_SENTINEL ||
+                    change.entityId === 'all';
+                  const newEpoch = payload.epoch as number;
+
+                  if (isGlobal) {
+                    const currentGlobalEpoch = Math.max(
+                      effectiveEpochs[GLOBAL_HISTORY_SENTINEL] || 0,
+                      effectiveEpochs['all'] || 0,
+                    );
+                    if (newEpoch <= currentGlobalEpoch) {
+                      fail(
+                        new InvalidDeltaPayloadError(
+                          `NON_MONOTONIC_HISTORY_EPOCH: Incoming global HISTORY DELETE epoch (${newEpoch}) must be strictly greater than current global epoch (${currentGlobalEpoch}).`
+                        )
+                      );
+                      return;
+                    }
+
+                    effectiveEpochs[GLOBAL_HISTORY_SENTINEL] = newEpoch;
+
+                    for (const [k, rec] of pendingUpserts.entries()) {
+                      if (rec.domain === SyncDomain.HISTORY || rec.domain === SyncDomain.PROGRESS) {
+                        pendingUpserts.delete(k);
+                      }
+                    }
+
+                    runGlobalCascade = true;
+                    recordPendingTombstone(
+                      SyncDomain.HISTORY,
+                      GLOBAL_HISTORY_SENTINEL,
+                      change.revision,
+                      newEpoch,
+                    );
+                  } else {
+                    const storyId = String(payload.storyId || change.entityId);
+                    const currentStoryEpoch = effectiveEpochs[storyId] || 0;
+                    const currentGlobalEpoch = Math.max(
+                      effectiveEpochs[GLOBAL_HISTORY_SENTINEL] || 0,
+                      effectiveEpochs['all'] || 0,
+                    );
+                    const currentEffectiveEpoch = Math.max(currentStoryEpoch, currentGlobalEpoch);
+                    if (newEpoch <= currentEffectiveEpoch) {
+                      fail(
+                        new InvalidDeltaPayloadError(
+                          `NON_MONOTONIC_HISTORY_EPOCH: Incoming story HISTORY DELETE epoch (${newEpoch}) for story "${storyId}" must be strictly greater than current effective epoch (${currentEffectiveEpoch}).`
+                        )
+                      );
+                      return;
+                    }
+
+                    effectiveEpochs[storyId] = newEpoch;
+
+                    for (const [k, rec] of pendingUpserts.entries()) {
+                      if (
+                        (rec.domain === SyncDomain.HISTORY &&
+                          (rec.entityKey === storyId ||
+                            rec.entityKey.startsWith(`${storyId}:`) ||
+                            rec.payload?.storyId === storyId)) ||
+                        (rec.domain === SyncDomain.PROGRESS && rec.entityKey === storyId)
+                      ) {
+                        pendingUpserts.delete(k);
+                      }
+                    }
+
+                    storyCascadeIds.add(storyId);
+                    recordPendingTombstone(SyncDomain.HISTORY, storyId, change.revision, newEpoch);
+                  }
+                }
+              } else {
+                // Other domains (e.g. FOLLOW)
+                const entityKey = change.entityId;
+                const composite = `${domain}::${entityKey}`;
+                if (op === SyncOperation.UPSERT) {
+                  directShadowDeletes.delete(composite);
+                  pendingUpserts.set(composite, {
+                    ownerScope,
+                    domain,
+                    entityKey,
+                    serverRevision: change.revision,
+                    epoch: 0,
+                    payload,
+                    isDeleted: false,
+                    updatedAt: Date.now(),
+                  });
+                } else {
+                  pendingUpserts.delete(composite);
+                  directShadowDeletes.set(composite, { domain, entityKey });
+                  recordPendingTombstone(domain, entityKey, change.revision);
+                }
+              }
+            }
+
+            // Phase B: Execute cursor cascades FIRST, and flush remaining deletes/upserts/tombstones/meta
+            // ONLY after all openCursor cascades finish, eliminating intra-page FIFO overwrite hazards.
+            const finalizeWrites = () => {
+              if (isSettled) return;
+              try {
+                for (const target of directShadowDeletes.values()) {
+                  shadowStore.delete([ownerScope, target.domain, target.entityKey]);
+                }
+
+                for (const record of pendingUpserts.values()) {
+                  shadowStore.put(record);
+                }
+
+                for (const tombRecord of pendingTombstones.values()) {
+                  tombstoneStore.put(tombRecord);
+                }
+
+                const updatedMeta: LocalSyncMeta = {
+                  ownerScope,
+                  lastSyncedServerRevision: targetCheckpoint,
+                  minActiveRevision: page.minActiveRevision || existingMeta?.minActiveRevision || '0',
+                  lastSyncTimestamp: new Date().toISOString(),
+                  effectiveHistoryEpochs: effectiveEpochs,
+                  syncState: 'IDLE',
+                  // INVARIANT: Step 5.2b / P1-01 DOES NOT grant READY baseline status!
+                  authoritativeBaselineStatus: existingMeta?.authoritativeBaselineStatus || 'UNINITIALIZED',
+                  lastErrorMessage: null,
+                };
+                metaStore.put(updatedMeta);
+
+                result = {
+                  appliedCount: page.changes.length,
+                  newCheckpoint: targetCheckpoint,
+                  hasMore: Boolean(page.hasMore),
+                  effectiveEpochs,
+                };
+
+                if (_testHookBeforeComplete) {
+                  _testHookBeforeComplete(tx);
+                }
+              } catch (err) {
+                fail(err);
+              }
+            };
+
+            if (runGlobalCascade) {
+              let remainingCursors = 2;
+              const onCursorDone = () => {
+                if (isSettled) return;
+                remainingCursors -= 1;
+                if (remainingCursors === 0) {
+                  finalizeWrites();
+                }
+              };
+
+              const hRange = IDBKeyRange.bound(
+                [ownerScope, SyncDomain.HISTORY, ''],
+                [ownerScope, SyncDomain.HISTORY, '\uffff'],
+              );
+              const hReq = shadowStore.openCursor(hRange);
+              hReq.onerror = () => fail(hReq.error || new Error('Failed global HISTORY cascade cursor.'));
+              hReq.onsuccess = () => {
+                try {
+                  const c = hReq.result;
+                  if (c) {
+                    c.delete();
+                    c.continue();
+                  } else {
+                    onCursorDone();
+                  }
+                } catch (err) {
+                  fail(err);
+                }
+              };
+
+              const pRange = IDBKeyRange.bound(
+                [ownerScope, SyncDomain.PROGRESS, ''],
+                [ownerScope, SyncDomain.PROGRESS, '\uffff'],
+              );
+              const pReq = shadowStore.openCursor(pRange);
+              pReq.onerror = () => fail(pReq.error || new Error('Failed global PROGRESS cascade cursor.'));
+              pReq.onsuccess = () => {
+                try {
+                  const c = pReq.result;
+                  if (c) {
+                    c.delete();
+                    c.continue();
+                  } else {
+                    onCursorDone();
+                  }
+                } catch (err) {
+                  fail(err);
+                }
+              };
+            } else if (storyCascadeIds.size > 0) {
+              let remainingCursors = storyCascadeIds.size;
+              const onCursorDone = () => {
+                if (isSettled) return;
+                remainingCursors -= 1;
+                if (remainingCursors === 0) {
+                  finalizeWrites();
+                }
+              };
+
+              for (const storyId of storyCascadeIds) {
+                shadowStore.delete([ownerScope, SyncDomain.HISTORY, storyId]);
+                shadowStore.delete([ownerScope, SyncDomain.PROGRESS, storyId]);
+
+                const sRange = IDBKeyRange.bound(
+                  [ownerScope, SyncDomain.HISTORY, `${storyId}:`],
+                  [ownerScope, SyncDomain.HISTORY, `${storyId}:\uffff`],
+                );
+                const sReq = shadowStore.openCursor(sRange);
+                sReq.onerror = () => fail(sReq.error || new Error(`Failed story HISTORY cascade cursor for "${storyId}".`));
+                sReq.onsuccess = () => {
+                  try {
+                    const c = sReq.result;
+                    if (c) {
+                      const item = c.value as AuthoritativeShadowRecord;
+                      if (
+                        item.entityKey === storyId ||
+                        item.entityKey.startsWith(`${storyId}:`) ||
+                        item.payload?.storyId === storyId
+                      ) {
+                        c.delete();
+                      }
+                      c.continue();
+                    } else {
+                      onCursorDone();
+                    }
+                  } catch (err) {
+                    fail(err);
+                  }
+                };
+              }
+            } else {
+              finalizeWrites();
+            }
+          } catch (err) {
+            fail(err);
+          }
+        };
 
         const metaReq = metaStore.get(ownerScope);
         metaReq.onerror = () => fail(metaReq.error || new Error('Failed to load sync_meta in applyAuthoritativeDeltaPage.'));
@@ -1802,226 +2659,31 @@ export class IndexedDbClient {
               return;
             }
 
-            const effectiveEpochs: Record<string, number> = {
-              ...(existingMeta?.effectiveHistoryEpochs || {}),
-            };
+            if (!hasAnyDeletes) {
+              executeDeltaWithTombstones(existingMeta, new Map());
+              return;
+            }
 
-            // 5. Ingest all changes
-            for (let i = 0; i < page.changes.length; i++) {
-              const change = page.changes[i];
-              const domain = change.domain;
-              const op = change.operation;
-              const payload = (change.payload || {}) as Record<string, any>;
-
-              if (domain === SyncDomain.BOOKMARK) {
-                const entityKey = String(payload.storyId || change.entityId);
-                if (op === SyncOperation.UPSERT) {
-                  const record: AuthoritativeShadowRecord = {
-                    ownerScope,
-                    domain: SyncDomain.BOOKMARK,
-                    entityKey,
-                    serverRevision: change.revision,
-                    epoch: 0,
-                    payload,
-                    isDeleted: false,
-                    updatedAt: Date.now(),
-                  };
-                  shadowStore.put(record);
-                } else {
-                  shadowStore.delete([ownerScope, SyncDomain.BOOKMARK, entityKey]);
-                }
-              } else if (domain === SyncDomain.PROGRESS) {
-                const entityKey = String(payload.storyId || change.entityId);
-                if (op === SyncOperation.UPSERT) {
-                  const epoch = typeof payload.observedHistoryEpoch === 'number'
-                    ? payload.observedHistoryEpoch
-                    : (typeof payload.epoch === 'number' ? payload.epoch : 0);
-                  const record: AuthoritativeShadowRecord = {
-                    ownerScope,
-                    domain: SyncDomain.PROGRESS,
-                    entityKey,
-                    serverRevision: change.revision,
-                    epoch,
-                    payload,
-                    isDeleted: false,
-                    updatedAt: Date.now(),
-                  };
-                  shadowStore.put(record);
-                } else {
-                  shadowStore.delete([ownerScope, SyncDomain.PROGRESS, entityKey]);
-                }
-              } else if (domain === SyncDomain.PREFERENCE) {
-                const entityKey = String(payload.key || change.entityId);
-                if (op === SyncOperation.UPSERT) {
-                  const record: AuthoritativeShadowRecord = {
-                    ownerScope,
-                    domain: SyncDomain.PREFERENCE,
-                    entityKey,
-                    serverRevision: change.revision,
-                    epoch: 0,
-                    payload,
-                    isDeleted: false,
-                    updatedAt: Date.now(),
-                  };
-                  shadowStore.put(record);
-                } else {
-                  shadowStore.delete([ownerScope, SyncDomain.PREFERENCE, entityKey]);
-                }
-              } else if (domain === SyncDomain.HISTORY) {
-                if (op === SyncOperation.UPSERT) {
-                  const storyId = String(
-                    payload.storyId || (change.entityId.includes(':') ? change.entityId.split(':')[0] : change.entityId)
-                  );
-                  const chapterId = String(
-                    payload.chapterId || (change.entityId.includes(':') ? change.entityId.split(':')[1] : '')
-                  );
-                  const entityKey = `${storyId}:${chapterId}`;
-                  const epoch = typeof payload.observedHistoryEpoch === 'number'
-                    ? payload.observedHistoryEpoch
-                    : (typeof payload.epoch === 'number' ? payload.epoch : 0);
-                  const record: AuthoritativeShadowRecord = {
-                    ownerScope,
-                    domain: SyncDomain.HISTORY,
-                    entityKey,
-                    serverRevision: change.revision,
-                    epoch,
-                    payload,
-                    isDeleted: false,
-                    updatedAt: Date.now(),
-                  };
-                  shadowStore.put(record);
-                } else if (op === SyncOperation.DELETE) {
-                  const isGlobal =
-                    change.entityId === '00000000-0000-0000-0000-000000000000' ||
-                    change.entityId === 'all';
-                  const newEpoch = payload.epoch as number;
-
-                  if (isGlobal) {
-                    const currentGlobalEpoch = effectiveEpochs['00000000-0000-0000-0000-000000000000'] || 0;
-                    if (newEpoch <= currentGlobalEpoch) {
-                      fail(
-                        new InvalidDeltaPayloadError(
-                          `NON_MONOTONIC_HISTORY_EPOCH: Incoming global HISTORY DELETE epoch (${newEpoch}) must be strictly greater than current global epoch (${currentGlobalEpoch}).`
-                        )
-                      );
-                      return;
-                    }
-
-                    // Global HISTORY DELETE:
-                    effectiveEpochs['00000000-0000-0000-0000-000000000000'] = newEpoch;
-
-                    // 1. Cascade delete ALL history shadow records for scope
-                    const hRange = IDBKeyRange.bound([ownerScope, SyncDomain.HISTORY, ''], [ownerScope, SyncDomain.HISTORY, '\uffff']);
-                    const hReq = shadowStore.openCursor(hRange);
-                    hReq.onsuccess = () => {
-                      const c = hReq.result;
-                      if (c) {
-                        c.delete();
-                        c.continue();
-                      }
-                    };
-
-                    // 2. Cascade delete ALL progress shadow records for scope
-                    const pRange = IDBKeyRange.bound([ownerScope, SyncDomain.PROGRESS, ''], [ownerScope, SyncDomain.PROGRESS, '\uffff']);
-                    const pReq = shadowStore.openCursor(pRange);
-                    pReq.onsuccess = () => {
-                      const c = pReq.result;
-                      if (c) {
-                        c.delete();
-                        c.continue();
-                      }
-                    };
-                  } else {
-                    // Story-wide HISTORY DELETE:
-                    const storyId = String(payload.storyId || change.entityId);
-                    const currentStoryEpoch = effectiveEpochs[storyId] || 0;
-                    const currentGlobalEpoch = effectiveEpochs['00000000-0000-0000-0000-000000000000'] || 0;
-                    const currentEffectiveEpoch = Math.max(currentStoryEpoch, currentGlobalEpoch);
-                    if (newEpoch <= currentEffectiveEpoch) {
-                      fail(
-                        new InvalidDeltaPayloadError(
-                          `NON_MONOTONIC_HISTORY_EPOCH: Incoming story HISTORY DELETE epoch (${newEpoch}) for story "${storyId}" must be strictly greater than current effective epoch (${currentEffectiveEpoch}).`
-                        )
-                      );
-                      return;
-                    }
-
-                    effectiveEpochs[storyId] = newEpoch;
-
-                    // 1. Cascade delete all chapter history shadow records for this story
-                    const sRange = IDBKeyRange.bound(
-                      [ownerScope, SyncDomain.HISTORY, `${storyId}:`],
-                      [ownerScope, SyncDomain.HISTORY, `${storyId}:\uffff`]
-                    );
-                    const sReq = shadowStore.openCursor(sRange);
-                    sReq.onsuccess = () => {
-                      const c = sReq.result;
-                      if (c) {
-                        const item = c.value as AuthoritativeShadowRecord;
-                        if (
-                          item.entityKey === storyId ||
-                          item.entityKey.startsWith(`${storyId}:`) ||
-                          item.payload?.storyId === storyId
-                        ) {
-                          c.delete();
-                        }
-                        c.continue();
-                      }
-                    };
-
-                    // Delete possible direct storyId history item
-                    shadowStore.delete([ownerScope, SyncDomain.HISTORY, storyId]);
-
-                    // 2. Cascade delete progress shadow record for this story
-                    shadowStore.delete([ownerScope, SyncDomain.PROGRESS, storyId]);
+            const existingTombstoneMap = new Map<string, AuthoritativeTombstoneRecord>();
+            const tRange = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+            const tReq = tombstoneStore.openCursor(tRange);
+            tReq.onerror = () => fail(tReq.error || new Error('Failed loading tombstones in applyAuthoritativeDeltaPage.'));
+            tReq.onsuccess = () => {
+              try {
+                const cursor = tReq.result;
+                if (cursor) {
+                  const rec = cursor.value as AuthoritativeTombstoneRecord;
+                  if (rec && rec.ownerScope === ownerScope) {
+                    existingTombstoneMap.set(`${rec.domain}::${rec.entityKey}`, rec);
                   }
-                }
-              } else {
-                // Other domains (e.g. FOLLOW)
-                const entityKey = change.entityId;
-                if (op === SyncOperation.UPSERT) {
-                  const record: AuthoritativeShadowRecord = {
-                    ownerScope,
-                    domain,
-                    entityKey,
-                    serverRevision: change.revision,
-                    epoch: 0,
-                    payload,
-                    isDeleted: false,
-                    updatedAt: Date.now(),
-                  };
-                  shadowStore.put(record);
+                  cursor.continue();
                 } else {
-                  shadowStore.delete([ownerScope, domain, entityKey]);
+                  executeDeltaWithTombstones(existingMeta, existingTombstoneMap);
                 }
+              } catch (err) {
+                fail(err);
               }
-            }
-
-            // 6. Persist updated sync_meta atomically in the same transaction
-            const updatedMeta: LocalSyncMeta = {
-              ownerScope,
-              lastSyncedServerRevision: targetCheckpoint,
-              minActiveRevision: page.minActiveRevision || existingMeta?.minActiveRevision || '0',
-              lastSyncTimestamp: new Date().toISOString(),
-              effectiveHistoryEpochs: effectiveEpochs,
-              syncState: 'IDLE',
-              // INVARIANT: Step 5.2b DOES NOT grant READY baseline status!
-              authoritativeBaselineStatus: existingMeta?.authoritativeBaselineStatus || 'UNINITIALIZED',
-              lastErrorMessage: null,
             };
-            metaStore.put(updatedMeta);
-
-            result = {
-              appliedCount: page.changes.length,
-              newCheckpoint: targetCheckpoint,
-              hasMore: Boolean(page.hasMore),
-              effectiveEpochs,
-            };
-
-            // Test hook for simulating error/abort before commit
-            if (_testHookBeforeComplete) {
-              _testHookBeforeComplete(tx);
-            }
           } catch (err) {
             fail(err);
           }
@@ -2997,6 +3659,7 @@ export class IndexedDbClient {
         STORE_QUARANTINED_MUTATIONS,
         STORE_SNAPSHOT_STAGING,
         STORE_AUTHORITATIVE_REPLICAS,
+        STORE_TOMBSTONES,
       ];
 
       const tx = db.transaction(storesToPurge, 'readwrite');
@@ -3014,6 +3677,7 @@ export class IndexedDbClient {
         STORE_QUARANTINED_MUTATIONS,
         STORE_SNAPSHOT_STAGING,
         STORE_AUTHORITATIVE_REPLICAS,
+        STORE_TOMBSTONES,
       ];
 
       for (const storeName of compositeStores) {

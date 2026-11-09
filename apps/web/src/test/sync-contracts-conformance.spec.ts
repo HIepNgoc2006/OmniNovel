@@ -8,6 +8,17 @@ import {
   PushMutationsBatchResponse,
   SyncChangesResponse,
   SyncSnapshotResponse,
+  SnapshotHistoryEpochItem,
+  SnapshotTombstoneItem,
+  SixDomainSnapshotData,
+  SixDomainSyncSnapshotResponse,
+  SnapshotPartitionDomain,
+  GLOBAL_HISTORY_EPOCH_SENTINEL,
+  SNAPSHOT_PARTITION_DOMAINS,
+  SYNC_TOMBSTONE_DOMAINS,
+  isValidTombstoneDomain,
+  isSixDomainSnapshotData,
+  isSixDomainSyncSnapshotResponse,
   BookmarkMutationPayload,
   ProgressMutationPayload,
   HistoryMutationPayload,
@@ -166,5 +177,188 @@ describe('Task 7C.3 — Shared Canonical Sync Contracts Conformance', () => {
     // BigInt retains exact precision:
     expect(BigInt(revA) < BigInt(revB)).toBe(true);
     expect(BigInt(revA) === BigInt(revB)).toBe(false);
+  });
+});
+
+describe('Patch Set A — Six-Domain Shared Snapshot Contracts Conformance', () => {
+  const buildValidSixDomainSnapshot = (): SixDomainSyncSnapshotResponse => {
+    const historyEpochs: SnapshotHistoryEpochItem[] = [
+      { storyId: '550e8400-e29b-41d4-a716-446655440010', epoch: 1 },
+      { storyId: '550e8400-e29b-41d4-a716-446655440020', epoch: 4 },
+    ];
+    const tombstones: SnapshotTombstoneItem[] = [
+      {
+        domain: SyncDomain.HISTORY,
+        entityId: GLOBAL_HISTORY_EPOCH_SENTINEL,
+        deletedAtRevision: '11',
+      },
+      {
+        domain: SyncDomain.PREFERENCE,
+        entityId: 'pref:a:b',
+        deletedAtRevision: '12',
+      },
+      {
+        domain: SyncDomain.BOOKMARK,
+        entityId: '550e8400-e29b-41d4-a716-446655440030',
+        deletedAtRevision: '15',
+      },
+    ];
+    const data: SixDomainSnapshotData = {
+      bookmarks: [],
+      readingProgress: [],
+      chapterReadStates: [],
+      preferences: [{ key: 'theme:colon', value: 'dark', updatedAt: '2026-11-09T10:00:00.000Z' }],
+      historyEpochs,
+      tombstones,
+    };
+
+    return {
+      snapshotRevision: '15',
+      minActiveRevision: '1',
+      globalHistoryEpoch: 3,
+      hasMore: false,
+      nextCursor: null,
+      data,
+    };
+  };
+
+  it('should export canonical partition domains, sentinel UUID, and tombstone domain helpers', () => {
+    const domains: readonly SnapshotPartitionDomain[] = SNAPSHOT_PARTITION_DOMAINS;
+    expect(domains).toEqual([
+      'BOOKMARK',
+      'PROGRESS',
+      'CHAPTER_READ_STATE',
+      'PREFERENCE',
+      'HISTORY_TOMBSTONE',
+      'SYNC_TOMBSTONE',
+    ]);
+    expect(GLOBAL_HISTORY_EPOCH_SENTINEL).toBe('00000000-0000-0000-0000-000000000000');
+    expect(SYNC_TOMBSTONE_DOMAINS).toEqual([
+      SyncDomain.BOOKMARK,
+      SyncDomain.PROGRESS,
+      SyncDomain.HISTORY,
+      SyncDomain.PREFERENCE,
+    ]);
+    expect(isValidTombstoneDomain(SyncDomain.BOOKMARK)).toBe(true);
+    expect(isValidTombstoneDomain(SyncDomain.PROGRESS)).toBe(true);
+    expect(isValidTombstoneDomain(SyncDomain.HISTORY)).toBe(true);
+    expect(isValidTombstoneDomain(SyncDomain.PREFERENCE)).toBe(true);
+    expect(isValidTombstoneDomain(SyncDomain.FOLLOW)).toBe(false);
+    expect(isValidTombstoneDomain('UNKNOWN')).toBe(false);
+  });
+
+  it('should validate valid six-domain snapshots including 64-bit BIGINT revisions and paginated cursors', () => {
+    const sixDomain = buildValidSixDomainSnapshot();
+    // Backward-compatible structural subtype check
+    const wideContract: SyncSnapshotResponse = sixDomain;
+
+    expect(wideContract.globalHistoryEpoch).toBe(3);
+    expect(isSixDomainSnapshotData(sixDomain.data)).toBe(true);
+    expect(isSixDomainSyncSnapshotResponse(sixDomain)).toBe(true);
+
+    const paginatedMaxBigInt: SixDomainSyncSnapshotResponse = {
+      ...sixDomain,
+      snapshotRevision: '9223372036854775807',
+      minActiveRevision: '1',
+      hasMore: true,
+      nextCursor: 'v1.signed-hmac-cursor',
+    };
+    expect(isSixDomainSyncSnapshotResponse(paginatedMaxBigInt)).toBe(true);
+  });
+
+  it('should maintain backward compatibility with unmodified 4-domain Web and Core API snapshot DTO shapes', () => {
+    const legacy4DomainResponse: SyncSnapshotResponse = {
+      snapshotRevision: '42',
+      minActiveRevision: '0',
+      hasMore: false,
+      nextCursor: null,
+      data: {
+        bookmarks: [],
+        readingProgress: [],
+        chapterReadStates: [],
+        preferences: [],
+      },
+    };
+
+    expect(legacy4DomainResponse.globalHistoryEpoch).toBeUndefined();
+    expect(legacy4DomainResponse.data.historyEpochs).toBeUndefined();
+    expect(legacy4DomainResponse.data.tombstones).toBeUndefined();
+    expect(isSixDomainSnapshotData(legacy4DomainResponse.data)).toBe(false);
+    expect(isSixDomainSyncSnapshotResponse(legacy4DomainResponse)).toBe(false);
+  });
+
+  it('should reject duplicated sentinel in historyEpochs, legacy HISTORY:all, and FOLLOW tombstones', () => {
+    const duplicateSentinel = buildValidSixDomainSnapshot();
+    duplicateSentinel.data.historyEpochs.push({
+      storyId: GLOBAL_HISTORY_EPOCH_SENTINEL,
+      epoch: 3,
+    });
+    expect(isSixDomainSnapshotData(duplicateSentinel.data)).toBe(false);
+    expect(isSixDomainSyncSnapshotResponse(duplicateSentinel)).toBe(false);
+
+    const legacyAllTombstone = buildValidSixDomainSnapshot();
+    legacyAllTombstone.data.tombstones.push({
+      domain: SyncDomain.HISTORY,
+      entityId: 'all',
+      deletedAtRevision: '11',
+    });
+    expect(isSixDomainSnapshotData(legacyAllTombstone.data)).toBe(false);
+    expect(isSixDomainSyncSnapshotResponse(legacyAllTombstone)).toBe(false);
+
+    const unsupportedFollowTombstone = buildValidSixDomainSnapshot();
+    unsupportedFollowTombstone.data.tombstones.push({
+      domain: SyncDomain.FOLLOW as unknown as SnapshotTombstoneItem['domain'],
+      entityId: '550e8400-e29b-41d4-a716-446655440099',
+      deletedAtRevision: '12',
+    });
+    expect(isSixDomainSnapshotData(unsupportedFollowTombstone.data)).toBe(false);
+    expect(isSixDomainSyncSnapshotResponse(unsupportedFollowTombstone)).toBe(false);
+  });
+
+  it('should fail-closed on malformed epochs, overflow/non-decimal revisions, and inconsistent envelope bounds', () => {
+    const negativeGlobalEpoch = { ...buildValidSixDomainSnapshot(), globalHistoryEpoch: -1 };
+    expect(isSixDomainSyncSnapshotResponse(negativeGlobalEpoch)).toBe(false);
+
+    const floatStoryEpoch = buildValidSixDomainSnapshot();
+    floatStoryEpoch.data.historyEpochs[0].epoch = 1.5;
+    expect(isSixDomainSnapshotData(floatStoryEpoch.data)).toBe(false);
+
+    const overflowTombstoneRev = buildValidSixDomainSnapshot();
+    overflowTombstoneRev.data.tombstones[0].deletedAtRevision = '9223372036854775808';
+    expect(isSixDomainSnapshotData(overflowTombstoneRev.data)).toBe(false);
+
+    const staleTombstone = buildValidSixDomainSnapshot();
+    staleTombstone.minActiveRevision = '12'; // tombstone rev '11' < minActiveRevision '12'
+    expect(isSixDomainSyncSnapshotResponse(staleTombstone)).toBe(false);
+
+    const aheadTombstone = buildValidSixDomainSnapshot();
+    aheadTombstone.snapshotRevision = '14'; // tombstone rev '15' > snapshotRevision '14'
+    expect(isSixDomainSyncSnapshotResponse(aheadTombstone)).toBe(false);
+
+    const invertedWindow = { ...buildValidSixDomainSnapshot(), minActiveRevision: '16', snapshotRevision: '15' };
+    expect(isSixDomainSyncSnapshotResponse(invertedWindow)).toBe(false);
+
+    const paddedStoryId = buildValidSixDomainSnapshot();
+    paddedStoryId.data.historyEpochs[0].storyId = ' story-with-padding ';
+    expect(isSixDomainSnapshotData(paddedStoryId.data)).toBe(false);
+
+    for (const badRev of ['-1', 'abc', '1.5', ' 11', '']) {
+      const badTombstoneRev = buildValidSixDomainSnapshot();
+      badTombstoneRev.data.tombstones[0].deletedAtRevision = badRev;
+      expect(isSixDomainSnapshotData(badTombstoneRev.data)).toBe(false);
+    }
+
+    const emptyEntityId = buildValidSixDomainSnapshot();
+    emptyEntityId.data.tombstones[0].entityId = '   ';
+    expect(isSixDomainSnapshotData(emptyEntityId.data)).toBe(false);
+
+    const missingCursorOnHasMore = { ...buildValidSixDomainSnapshot(), hasMore: true, nextCursor: null };
+    expect(isSixDomainSyncSnapshotResponse(missingCursorOnHasMore)).toBe(false);
+
+    const emptyCursorOnHasMore = { ...buildValidSixDomainSnapshot(), hasMore: true, nextCursor: '' };
+    expect(isSixDomainSyncSnapshotResponse(emptyCursorOnHasMore)).toBe(false);
+
+    const strayCursorOnLastPage = { ...buildValidSixDomainSnapshot(), hasMore: false, nextCursor: 'v1.unexpected' };
+    expect(isSixDomainSyncSnapshotResponse(strayCursorOnLastPage)).toBe(false);
   });
 });

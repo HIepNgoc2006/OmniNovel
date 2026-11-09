@@ -1,0 +1,64 @@
+detectors:
+  - name: OmniNovelJwtSecret
+    keywords:
+      - jwt_secret
+      - jwt_refresh_secret
+    regex:
+      pattern: |-
+        (?im)(?:\b(?:JWT_SECRET|JWT_REFRESH_SECRET)["'`]?[ \t]*[:=][ \t]*(?:z\.[A-Za-z0-9_().]+\.default\([ \t]*)?["'`](?:[^"'`<>\r\n$\\]|[$][^{($\r\n\\]|\\.){3,}["'`]|(?:^|[ \t\x60]|-e[ \t]+)(?:JWT_SECRET|JWT_REFRESH_SECRET)[ \t]*[:=][ \t]*(?:[^p\s"'`<>{}()\[\],;#\\$?]|p(?:[^r\s"'`<>{}()\[\],;#\\$?]|r(?:[^o\s"'`<>{}()\[\],;#\\$?]|o(?:[^c\s"'`<>{}()\[\],;#\\$?]|c(?:[^e\s"'`<>{}()\[\],;#\\$?]|e(?:[^s\s"'`<>{}()\[\],;#\\$?]|s(?:[^s\s"'`<>{}()\[\],;#\\$?]|s[^.\s"'`<>{}()\[\],;#\\$?])))))))[^\s"'`<>{}()\[\],;#\\$?]{3,}(?:[ \t#\r\n\x60]|$))
+
+  - name: OmniNovelAiWorkerSecret
+    keywords:
+      - ai_worker_secret
+    regex:
+      pattern: |-
+        (?im)(?:\bAI_WORKER_SECRET["'`]?[ \t]*[:=][ \t]*(?:z\.[A-Za-z0-9_().]+\.default\([ \t]*)?["'`](?:[^"'`<>\r\n$\\]|[$][^{($\r\n\\]|\\.){3,}["'`]|(?:^|[ \t\x60]|-e[ \t]+)AI_WORKER_SECRET[ \t]*[:=][ \t]*(?:[^p\s"'`<>{}()\[\],;#\\$?]|p(?:[^r\s"'`<>{}()\[\],;#\\$?]|r(?:[^o\s"'`<>{}()\[\],;#\\$?]|o(?:[^c\s"'`<>{}()\[\],;#\\$?]|c(?:[^e\s"'`<>{}()\[\],;#\\$?]|e(?:[^s\s"'`<>{}()\[\],;#\\$?]|s(?:[^s\s"'`<>{}()\[\],;#\\$?]|s[^.\s"'`<>{}()\[\],;#\\$?])))))))[^\s"'`<>{}()\[\],;#\\$?]{3,}(?:[ \t#\r\n\x60]|$))
+
+  - name: OmniNovelRedisPassword
+    keywords:
+      - redis_password
+      - requirepass
+      - redis://
+      - rediss://
+      - redis-cli
+    regex:
+      pattern: |-
+        (?im)(?:\bREDIS_PASSWORD["'`]?[ \t]*[:=][ \t]*(?:z\.[A-Za-z0-9_().]+\.default\([ \t]*)?["'`](?:[^"'`<>\r\n$\\]|[$][^{($\r\n\\]|\\.){3,}["'`]|(?:^|[ \t\x60]|-e[ \t]+)REDIS_PASSWORD[ \t]*[:=][ \t]*(?:[^p\s"'`<>{}()\[\],;#\\$?]|p(?:[^r\s"'`<>{}()\[\],;#\\$?]|r(?:[^o\s"'`<>{}()\[\],;#\\$?]|o(?:[^c\s"'`<>{}()\[\],;#\\$?]|c(?:[^e\s"'`<>{}()\[\],;#\\$?]|e(?:[^s\s"'`<>{}()\[\],;#\\$?]|s(?:[^s\s"'`<>{}()\[\],;#\\$?]|s[^.\s"'`<>{}()\[\],;#\\$?])))))))[^\s"'`<>{}()\[\],;#\\$?]{3,}(?:[ \t#\r\n\x60]|$)|\brediss?://(?:[^:@\s"'`$<>\[\]]+)?:[^@\s"'`$<>\[\]]{3,}@[^\s"'`<>]+|(?:--requirepass|redis-cli(?:[ \t]+[^\r\n;|&$]+)*?[ \t]+(?:-a|--pass))[ \t]+(?:["'][^"'\r\n$\\]{3,}["']|[^\s"'`$<>()\[\]-]{4,}))
+
+  - name: OmniNovelDatabaseUrl
+    keywords:
+      - postgres://
+      - postgresql://
+      - database_url
+    regex:
+      pattern: |-
+        (?im)(?:\bpostgres(?:ql)?(?:\+[a-z0-9_-]+)?://[^:\s"'`$<>\[\]/]+:[^@\s"'`$<>\[\]]{2,}@[^\s"'`<>,;)\r\n]+|\bDATABASE_URL["'`]?[ \t]*[:=][ \t]*["'`]?[a-z][a-z0-9+.-]*://[^:\s"'`$<>\[\]/]+:[^@\s"'`$<>\[\]]{2,}@[^\s"'`<>,;)\r\n]+["'`]?)
+
+  - name: OmniNovelS3R2Credentials
+    keywords:
+      - s3_access_key_id
+      - s3_secret_access_key
+      - s3_access_key
+      - s3_secret_key
+      - r2_access_key_id
+      - r2_secret_access_key
+      - r2_token
+      - cloudflare_r2
+      - cloudflare_api_token
+      - cloudflare_api_key
+      - cf_r2_access_key_id
+      - cf_r2_secret_access_key
+      - aws_access_key_id
+      - aws_secret_access_key
+      - aws_session_token
+      - aws_secret_key
+      - minio_access_key
+      - minio_secret_key
+      - minio_root_password
+      - accesskeyid
+      - secretaccesskey
+      - akia
+      - asia
+    regex:
+      pattern: |-
+        (?im)(?:\b(?:S3_ACCESS_KEY_ID|S3_SECRET_ACCESS_KEY|S3_ACCESS_KEY|S3_SECRET_KEY|R2_ACCESS_KEY_ID|R2_SECRET_ACCESS_KEY|R2_TOKEN|CLOUDFLARE_R2_ACCESS_KEY_ID|CLOUDFLARE_R2_SECRET_ACCESS_KEY|CLOUDFLARE_R2_TOKEN|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_R2_ACCESS_KEY_ID|CF_R2_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|AWS_SECRET_KEY|MINIO_ACCESS_KEY|MINIO_SECRET_KEY|MINIO_ROOT_PASSWORD|accessKeyId|secretAccessKey)["'`]?[ \t]*[:=][ \t]*(?:z\.[A-Za-z0-9_().]+\.default\([ \t]*)?["'`](?:[^"'`<>\r\n$\\]|[$][^{($\r\n\\]|\\.){3,}["'`]|(?:^|[ \t\x60]|-e[ \t]+)(?:S3_ACCESS_KEY_ID|S3_SECRET_ACCESS_KEY|S3_ACCESS_KEY|S3_SECRET_KEY|R2_ACCESS_KEY_ID|R2_SECRET_ACCESS_KEY|R2_TOKEN|CLOUDFLARE_R2_ACCESS_KEY_ID|CLOUDFLARE_R2_SECRET_ACCESS_KEY|CLOUDFLARE_R2_TOKEN|CLOUDFLARE_API_TOKEN|CLOUDFLARE_API_KEY|CF_R2_ACCESS_KEY_ID|CF_R2_SECRET_ACCESS_KEY|AWS_ACCESS_KEY_ID|AWS_SECRET_ACCESS_KEY|AWS_SESSION_TOKEN|AWS_SECRET_KEY|MINIO_ACCESS_KEY|MINIO_SECRET_KEY|MINIO_ROOT_PASSWORD)[ \t]*[:=][ \t]*(?:[^p\s"'`<>{}()\[\],;#\\$?]|p(?:[^r\s"'`<>{}()\[\],;#\\$?]|r(?:[^o\s"'`<>{}()\[\],;#\\$?]|o(?:[^c\s"'`<>{}()\[\],;#\\$?]|c(?:[^e\s"'`<>{}()\[\],;#\\$?]|e(?:[^s\s"'`<>{}()\[\],;#\\$?]|s(?:[^s\s"'`<>{}()\[\],;#\\$?]|s[^.\s"'`<>{}()\[\],;#\\$?])))))))[^\s"'`<>{}()\[\],;#\\$?]{3,}(?:[ \t#\r\n\x60]|$)|(?-i:\b(?:AKIA|ASIA)[0-9A-Z]{16}\b))

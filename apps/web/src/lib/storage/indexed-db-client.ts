@@ -92,6 +92,174 @@ export interface QuarantineStaleByWatermarkResult {
   quarantinedMutations: LocalQuarantinedMutation[];
 }
 
+export interface SelectEligiblePendingBatchOptions {
+  limit: number;
+  now: number;
+  excludeMutationIds?: Iterable<string>;
+  checkAdmission?: () => void;
+  _testHookBeforeComplete?: (tx: IDBTransaction) => void;
+}
+
+export interface SelectEligiblePendingBatchResult {
+  minActiveRevision: string;
+  scannedCount: number;
+  quarantinedCount: number;
+  quarantinedMutations: LocalQuarantinedMutation[];
+  selectedMutations: LocalPendingMutation[];
+}
+
+export const RETRYABLE_QUARANTINE_REJECTION_STATUSES: ReadonlySet<string> = new Set([
+  'EXCEEDED_MAX_RETRIES',
+  'MANUAL',
+]);
+
+const VALID_TRIAGE_STATUSES: ReadonlySet<string> = new Set([
+  'PENDING',
+  'APPROVED',
+  'DISCARDED',
+]);
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Validates quarantined record metadata and evaluates terminal replacement proof
+ * for bounded tombstone GC (P1-C / ADR-SYNC-07C-v2.2 §2.2).
+ *
+ * Returns `true` ONLY when the quarantined record may safely be excluded from
+ * `floorCandidates` (`DISCARDED`, or `APPROVED` with complete, structurally valid proof).
+ * Throws `InvalidDeltaPayloadError` (fail-closed abort) on corrupt fields/proof.
+ * Returns `false` (conservative retention in `floorCandidates`) for `PENDING` or
+ * `APPROVED` missing terminal/replacement evidence.
+ */
+function evaluateQuarantineGcExclusion(q: LocalQuarantinedMutation): boolean {
+  if (typeof q.mutationId !== 'string' || q.mutationId.trim().length === 0) {
+    throw new InvalidDeltaPayloadError(
+      'Corrupt quarantined record during tombstone GC: missing mutationId.'
+    );
+  }
+  if (!isValidRevisionString(q.baseServerRevision)) {
+    throw new InvalidDeltaPayloadError(
+      `Invalid quarantined baseServerRevision during tombstone GC: "${q.baseServerRevision}" (mutationId="${q.mutationId}").`
+    );
+  }
+  if (
+    q.rejectionStatus !== undefined &&
+    (typeof q.rejectionStatus !== 'string' || q.rejectionStatus.trim().length === 0)
+  ) {
+    throw new InvalidDeltaPayloadError(
+      `Corrupt quarantined rejectionStatus during tombstone GC (mutationId="${q.mutationId}").`
+    );
+  }
+  if (q.triageStatus !== undefined && !VALID_TRIAGE_STATUSES.has(q.triageStatus)) {
+    throw new InvalidDeltaPayloadError(
+      `Invalid quarantined triageStatus during tombstone GC: "${String(q.triageStatus)}" (mutationId="${q.mutationId}").`
+    );
+  }
+
+  if (q.causalEvidence !== undefined) {
+    if (!isPlainRecord(q.causalEvidence)) {
+      throw new InvalidDeltaPayloadError(
+        `Corrupt quarantined causalEvidence during tombstone GC (mutationId="${q.mutationId}").`
+      );
+    }
+    if (typeof q.causalEvidence.triageApproved !== 'boolean') {
+      throw new InvalidDeltaPayloadError(
+        `Corrupt quarantined causalEvidence.triageApproved during tombstone GC (mutationId="${q.mutationId}").`
+      );
+    }
+    if (
+      q.causalEvidence.observedEpoch !== undefined &&
+      (!Number.isInteger(q.causalEvidence.observedEpoch) || q.causalEvidence.observedEpoch < 0)
+    ) {
+      throw new InvalidDeltaPayloadError(
+        `Invalid quarantined causalEvidence.observedEpoch during tombstone GC (mutationId="${q.mutationId}").`
+      );
+    }
+    if (q.causalEvidence.validatedRevision !== undefined) {
+      if (!isValidRevisionString(q.causalEvidence.validatedRevision)) {
+        throw new InvalidDeltaPayloadError(
+          `Invalid quarantined causalEvidence.validatedRevision "${String(q.causalEvidence.validatedRevision)}" during tombstone GC (mutationId="${q.mutationId}").`
+        );
+      }
+      if (BigInt(q.causalEvidence.validatedRevision) < BigInt(q.baseServerRevision)) {
+        throw new InvalidDeltaPayloadError(
+          `Corrupt quarantined causalEvidence.validatedRevision "${q.causalEvidence.validatedRevision}" < baseServerRevision "${q.baseServerRevision}" during tombstone GC (mutationId="${q.mutationId}").`
+        );
+      }
+    }
+    if (
+      q.causalEvidence.triageReason !== undefined &&
+      (typeof q.causalEvidence.triageReason !== 'string' ||
+        q.causalEvidence.triageReason.trim().length === 0)
+    ) {
+      throw new InvalidDeltaPayloadError(
+        `Corrupt quarantined causalEvidence.triageReason during tombstone GC (mutationId="${q.mutationId}").`
+      );
+    }
+    if (q.causalEvidence.evidence !== undefined) {
+      if (!isPlainRecord(q.causalEvidence.evidence)) {
+        throw new InvalidDeltaPayloadError(
+          `Corrupt quarantined causalEvidence.evidence during tombstone GC (mutationId="${q.mutationId}").`
+        );
+      }
+      if (
+        'replacementMutationId' in q.causalEvidence.evidence &&
+        q.causalEvidence.evidence.replacementMutationId !== undefined
+      ) {
+        const repId = q.causalEvidence.evidence.replacementMutationId;
+        if (
+          typeof repId !== 'string' ||
+          repId.trim().length === 0 ||
+          repId === q.mutationId
+        ) {
+          throw new InvalidDeltaPayloadError(
+            `Invalid replacementMutationId during tombstone GC (mutationId="${q.mutationId}").`
+          );
+        }
+      }
+      if (
+        'tombstoneRevision' in q.causalEvidence.evidence &&
+        q.causalEvidence.evidence.tombstoneRevision !== undefined &&
+        !isValidRevisionString(q.causalEvidence.evidence.tombstoneRevision)
+      ) {
+        throw new InvalidDeltaPayloadError(
+          `Invalid evidence.tombstoneRevision during tombstone GC (mutationId="${q.mutationId}").`
+        );
+      }
+      if (
+        'snapshotMinActiveRevision' in q.causalEvidence.evidence &&
+        q.causalEvidence.evidence.snapshotMinActiveRevision !== undefined &&
+        !isValidRevisionString(q.causalEvidence.evidence.snapshotMinActiveRevision)
+      ) {
+        throw new InvalidDeltaPayloadError(
+          `Invalid evidence.snapshotMinActiveRevision during tombstone GC (mutationId="${q.mutationId}").`
+        );
+      }
+    }
+  }
+
+  const effectiveStatus: QuarantineTriageStatus = q.triageStatus ?? 'PENDING';
+  if (effectiveStatus === 'DISCARDED') {
+    return true;
+  }
+  if (effectiveStatus === 'PENDING') {
+    return false;
+  }
+
+  // APPROVED: exclude ONLY when valid terminal/replacement evidence is present; fail closed otherwise
+  return Boolean(
+    q.causalEvidence &&
+      q.causalEvidence.triageApproved === true &&
+      q.causalEvidence.validatedRevision !== undefined &&
+      q.causalEvidence.evidence &&
+      typeof q.causalEvidence.evidence.replacementMutationId === 'string' &&
+      q.causalEvidence.evidence.replacementMutationId.trim().length > 0 &&
+      q.causalEvidence.evidence.replacementMutationId !== q.mutationId
+  );
+}
+
 export interface LocalSyncMeta {
   ownerScope: string;
   lastSyncedServerRevision: string;
@@ -1908,15 +2076,7 @@ export class IndexedDbClient {
             }
 
             for (const q of quarantinedItems) {
-              if (!isValidRevisionString(q.baseServerRevision)) {
-                fail(
-                  new InvalidDeltaPayloadError(
-                    `Invalid quarantined baseServerRevision during tombstone GC: "${q.baseServerRevision}" (mutationId="${q.mutationId}").`
-                  )
-                );
-                return;
-              }
-              if (q.triageStatus !== 'DISCARDED') {
+              if (!evaluateQuarantineGcExclusion(q)) {
                 floorCandidates.push(BigInt(q.baseServerRevision));
               }
             }
@@ -3191,18 +3351,21 @@ export class IndexedDbClient {
   /**
    * Atomic Primitive: Requeues a quarantined mutation back to pending_mutations with retryCount = 0.
    * Transfers from quarantined_mutations to pending_mutations in a single atomic IDB transaction
-   * alongside STORE_SYNC_META so revision watermarks cannot be bypassed via TOCTOU races.
+   * alongside STORE_SYNC_META so revision watermarks and triage state cannot be bypassed via TOCTOU races.
    * Strictly preserves exact mutationId, payload, and baseServerRevision.
    *
    * Invariant Enforcement:
    * - P1-A: DISCARDED triageStatus is strictly terminal and CANNOT be requeued inside IDB transaction.
+   * - P1-C: APPROVED triageStatus is strictly terminal and CANNOT requeue legacy mutationId (even if
+   *   triageProof.triageApproved=true); non-PENDING states fail closed; only PENDING + retryable
+   *   rejectionStatus (EXCEEDED_MAX_RETRIES, MANUAL) is permitted.
    * - P0-05: REJECTED_TOMBSTONE, REJECTED_STALE, and HTTP_410_GONE cannot be requeued.
    * - P1-B: Mutations with baseServerRevision < sync_meta.minActiveRevision cannot be requeued.
    */
   async requeueQuarantinedMutation(
     ownerScope: string,
     mutationId: string,
-    triageProof?: CausalTriageProof,
+    _triageProof?: CausalTriageProof,
     options?: {
       checkAdmission?: () => void;
       _testHookBeforeComplete?: (tx: IDBTransaction) => void;
@@ -3263,6 +3426,24 @@ export class IndexedDbClient {
               return;
             }
 
+            if (qRecord.triageStatus === 'APPROVED') {
+              fail(
+                new Error(
+                  `REQUEUE_PROHIBITED: Cannot requeue APPROVED quarantined mutation "${qRecord.mutationId}". APPROVED is terminal; Step 6 triage requires creating a brand-new replacement mutationId.`
+                )
+              );
+              return;
+            }
+
+            if (qRecord.triageStatus !== 'PENDING') {
+              fail(
+                new Error(
+                  `REQUEUE_PROHIBITED: Cannot requeue quarantined mutation "${qRecord.mutationId}" with non-PENDING triageStatus "${String(qRecord.triageStatus)}".`
+                )
+              );
+              return;
+            }
+
             if (qRecord.rejectionStatus === 'REJECTED_TOMBSTONE') {
               fail(
                 new Error(
@@ -3284,6 +3465,27 @@ export class IndexedDbClient {
               return;
             }
 
+            if (
+              !qRecord.rejectionStatus ||
+              !RETRYABLE_QUARANTINE_REJECTION_STATUSES.has(qRecord.rejectionStatus)
+            ) {
+              fail(
+                new Error(
+                  `REQUEUE_PROHIBITED: Cannot requeue quarantined mutation "${qRecord.mutationId}" with non-retryable rejectionStatus "${String(qRecord.rejectionStatus)}". Only retryable rejections (EXCEEDED_MAX_RETRIES, MANUAL) under PENDING triageStatus may be requeued.`
+                )
+              );
+              return;
+            }
+
+            if (!isValidRevisionString(qRecord.baseServerRevision)) {
+              fail(
+                new InvalidDeltaPayloadError(
+                  `Invalid baseServerRevision on quarantined mutation "${qRecord.mutationId}": "${qRecord.baseServerRevision}".`
+                )
+              );
+              return;
+            }
+
             if (syncMeta?.minActiveRevision !== undefined && syncMeta?.minActiveRevision !== null) {
               if (!isValidRevisionString(syncMeta.minActiveRevision)) {
                 fail(
@@ -3294,23 +3496,13 @@ export class IndexedDbClient {
                 return;
               }
               const minActiveRev = BigInt(syncMeta.minActiveRevision);
-              if (minActiveRev > 0n) {
-                if (!isValidRevisionString(qRecord.baseServerRevision)) {
-                  fail(
-                    new InvalidDeltaPayloadError(
-                      `Invalid baseServerRevision on quarantined mutation "${qRecord.mutationId}": "${qRecord.baseServerRevision}".`
-                    )
-                  );
-                  return;
-                }
-                if (BigInt(qRecord.baseServerRevision) < minActiveRev) {
-                  fail(
-                    new Error(
-                      `REQUEUE_PROHIBITED: Cannot requeue stale mutation "${qRecord.mutationId}" with baseServerRevision "${qRecord.baseServerRevision}" older than minActiveRevision "${syncMeta.minActiveRevision}".`
-                    )
-                  );
-                  return;
-                }
+              if (minActiveRev > 0n && BigInt(qRecord.baseServerRevision) < minActiveRev) {
+                fail(
+                  new Error(
+                    `REQUEUE_PROHIBITED: Cannot requeue stale mutation "${qRecord.mutationId}" with baseServerRevision "${qRecord.baseServerRevision}" older than minActiveRevision "${syncMeta.minActiveRevision}".`
+                  )
+                );
+                return;
               }
             }
 
@@ -3554,6 +3746,203 @@ export class IndexedDbClient {
           fail(tx.error || new Error('Transaction error in quarantineStalePendingMutationsByWatermark.'));
         tx.onabort = () =>
           fail(tx.error || new Error('Transaction aborted in quarantineStalePendingMutationsByWatermark.'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * P1-D Atomic Batch Re-verification & Selection:
+   * Evaluates live pending_mutations against the LATEST sync_meta.minActiveRevision inside a
+   * SINGLE IndexedDB readwrite transaction over [STORE_SYNC_META, STORE_PENDING_MUTATIONS,
+   * STORE_QUARANTINED_MUTATIONS]. Eliminates TOCTOU races between an earlier watermark sweep,
+   * getPendingMutations(), and batch candidate selection:
+   * - Newly stale items (baseServerRevision < latest minActiveRevision) are atomically quarantined
+   *   with full payload/metadata preservation and NEVER returned in selectedMutations.
+   * - Items deleted, quarantined, or placed in backoff concurrently are excluded cleanly.
+   */
+  async selectEligiblePendingBatchAtomic(
+    ownerScope: string,
+    options: SelectEligiblePendingBatchOptions
+  ): Promise<SelectEligiblePendingBatchResult> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    if (options.checkAdmission) {
+      options.checkAdmission();
+    }
+
+    const excludedIds = options.excludeMutationIds ? new Set(options.excludeMutationIds) : null;
+    const maxSelect = Math.max(0, Math.floor(options.limit));
+
+    return new Promise<SelectEligiblePendingBatchResult>((resolve, reject) => {
+      let settled = false;
+      let tx: IDBTransaction;
+      let result: SelectEligiblePendingBatchResult = {
+        minActiveRevision: '0',
+        scannedCount: 0,
+        quarantinedCount: 0,
+        quarantinedMutations: [],
+        selectedMutations: [],
+      };
+
+      const fail = (err: unknown) => {
+        if (!settled) {
+          settled = true;
+          try {
+            tx.abort();
+          } catch {
+            // ignore
+          }
+          reject(err);
+        }
+      };
+
+      try {
+        tx = db.transaction(
+          [STORE_SYNC_META, STORE_PENDING_MUTATIONS, STORE_QUARANTINED_MUTATIONS],
+          'readwrite'
+        );
+        const metaStore = tx.objectStore(STORE_SYNC_META);
+        const pStore = tx.objectStore(STORE_PENDING_MUTATIONS);
+        const qStore = tx.objectStore(STORE_QUARANTINED_MUTATIONS);
+
+        let syncMeta: LocalSyncMeta | undefined;
+        const scopedPending: LocalPendingMutation[] = [];
+        let remaining = 2;
+
+        const onAllLoaded = () => {
+          if (settled) return;
+          try {
+            if (options.checkAdmission) {
+              options.checkAdmission();
+            }
+
+            let minActiveRevisionStr = '0';
+            if (syncMeta?.minActiveRevision !== undefined && syncMeta?.minActiveRevision !== null) {
+              if (!isValidRevisionString(syncMeta.minActiveRevision)) {
+                fail(
+                  new InvalidDeltaPayloadError(
+                    `Invalid minActiveRevision during atomic batch selection: "${syncMeta.minActiveRevision}".`
+                  )
+                );
+                return;
+              }
+              minActiveRevisionStr = syncMeta.minActiveRevision;
+            }
+
+            const minActiveRev = BigInt(minActiveRevisionStr);
+
+            // Fail-closed validation across ALL live pending items before issuing writes or selecting
+            const staleTargets: LocalPendingMutation[] = [];
+            const selectedMutations: LocalPendingMutation[] = [];
+
+            for (const item of scopedPending) {
+              if (!isValidRevisionString(item.baseServerRevision)) {
+                fail(
+                  new InvalidDeltaPayloadError(
+                    `Invalid baseServerRevision "${item.baseServerRevision}" on pending mutation "${item.mutationId}".`
+                  )
+                );
+                return;
+              }
+              if (excludedIds?.has(item.mutationId)) {
+                continue;
+              }
+              if (minActiveRev > 0n && BigInt(item.baseServerRevision) < minActiveRev) {
+                staleTargets.push(item);
+                continue;
+              }
+              if (item.nextRetryAt && item.nextRetryAt > options.now) {
+                continue;
+              }
+              if (selectedMutations.length < maxSelect) {
+                selectedMutations.push(item);
+              }
+            }
+
+            const rejectedAtIso = new Date().toISOString();
+            const quarantinedMutations: LocalQuarantinedMutation[] = [];
+
+            for (const target of staleTargets) {
+              pStore.delete([ownerScope, target.mutationId]);
+              const quarantined: LocalQuarantinedMutation = {
+                ownerScope: target.ownerScope,
+                mutationId: target.mutationId,
+                clientId: target.clientId,
+                domain: target.domain,
+                entityId: target.entityId,
+                operation: target.operation,
+                baseServerRevision: target.baseServerRevision,
+                payload: target.payload,
+                rejectionReason: `BASE_REVISION_EXPIRED: baseServerRevision (${target.baseServerRevision}) is older than minActiveRevision (${minActiveRevisionStr}).`,
+                rejectionStatus: 'REJECTED_STALE',
+                rejectedAt: rejectedAtIso,
+                triageStatus: 'PENDING',
+                originalCreatedAt: target.createdAt,
+              };
+              qStore.put(quarantined);
+              quarantinedMutations.push(quarantined);
+            }
+
+            result = {
+              minActiveRevision: minActiveRevisionStr,
+              scannedCount: scopedPending.length,
+              quarantinedCount: quarantinedMutations.length,
+              quarantinedMutations,
+              selectedMutations,
+            };
+
+            if (options._testHookBeforeComplete) {
+              options._testHookBeforeComplete(tx);
+            }
+          } catch (err) {
+            fail(err);
+          }
+        };
+
+        const mReq = metaStore.get(ownerScope);
+        mReq.onerror = () =>
+          fail(mReq.error || new Error('Failed reading sync_meta during atomic batch selection.'));
+        mReq.onsuccess = () => {
+          syncMeta = mReq.result as LocalSyncMeta | undefined;
+          remaining -= 1;
+          if (remaining === 0) onAllLoaded();
+        };
+
+        const pIndex = pStore.index('by_scope_created');
+        const pRange = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+        const pReq = pIndex.openCursor(pRange, 'next');
+        pReq.onerror = () =>
+          fail(pReq.error || new Error('Failed scanning pending_mutations during atomic batch selection.'));
+        pReq.onsuccess = () => {
+          try {
+            const cursor = pReq.result;
+            if (cursor) {
+              const item = cursor.value as LocalPendingMutation;
+              if (item && item.ownerScope === ownerScope) {
+                scopedPending.push(item);
+              }
+              cursor.continue();
+            } else {
+              remaining -= 1;
+              if (remaining === 0) onAllLoaded();
+            }
+          } catch (err) {
+            fail(err);
+          }
+        };
+
+        tx.oncomplete = () => {
+          if (!settled) {
+            settled = true;
+            resolve(result);
+          }
+        };
+        tx.onerror = () =>
+          fail(tx.error || new Error('Transaction error in selectEligiblePendingBatchAtomic.'));
+        tx.onabort = () =>
+          fail(tx.error || new Error('Transaction aborted in selectEligiblePendingBatchAtomic.'));
       } catch (err) {
         reject(err);
       }

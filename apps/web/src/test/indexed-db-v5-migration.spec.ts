@@ -1089,7 +1089,7 @@ describe('Phase 5.2b P1-01 — Durable STORE_TOMBSTONES (IDB v5), Migration, Bou
       expect(await dbClient.getPendingMutation(scope, 'q-transient-100')).not.toBeNull();
       await dbClient.deletePendingMutation(scope, 'q-transient-100');
 
-      // APPROVED quarantined entry (baseRev=78) ALSO pins safeGcFloor (only DISCARDED is excluded)
+      // APPROVED quarantined entry (baseRev=78) WITHOUT terminal/replacement evidence fail-closed pins safeGcFloor = '78'
       await dbClient.quarantineMutation({
         ownerScope: scope,
         mutationId: 'q-approved-78',
@@ -1220,6 +1220,222 @@ describe('Phase 5.2b P1-01 — Durable STORE_TOMBSTONES (IDB v5), Migration, Bou
       expect((await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-1'))?.deletedAtRevision).toBe(
         '50',
       );
+    });
+
+    it('P1-C GC: excludes APPROVED ONLY with valid terminal/replacement proof; fails closed on incomplete proof or corrupt records', async () => {
+      const scope = 'account:usr-p1c-gc-proof';
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: scope,
+        lastSyncedServerRevision: '120',
+        minActiveRevision: '100',
+        lastSyncTimestamp: '2026-11-09T00:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
+      });
+
+      await dbClient.putAuthoritativeTombstone({
+        ownerScope: scope,
+        domain: SyncDomain.BOOKMARK,
+        entityKey: 'bm-gc-80',
+        deletedAtRevision: '80',
+        updatedAt: Date.now(),
+      });
+
+      // 1. APPROVED without causalEvidence -> fail-closed retains '80' (floor='78')
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q-approved-missing-proof',
+        clientId: 'web-tab-1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-gc-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '78',
+        payload: { storyId: 'bm-gc-80' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T01:00:00.000Z',
+        triageStatus: 'APPROVED',
+      });
+      let gcRes = await dbClient.gcAuthoritativeTombstones(scope);
+      expect(gcRes.safeGcFloor).toBe('78');
+      expect(gcRes.deletedCount).toBe(0);
+      expect(gcRes.retainedCount).toBe(1);
+
+      // 2. APPROVED with triageApproved=false or missing replacementMutationId -> fail-closed retains '80'
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q-approved-missing-proof',
+        clientId: 'web-tab-1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-gc-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '78',
+        payload: { storyId: 'bm-gc-80' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T01:00:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: false,
+          validatedRevision: '100',
+          evidence: { replacementMutationId: 'mut-new-100' },
+        },
+      });
+      gcRes = await dbClient.gcAuthoritativeTombstones(scope);
+      expect(gcRes.safeGcFloor).toBe('78');
+      expect(gcRes.retainedCount).toBe(1);
+
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q-approved-missing-proof',
+        clientId: 'web-tab-1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-gc-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '78',
+        payload: { storyId: 'bm-gc-80' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T01:00:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '100',
+          evidence: { tombstoneRevision: '80' },
+        },
+      });
+      gcRes = await dbClient.gcAuthoritativeTombstones(scope);
+      expect(gcRes.safeGcFloor).toBe('78');
+      expect(gcRes.retainedCount).toBe(1);
+
+      // 3. Corrupt proof / record variations MUST abort GC atomically with InvalidDeltaPayloadError (0 tombstones deleted)
+      const corruptCases: Array<Partial<Record<string, unknown>>> = [
+        { triageStatus: 'CORRUPT_TRIAGE', causalEvidence: undefined },
+        { triageStatus: 'APPROVED', causalEvidence: 'corrupt-string' },
+        {
+          triageStatus: 'APPROVED',
+          causalEvidence: {
+            triageApproved: true,
+            validatedRevision: '70', // < baseServerRevision '78'
+            evidence: { replacementMutationId: 'mut-new-100' },
+          },
+        },
+        {
+          triageStatus: 'APPROVED',
+          causalEvidence: {
+            triageApproved: true,
+            validatedRevision: 'not-decimal',
+            evidence: { replacementMutationId: 'mut-new-100' },
+          },
+        },
+        {
+          triageStatus: 'APPROVED',
+          causalEvidence: {
+            triageApproved: true,
+            validatedRevision: '100',
+            observedEpoch: -1,
+            evidence: { replacementMutationId: 'mut-new-100' },
+          },
+        },
+        {
+          triageStatus: 'APPROVED',
+          causalEvidence: {
+            triageApproved: true,
+            validatedRevision: '100',
+            evidence: { replacementMutationId: 'q-approved-missing-proof' }, // self-referencing!
+          },
+        },
+        {
+          triageStatus: 'APPROVED',
+          causalEvidence: {
+            triageApproved: true,
+            validatedRevision: '100',
+            evidence: {
+              replacementMutationId: 'mut-new-100',
+              tombstoneRevision: 'bad-tomb-rev',
+            },
+          },
+        },
+      ];
+
+      const rawDb = await dbClient.getDatabase();
+      for (const patch of corruptCases) {
+        await new Promise<void>((resolve, reject) => {
+          const wTx = rawDb.transaction(STORE_QUARANTINED_MUTATIONS, 'readwrite');
+          wTx.objectStore(STORE_QUARANTINED_MUTATIONS).put({
+            ownerScope: scope,
+            mutationId: 'q-approved-missing-proof',
+            clientId: 'web-tab-1',
+            domain: SyncDomain.BOOKMARK,
+            entityId: 'bm-gc-80',
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '78',
+            payload: { storyId: 'bm-gc-80' },
+            rejectionReason: 'REJECTED_STALE',
+            rejectionStatus: 'REJECTED_STALE',
+            rejectedAt: '2026-11-09T01:00:00.000Z',
+            ...patch,
+          });
+          wTx.oncomplete = () => resolve();
+          wTx.onerror = () => reject(wTx.error);
+        });
+        await expect(dbClient.gcAuthoritativeTombstones(scope)).rejects.toThrow(
+          InvalidDeltaPayloadError,
+        );
+        expect(
+          await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-gc-80'),
+        ).not.toBeNull();
+      }
+
+      // 4. Valid terminal/replacement proof (ADR v2.2 QT-04) excludes APPROVED from floorCandidates -> evicts '80'!
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q-approved-missing-proof',
+        clientId: 'web-tab-1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-gc-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '78',
+        payload: { storyId: 'bm-gc-80' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T01:00:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '120',
+          observedEpoch: 0,
+          triageReason: 'USER_REAPPLIED_AS_NEW_MUTATION',
+          evidence: {
+            tombstoneRevision: '80',
+            replacementMutationId: 'mut-replacement-100',
+          },
+        },
+        originalCreatedAt: '2026-11-09T00:30:00.000Z',
+      });
+
+      // Replacement mutation in pending_mutations carries baseRev=100 (>= 80), allowing GC floor='100'
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scope,
+        mutationId: 'mut-replacement-100',
+        clientId: 'web-tab-1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-gc-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '100',
+        payload: { storyId: 'bm-gc-80' },
+        createdAt: '2026-11-09T02:00:00.000Z',
+        retryCount: 0,
+      });
+
+      gcRes = await dbClient.gcAuthoritativeTombstones(scope);
+      expect(gcRes.safeGcFloor).toBe('100');
+      expect(gcRes.deletedCount).toBe(1);
+      expect(gcRes.retainedCount).toBe(0);
+      expect(
+        await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-gc-80'),
+      ).toBeNull();
     });
   });
 

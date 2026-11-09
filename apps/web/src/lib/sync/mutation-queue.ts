@@ -16,6 +16,7 @@ import {
   isValidRevisionString,
   RecordTransientFailureOptions,
   TransientFailureResult,
+  RETRYABLE_QUARANTINE_REJECTION_STATUSES,
 } from '../storage/indexed-db-client';
 
 export class ScopeTransitioningError extends Error {
@@ -518,6 +519,26 @@ export class MutationQueue {
    * Filters out mutations currently in-flight or waiting in backoff (persisted in DB).
    * Returns a PreparedPushBatch with immutable snapshot of ownerScope and scopeGeneration.
    *
+   * P1-D Atomic Convergence:
+   * - Never relies on an earlier TX's `minActiveRevision` snapshot (`watermarkSweep`) or unlocked
+   *   `getPendingMutations` results for final batch admission.
+   * - Re-verifies live `pending_mutations` against the LATEST `sync_meta.minActiveRevision` inside ONE
+   *   atomic IndexedDB readwrite transaction (`selectEligiblePendingBatchAtomic`), moving any stale
+   *   mutations (< latest `minActiveRevision`) to `quarantined_mutations` with full payload preservation.
+   *
+   * Pre-Dispatch Guard Specification for Future Step 5.2d (Network Dispatcher Not Implemented Yet):
+   * - Note: No HTTP sender / network transport dispatcher exists in Step 5.2c; network dispatch is
+   *   NOT protected by this method alone after `PreparedPushBatch` is returned.
+   * - Before Step 5.2d dispatches `POST /api/v1/sync/mutations/batch`, the network dispatcher MUST:
+   *   1. Re-verify active Web Locks Tab Leader lease (`leaderSignal`) and `IdentityStateProvider`
+   *      `(batch.ownerScope, batch.scopeGeneration)` authority; if revoked, abort dispatch and
+   *      call `releaseInFlight(batch)` without deleting offline pending data.
+   *   2. Run an atomic pre-dispatch IDB revalidation against the latest `sync_meta.minActiveRevision`
+   *      and live `pending_mutations`, atomically quarantining any item whose `baseServerRevision < latestMinActiveRevision`
+   *      (preserving user payload) and excluding non-pending items rather than dispatching stale wire payloads.
+   *   3. Hold the Tab Leader lock across dispatch -> receipt ingest and rely on Core API `BASE_REVISION_EXPIRED`
+   *      (`REJECTED_STALE`) on receipt for any watermark advance occurring after the HTTP request leaves the browser.
+   *
    * Crucial Invariant: Strictly preserves mutationId, payload, and baseServerRevision.
    */
   async preparePushBatch(options?: {
@@ -545,12 +566,15 @@ export class MutationQueue {
       return emptyBatch;
     }
 
-    const activeInFlightIds = new Set<string>();
-    for (const [mId, owner] of this.inFlightMap.entries()) {
-      if (owner.ownerScope === currentScope && owner.scopeGeneration === currentGeneration) {
-        activeInFlightIds.add(mId);
+    const collectActiveInFlightIds = (): Set<string> => {
+      const ids = new Set<string>();
+      for (const [mId, owner] of this.inFlightMap.entries()) {
+        if (owner.ownerScope === currentScope && owner.scopeGeneration === currentGeneration) {
+          ids.add(mId);
+        }
       }
-    }
+      return ids;
+    };
 
     const emitQuarantinedEvents = (quarantinedList: LocalQuarantinedMutation[]) => {
       if (
@@ -576,18 +600,20 @@ export class MutationQueue {
       Boolean(options?.leaderSignal?.aborted) ||
       (err instanceof Error && err.message === 'Leader signal aborted during preparePushBatch.');
 
+    const checkPrepAdmission = () => {
+      this.assertAuthorityAtBoundary(currentScope, currentGeneration);
+      if (options?.leaderSignal?.aborted) {
+        throw new Error('Leader signal aborted during preparePushBatch.');
+      }
+    };
+
     let watermarkSweep;
     try {
       watermarkSweep = await this.dbClient.quarantineStalePendingMutationsByWatermark(
         currentScope,
         {
-          excludeMutationIds: activeInFlightIds,
-          checkAdmission: () => {
-            this.assertAuthorityAtBoundary(currentScope, currentGeneration);
-            if (options?.leaderSignal?.aborted) {
-              throw new Error('Leader signal aborted during preparePushBatch.');
-            }
-          },
+          excludeMutationIds: collectActiveInFlightIds(),
+          checkAdmission: checkPrepAdmission,
         }
       );
     } catch (err) {
@@ -614,7 +640,8 @@ export class MutationQueue {
       return emptyBatch;
     }
 
-    const pending = await this.dbClient.getPendingMutations(currentScope, limit * 2);
+    // Preserve pre-selection snapshot read boundary (supports P0-06/race await hooks)
+    await this.dbClient.getPendingMutations(currentScope, limit * 2);
 
     // Asynchronous boundary check: ensure scope, generation, and authority haven't changed during getPendingMutations
     try {
@@ -627,67 +654,45 @@ export class MutationQueue {
       return emptyBatch;
     }
 
-    const minActiveRev = BigInt(watermarkSweep.minActiveRevision);
-    const candidates: LocalPendingMutation[] = [];
-    let lateStaleDetected = false;
-
-    for (const item of pending) {
-      if (this.inFlightMap.has(item.mutationId)) {
-        continue;
-      }
-      // Persistent Backoff Invariant: item.nextRetryAt stored in IndexedDB
-      if (item.nextRetryAt && item.nextRetryAt > now) {
-        continue;
-      }
-      if (minActiveRev > 0n) {
-        if (!isValidRevisionString(item.baseServerRevision)) {
-          throw new InvalidDeltaPayloadError(
-            `Invalid baseServerRevision "${item.baseServerRevision}" on pending mutation "${item.mutationId}".`
-          );
-        }
-        if (BigInt(item.baseServerRevision) < minActiveRev) {
-          lateStaleDetected = true;
-          continue;
-        }
-      }
-      candidates.push(item);
-    }
-
-    if (lateStaleDetected) {
-      try {
-        const followUpSweep = await this.dbClient.quarantineStalePendingMutationsByWatermark(
-          currentScope,
-          {
-            excludeMutationIds: activeInFlightIds,
-            checkAdmission: () => {
-              this.assertAuthorityAtBoundary(currentScope, currentGeneration);
-              if (options?.leaderSignal?.aborted) {
-                throw new Error('Leader signal aborted during preparePushBatch.');
-              }
-            },
-          }
-        );
-        emitQuarantinedEvents(followUpSweep.quarantinedMutations);
-        this.assertAuthorityAtBoundary(currentScope, currentGeneration);
-      } catch (err) {
-        if (
-          isLeaderAbortedError(err) ||
-          err instanceof ScopeTransitioningError ||
-          err instanceof ScopeMismatchError ||
-          err instanceof StaleBatchRejectedError
-        ) {
-          return emptyBatch;
-        }
-        throw err;
-      }
-      if (options?.leaderSignal?.aborted) {
+    // Atomic Re-verification & Selection against LATEST sync_meta.minActiveRevision in ONE readwrite tx (P1-D)
+    let atomicSelection;
+    try {
+      atomicSelection = await this.dbClient.selectEligiblePendingBatchAtomic(currentScope, {
+        limit,
+        now,
+        excludeMutationIds: collectActiveInFlightIds(),
+        checkAdmission: checkPrepAdmission,
+      });
+    } catch (err) {
+      if (
+        isLeaderAbortedError(err) ||
+        err instanceof ScopeTransitioningError ||
+        err instanceof ScopeMismatchError ||
+        err instanceof StaleBatchRejectedError
+      ) {
         return emptyBatch;
       }
+      throw err;
+    }
+
+    emitQuarantinedEvents(atomicSelection.quarantinedMutations);
+
+    try {
+      this.assertAuthorityAtBoundary(currentScope, currentGeneration);
+    } catch {
+      return emptyBatch;
+    }
+
+    if (options?.leaderSignal?.aborted) {
+      return emptyBatch;
     }
 
     const selected: LocalPendingMutation[] = [];
 
-    for (const item of candidates) {
+    for (const item of atomicSelection.selectedMutations) {
+      if (this.inFlightMap.has(item.mutationId)) {
+        continue;
+      }
       if (selected.length >= limit) {
         break;
       }
@@ -1320,11 +1325,14 @@ export class MutationQueue {
    * Strictly preserves exact mutationId, payload, and baseServerRevision.
    * Resets retryCount to 0 and clears nextRetryAt.
    *
-   * Invariant Enforcement (P0-05 Remediation):
-   * - Prohibits requeue of REJECTED_TOMBSTONE mutations.
-   * - Prohibits requeue of REJECTED_STALE or HTTP_410 mutations without approved causal proof.
+   * Invariant Enforcement:
+   * - P1-A / P1-C: DISCARDED and APPROVED triageStatus are strictly terminal (cannot requeue old mutationId,
+   *   even if triageProof.triageApproved=true). Non-PENDING triageStatus fails closed.
+   * - P0-05 / P1-C: Prohibits REJECTED_TOMBSTONE, REJECTED_STALE, HTTP_410_GONE, and non-retryable rejections;
+   *   only PENDING + EXCEEDED_MAX_RETRIES / MANUAL may be requeued.
+   * - Guards are re-verified inside IndexedDbClient.requeueQuarantinedMutation's readwrite transaction.
    */
-  async requeue(mutationId: string, triageProof?: CausalTriageProof): Promise<void> {
+  async requeue(mutationId: string, _triageProof?: CausalTriageProof): Promise<void> {
     const currentScope = this.ownerScope;
     const currentGen = this.scopeGeneration;
     this.assertAuthorityAtBoundary(currentScope, currentGen);
@@ -1339,6 +1347,18 @@ export class MutationQueue {
     if (quarantined.triageStatus === 'DISCARDED') {
       throw new RequeueProhibitedError(
         `Cannot requeue mutation "${mutationId}": mutation triageStatus is DISCARDED (terminal user decision).`
+      );
+    }
+
+    if (quarantined.triageStatus === 'APPROVED') {
+      throw new RequeueProhibitedError(
+        `Cannot requeue mutation "${mutationId}": mutation triageStatus is APPROVED (terminal; Step 6 triage requires creating a brand-new replacement mutationId).`
+      );
+    }
+
+    if (quarantined.triageStatus !== 'PENDING') {
+      throw new RequeueProhibitedError(
+        `Cannot requeue mutation "${mutationId}": non-PENDING triageStatus "${String(quarantined.triageStatus)}" is not requeueable.`
       );
     }
 
@@ -1357,6 +1377,21 @@ export class MutationQueue {
       );
     }
 
+    if (
+      !quarantined.rejectionStatus ||
+      !RETRYABLE_QUARANTINE_REJECTION_STATUSES.has(quarantined.rejectionStatus)
+    ) {
+      throw new RequeueProhibitedError(
+        `Cannot requeue mutation "${mutationId}": rejectionStatus "${String(quarantined.rejectionStatus)}" is non-retryable. Only retryable rejections (EXCEEDED_MAX_RETRIES, MANUAL) under PENDING triageStatus may be requeued.`
+      );
+    }
+
+    if (!isValidRevisionString(quarantined.baseServerRevision)) {
+      throw new InvalidDeltaPayloadError(
+        `Invalid baseServerRevision on quarantined mutation "${mutationId}": "${quarantined.baseServerRevision}".`
+      );
+    }
+
     const syncMeta = await this.dbClient.getSyncMeta(currentScope);
     this.assertAuthorityAtBoundary(currentScope, currentGen);
 
@@ -1367,22 +1402,15 @@ export class MutationQueue {
         );
       }
       const minActiveRev = BigInt(syncMeta.minActiveRevision);
-      if (minActiveRev > 0n) {
-        if (!isValidRevisionString(quarantined.baseServerRevision)) {
-          throw new InvalidDeltaPayloadError(
-            `Invalid baseServerRevision on quarantined mutation "${mutationId}": "${quarantined.baseServerRevision}".`
-          );
-        }
-        if (BigInt(quarantined.baseServerRevision) < minActiveRev) {
-          throw new RequeueProhibitedError(
-            `Cannot requeue mutation "${mutationId}": baseServerRevision "${quarantined.baseServerRevision}" is older than minActiveRevision "${syncMeta.minActiveRevision}".`
-          );
-        }
+      if (minActiveRev > 0n && BigInt(quarantined.baseServerRevision) < minActiveRev) {
+        throw new RequeueProhibitedError(
+          `Cannot requeue mutation "${mutationId}": baseServerRevision "${quarantined.baseServerRevision}" is older than minActiveRevision "${syncMeta.minActiveRevision}".`
+        );
       }
     }
 
     try {
-      await this.dbClient.requeueQuarantinedMutation(currentScope, mutationId, triageProof, {
+      await this.dbClient.requeueQuarantinedMutation(currentScope, mutationId, _triageProof, {
         checkAdmission: () => {
           this.assertAuthorityAtBoundary(currentScope, currentGen);
         },

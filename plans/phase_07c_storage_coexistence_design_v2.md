@@ -2,7 +2,7 @@
 ## Đề Xuất Hoàn Thiện Tầng Lưu Trữ Client-Side Web Sync (`apps/web` — Phase 5.2)
 
 > **Tài liệu:** Thiết kế Kiến trúc Đồng Bộ Lưu Trữ Cục Bộ (Storage Coexistence RFC — Revision 2.2)  
-> **Trạng thái:** `Đã Hoàn Thiện Hợp Đồng & Phê Duyệt Bước 5.2a (APPROVED FOR 5.2a IMPLEMENTATION)`  
+> **Trạng thái:** `Step 5.2a & Step 5.2b FROZEN CLEAN (Hosted CI #42053644100) — Step 5.2c IMPLEMENTED LOCALLY / PENDING GATE REVIEW`  
 > **Cơ sở pháp lý:** Phán quyết Conditional Approval từ Gate Review Storage Coexistence Revision 2.1 (Commit `f6a7349`).  
 > **Mục tiêu:** Khóa toàn diện các bất biến kỹ thuật: Baseline Lifecycle (mặc định `UNINITIALIZED`), Epoch Governance (`effectiveHistoryEpochs: Record<string, number>`), Post-Receipt Reconciliation & In-Flight Grace, Snapshot Baseline Metadata, và Triển khai Bước 5.2a (IndexedDB v4 Migration).
 
@@ -193,7 +193,7 @@ Tạo file kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-v4-migrati
 
 ## 9. Đặc Tả & Ma Trận Kiểm Thử Bước 5.2b (Authoritative Shadow DAL, OCC Delta Ingestion & Remediation)
 
-File kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-authoritative-delta.spec.ts` (**33/33 tests PASS**):
+File kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-authoritative-delta.spec.ts` (**41/41 tests PASS** — CLOSED / FROZEN CLEAN tại commit `4a78f9c`, Hosted CI `#42053644100`):
 
 | Mã Test | Tên Kịch Bản Kiểm Thử | Yêu Cầu Xác Minh | Kết Quả |
 | :--- | :--- | :--- | :--- |
@@ -235,14 +235,40 @@ File kiểm thử chuyên biệt: `apps/web/src/test/indexed-db-authoritative-de
 | **P1-01E** | Monotonic Epoch Progression Acceptance | Chấp thuận các epoch tăng dần liên tục và ghi nhận atomically vào `effectiveHistoryEpochs`. | **PASS** (2ms) |
 | **P1-02A** | Concurrent OCC Race Conflict & Full Shadow Verification | 2 transaction đồng quy cùng `expectedCheckpoint`: đúng 1 thành công, transaction thứ hai fail `CheckpointConflictError`, kiểm chứng đầy đủ shadow record người thắng tồn tại và người thua không tồn tại. | **PASS** (3ms) |
 | **P1-02B** | Two Independent IndexedDbClient Instances Race | Hai instance `IndexedDbClient` hoàn toàn độc lập truy cập cùng database: đúng 1 transaction thắng, 1 transaction dính OCC conflict, zero dirty shadow từ loser. | **PASS** (3ms) |
-| **P1-02C** | Delayed-Commit Interleaving with Deterministic Coordination | Điều phối barrier xác định: transaction B khởi tạo dựa trên checkpoint cũ trong khi transaction A đang in-flight trước khi commit; transaction B bị chặn đứng bởi `CheckpointConflictError` và rollback sạch sẽ. | **PASS** (2ms) |
+| **P1-02C** | Delayed-Commit Interleaving with Deterministic Coordination | Điều phối barrier xác định: client B khởi tạo yêu cầu với `expectedCheckpoint` cũ (`'50'`) trong lúc transaction A đang in-flight trước khi commit (không chứng minh B đã thực sự đọc metadata từ IndexedDB trước khi A commit); transaction B bị chặn đứng bởi `CheckpointConflictError` và rollback sạch sẽ. | **PASS HOSTED** |
 | **P1-02D** | Multi-Scope Concurrent Isolation | Ingestion đồng thời trên 2 scope khác nhau thành công 100% không ảnh hưởng checkpoint hoặc shadow của nhau. | **PASS** (3ms) |
 | **P1-02E** | Concurrent Read Consistency | Đọc shadow trong và sau transaction thất bại luôn trả về dữ liệu committed sạch, không bao giờ đọc dirty state. | **PASS** (2ms) |
 
 ---
 
-## 10. Kết Luận
+## 10. Đặc Tả & Ma Trận Kiểm Thử Bước 5.2c (Causal Projection Engine & Hydration — PENDING GATE REVIEW)
+
+Thành phần triển khai tại `apps/web/src/lib/sync/`:
+- [`causal-projection-engine.ts`](file:///e:/Workspace2/Doctruyen_project/apps/web/src/lib/sync/causal-projection-engine.ts): Hàm thuần túy `resolveCausalProjection(AuthoritativeShadow, PendingMutations, OptionalGrace)` bất biến theo hoán vị mảng và độc lập với RAM event / lịch sử tab; chuẩn hóa key via `getCanonicalEntityKey` (`UUID_SENTINEL` / `'all'` / `${storyId}:${chapterId}`), tính `getEffectiveHistoryEpoch`, bảo vệ kép tombstone/epoch (Revision 2.2 P0-03, P0-05) và cửa sổ `GraceProjectionEntry` có giới hạn TTL / catch-up retirement (P0-04).
+- [`projection-hydrator.ts`](file:///e:/Workspace2/Doctruyen_project/apps/web/src/lib/sync/projection-hydrator.ts): `SyncProjectionHydrator` & `hydrateProjectionFromIndexedDb` đọc nhất quán 7 stores (`sync_meta`, `sync_authoritative_replicas`, `pending_mutations`, `bookmarks`, `progress`, `history`, `preferences`) trong 1 IndexedDB transaction duy nhất; fail-closed vào `DEGRADED_COMPATIBILITY` khi `authoritativeBaselineStatus !== 'READY'`; cung cấp `materializeToLegacyStores` trong 1 `readwrite` transaction bảo toàn active pending local writes (`ST-15`).
+
+File kiểm thử chuyên biệt: `apps/web/src/test/causal-projection-engine.spec.ts` (**19/19 tests PASS — PENDING GATE REVIEW**):
+
+| Mã / Nhóm Test | Kịch Bản Kiểm Thử | Yêu Cầu Xác Minh | Kết Quả |
+| :--- | :--- | :--- | :--- |
+| **Pure Helpers (3 tests)** | Canonical Keys, Effective Epoch, Permutation Invariance | Chuẩn hóa key đa dạng (`storyId`, `chapterId`, `'all'`, UUID sentinel), `max(storyEpoch, globalEpoch)`, hoán vị ngược mảng shadows & pending cho kết quả giống hệt 100%. | **PASS LOCAL** |
+| **Progress Intent & Catalog (2 tests)** | Cross-Chapter / `forceRewind` & `needsHydration` | Hỗ trợ chuyển chương / `forceRewind` theo ý đồ mới nhất của user; giữ `max(%)` cùng chương nếu không `forceRewind`; gắn cờ `needsHydration` và hợp nhất catalog metadata. | **PASS LOCAL** |
+| **Dual-Layer Tombstones (3 tests)** | Epoch Suppression, `P0-05` BaseRev Guard & Bookmark/Delete | Lọc `epoch < effective`, giữ lại `4 === 4`; chặn pending thiếu epoch có `baseServerRevision < tombstoneRevision`; chặn bookmark tombstone resurrection & thực thi chronological HISTORY DELETE. | **PASS LOCAL** |
+| **Grace & Degraded Mode (2 tests)** | Bounded Grace (P0-04) & `DEGRADED_COMPATIBILITY` Fail-Closed | Giữ trạng thái `GRACE` sau receipt `APPLIED` cho tới khi `syncedServerRevision >= assignedRevision` hoặc hết TTL `5000ms`; tự hạ cấp về legacy stores và bỏ qua unverified shadow khi `UNINITIALIZED` / `BOOTSTRAPPING` / missing `sync_meta`. | **PASS LOCAL** |
+| **ST-02** | Authoritative Payload Preservation | Evict pending chap 5 sau reject khôi phục hiển thị Shadow chap 3 mà không cần gọi mạng. | **PASS LOCAL** |
+| **ST-03** | Step 4 Shadow Isolation Guard | `recordReadingSessionWithMutation` không chạm `sync_authoritative_replicas` trong khi projection phản ánh ngay pending write mới. | **PASS LOCAL** |
+| **ST-04** | Monotonic History Upsert Merge | Shadow 80% + pending 30% giữ nguyên 80% cả trước và sau khi xóa pending. | **PASS LOCAL** |
+| **ST-06** | Multi-Scope Tenant Isolation | Cùng `storyId` trên `account-1`, `account-2`, `guest-1` hoàn toàn cách ly cả dữ liệu, epoch lẫn mode projection. | **PASS LOCAL** |
+| **ST-12** | Entity Key Mismatch Mapping | HISTORY mutation gửi `entityId = chapterId` hoặc `storyId` tự chuẩn hóa khớp vào shadow `${storyId}:${chapterId}`. | **PASS LOCAL** |
+| **ST-13** | Post-Reload Determinism | Đóng `IndexedDbClient`, mở client & hydrator mới (không có RAM events / tab grace) cho kết quả hydrate khớp 100% và lặp lại bất biến. | **PASS LOCAL** |
+| **ST-15** | Concurrent Local Write vs Materialization | Giao dịch đồng thời `recordReadingSessionWithMutation` & `putPreferenceWithMutation` trong lúc materialize: 100% bảo toàn dữ liệu local pending và dọn sạch bản ghi stale/deleted. | **PASS LOCAL** |
+| **5.2b + Reload & SSR (2 tests)** | Step 5.2b `applyAuthoritativeDeltaPage` + Reload & SSR Guard | Tích hợp delta `HISTORY DELETE` (tăng epoch) -> reload -> chặn stale pending epoch 0, chấp thuận read mới epoch 1, dọn pending DELETE; ném `IndexedDbUnavailableError` khi thiếu `window`/IndexedDB. | **PASS LOCAL** |
+
+---
+
+## 11. Kết Luận
 
 Tài liệu **Storage Coexistence Revision 2.2** đã được hiện thực hóa qua các giai đoạn:
-1. **Bước 5.2a (IndexedDB v4 Migration & Baseline Lifecycle Remediation):** Nghiệm thu chính thức tại commit `a1c6f4e` với 20/20 regression tests PASS và Hosted CI Run #41485048616 7/7 jobs PASS (`FROZEN CLEAN`).
-2. **Bước 5.2b (Authoritative Shadow DAL & OCC Delta Ingestion Final Remediation):** Khắc phục triệt để 5 nhóm vấn đề kỹ thuật (P0-01 Mandatory OCC Checkpoint, P0-02 Delta Page Consistency, P0-03 Pagination Cursor Integrity, P1-01 HISTORY Epoch Monotonicity, P1-02 Complete Concurrent Evidence & Independent Client Race), đạt **41/41 regression tests PASS** (`indexed-db-authoritative-delta.spec.ts`), 56/56 suites (**827/827 tests**) toàn web PASS, TypeScript 0 lỗi, Next.js 16 build Turbopack SUCCESS. Giải quyết dứt điểm Security Gate AI Worker Trivy Findings qua quy trình Governed Lifecycle Exception Policy SEC-REG-6.4.4A (`12/12 test scenarios PASS`). Giữ nguyên 100% mã nguồn Step 4 (`mutation-queue.ts`). Sẵn sàng cho Final Gate Review đóng băng Step 5.2b.
+1. **Bước 5.2a (IndexedDB v4 Migration & Baseline Lifecycle Remediation):** Nghiệm thu chính thức (`APPROVED — FROZEN CLEAN`) tại commit `a1c6f4e` với 20/20 regression tests PASS và Hosted CI Run `#41485048616` (`7/7 PASS`).
+2. **Bước 5.2b (Authoritative Shadow DAL & OCC Delta Ingestion Final Remediation):** Nghiệm thu chính thức (`APPROVED — CLOSED / FROZEN CLEAN`) tại baseline `4a78f9c`, Hosted CI Run `#42053644100` (`7/7 jobs PASS`), **41/41 tests PASS** (`indexed-db-authoritative-delta.spec.ts`), **827/827 Web Vitest PASS**, TypeScript 0 lỗi, Next.js 16 build Turbopack SUCCESS. Security Gate sử dụng `exit-code: 1` + validator `12/12 PASS` kết hợp **55 CVE IDs** trong `deploy/security/trivy/ai-worker.trivyignore` theo chính sách chấp nhận rủi ro có thời hạn `SEC-REG-6.4.4A` (hạn rà soát **2026-12-01** — không phải đã loại bỏ lỗ hổng upstream); VPS job là Docker Compose topology validation vì chưa cấu hình `VPS_SSH_HOST`/`VPS_SSH_KEY`. Giữ nguyên 100% `mutation-queue.ts`.
+3. **Bước 5.2c (Pure Deterministic Causal Projection Engine & Hydration — IMPLEMENTED LOCALLY / PENDING GATE REVIEW):** Đã triển khai `causal-projection-engine.ts`, `projection-hydrator.ts`, và `causal-projection-engine.spec.ts` (**19/19 tests PASS**, toàn bộ Web Vitest 57/57 suites / 846/846 tests PASS), tuân thủ tuyệt đối phạm vi cô lập (0 sửa đổi `mutation-queue.ts` và Step 5.2b `indexed-db-client.ts`, chưa tự cấp `READY`, chưa tích hợp Step 5.2d hoặc Step 6). Đang trình Gate Review Step 5.2c.

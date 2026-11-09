@@ -146,16 +146,21 @@ void main() {
       // Đóng DB v2
       await v2Db.close();
 
-      // 3. Mở lại thông qua OfflineDatabase (kích hoạt upgrade lên v3)
+      // 3. Mở lại thông qua OfflineDatabase (kích hoạt upgrade lên schema mới nhất)
       final offlineDb = OfflineDatabase();
       final migratedDb = await offlineDb.initialize(
         customPath: dbPath,
         databaseFactory: databaseFactoryFfi,
       );
 
-      // 4. Kiểm tra Database Version
+      // 4. Kiểm tra Database Version (additive progression lên phiên bản hiện hành v5)
       final currentVersion = await migratedDb.getVersion();
-      expect(currentVersion, 4, reason: 'Database version must be upgraded to 4');
+      expect(
+        currentVersion,
+        OfflineDatabase.databaseVersion,
+        reason:
+            'Database version must be upgraded to ${OfflineDatabase.databaseVersion} (additive v5 progression)',
+      );
 
       // 5. Invariant 1: Toàn bộ dữ liệu v2 còn nguyên vẹn 100%
       final chapters = await migratedDb.query('offline_chapters');

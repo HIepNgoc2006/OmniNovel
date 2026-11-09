@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 import 'package:dio/dio.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -34,6 +35,7 @@ class GuestClaimCoordinator extends ChangeNotifier {
   final OfflineDatabase _offlineDb;
   final AuthService _authService;
   final SharedPreferences _prefs;
+  static const Duration _defaultBusyRetryTimeout = Duration(milliseconds: 5000);
 
   bool _isOpen = false;
   bool _isPreparing = false;
@@ -94,6 +96,50 @@ class GuestClaimCoordinator extends ChangeNotifier {
 
   int _prepareRequestId = 0;
   int? _activeOperationId;
+
+  static bool _isSqliteBusyException(DatabaseException error) {
+    final code = error.getResultCode();
+    if (code != null) {
+      return (code & 0xFF) == 5;
+    }
+    final normalized = error.toString().toLowerCase();
+    if (normalized.contains('database table is locked')) {
+      return false;
+    }
+    return normalized.contains('database is locked') ||
+        normalized.contains('sqlite_busy');
+  }
+
+  Future<T> _runSqliteWriteTransaction<T>(
+    Future<T> Function(Transaction txn) action,
+  ) async {
+    final stopwatch = Stopwatch()..start();
+    var attempt = 0;
+
+    while (true) {
+      var enteredAction = false;
+      try {
+        return await _offlineDb.database.transaction<T>((txn) async {
+          enteredAction = true;
+          return await action(txn);
+        });
+      } on DatabaseException catch (e) {
+        if (enteredAction || !_isSqliteBusyException(e)) {
+          rethrow;
+        }
+        final remaining = _defaultBusyRetryTimeout - stopwatch.elapsed;
+        if (remaining <= Duration.zero) {
+          rethrow;
+        }
+        attempt++;
+        final baseMs = math.min(50, 10 * (1 << math.min(attempt - 1, 3)));
+        final delayMs = math.min(baseMs, remaining.inMilliseconds);
+        await Future<void>.delayed(
+          Duration(milliseconds: delayMs > 0 ? delayMs : 1),
+        );
+      }
+    }
+  }
 
   /// Đặt lại toàn bộ phiên claim khi đăng xuất hoặc hủy phiên (P0-2)
   void resetSession() {
@@ -174,7 +220,55 @@ class GuestClaimCoordinator extends ChangeNotifier {
     }
 
     try {
-      final guestProfileId = await _guestProvider.getOrCreateGuestProfileId();
+      await _guestProvider.migrateLegacyQuarantinesToSqlite();
+
+      // Pre-HTTP Lifecycle Eligibility Guard (SQLite v6 SSoT):
+      // Tuyệt đối không gọi POST /prepare nếu guestProfileId đã mang terminal PURGED tombstone
+      // hoặc đã bị QUARANTINED; giải phóng transition sang Account để không kẹt luồng đăng nhập.
+      final peekedGuestId = await _guestProvider.peekGuestProfileId();
+      if (peekedGuestId != null && peekedGuestId.isNotEmpty) {
+        if (await _guestProvider.isGuestScopePurged(peekedGuestId)) {
+          _isPreparing = false;
+          _isOpen = false;
+          _isPendingUnavailable = false;
+          _error =
+              'GUEST_ALREADY_PURGED: Guest "$peekedGuestId" has been purged and cannot be claimed.';
+          notifyListeners();
+          if (isSessionValid(
+            expectedGeneration: capturedGen,
+            expectedUserId: capturedUserId,
+            expectedOperationId: opId,
+          )) {
+            await _scopeBridge.resolveToAccount(
+              userId,
+              expectedGeneration: capturedGen,
+            );
+          }
+          return;
+        }
+        if (await _guestProvider.isGuestScopeQuarantined(peekedGuestId)) {
+          _isPreparing = false;
+          _isOpen = false;
+          _isPendingUnavailable = false;
+          _error =
+              'GUEST_QUARANTINED: Guest "$peekedGuestId" is quarantined and cannot be auto-claimed.';
+          notifyListeners();
+          if (isSessionValid(
+            expectedGeneration: capturedGen,
+            expectedUserId: capturedUserId,
+            expectedOperationId: opId,
+          )) {
+            await _scopeBridge.resolveToAccount(
+              userId,
+              expectedGeneration: capturedGen,
+            );
+          }
+          return;
+        }
+      }
+
+      final guestProfileId =
+          peekedGuestId ?? await _guestProvider.getOrCreateGuestProfileId();
       final guestScope = 'guest:$guestProfileId';
 
       final hasData = await _dao.hasGuestData(guestScope);
@@ -196,7 +290,7 @@ class GuestClaimCoordinator extends ChangeNotifier {
         return;
       }
 
-      // Khách có dữ liệu -> Dispatch POST /prepare
+      // Khách có dữ liệu -> Dispatch POST /prepare (KHÔNG giữ SQLite lock qua HTTP!)
       final response = await _apiClient.post<Map<String, dynamic>>(
         ApiEndpoints.guestClaimPrepare,
         data: {'guestProfileId': guestProfileId},
@@ -219,24 +313,109 @@ class GuestClaimCoordinator extends ChangeNotifier {
         return;
       }
 
+      // Post-HTTP Eligibility Recheck & Atomic Journal Write (KHÔNG giữ SQLite lock trong HTTP):
+      // Kiểm tra lại bên trong SQLite transaction trước khi ghi journal `prepared` để chặn
+      // mọi `PURGED` hoặc `QUARANTINED` xảy ra xen kẽ trong lúc chờ HTTP POST /prepare.
+      final outcome = await _runSqliteWriteTransaction<_PrepareJournalOutcome>(
+        (txn) async {
+          if (!isSessionValid(
+            expectedGeneration: capturedGen,
+            expectedUserId: capturedUserId,
+            expectedOperationId: opId,
+          )) {
+            return _PrepareJournalOutcome.sessionInvalid;
+          }
 
-      // Invariant: Lập tức ghi PendingGuestClaim(phase: prepared) vào SQLite journal TRƯỚC KHI mở modal
-      final now = DateTime.now().millisecondsSinceEpoch;
-      await _offlineDb.database.insert(
-        'guest_claim_recovery_journal',
-        {
-          'claim_id': preview.claimId,
-          'user_id': userId,
-          'guest_profile_id': guestProfileId,
-          'expected_state_fingerprint': preview.stateFingerprint,
-          'conflict_decisions': '{}',
-          'phase': 'prepared',
-          'preview_data': jsonEncode(preview.toJson()),
-          'created_at': now,
-          'updated_at': now,
+          final concurrentJournal = await txn.query(
+            'guest_claim_recovery_journal',
+            columns: const <String>['claim_id'],
+            where: 'user_id = ?',
+            whereArgs: <Object?>[userId],
+            limit: 1,
+          );
+          if (concurrentJournal.isNotEmpty) {
+            return _PrepareJournalOutcome.alreadyExists;
+          }
+
+          if (await _guestProvider.isGuestScopePurged(
+            guestProfileId,
+            txn: txn,
+          )) {
+            return _PrepareJournalOutcome.rejectedPurged;
+          }
+
+          if (await _guestProvider.isGuestScopeQuarantined(
+            guestProfileId,
+            txn: txn,
+          )) {
+            return _PrepareJournalOutcome.rejectedQuarantined;
+          }
+
+          final now = DateTime.now().millisecondsSinceEpoch;
+          await txn.insert(
+            'guest_claim_recovery_journal',
+            {
+              'claim_id': preview.claimId,
+              'user_id': userId,
+              'guest_profile_id': guestProfileId,
+              'expected_state_fingerprint': preview.stateFingerprint,
+              'conflict_decisions': '{}',
+              'phase': 'prepared',
+              'preview_data': jsonEncode(preview.toJson()),
+              'created_at': now,
+              'updated_at': now,
+            },
+            conflictAlgorithm: ConflictAlgorithm.abort,
+          );
+          return _PrepareJournalOutcome.inserted;
         },
-        conflictAlgorithm: ConflictAlgorithm.replace,
       );
+
+      if (outcome == _PrepareJournalOutcome.rejectedPurged) {
+        _isPreparing = false;
+        _isOpen = false;
+        _isPendingUnavailable = false;
+        _error =
+            'GUEST_ALREADY_PURGED: Guest "$guestProfileId" was purged during prepare and journal creation was blocked.';
+        notifyListeners();
+        if (isSessionValid(
+          expectedGeneration: capturedGen,
+          expectedUserId: capturedUserId,
+          expectedOperationId: opId,
+        )) {
+          await _scopeBridge.resolveToAccount(
+            userId,
+            expectedGeneration: capturedGen,
+          );
+        }
+        return;
+      }
+
+      if (outcome == _PrepareJournalOutcome.rejectedQuarantined) {
+        _isPreparing = false;
+        _isOpen = false;
+        _isPendingUnavailable = false;
+        _error =
+            'GUEST_QUARANTINED: Guest "$guestProfileId" was quarantined during prepare and journal creation was blocked.';
+        notifyListeners();
+        if (isSessionValid(
+          expectedGeneration: capturedGen,
+          expectedUserId: capturedUserId,
+          expectedOperationId: opId,
+        )) {
+          await _scopeBridge.resolveToAccount(
+            userId,
+            expectedGeneration: capturedGen,
+          );
+        }
+        return;
+      }
+
+      if (outcome != _PrepareJournalOutcome.inserted) {
+        _isPreparing = false;
+        notifyListeners();
+        return;
+      }
 
       _currentUserId = userId;
       _currentClaimId = preview.claimId;
@@ -276,7 +455,23 @@ class GuestClaimCoordinator extends ChangeNotifier {
     }
 
     final claimId = _currentClaimId!;
-    final guestProfileId = await _guestProvider.getOrCreateGuestProfileId();
+    String? journalGuestProfileId;
+    final journalRowsForClaim = await _offlineDb.database.query(
+      'guest_claim_recovery_journal',
+      columns: const <String>['guest_profile_id'],
+      where: 'claim_id = ? AND user_id = ?',
+      whereArgs: <Object?>[claimId, userId],
+      limit: 1,
+    );
+    if (journalRowsForClaim.isNotEmpty) {
+      journalGuestProfileId =
+          journalRowsForClaim.first['guest_profile_id'] as String?;
+    }
+    final guestProfileId = (journalGuestProfileId != null &&
+            journalGuestProfileId.isNotEmpty)
+        ? journalGuestProfileId
+        : (await _guestProvider.peekGuestProfileId() ??
+            await _guestProvider.getOrCreateGuestProfileId());
 
     _isCommitting = true;
     _error = null;
@@ -475,6 +670,15 @@ class GuestClaimCoordinator extends ChangeNotifier {
     int capturedGen,
   ) async {
     try {
+      if (await _guestProvider.isGuestScopePurged(guestProfileId)) {
+        _isCommitting = false;
+        _isOpen = false;
+        _error =
+            'GUEST_ALREADY_PURGED: Cannot re-prepare conflict claim for purged guest "$guestProfileId".';
+        notifyListeners();
+        return;
+      }
+
       final prepRes = await _apiClient.post<Map<String, dynamic>>(
         ApiEndpoints.guestClaimPrepare,
         data: {'guestProfileId': guestProfileId},
@@ -487,31 +691,50 @@ class GuestClaimCoordinator extends ChangeNotifier {
         return;
       }
 
-      final now = DateTime.now().millisecondsSinceEpoch;
-      // Xóa claim cũ bị conflict và thay thế bằng claim mới
-      if (_currentClaimId != null) {
-        await _offlineDb.database.delete(
-          'guest_claim_recovery_journal',
-          where: 'claim_id = ?',
-          whereArgs: [_currentClaimId],
-        );
-      }
+      final swapped = await _runSqliteWriteTransaction<bool>((txn) async {
+        if (await _guestProvider.isGuestScopePurged(guestProfileId, txn: txn) ||
+            await _guestProvider.isGuestScopeQuarantined(
+              guestProfileId,
+              txn: txn,
+            )) {
+          return false;
+        }
 
-      await _offlineDb.database.insert(
-        'guest_claim_recovery_journal',
-        {
-          'claim_id': newPreview.claimId,
-          'user_id': userId,
-          'guest_profile_id': guestProfileId,
-          'expected_state_fingerprint': newPreview.stateFingerprint,
-          'conflict_decisions': '{}',
-          'phase': 'prepared',
-          'preview_data': jsonEncode(newPreview.toJson()),
-          'created_at': now,
-          'updated_at': now,
-        },
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+        final now = DateTime.now().millisecondsSinceEpoch;
+        if (_currentClaimId != null) {
+          await txn.delete(
+            'guest_claim_recovery_journal',
+            where: 'claim_id = ?',
+            whereArgs: [_currentClaimId],
+          );
+        }
+
+        await txn.insert(
+          'guest_claim_recovery_journal',
+          {
+            'claim_id': newPreview.claimId,
+            'user_id': userId,
+            'guest_profile_id': guestProfileId,
+            'expected_state_fingerprint': newPreview.stateFingerprint,
+            'conflict_decisions': '{}',
+            'phase': 'prepared',
+            'preview_data': jsonEncode(newPreview.toJson()),
+            'created_at': now,
+            'updated_at': now,
+          },
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        return true;
+      });
+
+      if (!swapped) {
+        _isCommitting = false;
+        _isOpen = false;
+        _error =
+            'GUEST_ALREADY_PURGED: Guest "$guestProfileId" became ineligible during 409 re-prepare.';
+        notifyListeners();
+        return;
+      }
 
       _currentClaimId = newPreview.claimId;
       _previewData = newPreview;
@@ -528,27 +751,23 @@ class GuestClaimCoordinator extends ChangeNotifier {
 
   // ==================== SKIP CLAIM ====================
 
-  /// Người dùng chủ động bỏ qua claim: Cách ly partition khách, xóa journal và mở account.
-  Future<void> skipClaim(String userId) async {
+  /// Người dùng chủ động bỏ qua claim: Cách ly partition khách trong SQLite v6 SSoT
+  /// (`guest_quarantined_scopes`), xóa journal và mở account trong **1 SQLite transaction nguyên tử**.
+  ///
+  /// - Kiểm tra terminal `PURGED` tombstone bên trong transaction trước khi insert quarantine
+  ///   (`purge-before-quarantine` => rollback + ném [GuestLifecycleStateError]).
+  /// - Bảo vệ crash-safe: rollback hoàn toàn nếu lỗi xảy ra trước `COMMIT`
+  ///   (ví dụ crash giữa INSERT quarantine và DELETE journal).
+  Future<void> skipClaim(
+    String userId, {
+    @visibleForTesting Future<void> Function(Transaction txn)?
+        onAfterQuarantineBeforeJournalDeleteHook,
+    @visibleForTesting Future<void> Function(Transaction txn)?
+        onBeforeCommitHook,
+  }) async {
     // Guard 1: Đang trong quá trình commit -> tuyệt đối không cho skip
     if (_isCommitting) {
       throw StateError('Cannot skip claim once commit has started');
-    }
-
-    // Guard 2: Kiểm tra journal trong SQLite, nếu đã ở 'committing' hoặc 'committedServer' -> cấm skip
-    if (_currentClaimId != null) {
-      final journalRows = await _offlineDb.database.query(
-        'guest_claim_recovery_journal',
-        where: 'claim_id = ?',
-        whereArgs: [_currentClaimId],
-        limit: 1,
-      );
-      if (journalRows.isNotEmpty) {
-        final phase = journalRows.first['phase'] as String?;
-        if (phase == 'committing' || phase == 'committedServer') {
-          throw StateError('Cannot skip claim once commit has started');
-        }
-      }
     }
 
     final capturedGen = _activeGeneration ?? _scopeBridge.transitionGeneration;
@@ -557,22 +776,76 @@ class GuestClaimCoordinator extends ChangeNotifier {
       return;
     }
 
-    // 1. Lưu marker cách ly vào SharedPreferences
-    final guestProfileId = await _guestProvider.getOrCreateGuestProfileId();
-    await _guestProvider.quarantineGuestScope(guestProfileId);
+    final fallbackGuestId = await _guestProvider.peekGuestProfileId();
 
-    // 2. Xóa bản ghi recovery journal
-    if (_currentClaimId != null) {
-      await _offlineDb.database.delete(
-        'guest_claim_recovery_journal',
-        where: 'claim_id = ? AND user_id = ?',
-        whereArgs: [_currentClaimId, userId],
+    final committed = await _runSqliteWriteTransaction<bool>((txn) async {
+      // Guard 2: Kiểm tra journal trong SQLite TRONG transaction:
+      // nếu đã ở 'committing' hoặc 'committedServer' -> cấm skip
+      String? journalGuestId;
+      if (_currentClaimId != null) {
+        final journalRows = await txn.query(
+          'guest_claim_recovery_journal',
+          columns: const <String>['phase', 'guest_profile_id'],
+          where: 'claim_id = ?',
+          whereArgs: [_currentClaimId],
+          limit: 1,
+        );
+        if (journalRows.isNotEmpty) {
+          final phase = journalRows.first['phase'] as String?;
+          if (phase == 'committing' || phase == 'committedServer') {
+            throw StateError('Cannot skip claim once commit has started');
+          }
+          journalGuestId = journalRows.first['guest_profile_id'] as String?;
+        }
+      }
+
+      if (!isSessionValid(expectedGeneration: capturedGen, expectedUserId: userId)) {
+        return false;
+      }
+
+      final guestProfileId = (journalGuestId != null && journalGuestId.isNotEmpty)
+          ? journalGuestId
+          : (fallbackGuestId ??
+              await _guestProvider.getOrCreateGuestProfileId(txn: txn));
+
+      // 1. Ghi quarantine vào SQLite SSoT (kiểm tra NOT PURGED bên trong cùng txn ->
+      // nếu Guest đã bị purge trước đó, ném GuestLifecycleStateError & rollback transaction)
+      await _guestProvider.quarantineGuestScope(
+        guestProfileId,
+        txn: txn,
+        sourceUserId: userId,
+        reason: 'SKIP_CLAIM',
       );
+
+      if (onAfterQuarantineBeforeJournalDeleteHook != null) {
+        await onAfterQuarantineBeforeJournalDeleteHook(txn);
+      }
+
+      // 2. Xóa bản ghi recovery journal trong cùng SQLite transaction nguyên tử
+      if (_currentClaimId != null) {
+        await txn.delete(
+          'guest_claim_recovery_journal',
+          where: 'claim_id = ? AND user_id = ?',
+          whereArgs: [_currentClaimId, userId],
+        );
+      }
+
+      if (onBeforeCommitHook != null) {
+        await onBeforeCommitHook(txn);
+      }
+
+      return true;
+    });
+
+    if (!committed) {
+      _isOpen = false;
+      notifyListeners();
+      return;
     }
 
     // Invariant: Partition SQLite của khách được bảo toàn 100%
 
-    // 3. Đóng dialog và mở account
+    // 3. Chỉ đóng dialog và mở account SAU KHI SQLite transaction đã commit bền vững
     _isOpen = false;
     _currentUserId = null;
     _currentClaimId = null;
@@ -697,6 +970,26 @@ class GuestClaimCoordinator extends ChangeNotifier {
         }
 
       case 'prepared':
+        // Stage 1B Lifecycle Guard: Nếu Guest đã mang terminal PURGED tombstone trong khi
+        // còn sót journal `prepared` mồ côi -> dọn journal fail-closed, KHÔNG mở modal rỗng.
+        if (await _guestProvider.isGuestScopePurged(guestProfileId)) {
+          await _runSqliteWriteTransaction<void>((txn) async {
+            if (await _guestProvider.isGuestScopePurged(
+              guestProfileId,
+              txn: txn,
+            )) {
+              await txn.delete(
+                'guest_claim_recovery_journal',
+                where: 'claim_id = ? AND user_id = ? AND phase = ?',
+                whereArgs: <Object?>[claimId, userId, 'prepared'],
+              );
+            }
+          });
+          _isOpen = false;
+          _previewData = null;
+          notifyListeners();
+          return CrashRecoveryResult.noPending;
+        }
         // Crash khi modal đang mở -> khôi phục previewData từ journal và mở lại modal
         if (previewJsonStr != null && previewJsonStr.isNotEmpty) {
           try {
@@ -713,4 +1006,12 @@ class GuestClaimCoordinator extends ChangeNotifier {
     }
     return CrashRecoveryResult.noPending;
   }
+}
+
+enum _PrepareJournalOutcome {
+  inserted,
+  alreadyExists,
+  rejectedPurged,
+  rejectedQuarantined,
+  sessionInvalid,
 }

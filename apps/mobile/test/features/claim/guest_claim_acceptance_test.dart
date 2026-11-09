@@ -90,7 +90,10 @@ void main() {
         secureStorage: mockSecureStorage,
         prefs: prefs,
       );
-      guestProvider = GuestProfileIdentityProvider(prefs: prefs);
+      guestProvider = GuestProfileIdentityProvider(
+        prefs: prefs,
+        offlineDatabase: offlineDb,
+      );
 
       dao = LocalLibraryDao(offlineDatabase: offlineDb);
 
@@ -140,10 +143,12 @@ void main() {
     // AC-02: GoRouter redirects away from /login -> BottomSheet remains visible on Root Shell
     // =========================================================================
     testWidgets('AC-02: GoRouter navigation does not dismiss GuestClaimBottomSheet on Root Shell', (tester) async {
-      final bootstrap = await AppBootstrap.run(
-        customOfflineDatabase: offlineDb,
-        customTokenStorage: mockTokenStorage,
-      );
+      final bootstrap = (await tester.runAsync(
+        () => AppBootstrap.run(
+          customOfflineDatabase: offlineDb,
+          customTokenStorage: mockTokenStorage,
+        ),
+      ))!;
 
       await tester.pumpWidget(OmniNovelApp(bootstrapResult: bootstrap));
       await tester.pump();
@@ -774,11 +779,13 @@ void main() {
     // AC-17 (P0-3): System Back when modal prepared -> PopScope(canPop: false) prevents pop
     // =========================================================================
     testWidgets('AC-17 (P0-3): System Back when modal is prepared cannot silently dismiss bottom sheet', (tester) async {
-      final bootstrap = await AppBootstrap.run(
-        customOfflineDatabase: offlineDb,
-        customTokenStorage: mockTokenStorage,
-        customApiClient: mockApiClient,
-      );
+      final bootstrap = (await tester.runAsync(
+        () => AppBootstrap.run(
+          customOfflineDatabase: offlineDb,
+          customTokenStorage: mockTokenStorage,
+          customApiClient: mockApiClient,
+        ),
+      ))!;
 
       final coordinator = bootstrap.guestClaimCoordinator;
       coordinator.currentUserId = testUserId;

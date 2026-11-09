@@ -5,7 +5,9 @@ import 'package:omninovel_mobile/core/auth/auth_state.dart';
 import 'package:omninovel_mobile/core/identity/active_scope_coordinator.dart';
 import 'package:omninovel_mobile/core/identity/guest_profile_identity_provider.dart';
 import 'package:omninovel_mobile/core/identity/installation_identity_provider.dart';
+import 'package:omninovel_mobile/core/storage/offline_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 class MockSecureStorage extends Mock implements FlutterSecureStorage {}
 
@@ -110,15 +112,29 @@ void main() {
       expect(prefs.getString('omninovel_guest_profile_id'), newId);
     });
 
-    test('quarantines old guest profile without silent destruction', () async {
+    test('quarantines old guest profile into SQLite SSoT without silent destruction or SharedPreferences shadow writes', () async {
+      sqfliteFfiInit();
+      final offlineDb = OfflineDatabase();
+      await offlineDb.initialize(
+        customPath: inMemoryDatabasePath,
+        databaseFactory: databaseFactoryFfi,
+        singleInstance: false,
+      );
+      addTearDown(offlineDb.close);
+
       final prefs = await SharedPreferences.getInstance();
-      final provider = GuestProfileIdentityProvider(prefs: prefs);
+      final provider = GuestProfileIdentityProvider(
+        prefs: prefs,
+        offlineDatabase: offlineDb,
+      );
 
       final profileToQuarantine = await provider.getOrCreateGuestProfileId();
       await provider.quarantineGuestScope(profileToQuarantine);
 
       final quarantined = await provider.listQuarantinedGuestScopes();
       expect(quarantined, contains(profileToQuarantine));
+      // Stage 1B invariant: zero new writes to legacy SharedPreferences key
+      expect(prefs.getStringList(GuestProfileIdentityProvider.keyQuarantinedProfiles), isNull);
     });
   });
 

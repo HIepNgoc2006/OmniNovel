@@ -1,11 +1,11 @@
 import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
-/// Database Manager cho hạ tầng lưu trữ ngoại tuyến của OmniNovel Mobile.
-/// Quản lý SQLite schema v1 gồm bảng `download_tasks` và `offline_chapters`.
+/// Database Manager cho hạ tầng lưu trữ ngoại tuyến và Sync Foundation của OmniNovel Mobile.
+/// Quản lý SQLite schema v1–v5 gồm các bảng offline, local library, guest claim journal và sync storage.
 class OfflineDatabase {
   static const String databaseName = 'omninovel_offline.db';
-  static const int databaseVersion = 4;
+  static const int databaseVersion = 5;
 
   Database? _db;
 
@@ -28,6 +28,7 @@ class OfflineDatabase {
   Future<Database> initialize({
     String? customPath,
     DatabaseFactory? databaseFactory,
+    bool singleInstance = true,
   }) async {
     if (isInitialized) {
       return database;
@@ -51,6 +52,7 @@ class OfflineDatabase {
           onConfigure: _onConfigure,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
+          singleInstance: singleInstance,
         ),
       );
     } else {
@@ -60,6 +62,7 @@ class OfflineDatabase {
         onConfigure: _onConfigure,
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
+        singleInstance: singleInstance,
       );
     }
 
@@ -69,12 +72,24 @@ class OfflineDatabase {
   Future<void> _onConfigure(Database db) async {
     // Kích hoạt foreign key constraints
     await db.execute('PRAGMA foreign_keys = ON;');
+    // Thiết lập busy_timeout để hỗ trợ đa kết nối SQLite tranh chấp OCC an toàn (P0-M02)
+    await db.rawQuery('PRAGMA busy_timeout = 5000;');
+    // Chỉ bật WAL cho file database trên đĩa; bỏ qua :memory:
+    final pathLower = db.path.toLowerCase();
+    if (db.path.isNotEmpty && !pathLower.contains(':memory:')) {
+      try {
+        await db.rawQuery('PRAGMA journal_mode = WAL;');
+      } catch (_) {
+        // Fallback an toàn nếu nền tảng/driver không hỗ trợ WAL
+      }
+    }
   }
 
   Future<void> _onCreate(Database db, int version) async {
     await _createV2Tables(db);
     await _createV3LocalLibraryTables(db);
     await _createV4RecoveryJournalTable(db);
+    await _createV5SyncTables(db);
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -101,6 +116,149 @@ class OfflineDatabase {
       // Chỉ tạo thêm bảng guest_claim_recovery_journal (9 cột) cho crash recovery.
       await _createV4RecoveryJournalTable(db);
     }
+    if (oldVersion < 5) {
+      // Migration v4 ➔ v5:
+      // Invariant: Toàn bộ 7 bảng cũ (v2 + v3 + v4) giữ nguyên 100% dữ liệu (additive).
+      // Tạo thêm 7 bảng nền tảng Sync Storage Foundation & Local Preferences.
+      await _createV5SyncTables(db);
+    }
+  }
+
+  Future<void> _createV5SyncTables(Database db) async {
+    // 1. Sync Metadata & Baseline Lifecycle (fail-closed UNINITIALIZED)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_meta (
+        owner_scope TEXT PRIMARY KEY,
+        last_synced_server_revision TEXT NOT NULL DEFAULT '0',
+        min_active_revision TEXT NOT NULL DEFAULT '0',
+        last_sync_timestamp TEXT NOT NULL,
+        effective_history_epochs_json TEXT NOT NULL DEFAULT '{}',
+        sync_state TEXT NOT NULL DEFAULT 'IDLE',
+        authoritative_baseline_status TEXT NOT NULL DEFAULT 'UNINITIALIZED'
+          CHECK (authoritative_baseline_status IN ('UNINITIALIZED', 'BOOTSTRAPPING', 'READY')),
+        last_error_message TEXT
+      );
+    ''');
+
+    // 2. Durable Monotonic FIFO Sequence Allocation Table (P1-M03)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_mutation_sequences (
+        owner_scope TEXT PRIMARY KEY,
+        last_sequence_no INTEGER NOT NULL DEFAULT 0
+      );
+    ''');
+
+    // 3. Account-Scoped Authoritative Shadow Replicas
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS sync_authoritative_replicas (
+        owner_scope TEXT NOT NULL,
+        domain TEXT NOT NULL,
+        entity_key TEXT NOT NULL,
+        server_revision TEXT NOT NULL,
+        epoch INTEGER NOT NULL DEFAULT 0,
+        payload_json TEXT,
+        is_deleted INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (owner_scope, domain, entity_key)
+      );
+    ''');
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sync_replicas_scope_domain ON sync_authoritative_replicas(owner_scope, domain);',
+    );
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_sync_replicas_scope_rev ON sync_authoritative_replicas(owner_scope, server_revision);',
+    );
+
+    // 4. Pending Mutations Queue (P1-M03 monotonic FIFO sequence_no)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS pending_mutations (
+        owner_scope TEXT NOT NULL,
+        mutation_id TEXT NOT NULL,
+        sequence_no INTEGER NOT NULL,
+        client_id TEXT NOT NULL,
+        domain TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        base_server_revision TEXT NOT NULL,
+        observed_history_epoch INTEGER,
+        payload_json TEXT NOT NULL,
+        retry_count INTEGER NOT NULL DEFAULT 0,
+        next_retry_at_ms INTEGER,
+        created_at_iso TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (owner_scope, mutation_id),
+        UNIQUE (owner_scope, sequence_no)
+      );
+    ''');
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_pending_mutations_scope_fifo ON pending_mutations(owner_scope, sequence_no ASC);',
+    );
+
+    // 5. Quarantined Mutations Store (P1-M04 full-fidelity preservation)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS quarantined_mutations (
+        owner_scope TEXT NOT NULL,
+        mutation_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        domain TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        base_server_revision TEXT NOT NULL,
+        observed_history_epoch INTEGER,
+        payload_json TEXT NOT NULL,
+        original_sequence_no INTEGER,
+        original_retry_count INTEGER NOT NULL DEFAULT 0,
+        original_created_at_iso TEXT NOT NULL,
+        original_created_at_ms INTEGER NOT NULL,
+        rejection_reason TEXT NOT NULL,
+        rejection_status TEXT NOT NULL DEFAULT 'MANUAL',
+        rejected_at_iso TEXT NOT NULL,
+        rejected_at_ms INTEGER NOT NULL,
+        triage_status TEXT NOT NULL DEFAULT 'PENDING'
+          CHECK (triage_status IN ('PENDING', 'APPROVED', 'DISCARDED')),
+        causal_evidence_json TEXT,
+        PRIMARY KEY (owner_scope, mutation_id)
+      );
+    ''');
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_quarantined_mutations_scope_rejected ON quarantined_mutations(owner_scope, rejected_at_ms DESC);',
+    );
+
+    // 6. Snapshot Staging Store (P1-M04 snapshot session & cursor metadata)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS snapshot_staging_store (
+        owner_scope TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        snapshot_revision TEXT NOT NULL,
+        min_active_revision TEXT NOT NULL,
+        cursor_token TEXT,
+        page_index INTEGER NOT NULL DEFAULT 0,
+        domain TEXT NOT NULL,
+        entity_key TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        staged_at_iso TEXT NOT NULL,
+        staged_at_ms INTEGER NOT NULL,
+        PRIMARY KEY (owner_scope, session_id, domain, entity_key)
+      );
+    ''');
+
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_snapshot_staging_scope_session ON snapshot_staging_store(owner_scope, session_id);',
+    );
+
+    // 7. Scoped Local Preferences
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS local_preferences (
+        owner_scope TEXT NOT NULL,
+        pref_key TEXT NOT NULL,
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (owner_scope, pref_key)
+      );
+    ''');
   }
 
   Future<void> _createV3LocalLibraryTables(Database db) async {

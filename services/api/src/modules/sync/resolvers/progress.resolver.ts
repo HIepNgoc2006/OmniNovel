@@ -89,8 +89,11 @@ export class ProgressConflictResolver implements IConflictResolver {
     const incomingChapterId = payload.chapterId;
 
     const existingVersionId =
-      existingRecord.chapterVersionId ?? existingRecord.chapter_version_id;
-    const incomingVersionId = payload.chapterVersionId;
+      existingRecord.chapterVersionId ??
+      existingRecord.chapter_version_id ??
+      null;
+    const incomingVersionId = payload.chapterVersionId ?? null;
+    const fallbackStoryId = payload.storyId ?? mutation.entityId;
 
     // Trường hợp 1: Cùng chương và cùng layout version
     if (
@@ -106,18 +109,18 @@ export class ProgressConflictResolver implements IConflictResolver {
           };
         }
 
-        // Monotonic forward progress invariant: bảo toàn vị trí đọc lớn hơn
+        // Monotonic forward progress invariant: bảo toàn đầy đủ bản ghi server thắng cuộc
         return {
           status: 'CONFLICT_MERGED',
           reason: 'MONOTONIC_PROGRESS_PRESERVED',
           message: `Server preserved higher progress percentage (${existingPercentage} > ${incomingPercentage})`,
-          resolvedPayload: {
-            ...payload,
-            pageIndex: existingRecord.pageIndex ?? existingRecord.page_index,
-            scrollPosition:
-              existingRecord.scrollPosition ?? existingRecord.scroll_position,
-            progressPercentage: existingPercentage,
-          },
+          resolvedPayload: this.buildServerWinningPayload(
+            existingRecord,
+            fallbackStoryId,
+            existingChapterId,
+            existingVersionId,
+            existingPercentage,
+          ),
           assignedRevision: null,
         };
       }
@@ -141,21 +144,13 @@ export class ProgressConflictResolver implements IConflictResolver {
           status: 'CONFLICT_MERGED',
           reason: 'MONOTONIC_PROGRESS_PRESERVED',
           message: `Version layout mismatch: Server preserved higher completion state (${existingPercentage}% on version '${existingVersionId}' > ${incomingPercentage}% on version '${incomingVersionId}')`,
-          resolvedPayload: {
-            storyId: payload.storyId,
-            chapterId: existingChapterId,
-            chapterVersionId: existingVersionId,
-            readingMode:
-              existingRecord.readingMode ?? existingRecord.reading_mode,
-            pageIndex: existingRecord.pageIndex ?? existingRecord.page_index,
-            scrollPosition:
-              existingRecord.scrollPosition ?? existingRecord.scroll_position,
-            progressPercentage: existingPercentage,
-            anchorBlockId:
-              existingRecord.anchorBlockId ?? existingRecord.anchor_block_id ?? null,
-            textOffset:
-              existingRecord.textOffset ?? existingRecord.text_offset ?? null,
-          },
+          resolvedPayload: this.buildServerWinningPayload(
+            existingRecord,
+            fallbackStoryId,
+            existingChapterId,
+            existingVersionId,
+            existingPercentage,
+          ),
           assignedRevision: null,
         };
       }
@@ -184,6 +179,40 @@ export class ProgressConflictResolver implements IConflictResolver {
       status: 'APPLIED',
       assignedRevision: null,
       message: 'Chapter transition accepted',
+    };
+  }
+
+  private buildServerWinningPayload(
+    existingRecord: Record<string, any>,
+    fallbackStoryId: string,
+    existingChapterId: string,
+    existingVersionId: string | null,
+    existingPercentage: number,
+  ): Record<string, unknown> {
+    const rawPageIndex = existingRecord.pageIndex ?? existingRecord.page_index;
+    const rawScrollPosition =
+      existingRecord.scrollPosition ?? existingRecord.scroll_position;
+    const rawTextOffset =
+      existingRecord.textOffset ?? existingRecord.text_offset ?? null;
+
+    return {
+      storyId:
+        existingRecord.storyId ?? existingRecord.story_id ?? fallbackStoryId,
+      chapterId: existingChapterId,
+      chapterVersionId: existingVersionId,
+      readingMode: existingRecord.readingMode ?? existingRecord.reading_mode,
+      pageIndex:
+        rawPageIndex !== undefined && rawPageIndex !== null
+          ? Number(rawPageIndex)
+          : undefined,
+      scrollPosition:
+        rawScrollPosition !== undefined && rawScrollPosition !== null
+          ? Number(rawScrollPosition)
+          : undefined,
+      progressPercentage: existingPercentage,
+      anchorBlockId:
+        existingRecord.anchorBlockId ?? existingRecord.anchor_block_id ?? null,
+      textOffset: rawTextOffset !== null ? Number(rawTextOffset) : null,
     };
   }
 }

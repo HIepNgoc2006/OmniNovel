@@ -9,7 +9,7 @@ import { HistoryConflictResolver } from '../resolvers/history.resolver';
 import { PreferenceConflictResolver } from '../resolvers/preference.resolver';
 import { FollowConflictResolver } from '../resolvers/follow.resolver';
 import { HmacCursorHelper } from '../helpers/hmac-cursor.helper';
-import { SyncDomain, SyncOperation } from '../interfaces/sync.types';
+import { ReadingMode, SyncDomain, SyncOperation } from '../interfaces/sync.types';
 
 describe('SyncService (Step 3 Unit & Concurrency Tests)', () => {
   const SECRET = 'test-sync-cursor-secret-key-32chars!!';
@@ -78,8 +78,9 @@ describe('SyncService (Step 3 Unit & Concurrency Tests)', () => {
   });
 
   describe('getChanges', () => {
-    it('should return delta changes after cursor revision', async () => {
-      mockDataSource.query
+    it('should return delta changes inside REPEATABLE READ READ ONLY transaction with upper bound revision <= currentServerRevision', async () => {
+      mockRunner.query
+        .mockResolvedValueOnce('SET TRANSACTION READ ONLY')
         .mockResolvedValueOnce([
           { currentSyncRevision: 105n, minActiveRevision: 0n },
         ])
@@ -107,6 +108,15 @@ describe('SyncService (Step 3 Unit & Concurrency Tests)', () => {
         limit: 10,
       });
 
+      expect(mockRunner.startTransaction).toHaveBeenCalledWith('REPEATABLE READ');
+      expect(mockRunner.query).toHaveBeenNthCalledWith(1, 'SET TRANSACTION READ ONLY');
+      expect(mockRunner.query).toHaveBeenNthCalledWith(
+        3,
+        expect.stringContaining('revision > $2 AND revision <= $3'),
+        [USER_ID, '100', '105', 11],
+      );
+      expect(mockRunner.commitTransaction).toHaveBeenCalled();
+      expect(mockRunner.release).toHaveBeenCalled();
       expect(res.currentServerRevision).toBe('105');
       expect(res.minActiveRevision).toBe('0');
       expect(res.changes.length).toBe(2);
@@ -115,7 +125,8 @@ describe('SyncService (Step 3 Unit & Concurrency Tests)', () => {
     });
 
     it('should indicate hasMore and nextRevision when more changes exist', async () => {
-      mockDataSource.query
+      mockRunner.query
+        .mockResolvedValueOnce('SET TRANSACTION READ ONLY')
         .mockResolvedValueOnce([
           { currentSyncRevision: 105n, minActiveRevision: 0n },
         ])
@@ -144,15 +155,43 @@ describe('SyncService (Step 3 Unit & Concurrency Tests)', () => {
         limit: 1,
       });
 
+      expect(mockRunner.startTransaction).toHaveBeenCalledWith('REPEATABLE READ');
+      expect(mockRunner.commitTransaction).toHaveBeenCalled();
+      expect(mockRunner.release).toHaveBeenCalled();
       expect(res.hasMore).toBe(true);
       expect(res.changes.length).toBe(1);
       expect(res.nextRevision).toBe('101');
     });
 
-    it('should throw HTTP 410 SYNC_REVISION_EXPIRED if client requested after < minActiveRevision', async () => {
-      mockDataSource.query.mockResolvedValueOnce([
-        { currentSyncRevision: 500n, minActiveRevision: 200n },
-      ]);
+    it('should throw HTTP 400 SYNC_REVISION_AHEAD and rollback transaction if after > currentServerRevision', async () => {
+      mockRunner.query
+        .mockResolvedValueOnce('SET TRANSACTION READ ONLY')
+        .mockResolvedValueOnce([
+          { currentSyncRevision: 105n, minActiveRevision: 0n },
+        ]);
+
+      try {
+        await syncService.getChanges(USER_ID, {
+          after: '106', // > 105n
+          limit: 50,
+        });
+        throw new Error('Expected 400 BAD REQUEST');
+      } catch (err: any) {
+        expect(err).toBeInstanceOf(BadRequestException);
+        expect(err.getStatus()).toBe(HttpStatus.BAD_REQUEST);
+        expect(err.getResponse().code).toBe('SYNC_REVISION_AHEAD');
+        expect(mockRunner.rollbackTransaction).toHaveBeenCalled();
+        expect(mockRunner.release).toHaveBeenCalled();
+        expect(mockRunner.query).toHaveBeenCalledTimes(2);
+      }
+    });
+
+    it('should throw HTTP 410 SYNC_REVISION_EXPIRED and rollback transaction if client requested after < minActiveRevision', async () => {
+      mockRunner.query
+        .mockResolvedValueOnce('SET TRANSACTION READ ONLY')
+        .mockResolvedValueOnce([
+          { currentSyncRevision: 500n, minActiveRevision: 200n },
+        ]);
 
       try {
         await syncService.getChanges(USER_ID, {
@@ -164,7 +203,26 @@ describe('SyncService (Step 3 Unit & Concurrency Tests)', () => {
         expect(err).toBeInstanceOf(HttpException);
         expect(err.getStatus()).toBe(HttpStatus.GONE);
         expect(err.getResponse().code).toBe('SYNC_REVISION_EXPIRED');
+        expect(mockRunner.rollbackTransaction).toHaveBeenCalled();
+        expect(mockRunner.release).toHaveBeenCalled();
+        expect(mockRunner.query).toHaveBeenCalledTimes(2);
       }
+    });
+
+    it('should rollback transaction and release query runner when sync_change_log query fails', async () => {
+      mockRunner.query
+        .mockResolvedValueOnce('SET TRANSACTION READ ONLY')
+        .mockResolvedValueOnce([
+          { currentSyncRevision: 105n, minActiveRevision: 0n },
+        ])
+        .mockRejectedValueOnce(new Error('DB transient error'));
+
+      await expect(
+        syncService.getChanges(USER_ID, { after: '100', limit: 50 }),
+      ).rejects.toThrow('DB transient error');
+
+      expect(mockRunner.rollbackTransaction).toHaveBeenCalled();
+      expect(mockRunner.release).toHaveBeenCalled();
     });
   });
 
@@ -602,6 +660,152 @@ describe('SyncService (Step 3 Unit & Concurrency Tests)', () => {
       expect(tombstoneCalls.length).toBe(2);
       expect(tombstoneCalls[0][1][2]).toBe('00000000-0000-0000-0000-000000000000');
       expect(tombstoneCalls[1][1][2]).toBe('all');
+    });
+
+    it('Task C: PROGRESS UPSERT should preserve numeric textOffset = 0 instead of coercing to NULL', async () => {
+      const storyId = '99999999-9999-4999-8999-999999999999';
+      const chapterId = '11111111-2222-3333-4444-555555555555';
+      const mutation = {
+        clientId: CLIENT_ID,
+        mutationId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        domain: SyncDomain.PROGRESS,
+        entityId: storyId,
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '10',
+        payload: {
+          storyId,
+          chapterId,
+          chapterVersionId: null,
+          readingMode: ReadingMode.NOVEL,
+          pageIndex: 1,
+          scrollPosition: 0,
+          progressPercentage: 45,
+          anchorBlockId: 'para-1',
+          textOffset: 0,
+        },
+      };
+
+      mockRunner.query
+        .mockResolvedValueOnce([]) // INSERT user_sync_state
+        .mockResolvedValueOnce([
+          { current_sync_revision: 10n, min_active_revision: 0n },
+        ]) // SELECT FOR UPDATE
+        .mockResolvedValueOnce([]) // SELECT receipts
+        .mockResolvedValueOnce([]) // SELECT tombstones
+        .mockResolvedValueOnce([{ effectiveEpoch: 0 }]) // SELECT epoch
+        .mockResolvedValueOnce([]) // SELECT reading_progress FOR UPDATE
+        .mockResolvedValueOnce([]) // INSERT reading_progress
+        .mockResolvedValueOnce([]) // INSERT chapter_read_states
+        .mockResolvedValueOnce([]) // INSERT sync_change_log
+        .mockResolvedValueOnce([]) // INSERT sync_mutation_receipts
+        .mockResolvedValueOnce([]); // UPDATE user_sync_state
+
+      const res = await syncService.pushMutations(USER_ID, {
+        mutations: [mutation],
+      });
+
+      expect(res.results[0].status).toBe('APPLIED');
+      const rpInsertCall = mockRunner.query.mock.calls.find((call: any[]) =>
+        call[0].includes('INSERT INTO reading_progress'),
+      );
+      expect(rpInsertCall).toBeDefined();
+      expect(rpInsertCall[1][4]).toBe(ReadingMode.NOVEL);
+      expect(rpInsertCall[1][8]).toBe('para-1');
+      expect(rpInsertCall[1][9]).toBe(0);
+
+      const changeLogCall = mockRunner.query.mock.calls.find((call: any[]) =>
+        call[0].includes('INSERT INTO sync_change_log'),
+      );
+      expect(JSON.parse(changeLogCall[1][7]).textOffset).toBe(0);
+    });
+
+    it('Task A + C: CONFLICT_MERGED Case 1 in pushMutations should persist full server NOVEL state and textOffset = 0 instead of losing incoming payload', async () => {
+      const storyId = '99999999-9999-4999-8999-999999999999';
+      const chapterId = '11111111-2222-3333-4444-555555555555';
+      const versionId = '22222222-2222-4222-8222-333333333333';
+      const mutation = {
+        clientId: CLIENT_ID,
+        mutationId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        domain: SyncDomain.PROGRESS,
+        entityId: storyId,
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '10',
+        payload: {
+          storyId,
+          chapterId,
+          chapterVersionId: versionId,
+          readingMode: ReadingMode.PAGED,
+          pageIndex: 4,
+          scrollPosition: 900,
+          progressPercentage: 25,
+          anchorBlockId: 'para-losing',
+          textOffset: 99,
+          forceRewind: false,
+        },
+      };
+
+      mockRunner.query
+        .mockResolvedValueOnce([]) // INSERT user_sync_state
+        .mockResolvedValueOnce([
+          { current_sync_revision: 10n, min_active_revision: 0n },
+        ]) // SELECT FOR UPDATE
+        .mockResolvedValueOnce([]) // SELECT receipts
+        .mockResolvedValueOnce([]) // SELECT tombstones
+        .mockResolvedValueOnce([{ effectiveEpoch: 0 }]) // SELECT epoch
+        .mockResolvedValueOnce([
+          {
+            chapter_id: chapterId,
+            chapter_version_id: versionId,
+            reading_mode: ReadingMode.NOVEL,
+            page_index: 1,
+            scroll_position: '0.00',
+            progress_percentage: '80.00',
+            anchor_block_id: 'para-server',
+            text_offset: 0,
+          },
+        ]) // SELECT reading_progress FOR UPDATE
+        .mockResolvedValueOnce([]) // INSERT reading_progress
+        .mockResolvedValueOnce([]) // INSERT chapter_read_states
+        .mockResolvedValueOnce([]) // INSERT sync_change_log
+        .mockResolvedValueOnce([]) // INSERT sync_mutation_receipts
+        .mockResolvedValueOnce([]); // UPDATE user_sync_state
+
+      const res = await syncService.pushMutations(USER_ID, {
+        mutations: [mutation],
+      });
+
+      expect(res.results[0].status).toBe('CONFLICT_MERGED');
+
+      const rpInsertCall = mockRunner.query.mock.calls.find((call: any[]) =>
+        call[0].includes('INSERT INTO reading_progress'),
+      );
+      expect(rpInsertCall[1]).toEqual([
+        USER_ID,
+        storyId,
+        chapterId,
+        versionId,
+        ReadingMode.NOVEL,
+        80,
+        0,
+        1,
+        'para-server',
+        0,
+      ]);
+
+      const changeLogCall = mockRunner.query.mock.calls.find((call: any[]) =>
+        call[0].includes('INSERT INTO sync_change_log'),
+      );
+      expect(JSON.parse(changeLogCall[1][7])).toEqual({
+        storyId,
+        chapterId,
+        chapterVersionId: versionId,
+        readingMode: ReadingMode.NOVEL,
+        pageIndex: 1,
+        scrollPosition: 0,
+        progressPercentage: 80,
+        anchorBlockId: 'para-server',
+        textOffset: 0,
+      });
     });
   });
 

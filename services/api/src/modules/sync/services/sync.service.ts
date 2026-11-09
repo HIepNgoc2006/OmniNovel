@@ -74,84 +74,104 @@ export class SyncService {
     const afterRevision = BigInt(query.after || '0');
     const limit = query.limit || 100;
 
-    // 1. Lấy trạng thái revision hiện hành của user
-    const stateRows = await this.dataSource.query(
-      `SELECT current_sync_revision AS "currentSyncRevision", min_active_revision AS "minActiveRevision"
-       FROM user_sync_state
-       WHERE user_id = $1`,
-      [userId],
-    );
+    const runner = this.dataSource.createQueryRunner();
+    await runner.connect();
 
-    const firstState = Array.isArray(stateRows) && Array.isArray(stateRows[0]) ? stateRows[0][0] : stateRows?.[0];
-    const currentServerRevision = firstState
-      ? (firstState.current_sync_revision ?? firstState.currentSyncRevision ?? '0').toString()
-      : '0';
-    const minActiveRevision = firstState
-      ? (firstState.min_active_revision ?? firstState.minActiveRevision ?? '0').toString()
-      : '0';
+    try {
+      // 1. Khởi động giao dịch REPEATABLE READ READ ONLY để neo snapshot nhất quán
+      await runner.startTransaction('REPEATABLE READ');
+      await runner.query('SET TRANSACTION READ ONLY');
 
-    // 2.1 Kiểm tra nếu client yêu cầu revision lớn hơn currentServerRevision (P1-01 / SYNC-10)
-    if (afterRevision > BigInt(currentServerRevision)) {
-      throw new BadRequestException({
-        statusCode: HttpStatus.BAD_REQUEST,
-        code: 'SYNC_REVISION_AHEAD',
-        message: `Client revision ${query.after} is ahead of current server revision (${currentServerRevision})`,
-        currentServerRevision,
-      });
-    }
-
-    // 2.2 Kiểm tra nếu client yêu cầu revision cũ hơn min_active_revision (đã bị GC dọn dẹp)
-    if (afterRevision < BigInt(minActiveRevision)) {
-      throw new HttpException(
-        {
-          statusCode: HttpStatus.GONE,
-          code: 'SYNC_REVISION_EXPIRED',
-          message: `Client revision ${query.after} is expired and has been pruned by GC (minActiveRevision: ${minActiveRevision}); full snapshot resync required`,
-          minActiveRevision,
-          currentServerRevision,
-        },
-        HttpStatus.GONE,
+      // 2. Lấy trạng thái revision hiện hành của user trong cùng snapshot giao dịch
+      const stateRows = await runner.query(
+        `SELECT current_sync_revision AS "currentSyncRevision", min_active_revision AS "minActiveRevision"
+         FROM user_sync_state
+         WHERE user_id = $1`,
+        [userId],
       );
+
+      const firstState = Array.isArray(stateRows) && Array.isArray(stateRows[0]) ? stateRows[0][0] : stateRows?.[0];
+      const currentServerRevision = firstState
+        ? (firstState.current_sync_revision ?? firstState.currentSyncRevision ?? '0').toString()
+        : '0';
+      const minActiveRevision = firstState
+        ? (firstState.min_active_revision ?? firstState.minActiveRevision ?? '0').toString()
+        : '0';
+
+      // 3.1 Kiểm tra nếu client yêu cầu revision lớn hơn currentServerRevision (P1-01 / SYNC-10)
+      if (afterRevision > BigInt(currentServerRevision)) {
+        await runner.rollbackTransaction();
+        throw new BadRequestException({
+          statusCode: HttpStatus.BAD_REQUEST,
+          code: 'SYNC_REVISION_AHEAD',
+          message: `Client revision ${query.after} is ahead of current server revision (${currentServerRevision})`,
+          currentServerRevision,
+        });
+      }
+
+      // 3.2 Kiểm tra nếu client yêu cầu revision cũ hơn min_active_revision (đã bị GC dọn dẹp)
+      if (afterRevision < BigInt(minActiveRevision)) {
+        await runner.rollbackTransaction();
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.GONE,
+            code: 'SYNC_REVISION_EXPIRED',
+            message: `Client revision ${query.after} is expired and has been pruned by GC (minActiveRevision: ${minActiveRevision}); full snapshot resync required`,
+            minActiveRevision,
+            currentServerRevision,
+          },
+          HttpStatus.GONE,
+        );
+      }
+
+      // 4. Truy vấn delta từ sync_change_log trong cùng snapshot với upper bound revision <= currentServerRevision
+      const fetchLimit = limit + 1;
+      const changeRows: {
+        revision: string;
+        domain: SyncDomain;
+        entityId: string;
+        operation: SyncOperation;
+        payload: Record<string, unknown>;
+        createdAt: Date;
+      }[] = await runner.query(
+        `SELECT revision::text, domain, entity_id AS "entityId", operation, payload, created_at AS "createdAt"
+         FROM sync_change_log
+         WHERE user_id = $1 AND revision > $2 AND revision <= $3
+         ORDER BY revision ASC
+         LIMIT $4`,
+        [userId, afterRevision.toString(), currentServerRevision, fetchLimit],
+      );
+
+      await runner.commitTransaction();
+
+      const hasMore = changeRows.length > limit;
+      const pagedRows = hasMore ? changeRows.slice(0, limit) : changeRows;
+      const nextRevision = hasMore
+        ? pagedRows[pagedRows.length - 1].revision
+        : null;
+
+      return {
+        currentServerRevision,
+        minActiveRevision,
+        nextRevision,
+        hasMore,
+        changes: pagedRows.map((row) => ({
+          revision: row.revision,
+          domain: row.domain,
+          entityId: row.entityId,
+          operation: row.operation,
+          payload: row.payload || {},
+          createdAt: new Date(row.createdAt).toISOString(),
+        })),
+      };
+    } catch (err) {
+      if (runner.isTransactionActive) {
+        await runner.rollbackTransaction();
+      }
+      throw err;
+    } finally {
+      await runner.release();
     }
-
-    // 3. Truy vấn delta từ sync_change_log (lấy limit + 1 để xác định hasMore)
-    const fetchLimit = limit + 1;
-    const changeRows: {
-      revision: string;
-      domain: SyncDomain;
-      entityId: string;
-      operation: SyncOperation;
-      payload: Record<string, unknown>;
-      createdAt: Date;
-    }[] = await this.dataSource.query(
-      `SELECT revision::text, domain, entity_id AS "entityId", operation, payload, created_at AS "createdAt"
-       FROM sync_change_log
-       WHERE user_id = $1 AND revision > $2
-       ORDER BY revision ASC
-       LIMIT $3`,
-      [userId, afterRevision.toString(), fetchLimit],
-    );
-
-    const hasMore = changeRows.length > limit;
-    const pagedRows = hasMore ? changeRows.slice(0, limit) : changeRows;
-    const nextRevision = hasMore
-      ? pagedRows[pagedRows.length - 1].revision
-      : null;
-
-    return {
-      currentServerRevision,
-      minActiveRevision,
-      nextRevision,
-      hasMore,
-      changes: pagedRows.map((row) => ({
-        revision: row.revision,
-        domain: row.domain,
-        entityId: row.entityId,
-        operation: row.operation,
-        payload: row.payload || {},
-        createdAt: new Date(row.createdAt).toISOString(),
-      })),
-    };
   }
 
   /**
@@ -895,7 +915,7 @@ export class SyncService {
                 payload.scrollPosition,
                 payload.pageIndex,
                 payload.anchorBlockId || null,
-                payload.textOffset || null,
+                payload.textOffset ?? null,
               ],
             );
 

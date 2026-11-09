@@ -447,7 +447,7 @@ def _init_git_repo(repo_dir: str) -> str:
 
 
 def run_unit_tests() -> int:
-    """Execute fail-closed ref resolution and JSON parser matrix (13 assertions)."""
+    """Execute fail-closed ref resolution and JSON parser matrix (15 assertions)."""
     print("================================================================================")
     print("[TEST] RUNNING SECRET SCAN FAIL-CLOSED UNIT & GIT RESOLUTION MATRIX")
     print("================================================================================")
@@ -611,6 +611,74 @@ def run_unit_tests() -> int:
         print("  [PASS] SEC-13: Valid clean PR scan with chunks>0 and bytes>0 PASSED")
         passed += 1
 
+        # SEC-14: Merged-PR topology & push-to-main range lifecycle (forward, identical, rewind)
+        _run_git(repo, ["checkout", "-q", "feat/sample"])
+        _run_git(repo, ["merge", "-q", "--no-ff", main_sha, "-m", "chore: sync feat with main-sim"])
+        pr_synced_sha = _run_git(repo, ["rev-parse", "HEAD"])
+        synced_pr_range = resolve_scan_range(repo, "pull_request", main_sha, pr_synced_sha)
+        assert synced_pr_range.since_commit == main_sha
+        assert synced_pr_range.branch == pr_synced_sha
+        assert synced_pr_range.commit_count == 2
+        assert synced_pr_range.changed_files == ["feature.txt"]
+
+        _run_git(repo, ["checkout", "-q", "main-sim"])
+        _run_git(repo, ["merge", "-q", "--no-ff", pr_synced_sha, "-m", "Merge PR into main-sim"])
+        main_after_merge = _run_git(repo, ["rev-parse", "HEAD"])
+        push_inc = resolve_scan_range(repo, "push", main_sha, main_after_merge)
+        assert push_inc.since_commit == main_sha
+        assert push_inc.branch == main_after_merge
+        assert push_inc.commit_count >= 2
+        assert push_inc.changed_files == ["feature.txt"]
+
+        for bad_pair, expected_code in (
+            ((main_after_merge, main_after_merge), "IDENTICAL_BASE_AND_HEAD"),
+            ((main_after_merge, main_sha), "NO_NEW_COMMITS"),
+        ):
+            try:
+                resolve_scan_range(repo, "push", bad_pair[0], bad_pair[1])
+                raise AssertionError(f"SEC-14 failed: accepted invalid push pair={bad_pair!r}")
+            except ScanGateError as exc:
+                assert exc.code == expected_code, f"Unexpected code: {exc.code}"
+        print("  [PASS] SEC-14: Merged-PR topology & push-to-main lifecycle validated fail-closed")
+        passed += 1
+
+        # SEC-15: Push-path fail-closed enforcement on scanner error, zero-input, crash & findings
+        push_err_log = "\n".join([
+            json.dumps({"level": "info-0", "msg": "running source"}),
+            json.dumps({
+                "level": "error",
+                "msg": "encountered errors during scan",
+                "errors": ['error chunking dir "/repo/": unable to resolve commit: object not found'],
+            }),
+            json.dumps({
+                "level": "info-0",
+                "msg": "finished scanning",
+                "chunks": 0,
+                "bytes": 0,
+                "verified_secrets": 0,
+                "unverified_secrets": 0,
+            }),
+        ])
+        ev = evaluate_trufflehog_output(push_err_log, 0, push_inc)
+        assert not ev.passed
+        assert any("SCANNER_ERROR:" in e for e in ev.errors)
+        assert any("ZERO_INPUT_SCANNED:" in e for e in ev.errors)
+
+        ev = evaluate_trufflehog_output(zero_input_log, 0, push_init)
+        assert not ev.passed
+        assert any("ZERO_INPUT_SCANNED:" in e for e in ev.errors)
+
+        ev = evaluate_trufflehog_output("", 2, push_inc)
+        assert not ev.passed
+        assert any("SCANNER_CRASH:" in e for e in ev.errors)
+
+        ev = evaluate_trufflehog_output(clean_log, 0, push_inc)
+        assert ev.passed
+        ev = evaluate_trufflehog_output(clean_log, 0, push_init)
+        assert ev.passed
+        print("  [PASS] SEC-15: Push-to-main (incremental & ZERO_SHA) enforces fail-closed invariants")
+        passed += 1
+
         print("--------------------------------------------------------------------------------")
         print(f"[TEST RESULT] {passed}/{passed} Secret Scan Fail-Closed Unit Tests PASSED")
         print("================================================================================\n")
@@ -729,6 +797,99 @@ def run_e2e_docker_tests() -> int:
         assert any(f["detector"] == "CustomRegex" for f in ev_canary.findings_redacted)
         print(
             f"  [PASS] E2E-04: Live container detected custom dummy canary (raw_exit={rc}, detector=CustomRegex, chunks={ev_canary.chunks}) -> Gate BLOCKED"
+        )
+        passed += 1
+
+        # E2E-05: Live container merged-PR topology (pull_request) + push-to-main (incremental & ZERO_SHA) PASS
+        _run_git(repo, ["checkout", "-q", "-b", "clean-main", c0])
+        with open(os.path.join(repo, "web_main.ts"), "w", encoding="utf-8") as fh:
+            fh.write("export const tombstoneSync = true;\n")
+        _run_git(repo, ["add", "web_main.ts"])
+        _run_git(repo, ["commit", "-q", "-m", "feat: advance simulated main"])
+        c_main1 = _run_git(repo, ["rev-parse", "HEAD"])
+
+        _run_git(repo, ["checkout", "-q", "-b", "sec-pr", c0])
+        with open(os.path.join(repo, "sec_gate.py"), "w", encoding="utf-8") as fh:
+            fh.write("print('clean security gate change')\n")
+        _run_git(repo, ["add", "sec_gate.py"])
+        _run_git(repo, ["commit", "-q", "-m", "fix(security): clean gate commit"])
+        _run_git(repo, ["merge", "-q", "--no-ff", "clean-main", "-m", "chore: sync clean-main into sec-pr"])
+        c_pr_sync = _run_git(repo, ["rev-parse", "HEAD"])
+
+        synced_pr_range = resolve_scan_range(repo, "pull_request", c_main1, c_pr_sync)
+        rc, out = run_trufflehog_docker(
+            repo_dir=repo,
+            since_commit=synced_pr_range.since_commit,
+            branch_ref=synced_pr_range.branch,
+            only_verified=True,
+        )
+        ev_pr_sync = evaluate_trufflehog_output(out, rc, synced_pr_range)
+        assert ev_pr_sync.passed, f"E2E-05 PR sync failed: {ev_pr_sync.errors}"
+        assert ev_pr_sync.chunks > 0 and ev_pr_sync.bytes_scanned > 0
+
+        _run_git(repo, ["checkout", "-q", "clean-main"])
+        _run_git(repo, ["merge", "-q", "--no-ff", "sec-pr", "-m", "Merge PR into clean-main"])
+        c_main2 = _run_git(repo, ["rev-parse", "HEAD"])
+
+        push_range = resolve_scan_range(repo, "push", c_main1, c_main2)
+        rc, out = run_trufflehog_docker(
+            repo_dir=repo,
+            since_commit=push_range.since_commit,
+            branch_ref=push_range.branch,
+            only_verified=True,
+        )
+        ev_push_inc = evaluate_trufflehog_output(out, rc, push_range)
+        assert ev_push_inc.passed, f"E2E-05 push incremental failed: {ev_push_inc.errors}"
+        assert ev_push_inc.chunks > 0 and ev_push_inc.bytes_scanned > 0
+
+        push_zero_range = resolve_scan_range(repo, "push", ZERO_SHA, c_main2)
+        rc, out = run_trufflehog_docker(
+            repo_dir=repo,
+            since_commit=push_zero_range.since_commit,
+            branch_ref=push_zero_range.branch,
+            only_verified=True,
+        )
+        ev_push_zero = evaluate_trufflehog_output(out, rc, push_zero_range)
+        assert ev_push_zero.passed, f"E2E-05 ZERO_SHA push failed: {ev_push_zero.errors}"
+        assert ev_push_zero.chunks > 0 and ev_push_zero.bytes_scanned > 0
+        print(
+            "  [PASS] E2E-05: Live container merged-PR & push-to-main scans PASSED "
+            f"(pr_chunks={ev_pr_sync.chunks}, push_chunks={ev_push_inc.chunks}, init_chunks={ev_push_zero.chunks})"
+        )
+        passed += 1
+
+        # E2E-06: Live container push scanner-error & push secret leak MUST fail closed
+        rc, out = run_trufflehog_docker(
+            repo_dir=repo,
+            since_commit="1" * 40,
+            branch_ref=c_main2,
+            only_verified=True,
+        )
+        assert rc == 0, f"Expected TruffleHog CLI fail-open exit 0 on invalid since-commit, got {rc}"
+        ev_push_err = evaluate_trufflehog_output(out, rc, push_range)
+        assert not ev_push_err.passed
+        assert any("SCANNER_ERROR:" in e for e in ev_push_err.errors)
+        assert any("ZERO_INPUT_SCANNED:" in e for e in ev_push_err.errors)
+
+        with open(os.path.join(repo, "main_canary.env"), "w", encoding="utf-8") as fh:
+            fh.write(f"MAIN_PUSH_TOKEN={dummy_canary}\n")
+        _run_git(repo, ["add", "main_canary.env"])
+        _run_git(repo, ["commit", "-q", "-m", "test: simulated push secret leak"])
+        c_main3 = _run_git(repo, ["rev-parse", "HEAD"])
+        push_leak_range = resolve_scan_range(repo, "push", c_main2, c_main3)
+        rc, out = run_trufflehog_docker(
+            repo_dir=repo,
+            since_commit=push_leak_range.since_commit,
+            branch_ref=push_leak_range.branch,
+            only_verified=False,
+            config_path=cfg_path,
+        )
+        ev_push_leak = evaluate_trufflehog_output(out, rc, push_leak_range, fail_on_unverified=True)
+        assert rc == 183, f"Expected exit 183 on push dummy canary, got {rc}"
+        assert not ev_push_leak.passed
+        assert any(f["detector"] == "CustomRegex" for f in ev_push_leak.findings_redacted)
+        print(
+            f"  [PASS] E2E-06: Live container push scanner-error (raw_exit=0) & push leak (raw_exit={rc}) BLOCKED fail-closed"
         )
         passed += 1
 

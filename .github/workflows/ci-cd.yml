@@ -332,8 +332,8 @@ jobs:
           trivy image --scanners vuln --ignorefile="" --format json --output /tmp/trivy-reports/api.json --severity CRITICAL,HIGH --exit-code 0 omninovel-api:${{ github.sha }}
           trivy image --scanners vuln --ignorefile="" --format json --output /tmp/trivy-reports/ai-worker.json --severity CRITICAL,HIGH --exit-code 0 omninovel-ai-worker:${{ github.sha }}
           trivy image --scanners vuln --ignorefile="" --format json --output /tmp/trivy-reports/nginx.json --severity CRITICAL,HIGH --exit-code 0 omninovel-nginx:${{ github.sha }}
-          trivy image --scanners vuln --ignorefile="" --format json --output /tmp/trivy-reports/prometheus.json --severity CRITICAL,HIGH --exit-code 0 prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
-          trivy image --scanners vuln --ignorefile="" --format json --output /tmp/trivy-reports/grafana.json --severity CRITICAL,HIGH --exit-code 0 grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
+          trivy image --scanners vuln --ignorefile="" --format json --output /tmp/trivy-reports/prometheus.json --severity CRITICAL,HIGH --exit-code 0 prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
+          trivy image --scanners vuln --ignorefile="" --format json --output /tmp/trivy-reports/grafana.json --severity CRITICAL,HIGH --exit-code 0 grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205
           ls -lh /tmp/trivy-reports
 
       - name: Enforce Fail-Closed Package-Level Governance Gate on Real Scan Reports
@@ -385,7 +385,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          image-ref: prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+          image-ref: prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06
           format: table
           severity: CRITICAL,HIGH
           trivyignores: deploy/security/trivy/prometheus.trivyignore
@@ -396,7 +396,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          image-ref: grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572
+          image-ref: grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205
           format: table
           severity: CRITICAL,HIGH
           trivyignores: deploy/security/trivy/grafana.trivyignore

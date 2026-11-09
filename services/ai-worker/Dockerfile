@@ -11,7 +11,7 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HOME=/home/appuser/.cache/huggingface \
     TORCH_HOME=/home/appuser/.cache/torch
 
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get install -y --no-install-recommends \
     curl \
     libgl1 \
     libglib2.0-0 \

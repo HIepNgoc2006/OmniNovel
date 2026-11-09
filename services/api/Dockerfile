@@ -5,7 +5,7 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-RUN apk add --no-cache python3 make g++
+RUN apk upgrade --no-cache && apk add --no-cache python3 make g++
 
 COPY package.json package-lock.json ./
 COPY packages/shared/package.json ./packages/shared/
@@ -31,8 +31,8 @@ WORKDIR /app
 ENV NODE_ENV=production \
     PORT=8000
 
-# Security Hardening: Remove unused global npm/npx from production runtime
-RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
+# Security Hardening: Upgrade Alpine base OS packages and remove unused global npm/npx from production runtime
+RUN apk upgrade --no-cache && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/packages/shared/dist ./packages/shared/dist

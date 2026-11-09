@@ -16,8 +16,8 @@ import argparse
 import copy
 from typing import Dict, Any, List, Set, Tuple
 
-EXACT_PROMETHEUS_IMAGE = "prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e"
-EXACT_GRAFANA_IMAGE = "grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572"
+EXACT_PROMETHEUS_IMAGE = "prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06"
+EXACT_GRAFANA_IMAGE = "grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205"
 
 EXPECTED_NETWORKS: Set[str] = {"omninovel-edge", "omninovel-internal", "omninovel-egress"}
 
@@ -379,7 +379,7 @@ def run_unit_tests() -> int:
     # TOP-16: Fake image repository containing valid digest -> BLOCK
     bad_fake_repo = copy.deepcopy(valid_fixture)
     bad_fake_repo["services"]["prometheus"]["image"] = (
-        "evil-registry.io/attacker/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e"
+        "evil-registry.io/attacker/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06"
     )
     errs = validate_topology(bad_fake_repo)
     assert any("PROMETHEUS_IMAGE_MISMATCH" in e for e in errs), f"TOP-16 failed: {errs}"

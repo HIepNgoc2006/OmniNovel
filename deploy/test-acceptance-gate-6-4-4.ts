@@ -296,8 +296,8 @@ async function runAcceptanceGate644() {
       !composeContent.includes('admin_omninovel_2026');
 
     // 4. Verify both Prometheus and Grafana are pinned by sha256 digest (Supply Chain Invariant)
-    const digestsPinned = composeContent.includes('prom/prometheus:v3.15.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e') &&
-      composeContent.includes('grafana/grafana:13.2.3@sha256:b28bae15e219c998fb0e0424ed724930cc61b1f61fb404d47c862f9a23f9e572');
+    const digestsPinned = composeContent.includes('prom/prometheus:v3.16.0@sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06') &&
+      composeContent.includes('grafana/grafana:13.3.0@sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205');
 
     const passed = configClean && promInternalOnly && grafInternalOnly && noHardcodedPass && digestsPinned;
 

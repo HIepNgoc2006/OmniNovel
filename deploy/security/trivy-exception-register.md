@@ -95,3 +95,31 @@
 2. **Minh bạch Học thuật & An Toàn Thông Tin:**
    - 100% các CVE được ignore đều có mã định danh, lý do kỹ thuật chi tiết, đánh giá khả năng khai thác thực tế và cơ chế phòng thủ bù đắp (Defense-in-Depth).
    - Đáp ứng trọn vẹn tiêu chuẩn đánh giá khắt khe của môn **An toàn thông tin** và **Triển khai phần mềm**.
+
+---
+
+## 🔍 IV. HỒ SƠ NGHIỆM THU SAU MERGE & BACKLOG (SECURITY REMEDIATION PR #210 — 2026-11-09)
+
+> **Quyết định Gate Review:** **SECURITY REMEDIATION — APPROVED & MERGED ON `main`** (giữ nguyên Step 5.2c application code ở trạng thái `IMPLEMENTED — PENDING FINAL GATE REVIEW`, không chỉnh sửa mã nguồn Web Projection / Mobile Sync / Mutation Queue).
+
+1. **Bằng Chứng Post-Merge trên `main`:**
+   - **Commit SHA (`main` squash merge PR `#210`):** `457576033e38e6fe3bbe1aa25351c917404d6c37` (`4575760`) — hợp nhất từ PR [`#210`](https://github.com/HIepNgoc2006/OmniNovel/pull/210) (commit review `933002d166c3bbb994f2de48da9989b9dd90e31e`, PR Run [`#42567591448`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/42567591448)).
+   - **Hosted GitHub Actions Run trên `main`:** Run [`#42571464548`](https://github.com/HIepNgoc2006/OmniNovel/actions/runs/42571464548) hoàn thành **7/7 Jobs `SUCCESS`**:
+     - `Web Client`: ESLint PASS, `tsc --noEmit` PASS, Next.js build SUCCESS, Vitest **`57/57` files (`846/846` PASS)**, Playwright **`31/31` PASS**.
+     - `NestJS Core API`: Unit **`50/50` suites (`606` passed, `1` skipped `r2-live-smoke.spec.ts`)**, Integration/E2E **`23/23` suites (`309/309` PASS)**.
+     - `Mobile Client`: `flutter analyze` `0 issues`, Flutter foundation tests **`500/500` PASS**.
+     - `AI Worker`: Pytest **`323/323` PASS**.
+     - `Security Audit`: Git hygiene CLEAN, TruffleHog `3.88.16` (`verified_secrets: 0`), P1 Exception Validator **`12/12` PASS**.
+     - `Docker Build & Security Scan`: Raw JSON reports (`--scanners vuln --ignorefile=""`) + `--enforce-reports` **`12/12` PASS** (`ai-worker`: `76/76/76`, `api`: `18/18/18`, `grafana`: `54/54/54`, `nginx`: `0/0/0`, `prometheus`: `2/2/2`) + **5/5 image scans** (`trivyignores` riêng từng image, `severity: CRITICAL,HIGH`, `exit-code: '1'`) **`PASS`**.
+     - `VPS Deployment & Topology`: `validate-compose-topology.py --test` **`17/17` PASS**, live `--stdin` strict exact-set topology **`PASS`** (*chỉ xác thực manifest/topology vì `VPS_SSH_HOST`/`VPS_SSH_KEY` chưa cấu hình*).
+
+2. **Thống Kê Chính Xác Danh Mục Đã Vá & Ngoại Lệ Đang Hiệu Lực (Hạn Rà Soát `2026-12-01`):**
+   - **Lỗ hổng đã vá trực tiếp trên container/base OS:**
+     - Lỗ hổng mới (chưa từng vào `.trivyignore`): `CVE-2026-107891` (`musl` / `musl-utils`) và `CVE-2026-85091` (`zlib` / `zlib1g`) trên `omninovel-api`, `omninovel-ai-worker`, và `grafana`.
+     - **18** mục advisory/scoped lịch sử đã được vá và gỡ bỏ khỏi các scoped `.trivyignore`: `api` (**2**: `CVE-2026-14456`, `CVE-2026-45447`), `ai-worker` (**1**: `CVE-2026-76844`), `prometheus` (**5**: `CVE-2026-42154`, `CVE-2026-111943`, `CVE-2026-78667`, `CVE-2026-78669`, `CVE-2026-97031` — ghi chú 4 mã Go stdlib vẫn còn hiệu lực riêng trên phạm vi `grafana`), và `grafana` (**10**: `CVE-2026-100349`, `CVE-2026-100351`, `CVE-2026-100352`, `CVE-2026-100353`, `CVE-2026-100354`, `CVE-2026-111497`, `CVE-2026-92392`, `CVE-2026-116587`, `CVE-2026-84304`, `CVE-2026-84445`).
+   - **Phân bổ ngoại lệ image-scoped đang kích hoạt (`SEC-REG-6.4.4A`, hết hạn `2026-12-01`):**
+     - Tổng **102 scoped entries**: `ai-worker` (**57**), `api` (**34**), `grafana` (**7**), `nginx` (**3**), `prometheus` (**1**).
+     - Hợp nhất tại [`.trivyignore`](../../.trivyignore) ở root: **99 unique security advisory IDs**, gồm **98 CVE IDs + 1 GHSA ID (`GHSA-5p4m-2wfm-xmqj`)** *(chênh lệch 3 mục do `CVE-2024-21538`, `CVE-2026-93990`, và `CVE-2026-78661` xuất hiện hợp lệ ở 2 image khác nhau)*.
+
+3. **Backlog Hardening (P1 — Non-Blocking):**
+   - Loại bỏ dần sự phụ thuộc vào root `.trivyignore` hoặc ép buộc mọi lệnh Trivy thủ công tại root sử dụng `--ignorefile deploy/security/trivy/<image>.trivyignore` / `trivy.yaml` tường minh để loại trừ nguy cơ vô tình áp dụng danh sách tổng hợp (`99` advisory IDs) cho một container image đơn lẻ.

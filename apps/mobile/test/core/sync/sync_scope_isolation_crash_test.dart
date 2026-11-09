@@ -1,13 +1,17 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:omninovel_mobile/core/identity/active_scope_coordinator.dart';
 import 'package:omninovel_mobile/core/storage/local_library_models.dart';
 import 'package:omninovel_mobile/core/storage/offline_database.dart';
+import 'package:omninovel_mobile/core/sync/authority/sync_write_admission.dart';
 import 'package:omninovel_mobile/core/sync/errors/sync_storage_exceptions.dart';
 import 'package:omninovel_mobile/core/sync/models/sync_models.dart';
 import 'package:omninovel_mobile/core/sync/storage/sync_storage_dal.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+import 'sync_test_helpers.dart';
 
 void main() {
   setUpAll(() {
@@ -47,6 +51,7 @@ void main() {
   group('Fail-Closed Baseline Lifecycle & Crash Recovery', () {
     test('defaults new and non-zero checkpoint scopes to UNINITIALIZED and forbids READY transitions in Stage 1', () async {
       const scope = 'account:baseline-lock';
+      final admission = testAccountAdmission(scope);
 
       // Default unseeded scope
       expect(await dal.getAuthoritativeBaselineStatus(scope), AuthoritativeBaselineStatus.uninitialized);
@@ -60,13 +65,18 @@ void main() {
           minActiveRevision: '10',
           lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
         ),
+        admission: admission,
       );
       expect(await dal.getAuthoritativeBaselineStatus(scope), AuthoritativeBaselineStatus.uninitialized);
       expect(await dal.isAuthoritativeReady(scope), isFalse);
 
       // Direct setAuthoritativeBaselineStatus(READY) is forbidden
       await expectLater(
-        () => dal.setAuthoritativeBaselineStatus(scope, AuthoritativeBaselineStatus.ready),
+        () => dal.setAuthoritativeBaselineStatus(
+          scope,
+          AuthoritativeBaselineStatus.ready,
+          admission: admission,
+        ),
         throwsA(isA<ReadyStatusTransitionForbiddenError>()),
       );
 
@@ -80,6 +90,7 @@ void main() {
             lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
             authoritativeBaselineStatus: AuthoritativeBaselineStatus.ready,
           ),
+          admission: admission,
         ),
         throwsA(isA<ReadyStatusTransitionForbiddenError>()),
       );
@@ -89,6 +100,7 @@ void main() {
 
     test('forbids mutating checkpoint, minActiveRevision, or epochs on a READY scope via putSyncMeta, while allowing operational telemetry updates', () async {
       const scope = 'account:ready-immutable';
+      final admission = testAccountAdmission(scope);
 
       // Seed a pre-existing verified READY row directly in SQLite (no production backdoor exists)
       await offlineDb.database.insert('sync_meta', <String, Object?>{
@@ -113,6 +125,7 @@ void main() {
             effectiveHistoryEpochs: <String, int>{'s1': 2, 's2': 5},
             authoritativeBaselineStatus: AuthoritativeBaselineStatus.ready,
           ),
+          admission: admission,
         ),
         throwsA(isA<ReadyStatusTransitionForbiddenError>().having(
           (e) => e.message,
@@ -132,6 +145,7 @@ void main() {
             effectiveHistoryEpochs: <String, int>{'s1': 2, 's2': 5},
             authoritativeBaselineStatus: AuthoritativeBaselineStatus.ready,
           ),
+          admission: admission,
         ),
         throwsA(isA<ReadyStatusTransitionForbiddenError>()),
       );
@@ -147,6 +161,7 @@ void main() {
             effectiveHistoryEpochs: <String, int>{'s1': 3, 's2': 5},
             authoritativeBaselineStatus: AuthoritativeBaselineStatus.ready,
           ),
+          admission: admission,
         ),
         throwsA(isA<ReadyStatusTransitionForbiddenError>()),
       );
@@ -163,6 +178,7 @@ void main() {
           authoritativeBaselineStatus: AuthoritativeBaselineStatus.ready,
           lastErrorMessage: 'Network timeout',
         ),
+        admission: admission,
       );
       final updated = await dal.getSyncMeta(scope);
       expect(updated?.syncState, SyncExecutionState.error);
@@ -171,6 +187,7 @@ void main() {
 
     test('crash recovery resets interrupted BOOTSTRAPPING back to UNINITIALIZED across DB reopen without losing checkpoint', () async {
       const scope = 'account:crash-recovery';
+      final admission = testAccountAdmission(scope);
 
       await dal.putSyncMeta(
         const SyncMeta(
@@ -181,8 +198,13 @@ void main() {
           effectiveHistoryEpochs: <String, int>{'story-9': 3},
           syncState: SyncExecutionState.reconciling410,
         ),
+        admission: admission,
       );
-      await dal.setAuthoritativeBaselineStatus(scope, AuthoritativeBaselineStatus.bootstrapping);
+      await dal.setAuthoritativeBaselineStatus(
+        scope,
+        AuthoritativeBaselineStatus.bootstrapping,
+        admission: admission,
+      );
       expect(await dal.getAuthoritativeBaselineStatus(scope), AuthoritativeBaselineStatus.bootstrapping);
       expect(await dal.isAuthoritativeReady(scope), isFalse);
 
@@ -198,7 +220,10 @@ void main() {
 
       expect(await dal.getAuthoritativeBaselineStatus(scope), AuthoritativeBaselineStatus.bootstrapping);
 
-      final recovered = await dal.recoverInterruptedBootstrapToUninitialized(scope);
+      final recovered = await dal.recoverInterruptedBootstrapToUninitialized(
+        scope,
+        admission: admission,
+      );
       expect(recovered, isTrue);
 
       final postRecovery = await dal.getSyncMeta(scope);
@@ -207,29 +232,34 @@ void main() {
       expect(postRecovery?.lastSyncedServerRevision, '55');
       expect(postRecovery?.effectiveHistoryEpochs, <String, int>{'story-9': 3});
 
-      // Calling recovery on non-bootstrapping or READY returns false cleanly
-      expect(await dal.recoverInterruptedBootstrapToUninitialized(scope), isFalse);
-      expect(await dal.recoverInterruptedBootstrapToUninitialized('account:missing'), isFalse);
+      // Calling recovery on non-bootstrapping or missing scope returns false cleanly
+      expect(
+        await dal.recoverInterruptedBootstrapToUninitialized(scope, admission: admission),
+        isFalse,
+      );
+      expect(
+        await dal.recoverInterruptedBootstrapToUninitialized(
+          'account:missing',
+          admission: testAccountAdmission('account:missing'),
+        ),
+        isFalse,
+      );
     });
   });
 
-  group('P0-M02 Triple-Barrier Admission & Multi-Tenant Scope Isolation', () {
-    test('pre-transaction and pre-commit checkAdmission aborts rollback 100% of writes without dirty shadows or sequence leaks', () async {
-      const scope = 'account:admission-guard';
-      var activeScope = scope;
-      var generation = 1;
-      const expectedGen = 1;
-
-      void guard() {
-        if (activeScope != scope || generation != expectedGen) {
-          throw const SyncAdmissionRejectedError(
-            'Scope or generation invalidated mid-flight.',
-          );
-        }
-      }
+  group('P0-M02 & P0-M06 4-Barrier Admission & Multi-Tenant Scope Isolation', () {
+    test('pre-transaction and pre-commit AccountWriteAdmission aborts rollback 100% of writes without dirty shadows or sequence leaks', () async {
+      const userId = 'admission-guard';
+      const scope = 'account:$userId';
+      final authority = MutableSyncAuthoritySource.activeAccount(userId, generation: 1);
+      final admission = AccountWriteAdmission(
+        authoritySource: authority,
+        expectedUserId: userId,
+        expectedGeneration: 1,
+      );
 
       // 1. Pre-transaction barrier blocks before touching DB
-      generation = 2;
+      authority.transitionGeneration = 2;
       await expectLater(
         () => dal.putBookmarkWithMutation(
           bookmark: LocalBookmark(
@@ -241,24 +271,25 @@ void main() {
           mutation: PendingMutationRecord.create(
             ownerScope: scope,
             mutationId: 'mut-blocked-1',
-            clientId: 'cli-1',
+            clientId: kTestClientId,
             domain: SyncDomain.bookmark,
             entityId: 's-blocked',
             operation: SyncOperation.upsert,
             baseServerRevision: '0',
             payload: const <String, Object?>{'storyId': 's-blocked'},
           ),
-          checkAdmission: guard,
+          admission: admission,
         ),
         throwsA(isA<SyncAdmissionRejectedError>()),
       );
 
-      // 2. Pre-commit seal barrier (Barrier 3): generation flips right before commit inside txn!
-      generation = 1;
+      // 2. Pre-commit seal barrier (Barrier 4): generation flips right before commit inside txn!
+      authority.transitionGeneration = 1;
       await expectLater(
         () => dal.applyAuthoritativeDeltaPage(
           ownerScope: scope,
           expectedCheckpoint: '0',
+          admission: admission,
           page: SyncChangesPage(
             currentServerRevision: '88',
             minActiveRevision: '0',
@@ -273,11 +304,13 @@ void main() {
               ),
             ],
           ),
-          checkAdmission: guard,
           onBeforeCommitHook: (_) async {
             // Simulate user logging out during async disk transaction before commit seal!
-            activeScope = 'guest:new-rotated-guest';
-            generation = 99;
+            authority.scopeState = ActiveScopeState.guest;
+            authority.activeScope = 'guest:new-rotated-guest';
+            authority.isAuthenticated = false;
+            authority.authenticatedUserId = null;
+            authority.transitionGeneration = 99;
           },
         ),
         throwsA(isA<SyncAdmissionRejectedError>()),
@@ -289,23 +322,24 @@ void main() {
       expect(await dal.getPendingMutations(scope), isEmpty);
     });
 
-    test('strictly isolates guest:*, account:A, and account:B and rejects malformed scopes', () async {
+    test('strictly isolates guest:*, account:A, and account:B and rejects malformed/guest sync scopes', () async {
       const guestScope = 'guest:g-iso-1';
       const accountA = 'account:usr-A';
       const accountB = 'account:usr-B';
       final t = DateTime.utc(2026, 1, 1);
 
-      for (final invalid in <String?>['', '   ', 'anon', 'guest:', 'account:', ' account:a', 'device:123']) {
+      for (final invalid in <String?>['', '   ', 'anon', 'guest:', 'account:', ' account:a', 'device:123', guestScope]) {
         await expectLater(
           () => dal.getSyncMeta(invalid ?? ''),
           throwsA(isA<InvalidSyncScopeException>()),
         );
       }
 
-      // Account A & B delta + pending + preference + guest preference coexist cleanly
+      // Account A & B delta + guest-local preference coexist cleanly
       await dal.applyAuthoritativeDeltaPage(
         ownerScope: accountA,
         expectedCheckpoint: '0',
+        admission: testAccountAdmission(accountA),
         page: SyncChangesPage(
           currentServerRevision: '10',
           minActiveRevision: '0',
@@ -325,6 +359,7 @@ void main() {
       await dal.applyAuthoritativeDeltaPage(
         ownerScope: accountB,
         expectedCheckpoint: '0',
+        admission: testAccountAdmission(accountB),
         page: SyncChangesPage(
           currentServerRevision: '20',
           minActiveRevision: '0',
@@ -341,23 +376,31 @@ void main() {
           ],
         ),
       );
-      await dal.putPreference(
+      await dal.putGuestLocalPreference(
         LocalPreferenceRecord(
           ownerScope: guestScope,
           prefKey: 'reader_bg',
           value: 'sepia',
           updatedAt: t.toIso8601String(),
         ),
+        admission: testGuestAdmission(guestScope),
       );
 
       expect((await dal.getSyncMeta(accountA))?.lastSyncedServerRevision, '10');
       expect((await dal.getSyncMeta(accountB))?.lastSyncedServerRevision, '20');
-      expect(await dal.getSyncMeta(guestScope), isNull);
+      expect(
+        await offlineDb.database.query(
+          'sync_meta',
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[guestScope],
+        ),
+        isEmpty,
+      );
 
       expect((await dal.getAuthoritativeShadow(accountA, SyncDomain.bookmark, 'story-shared-id'))?.payload?['owner'], 'A');
       expect((await dal.getAuthoritativeShadow(accountB, SyncDomain.bookmark, 'story-shared-id'))?.payload?['owner'], 'B');
-      expect((await dal.getPreference(guestScope, 'reader_bg'))?.value, 'sepia');
-      expect(await dal.getPreference(accountA, 'reader_bg'), isNull);
+      expect((await dal.getGuestLocalPreference(guestScope, 'reader_bg'))?.value, 'sepia');
+      expect(await dal.getAccountLocalPreference(accountA, 'reader_bg'), isNull);
     });
   });
 }

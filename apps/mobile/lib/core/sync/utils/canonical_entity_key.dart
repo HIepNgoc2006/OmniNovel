@@ -16,6 +16,18 @@ const List<String> kValidSyncReadingModes = <String>[
   'NOVEL',
 ];
 
+/// Regex kiểm định chuẩn RFC4122 UUIDv4 cho `clientId` bền vững (`P1-M08`).
+final RegExp _kUuidV4Regex = RegExp(
+  r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$',
+  caseSensitive: false,
+);
+
+/// Kiểm tra [value] có phải RFC4122 UUIDv4 hợp lệ hay không (không khoảng trắng thừa).
+bool isValidUuidV4(String? value) {
+  if (value == null || value != value.trim()) return false;
+  return _kUuidV4Regex.hasMatch(value);
+}
+
 /// Kiểm tra [scope] có phải Guest scope (`guest:<guestProfileId>`) hợp lệ hay không.
 bool isGuestScope(String? scope) {
   if (scope == null || scope != scope.trim()) return false;
@@ -39,12 +51,24 @@ String assertValidScope(String? scope) {
   return scope!;
 }
 
-/// Xác thực [scope] bắt buộc thuộc `account:<userId>`.
+/// Xác thực [scope] bắt buộc thuộc `account:<userId>` (`P0-M05`).
+/// Chặn tuyệt đối mọi `guest:*` hoặc scope sai định dạng khỏi Account Sync Storage.
 String assertAccountScope(String? scope) {
   if (!isAccountScope(scope)) {
     throw InvalidSyncScopeException(
       scope,
-      'Invalid account scope "$scope". Strictly requires "account:<userId>".',
+      'ACCOUNT_SYNC_SCOPE_REQUIRED: Invalid account scope "$scope". Strictly requires "account:<userId>".',
+    );
+  }
+  return scope!;
+}
+
+/// Xác thực [scope] bắt buộc thuộc `guest:<guestProfileId>` (`P0-M05`).
+String assertGuestScope(String? scope) {
+  if (!isGuestScope(scope)) {
+    throw InvalidSyncScopeException(
+      scope,
+      'GUEST_SCOPE_REQUIRED: Invalid guest scope "$scope". Strictly requires "guest:<guestProfileId>".',
     );
   }
   return scope!;
@@ -90,16 +114,20 @@ bool areEpochMapsEqual(Map<String, int>? a, Map<String, int>? b) {
 
 /// Chuẩn hóa `readingMode` từ Mobile v3 (`MANGA_PAGED`) sang Canonical Sync DTO (M2):
 /// `'WEBTOON' | 'PAGED' | 'NOVEL'`.
+///
+/// Tuân thủ `P1-M07` fail-closed: từ chối `null`, chuỗi rỗng hoặc mọi giá trị ngoài
+/// `WEBTOON`, `PAGED`, `NOVEL`, `MANGA_PAGED` bằng [InvalidSyncReadingModeException].
 String normalizeSyncReadingMode(String? readingMode) {
   switch (readingMode?.trim().toUpperCase()) {
-    case 'NOVEL':
-      return 'NOVEL';
+    case 'WEBTOON':
+      return 'WEBTOON';
     case 'PAGED':
     case 'MANGA_PAGED':
       return 'PAGED';
-    case 'WEBTOON':
+    case 'NOVEL':
+      return 'NOVEL';
     default:
-      return 'WEBTOON';
+      throw InvalidSyncReadingModeException(readingMode);
   }
 }
 

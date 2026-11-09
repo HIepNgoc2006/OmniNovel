@@ -11,6 +11,8 @@ import 'package:omninovel_mobile/core/sync/utils/canonical_entity_key.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'sync_test_helpers.dart';
+
 void main() {
   setUpAll(() {
     sqfliteFfiInit();
@@ -51,6 +53,7 @@ void main() {
   group('Atomic Local Write + Enqueue & Monotonic MAX History', () {
     test('recordReadingSessionWithMutation persists progress, monotonic MAX history, and enqueues FIFO without touching shadow replicas', () async {
       const scope = 'account:user-1';
+      final admission = testAccountAdmission(scope);
       final t1 = DateTime.fromMillisecondsSinceEpoch(1730000000000, isUtc: true);
       final t2 = DateTime.fromMillisecondsSinceEpoch(1730000010000, isUtc: true);
 
@@ -79,7 +82,7 @@ void main() {
       final mut1 = PendingMutationRecord.create(
         ownerScope: scope,
         mutationId: 'mut-session-1',
-        clientId: 'client-mobile-1',
+        clientId: kTestClientId,
         domain: SyncDomain.progress,
         entityId: 'story-1',
         operation: SyncOperation.upsert,
@@ -93,6 +96,7 @@ void main() {
         progress: progress1,
         history: history1,
         mutation: mut1,
+        admission: admission,
       );
       expect(saved1.sequenceNo, 1);
 
@@ -107,7 +111,7 @@ void main() {
       final mut2 = PendingMutationRecord.create(
         ownerScope: scope,
         mutationId: 'mut-session-2',
-        clientId: 'client-mobile-1',
+        clientId: kTestClientId,
         domain: SyncDomain.progress,
         entityId: 'story-1',
         operation: SyncOperation.upsert,
@@ -120,6 +124,7 @@ void main() {
         progress: progress2,
         history: history2,
         mutation: mut2,
+        admission: admission,
       );
       expect(saved2.sequenceNo, 2);
 
@@ -134,6 +139,7 @@ void main() {
 
     test('bookmark, preference, story history delete, and global clearAllHistory atomic writes enforce invariants', () async {
       const scope = 'account:user-atomic-all';
+      final admission = testAccountAdmission(scope);
       final t = DateTime.fromMillisecondsSinceEpoch(1730000100000, isUtc: true);
 
       // 1. Bookmark upsert & delete
@@ -148,7 +154,7 @@ void main() {
         mutation: PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'mut-bm-up',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.bookmark,
           entityId: 'story-bm-1',
           operation: SyncOperation.upsert,
@@ -156,6 +162,7 @@ void main() {
           payload: const <String, Object?>{'storyId': 'story-bm-1'},
           createdAt: t,
         ),
+        admission: admission,
       );
       expect(await localDao.isBookmarked(ownerScope: scope, storyId: 'story-bm-1'), isTrue);
 
@@ -170,7 +177,7 @@ void main() {
         mutation: PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'mut-pref-1',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.preference,
           entityId: 'reader_theme',
           operation: SyncOperation.upsert,
@@ -178,8 +185,9 @@ void main() {
           payload: const <String, Object?>{'key': 'reader_theme', 'value': 'amoled'},
           createdAt: t,
         ),
+        admission: admission,
       );
-      expect((await dal.getPreference(scope, 'reader_theme'))?.value, 'amoled');
+      expect((await dal.getAccountLocalPreference(scope, 'reader_theme'))?.value, 'amoled');
 
       // 3. Seed reading state for story-A and story-B
       for (final sId in <String>['story-A', 'story-B']) {
@@ -212,7 +220,7 @@ void main() {
         mutation: PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'mut-hist-del-A',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.history,
           entityId: 'story-A',
           operation: SyncOperation.delete,
@@ -220,6 +228,7 @@ void main() {
           payload: const <String, Object?>{'storyId': 'story-A'},
           createdAt: t,
         ),
+        admission: admission,
       );
       expect(await localDao.getProgress(ownerScope: scope, storyId: 'story-A'), isNull);
       expect(await localDao.getProgress(ownerScope: scope, storyId: 'story-B'), isNotNull);
@@ -231,7 +240,7 @@ void main() {
         mutation: PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'mut-hist-del-all',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.history,
           entityId: kGlobalHistorySentinelUuid,
           operation: SyncOperation.delete,
@@ -239,6 +248,7 @@ void main() {
           payload: const <String, Object?>{},
           createdAt: t,
         ),
+        admission: admission,
       );
       expect(await localDao.getHistory(ownerScope: scope), isEmpty);
       expect(await localDao.getProgress(ownerScope: scope, storyId: 'story-B'), isNull);
@@ -251,7 +261,7 @@ void main() {
         mutation: PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'mut-bm-del',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.bookmark,
           entityId: 'story-bm-1',
           operation: SyncOperation.delete,
@@ -259,12 +269,14 @@ void main() {
           payload: const <String, Object?>{'storyId': 'story-bm-1'},
           createdAt: t,
         ),
+        admission: admission,
       );
       expect(await localDao.isBookmarked(ownerScope: scope, storyId: 'story-bm-1'), isFalse);
     });
 
     test('duplicate mutationId triggers DuplicateMutationException and rolls back local write and sequence_no', () async {
       const scope = 'account:user-dup';
+      final admission = testAccountAdmission(scope);
       final t = DateTime.fromMillisecondsSinceEpoch(1730000200000, isUtc: true);
 
       await dal.putBookmarkWithMutation(
@@ -277,7 +289,7 @@ void main() {
         mutation: PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'dup-id-1',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.bookmark,
           entityId: 'story-1',
           operation: SyncOperation.upsert,
@@ -285,6 +297,7 @@ void main() {
           payload: const <String, Object?>{'storyId': 'story-1'},
           createdAt: t,
         ),
+        admission: admission,
       );
 
       // Reuse same mutationId for story-2 -> must abort & roll back BOTH bookmark and sequence_no!
@@ -299,7 +312,7 @@ void main() {
           mutation: PendingMutationRecord.create(
             ownerScope: scope,
             mutationId: 'dup-id-1',
-            clientId: 'cli-1',
+            clientId: kTestClientId,
             domain: SyncDomain.bookmark,
             entityId: 'story-2',
             operation: SyncOperation.upsert,
@@ -307,6 +320,7 @@ void main() {
             payload: const <String, Object?>{'storyId': 'story-2'},
             createdAt: t,
           ),
+          admission: admission,
         ),
         throwsA(isA<DuplicateMutationException>()),
       );
@@ -324,7 +338,7 @@ void main() {
         mutation: PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'valid-id-2',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.bookmark,
           entityId: 'story-3',
           operation: SyncOperation.upsert,
@@ -332,12 +346,14 @@ void main() {
           payload: const <String, Object?>{'storyId': 'story-3'},
           createdAt: t,
         ),
+        admission: admission,
       );
       expect(next.sequenceNo, 2);
     });
 
     test('onBeforeCommitHook failure rolls back local write, pending mutation, and sequence_no', () async {
       const scope = 'account:user-hook-rb';
+      final admission = testAccountAdmission(scope);
       final t = DateTime.fromMillisecondsSinceEpoch(1730000300000, isUtc: true);
 
       await expectLater(
@@ -351,7 +367,7 @@ void main() {
           mutation: PendingMutationRecord.create(
             ownerScope: scope,
             mutationId: 'mut-hook-rb',
-            clientId: 'cli-1',
+            clientId: kTestClientId,
             domain: SyncDomain.preference,
             entityId: 'font_size',
             operation: SyncOperation.upsert,
@@ -359,12 +375,13 @@ void main() {
             payload: const <String, Object?>{'key': 'font_size', 'value': 22},
             createdAt: t,
           ),
+          admission: admission,
           onBeforeCommitHook: (_) async => throw StateError('Simulated crash before commit'),
         ),
         throwsStateError,
       );
 
-      expect(await dal.getPreference(scope, 'font_size'), isNull);
+      expect(await dal.getAccountLocalPreference(scope, 'font_size'), isNull);
       expect(await dal.getPendingMutations(scope), isEmpty);
       final seqRows = await offlineDb.database.query(
         'sync_mutation_sequences',
@@ -378,6 +395,7 @@ void main() {
   group('P1-M03: Durable Monotonic Mutation FIFO (sequence_no)', () {
     test('preserves strict insertion order across identical/regressive timestamps, empty queue drain, and DB restart', () async {
       const scope = 'account:user-fifo';
+      final admission = testAccountAdmission(scope);
       final sameTime = DateTime.fromMillisecondsSinceEpoch(1730001000000, isUtc: true);
       final backwardsTime = DateTime.fromMillisecondsSinceEpoch(1729999000000, isUtc: true); // NTP jump back
 
@@ -386,7 +404,7 @@ void main() {
         PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'mut-z-first',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.progress,
           entityId: 'story-1',
           operation: SyncOperation.upsert,
@@ -394,12 +412,13 @@ void main() {
           payload: const <String, Object?>{'chapterId': 'ch-1'},
           createdAt: sameTime,
         ),
+        admission: admission,
       );
       final mA = await dal.enqueuePendingMutation(
         PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'mut-a-second',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.progress,
           entityId: 'story-1',
           operation: SyncOperation.upsert,
@@ -407,12 +426,13 @@ void main() {
           payload: const <String, Object?>{'chapterId': 'ch-2'},
           createdAt: sameTime,
         ),
+        admission: admission,
       );
       final mM = await dal.enqueuePendingMutation(
         PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'mut-m-third-ntp-back',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.bookmark,
           entityId: 'story-1',
           operation: SyncOperation.delete,
@@ -420,6 +440,7 @@ void main() {
           payload: const <String, Object?>{'storyId': 'story-1'},
           createdAt: backwardsTime,
         ),
+        admission: admission,
       );
 
       expect(<int>[mZ.sequenceNo, mA.sequenceNo, mM.sequenceNo], <int>[1, 2, 3]);
@@ -434,6 +455,7 @@ void main() {
       await dal.deletePendingMutationsBatch(
         scope,
         fifo1.map((m) => m.mutationId).toList(),
+        admission: admission,
       );
       expect(await dal.getPendingMutations(scope), isEmpty);
 
@@ -451,7 +473,7 @@ void main() {
         PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'mut-post-restart',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.bookmark,
           entityId: 'story-2',
           operation: SyncOperation.upsert,
@@ -459,6 +481,7 @@ void main() {
           payload: const <String, Object?>{'storyId': 'story-2'},
           createdAt: backwardsTime,
         ),
+        admission: admission,
       );
       expect(m4.sequenceNo, 4);
     });
@@ -467,13 +490,14 @@ void main() {
   group('P1-M04: Transient Failure, Full-Fidelity Quarantine, Requeue & Eviction', () {
     test('recordTransientFailureAtomic computes backoff and preserves full metadata upon quarantine', () async {
       const scope = 'account:user-quarantine';
+      final admission = testAccountAdmission(scope);
       final origTime = DateTime.fromMillisecondsSinceEpoch(1730002000123, isUtc: true);
 
       final pending = await dal.enqueuePendingMutation(
         PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'mut-q-1',
-          clientId: 'cli-android-9',
+          clientId: kTestClientIdAlt,
           domain: SyncDomain.history,
           entityId: 'story-9:chap-4',
           operation: SyncOperation.upsert,
@@ -482,6 +506,7 @@ void main() {
           payload: const <String, Object?>{'storyId': 'story-9', 'chapterId': 'chap-4', 'observedHistoryEpoch': 7},
           createdAt: origTime,
         ),
+        admission: admission,
       );
       expect(pending.sequenceNo, 1);
 
@@ -498,6 +523,7 @@ void main() {
         ownerScope: scope,
         mutationId: 'mut-q-1',
         options: opts,
+        admission: admission,
       );
       expect(r1.outcome, TransientFailureOutcome.retryScheduled);
       expect(r1.retryCount, 1);
@@ -516,6 +542,7 @@ void main() {
             failureReason: 'rollback test',
             onBeforeCommitHook: (_) async => throw StateError('abort'),
           ),
+          admission: admission,
         ),
         throwsStateError,
       );
@@ -526,6 +553,7 @@ void main() {
         ownerScope: scope,
         mutationId: 'mut-q-1',
         options: opts,
+        admission: admission,
       );
       expect(r2.outcome, TransientFailureOutcome.retryScheduled);
       expect(r2.retryCount, 2);
@@ -535,6 +563,7 @@ void main() {
         ownerScope: scope,
         mutationId: 'mut-q-1',
         options: opts,
+        admission: admission,
       );
       expect(r3.outcome, TransientFailureOutcome.quarantined);
       expect(r3.quarantinedMutation, isNotNull);
@@ -555,6 +584,7 @@ void main() {
       final requeued = await dal.requeueQuarantinedMutation(
         ownerScope: scope,
         mutationId: 'mut-q-1',
+        admission: admission,
       );
       expect(requeued.retryCount, 0);
       expect(requeued.nextRetryAtMs, isNull);
@@ -568,12 +598,14 @@ void main() {
         ownerScope: scope,
         mutationId: 'does-not-exist',
         options: opts,
+        admission: admission,
       );
       expect(notFound.outcome, TransientFailureOutcome.notFound);
     });
 
     test('prohibits requeuing REJECTED_TOMBSTONE, REJECTED_STALE, and HTTP_410_GONE', () async {
       const scope = 'account:user-requeue-locks';
+      final admission = testAccountAdmission(scope);
       final t = DateTime.fromMillisecondsSinceEpoch(1730003000000, isUtc: true);
 
       for (final status in <String>['REJECTED_TOMBSTONE', 'REJECTED_STALE', 'HTTP_410_GONE']) {
@@ -582,7 +614,7 @@ void main() {
           PendingMutationRecord.create(
             ownerScope: scope,
             mutationId: mutId,
-            clientId: 'cli-1',
+            clientId: kTestClientId,
             domain: SyncDomain.history,
             entityId: 'story-1:chap-1',
             operation: SyncOperation.upsert,
@@ -591,6 +623,7 @@ void main() {
             payload: const <String, Object?>{'storyId': 'story-1', 'chapterId': 'chap-1'},
             createdAt: t,
           ),
+          admission: admission,
         );
         await dal.quarantinePendingMutationByKey(
           ownerScope: scope,
@@ -603,10 +636,15 @@ void main() {
             triageApproved: false,
             triageReason: 'Epoch mismatch',
           ),
+          admission: admission,
         );
 
         await expectLater(
-          () => dal.requeueQuarantinedMutation(ownerScope: scope, mutationId: mutId),
+          () => dal.requeueQuarantinedMutation(
+            ownerScope: scope,
+            mutationId: mutId,
+            admission: admission,
+          ),
           throwsA(isA<RequeueProhibitedError>()),
         );
         expect(await dal.getQuarantinedMutation(scope, mutId), isNotNull);
@@ -615,6 +653,7 @@ void main() {
 
     test('evictReplicaAndRemovePending atomically clears local/shadow replicas and removes pending mutation', () async {
       const scope = 'account:user-evict';
+      final admission = testAccountAdmission(scope);
       final t = DateTime.fromMillisecondsSinceEpoch(1730004000000, isUtc: true);
 
       final bm = LocalBookmark(ownerScope: scope, storyId: 'story-bm', title: 'BM', createdAt: t);
@@ -623,7 +662,7 @@ void main() {
         mutation: PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'mut-bm-evict',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.bookmark,
           entityId: 'story-bm',
           operation: SyncOperation.upsert,
@@ -631,6 +670,7 @@ void main() {
           payload: const <String, Object?>{'storyId': 'story-bm'},
           createdAt: t,
         ),
+        admission: admission,
       );
 
       // Hook failure must leave BOTH bookmark and pending mutation intact
@@ -640,6 +680,7 @@ void main() {
           domain: SyncDomain.bookmark,
           entityId: 'story-bm',
           mutationId: 'mut-bm-evict',
+          admission: admission,
           onBeforeCommitHook: (_) async => throw StateError('fail eviction'),
         ),
         throwsStateError,
@@ -653,50 +694,60 @@ void main() {
         domain: SyncDomain.bookmark,
         entityId: 'story-bm',
         mutationId: 'mut-bm-evict',
+        admission: admission,
       );
       expect(await localDao.isBookmarked(ownerScope: scope, storyId: 'story-bm'), isFalse);
       expect(await dal.getPendingMutation(scope, 'mut-bm-evict'), isNull);
     });
   });
 
-  group('P1-M04 Snapshot Staging & Scope-Safe Purge', () {
+  group('P1-M04 Snapshot Staging & P0-M05 Scope-Safe Purge', () {
     test('stageSnapshotItems enforces uniform snapshotRevision per (ownerScope, sessionId)', () async {
       const scope = 'account:user-snap';
+      final admission = testAccountAdmission(scope);
       const nowIso = '2026-01-01T00:00:00.000Z';
 
-      await dal.stageSnapshotItems(<SnapshotStagingItem>[
-        const SnapshotStagingItem(
-          ownerScope: scope,
-          sessionId: 'sess-1',
-          snapshotRevision: '200',
-          minActiveRevision: '150',
-          cursorToken: 'cursor-p2',
-          pageIndex: 0,
-          domain: SyncDomain.bookmark,
-          entityKey: 'story-1',
-          payload: <String, Object?>{'storyId': 'story-1'},
-          stagedAtIso: nowIso,
-          stagedAtMs: 1000,
-        ),
-      ]);
+      await dal.stageSnapshotItems(
+        ownerScope: scope,
+        admission: admission,
+        items: const <SnapshotStagingItem>[
+          SnapshotStagingItem(
+            ownerScope: scope,
+            sessionId: 'sess-1',
+            snapshotRevision: '200',
+            minActiveRevision: '150',
+            cursorToken: 'cursor-p2',
+            pageIndex: 0,
+            domain: SyncDomain.bookmark,
+            entityKey: 'story-1',
+            payload: <String, Object?>{'storyId': 'story-1'},
+            stagedAtIso: nowIso,
+            stagedAtMs: 1000,
+          ),
+        ],
+      );
 
       // Staging another page with conflicting snapshotRevision MUST throw SnapshotStagingConflictError
       await expectLater(
-        () => dal.stageSnapshotItems(<SnapshotStagingItem>[
-          const SnapshotStagingItem(
-            ownerScope: scope,
-            sessionId: 'sess-1',
-            snapshotRevision: '201',
-            minActiveRevision: '150',
-            cursorToken: null,
-            pageIndex: 1,
-            domain: SyncDomain.bookmark,
-            entityKey: 'story-2',
-            payload: <String, Object?>{'storyId': 'story-2'},
-            stagedAtIso: nowIso,
-            stagedAtMs: 1001,
-          ),
-        ]),
+        () => dal.stageSnapshotItems(
+          ownerScope: scope,
+          admission: admission,
+          items: const <SnapshotStagingItem>[
+            SnapshotStagingItem(
+              ownerScope: scope,
+              sessionId: 'sess-1',
+              snapshotRevision: '201',
+              minActiveRevision: '150',
+              cursorToken: null,
+              pageIndex: 1,
+              domain: SyncDomain.bookmark,
+              entityKey: 'story-2',
+              payload: <String, Object?>{'storyId': 'story-2'},
+              stagedAtIso: nowIso,
+              stagedAtMs: 1001,
+            ),
+          ],
+        ),
         throwsA(isA<SnapshotStagingConflictError>()),
       );
 
@@ -704,13 +755,15 @@ void main() {
       expect(staged, hasLength(1));
       expect(staged.first.entityKey, 'story-1');
 
-      await dal.clearSnapshotStaging(scope, sessionId: 'sess-1');
+      await dal.clearSnapshotStaging(scope, sessionId: 'sess-1', admission: admission);
       expect(await dal.getSnapshotStagingItems(scope, 'sess-1'), isEmpty);
     });
 
-    test('purgeScope deletes only target scope tables and preserves offline_chapters, download_tasks, tombstones, recovery journal, and other scopes', () async {
+    test('purgeAccountScope deletes only target scope tables and preserves offline_chapters, download_tasks, tombstones, recovery journal, and other scopes', () async {
       const targetScope = 'account:user-purge-target';
       const otherScope = 'guest:guest-safe';
+      final targetAdmission = testAccountAdmission(targetScope);
+      final otherGuestAdmission = testGuestAdmission(otherScope);
       final db = offlineDb.database;
       final t = DateTime.fromMillisecondsSinceEpoch(1730005000000, isUtc: true);
 
@@ -765,7 +818,7 @@ void main() {
         mutation: PendingMutationRecord.create(
           ownerScope: targetScope,
           mutationId: 'mut-t1',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.bookmark,
           entityId: 's-target',
           operation: SyncOperation.upsert,
@@ -773,41 +826,63 @@ void main() {
           payload: const <String, Object?>{'storyId': 's-target'},
           createdAt: t,
         ),
+        admission: targetAdmission,
       );
-      await dal.putPreference(
-        LocalPreferenceRecord(
+      await dal.putPreferenceWithMutation(
+        preference: LocalPreferenceRecord(
           ownerScope: targetScope,
           prefKey: 'theme',
           value: 'dark',
           updatedAt: t.toIso8601String(),
         ),
+        mutation: PendingMutationRecord.create(
+          ownerScope: targetScope,
+          mutationId: 'mut-pref-t1',
+          clientId: kTestClientId,
+          domain: SyncDomain.preference,
+          entityId: 'theme',
+          operation: SyncOperation.upsert,
+          baseServerRevision: '0',
+          payload: const <String, Object?>{'key': 'theme', 'value': 'dark'},
+          createdAt: t,
+        ),
+        admission: targetAdmission,
       );
-      await dal.setAuthoritativeBaselineStatus(targetScope, AuthoritativeBaselineStatus.bootstrapping);
+      await dal.setAuthoritativeBaselineStatus(
+        targetScope,
+        AuthoritativeBaselineStatus.bootstrapping,
+        admission: targetAdmission,
+      );
 
-      // Seed otherScope
+      // Seed otherScope (Guest-local)
       await localDao.saveBookmark(
         LocalBookmark(ownerScope: otherScope, storyId: 's-other', title: 'Other', createdAt: t),
       );
-      await dal.putPreference(
+      await dal.putGuestLocalPreference(
         LocalPreferenceRecord(
           ownerScope: otherScope,
           prefKey: 'theme',
           value: 'light',
           updatedAt: t.toIso8601String(),
         ),
+        admission: otherGuestAdmission,
       );
 
-      await dal.purgeScope(targetScope);
+      await dal.purgeAccountScope(
+        ownerScope: targetScope,
+        reason: AccountPurgeReason.accountDeleted,
+        admission: targetAdmission,
+      );
 
       // Target scope wiped
       expect(await dal.getSyncMeta(targetScope), isNull);
       expect(await dal.getPendingMutations(targetScope), isEmpty);
-      expect(await dal.getPreference(targetScope, 'theme'), isNull);
+      expect(await dal.getAccountLocalPreference(targetScope, 'theme'), isNull);
       expect(await localDao.getBookmarks(ownerScope: targetScope), isEmpty);
 
       // Other scope & disk/journal tables preserved 100%
       expect(await localDao.isBookmarked(ownerScope: otherScope, storyId: 's-other'), isTrue);
-      expect((await dal.getPreference(otherScope, 'theme'))?.value, 'light');
+      expect((await dal.getGuestLocalPreference(otherScope, 'theme'))?.value, 'light');
       expect(await db.query('offline_chapters'), hasLength(1));
       expect(await db.query('download_tasks'), hasLength(1));
       expect(await db.query('offline_deletion_tombstones'), hasLength(1));

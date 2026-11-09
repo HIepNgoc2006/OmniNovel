@@ -2,13 +2,17 @@ import 'dart:io';
 import 'dart:isolate';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:omninovel_mobile/core/identity/active_scope_coordinator.dart';
 import 'package:omninovel_mobile/core/storage/offline_database.dart';
+import 'package:omninovel_mobile/core/sync/authority/sync_write_admission.dart';
 import 'package:omninovel_mobile/core/sync/errors/sync_storage_exceptions.dart';
 import 'package:omninovel_mobile/core/sync/models/sync_models.dart';
 import 'package:omninovel_mobile/core/sync/storage/sync_storage_dal.dart';
 import 'package:omninovel_mobile/core/sync/utils/canonical_entity_key.dart';
 import 'package:path/path.dart' as p;
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+
+import 'sync_test_helpers.dart';
 
 void main() {
   setUpAll(() {
@@ -96,6 +100,7 @@ void main() {
         ownerScope: scope,
         expectedCheckpoint: '0',
         page: page,
+        admission: testAccountAdmission(scope),
       );
 
       expect(result.appliedCount, 5);
@@ -126,11 +131,13 @@ void main() {
           minActiveRevision: '9007199254740990',
           lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
         ),
+        admission: testAccountAdmission(scope),
       );
 
       final res = await dal.applyAuthoritativeDeltaPage(
         ownerScope: scope,
         expectedCheckpoint: bigBase,
+        admission: testAccountAdmission(scope),
         page: SyncChangesPage(
           currentServerRevision: bigNext,
           minActiveRevision: '9007199254740990',
@@ -154,6 +161,7 @@ void main() {
         () => dal.applyAuthoritativeDeltaPage(
           ownerScope: scope,
           expectedCheckpoint: bigNext,
+          admission: testAccountAdmission(scope),
           page: const SyncChangesPage(
             currentServerRevision: '9223372036854775808',
             minActiveRevision: '0',
@@ -168,11 +176,13 @@ void main() {
 
     test('P0-M01 rejects invalid checkpoints, inconsistent cursors, compaction gap, bounds, ordering, and rolls back cleanly', () async {
       const scope = 'account:p0-m01';
+      final admission = testAccountAdmission(scope);
 
       // Seed valid initial checkpoint '50'
       await dal.applyAuthoritativeDeltaPage(
         ownerScope: scope,
         expectedCheckpoint: '0',
+        admission: admission,
         page: SyncChangesPage(
           currentServerRevision: '50',
           minActiveRevision: '0',
@@ -200,6 +210,7 @@ void main() {
             ownerScope: scope,
             expectedCheckpoint: expectedCkpt,
             page: page,
+            admission: admission,
           ),
           throwsA(
             isA<InvalidDeltaPayloadError>().having(
@@ -442,6 +453,7 @@ void main() {
   group('P0-M02 Native SQLite OCC & Dual-Connection Contention', () {
     test('single connection OCC conflict throws CheckpointConflictError with zero dirty shadow', () async {
       const scope = 'account:occ-single';
+      final admission = testAccountAdmission(scope);
       await dal.putSyncMeta(
         const SyncMeta(
           ownerScope: scope,
@@ -449,12 +461,14 @@ void main() {
           minActiveRevision: '50',
           lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
         ),
+        admission: admission,
       );
 
       await expectLater(
         () => dal.applyAuthoritativeDeltaPage(
           ownerScope: scope,
           expectedCheckpoint: '90',
+          admission: admission,
           page: SyncChangesPage(
             currentServerRevision: '110',
             minActiveRevision: '50',
@@ -487,6 +501,7 @@ void main() {
           minActiveRevision: '0',
           lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
         ),
+        admission: testAccountAdmission(scope),
       );
 
       final readyPort1 = ReceivePort();
@@ -601,6 +616,7 @@ void main() {
           minActiveRevision: '0',
           lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
         ),
+        admission: testAccountAdmission(scope),
       );
 
       final readyPortA = ReceivePort();
@@ -690,6 +706,7 @@ void main() {
 
     test('retries pre-entry SQLITE_BUSY (codes 5/517/fallback) until lock clears without re-executing action', () async {
       const scope = 'account:busy-retry-ok';
+      final admission = testAccountAdmission(scope);
       final contendingDb = _ContendingDatabase(
         offlineDb.database,
         preEntryErrors: <DatabaseException>[
@@ -704,7 +721,7 @@ void main() {
         PendingMutationRecord.create(
           ownerScope: scope,
           mutationId: 'mut-busy-retry-1',
-          clientId: 'cli-1',
+          clientId: kTestClientId,
           domain: SyncDomain.bookmark,
           entityId: 'story-1',
           operation: SyncOperation.upsert,
@@ -712,6 +729,7 @@ void main() {
           payload: const <String, Object?>{'storyId': 'story-1'},
           createdAt: DateTime.utc(2026, 1, 1),
         ),
+        admission: admission,
       );
 
       expect(contendingDb.transactionAttempts, 4);
@@ -721,6 +739,7 @@ void main() {
 
     test('never retries on post-entry SQLITE_BUSY, SQLITE_LOCKED (6), or non-BUSY database errors', () async {
       const scope = 'account:no-retry-guard';
+      final admission = testAccountAdmission(scope);
 
       // 1. SQLITE_BUSY xảy ra sau khi đã bước vào thân action -> cấm retry (chỉ chạy đúng 1 lần)
       final postEntryDb = _ContendingDatabase(
@@ -736,6 +755,7 @@ void main() {
             minActiveRevision: '0',
             lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
           ),
+          admission: admission,
         ),
         throwsA(isA<DatabaseException>()),
       );
@@ -764,6 +784,7 @@ void main() {
               minActiveRevision: '0',
               lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
             ),
+            admission: admission,
           ),
           throwsA(isA<DatabaseException>()),
         );
@@ -771,8 +792,10 @@ void main() {
       }
     });
 
-    test('fails closed on busyRetryTimeout exhaustion and aborts cleanly if checkAdmission invalidates mid-wait', () async {
+    test('fails closed on busyRetryTimeout exhaustion and aborts cleanly if admission invalidates mid-wait', () async {
       const scope = 'account:busy-budget-admission';
+      const userId = 'busy-budget-admission';
+      final admission = testAccountAdmission(scope);
 
       // 1. Ngân sách hết -> fail closed DatabaseException
       final exhaustedDb = _ContendingDatabase(
@@ -794,14 +817,20 @@ void main() {
             minActiveRevision: '0',
             lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
           ),
+          admission: admission,
         ),
         throwsA(isA<DatabaseException>()),
       );
       expect(exhaustedDb.transactionAttempts, lessThan(40));
       expect(await dal.getSyncMeta(scope), isNull);
 
-      // 2. Mất hiệu lực checkAdmission trong lúc đang backoff giữa hai lần thử BUSY
-      var scopeValid = true;
+      // 2. Mất hiệu lực AccountWriteAdmission trong lúc đang backoff giữa hai lần thử BUSY
+      final liveAuthority = MutableSyncAuthoritySource.activeAccount(userId);
+      final midWaitAdmission = AccountWriteAdmission(
+        authoritySource: liveAuthority,
+        expectedUserId: userId,
+        expectedGeneration: 1,
+      );
       final midWaitDb = _ContendingDatabase(
         offlineDb.database,
         preEntryErrors: <DatabaseException>[
@@ -810,7 +839,11 @@ void main() {
         ],
         onAttempt: (attempt) {
           if (attempt == 1) {
-            scopeValid = false;
+            liveAuthority.scopeState = ActiveScopeState.guest;
+            liveAuthority.activeScope = 'guest:rotated';
+            liveAuthority.isAuthenticated = false;
+            liveAuthority.authenticatedUserId = null;
+            liveAuthority.transitionGeneration = 2;
           }
         },
       );
@@ -827,13 +860,7 @@ void main() {
             minActiveRevision: '0',
             lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
           ),
-          checkAdmission: () {
-            if (!scopeValid) {
-              throw const SyncAdmissionRejectedError(
-                'Scope rotated while waiting on SQLITE_BUSY.',
-              );
-            }
-          },
+          admission: midWaitAdmission,
         ),
         throwsA(isA<SyncAdmissionRejectedError>()),
       );
@@ -846,10 +873,12 @@ void main() {
   group('HISTORY DELETE Tombstones, Epochs & SQL LIKE Wildcard Isolation', () {
     test('story-wide HISTORY DELETE cascades shadows, preserves other stories & bookmarks, and escapes SQL LIKE wildcards (_ / %)', () async {
       const scope = 'account:history-like';
+      final admission = testAccountAdmission(scope);
 
       await dal.applyAuthoritativeDeltaPage(
         ownerScope: scope,
         expectedCheckpoint: '0',
+        admission: admission,
         page: SyncChangesPage(
           currentServerRevision: '10',
           minActiveRevision: '0',
@@ -913,6 +942,7 @@ void main() {
       final res1 = await dal.applyAuthoritativeDeltaPage(
         ownerScope: scope,
         expectedCheckpoint: '10',
+        admission: admission,
         page: SyncChangesPage(
           currentServerRevision: '11',
           minActiveRevision: '0',
@@ -941,6 +971,7 @@ void main() {
       await dal.applyAuthoritativeDeltaPage(
         ownerScope: scope,
         expectedCheckpoint: '11',
+        admission: admission,
         page: SyncChangesPage(
           currentServerRevision: '12',
           minActiveRevision: '0',
@@ -963,10 +994,12 @@ void main() {
 
     test('global HISTORY DELETE clears all HISTORY & PROGRESS preserving BOOKMARK/PREFERENCE and enforces epoch dominance', () async {
       const scope = 'account:history-global';
+      final admission = testAccountAdmission(scope);
 
       await dal.applyAuthoritativeDeltaPage(
         ownerScope: scope,
         expectedCheckpoint: '0',
+        admission: admission,
         page: SyncChangesPage(
           currentServerRevision: '20',
           minActiveRevision: '0',
@@ -1008,6 +1041,7 @@ void main() {
       final globalRes = await dal.applyAuthoritativeDeltaPage(
         ownerScope: scope,
         expectedCheckpoint: '20',
+        admission: admission,
         page: SyncChangesPage(
           currentServerRevision: '25',
           minActiveRevision: '0',
@@ -1037,6 +1071,7 @@ void main() {
         () => dal.applyAuthoritativeDeltaPage(
           ownerScope: scope,
           expectedCheckpoint: '25',
+          admission: admission,
           page: SyncChangesPage(
             currentServerRevision: '30',
             minActiveRevision: '0',
@@ -1061,6 +1096,7 @@ void main() {
         () => dal.applyAuthoritativeDeltaPage(
           ownerScope: scope,
           expectedCheckpoint: '25',
+          admission: admission,
           page: SyncChangesPage(
             currentServerRevision: '31',
             minActiveRevision: '0',
@@ -1084,6 +1120,7 @@ void main() {
       final globalRes2 = await dal.applyAuthoritativeDeltaPage(
         ownerScope: scope,
         expectedCheckpoint: '25',
+        admission: admission,
         page: SyncChangesPage(
           currentServerRevision: '35',
           minActiveRevision: '0',
@@ -1176,6 +1213,7 @@ Future<void> _concurrentDeltaWorkerEntry(
     final res = await dal.applyAuthoritativeDeltaPage(
       ownerScope: config.ownerScope,
       expectedCheckpoint: config.expectedCheckpoint,
+      admission: testAccountAdmission(config.ownerScope),
       page: SyncChangesPage(
         currentServerRevision: config.currentServerRevision,
         minActiveRevision: '0',
@@ -1245,6 +1283,7 @@ Future<void> _interleavedWinnerWorkerEntry(
     final res = await dal.applyAuthoritativeDeltaPage(
       ownerScope: config.ownerScope,
       expectedCheckpoint: '50',
+      admission: testAccountAdmission(config.ownerScope),
       page: SyncChangesPage(
         currentServerRevision: '100',
         minActiveRevision: '0',

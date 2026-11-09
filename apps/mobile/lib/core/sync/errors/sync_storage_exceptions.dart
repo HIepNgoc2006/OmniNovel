@@ -63,7 +63,7 @@ class NonMonotonicHistoryEpochError extends InvalidDeltaPayloadError {
   String toString() => 'NonMonotonicHistoryEpochError: $message';
 }
 
-/// Ném bởi hàng rào `checkAdmission()` khi scope hoặc `transitionGeneration` mất hiệu lực.
+/// Ném bởi hàng rào `SyncWriteAdmission` (`P0-M06`) khi scope, auth, hoặc `transitionGeneration` mất hiệu lực.
 class SyncAdmissionRejectedError implements Exception {
   final String message;
 
@@ -108,4 +108,45 @@ class SnapshotStagingConflictError implements Exception {
 
   @override
   String toString() => 'SnapshotStagingConflictError: $message';
+}
+
+/// Ném khi `readingMode` không thuộc tập canonical (`WEBTOON`, `PAGED`, `NOVEL`)
+/// hoặc legacy `MANGA_PAGED` (`P1-M07` fail-closed).
+class InvalidSyncReadingModeException implements Exception {
+  final String? readingMode;
+  final String message;
+
+  InvalidSyncReadingModeException(this.readingMode, [String? detail])
+      : message = detail ??
+            'INVALID_SYNC_READING_MODE: Unsupported readingMode "$readingMode". Strictly requires "WEBTOON", "PAGED", "NOVEL" (or legacy "MANGA_PAGED").';
+
+  @override
+  String toString() => 'InvalidSyncReadingModeException: $message';
+}
+
+/// Ném khi `clientId` thiếu, không đúng chuẩn RFC4122 UUIDv4, hoặc trùng lặp với
+/// `userId` / `guestProfileId` / JWT `sessionId` (`P1-M08`).
+class InvalidClientIdentityException implements Exception {
+  final String? clientId;
+  final String message;
+
+  InvalidClientIdentityException(this.clientId, [String? detail])
+      : message = detail ??
+            'INVALID_CLIENT_IDENTITY: Invalid or collided clientId "$clientId". Expected a durable RFC4122 UUIDv4 distinct from userId, guestProfileId, and sessionId.';
+
+  @override
+  String toString() => 'InvalidClientIdentityException: $message';
+}
+
+/// Ném khi thao tác purge scope vi phạm rào chắn lifecycle (`P0-M05`), ví dụ
+/// cố xóa Guest partition đang có `guest_claim_recovery_journal` hoặc đang bị cách ly.
+class PurgeProhibitedError implements Exception {
+  final String message;
+
+  const PurgeProhibitedError([
+    this.message = 'PURGE_PROHIBITED: Scope purge is forbidden in the current lifecycle state.',
+  ]);
+
+  @override
+  String toString() => 'PurgeProhibitedError: $message';
 }

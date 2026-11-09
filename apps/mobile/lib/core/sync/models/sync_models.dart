@@ -721,6 +721,28 @@ class ApplyAuthoritativeDeltaResult {
   });
 }
 
+/// Lý do lifecycle hợp lệ khi dọn sạch dữ liệu đồng bộ của Account scope (`P0-M05`).
+enum AccountPurgeReason {
+  /// Dọn bộ đệm tài khoản khi đăng xuất hoặc thu hồi phiên trên thiết bị.
+  signOutReset,
+
+  /// Đặt lại trạng thái đồng bộ tài khoản trước full resync.
+  fullResyncReset,
+
+  /// Xóa vĩnh viễn tài khoản theo yêu cầu người dùng.
+  accountDeleted,
+}
+
+/// Lý do lifecycle hợp lệ khi dọn dữ liệu cục bộ của Guest scope (`P0-M05`).
+/// Chỉ được phép thực thi khi Guest không nằm trong danh sách cách ly và không có Claim journal.
+enum GuestLifecyclePurgeReason {
+  /// Người dùng chủ động xóa thư viện / lịch sử đọc cục bộ ở chế độ Guest.
+  userClearedGuestData,
+
+  /// Thu hồi dữ liệu Guest cũ sau khi đã xác minh không còn Claim journal hay quarantine.
+  verifiedUnusedGuestEviction,
+}
+
 /// Tùy chọn cấu hình cho `recordTransientFailureAtomic`.
 class RecordTransientFailureOptions {
   final int maxRetries;
@@ -728,7 +750,6 @@ class RecordTransientFailureOptions {
   final int maxBackoffMs;
   final double backoffFactor;
   final String failureReason;
-  final void Function()? checkAdmission;
   final Future<void> Function(Transaction txn)? onBeforeCommitHook;
 
   const RecordTransientFailureOptions({
@@ -737,7 +758,6 @@ class RecordTransientFailureOptions {
     required this.maxBackoffMs,
     required this.backoffFactor,
     required this.failureReason,
-    this.checkAdmission,
     this.onBeforeCommitHook,
   });
 }

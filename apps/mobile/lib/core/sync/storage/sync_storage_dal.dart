@@ -2,8 +2,10 @@ import 'dart:math' as math;
 
 import 'package:sqflite/sqflite.dart';
 
+import '../../identity/guest_profile_identity_provider.dart';
 import '../../storage/local_library_models.dart';
 import '../../storage/offline_database.dart';
+import '../authority/sync_write_admission.dart';
 import '../errors/sync_storage_exceptions.dart';
 import '../models/sync_models.dart';
 import '../utils/canonical_entity_key.dart';
@@ -18,7 +20,9 @@ import '../utils/revision_bigint.dart';
 /// - Quarantine full-fidelity & requeue guards (`P1-M04`).
 /// - Snapshot staging session/revision consistency (`P1-M04`).
 /// - Fail-closed Baseline Lifecycle (`UNINITIALIZED -> BOOTSTRAPPING -> [READY bị khóa ở Stage 1]`).
-/// - Cô lập tuyệt đối theo `owner_scope` và triple-barrier `checkAdmission()` (`P0-M02`).
+/// - Cưỡng chế ranh giới thẩm quyền `account:*` vs Guest-local (`P0-M05`), bắt buộc
+///   capability admission 4 hàng rào (`P0-M06`), reading mode fail-closed (`P1-M07`),
+///   và `clientId` UUIDv4 tách biệt (`P1-M08`).
 ///
 /// Stage 1 boundary: KHÔNG gọi mạng `/sync/*`, KHÔNG chạy Background SyncWorker,
 /// và KHÔNG tự cấp trạng thái `READY`.
@@ -28,18 +32,23 @@ class SyncStorageDal {
 
   final OfflineDatabase? _offlineDatabase;
   final Database? _customDb;
+  final Future<Database> Function()? _asyncDbProvider;
   final Duration _busyRetryTimeout;
 
   SyncStorageDal({
     OfflineDatabase? offlineDatabase,
     Database? customDb,
+    Future<Database> Function()? asyncDatabaseProvider,
     Duration busyRetryTimeout = defaultBusyRetryTimeout,
   })  : _offlineDatabase = offlineDatabase,
         _customDb = customDb,
+        _asyncDbProvider = asyncDatabaseProvider,
         _busyRetryTimeout = busyRetryTimeout {
-    if (_offlineDatabase == null && _customDb == null) {
+    if (_offlineDatabase == null &&
+        _customDb == null &&
+        _asyncDbProvider == null) {
       throw ArgumentError(
-        'Phải cung cấp ít nhất offlineDatabase hoặc customDb cho SyncStorageDal.',
+        'Phải cung cấp ít nhất offlineDatabase, customDb hoặc asyncDatabaseProvider cho SyncStorageDal.',
       );
     }
     if (_busyRetryTimeout.isNegative) {
@@ -51,7 +60,13 @@ class SyncStorageDal {
     }
   }
 
-  Database get _db => _customDb ?? _offlineDatabase!.database;
+  Future<Database> _acquireDatabase() async {
+    final asyncProvider = _asyncDbProvider;
+    if (asyncProvider != null) {
+      return await asyncProvider();
+    }
+    return _customDb ?? _offlineDatabase!.database;
+  }
 
   static bool _isSqliteBusyException(DatabaseException error) {
     final code = error.getResultCode();
@@ -68,34 +83,39 @@ class SyncStorageDal {
         normalized.contains('sqlite_busy');
   }
 
-  /// Thực thi write operation trong native SQLite transaction với 3 hàng rào `checkAdmission`
-  /// và cơ chế async retry có giới hạn khi `BEGIN IMMEDIATE` gặp `SQLITE_BUSY` (`P0-M02`).
+  /// Thực thi write operation trong native SQLite transaction với 4 hàng rào
+  /// [SyncWriteAdmission] bắt buộc (`P0-M02` + `P0-M06`) và cơ chế async retry có giới hạn
+  /// khi `BEGIN IMMEDIATE` gặp `SQLITE_BUSY`.
   ///
-  /// Trên Linux (ví dụ chạy test với `--coverage` bật `SIGPROF` của Dart VM), signal POSIX
-  /// có thể ngắt `nanosleep` trong SQLite C `unixSleep` (`EINTR`), làm `PRAGMA busy_timeout`
-  /// trả `SQLITE_BUSY (5)` sớm trước thời hạn. Vòng retry chỉ áp dụng khi:
-  /// 1. Chưa bước vào callback `action(txn)` (`!enteredAction`) — không bao giờ chạy `action` lần thứ hai.
-  /// 2. Lỗi là `SQLITE_BUSY` (primary code 5) ở bước xin khóa transaction.
-  /// 3. Còn ngân sách [_busyRetryTimeout], đồng thời kiểm tra lại `checkAdmission` trước mỗi lần thử.
-  Future<T> _runWriteTransaction<T>(
-    Future<T> Function(Transaction txn) action, {
-    void Function()? checkAdmission,
+  /// Bốn hàng rào admission:
+  /// 1. Trước khi chạm / mở DB handle (và trước mỗi lần thử lại sau `SQLITE_BUSY`).
+  /// 2. Ngay sau khi acquire DB handle xong (bao gồm sau mọi `await` bất đồng bộ).
+  /// 3. Ngay khi bước vào native SQLite transaction (`BEGIN IMMEDIATE`).
+  /// 4. Ngay trước khi transaction kết thúc để commit (sau SQLite writes + hooks).
+  Future<T> _runWriteTransaction<T>({
+    required String targetScope,
+    required SyncWriteAdmission admission,
+    required Future<T> Function(Transaction txn) action,
   }) async {
     final stopwatch = Stopwatch()..start();
     var attempt = 0;
 
     while (true) {
-      checkAdmission?.call();
-      final db = _db;
-      checkAdmission?.call();
+      // Barrier 1: Trước khi chạm DB hoặc bắt đầu retry attempt mới
+      admission.assertAdmitted(targetScope);
+      final db = await _acquireDatabase();
+      // Barrier 2: Ngay sau khi acquire DB (bắt kịp revocation trong lúc await DB)
+      admission.assertAdmitted(targetScope);
 
       var enteredAction = false;
       try {
         return await db.transaction<T>((txn) async {
           enteredAction = true;
-          checkAdmission?.call();
+          // Barrier 3: Ngay khi đã nắm native SQLite transaction lock
+          admission.assertAdmitted(targetScope);
           final result = await action(txn);
-          checkAdmission?.call();
+          // Barrier 4: Ngay trước khi commit (sau toàn bộ ghi và onBeforeCommitHook)
+          admission.assertAdmitted(targetScope);
           return result;
         });
       } on DatabaseException catch (e) {
@@ -158,14 +178,29 @@ class SyncStorageDal {
     );
   }
 
+  void _validateClientIdForAccountScope(String ownerScope, String clientId) {
+    assertAccountScope(ownerScope);
+    if (!isValidUuidV4(clientId)) {
+      throw InvalidClientIdentityException(
+        clientId,
+        'INVALID_CLIENT_IDENTITY: clientId "$clientId" must be a valid RFC4122 UUIDv4.',
+      );
+    }
+    final accountUserId = ownerScope.substring('account:'.length).trim();
+    if (clientId.trim().toLowerCase() == accountUserId.toLowerCase()) {
+      throw InvalidClientIdentityException(
+        clientId,
+        'CLIENT_ID_IDENTITY_COLLISION: clientId "$clientId" must not match account userId "$accountUserId".',
+      );
+    }
+  }
+
   void _validatePendingMutationFields(PendingMutationRecord mutation) {
-    assertValidScope(mutation.ownerScope);
+    assertAccountScope(mutation.ownerScope);
     if (mutation.mutationId.trim().isEmpty) {
       throw ArgumentError('mutationId must be a non-empty string.');
     }
-    if (mutation.clientId.trim().isEmpty) {
-      throw ArgumentError('clientId must be a non-empty string.');
-    }
+    _validateClientIdForAccountScope(mutation.ownerScope, mutation.clientId);
     if (mutation.entityId.trim().isEmpty) {
       throw ArgumentError('entityId must be a non-empty string.');
     }
@@ -173,6 +208,12 @@ class SyncStorageDal {
       throw ArgumentError(
         'Invalid baseServerRevision "${mutation.baseServerRevision}". Expected canonical 64-bit BIGINT decimal string.',
       );
+    }
+    if (mutation.domain == SyncDomain.progress &&
+        mutation.operation == SyncOperation.upsert &&
+        mutation.payload.containsKey('readingMode')) {
+      final rawMode = mutation.payload['readingMode'];
+      normalizeSyncReadingMode(rawMode is String ? rawMode : null);
     }
   }
 
@@ -230,16 +271,19 @@ class SyncStorageDal {
 
   /// Ghi đồng thời `local_reading_progress` + Monotonic MAX `local_reading_history`
   /// + enqueue mutation vào `pending_mutations` (`P1-M03`) trong một SQLite transaction duy nhất.
+  ///
+  /// Yêu cầu nghiêm ngặt `account:<userId>` (`P0-M05`), [AccountWriteAdmission] bắt buộc (`P0-M06`),
+  /// `readingMode` fail-closed (`P1-M07`), và `clientId` UUIDv4 tách biệt (`P1-M08`).
   Future<PendingMutationRecord> recordReadingSessionWithMutation({
     required LocalReadingProgress progress,
     required LocalReadingHistory history,
     required PendingMutationRecord mutation,
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
-    assertValidScope(progress.ownerScope);
-    assertValidScope(history.ownerScope);
-    assertValidScope(mutation.ownerScope);
+    assertAccountScope(progress.ownerScope);
+    assertAccountScope(history.ownerScope);
+    assertAccountScope(mutation.ownerScope);
 
     if (progress.ownerScope != mutation.ownerScope ||
         history.ownerScope != mutation.ownerScope) {
@@ -264,61 +308,68 @@ class SyncStorageDal {
         'EntityId mismatch: expected "${progress.storyId}", got "${mutation.entityId}".',
       );
     }
+    normalizeSyncReadingMode(progress.readingMode);
+    _validatePendingMutationFields(mutation);
 
-    return _runWriteTransaction<PendingMutationRecord>((txn) async {
-      await txn.insert(
-        'local_reading_progress',
-        progress.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+    return _runWriteTransaction<PendingMutationRecord>(
+      targetScope: mutation.ownerScope,
+      admission: admission,
+      action: (txn) async {
+        await txn.insert(
+          'local_reading_progress',
+          progress.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
 
-      final existingHistoryRows = await txn.query(
-        'local_reading_history',
-        columns: <String>['progress_percentage'],
-        where: 'owner_scope = ? AND story_id = ? AND chapter_id = ?',
-        whereArgs: <Object?>[
-          history.ownerScope,
-          history.storyId,
-          history.chapterId,
-        ],
-        limit: 1,
-      );
+        final existingHistoryRows = await txn.query(
+          'local_reading_history',
+          columns: <String>['progress_percentage'],
+          where: 'owner_scope = ? AND story_id = ? AND chapter_id = ?',
+          whereArgs: <Object?>[
+            history.ownerScope,
+            history.storyId,
+            history.chapterId,
+          ],
+          limit: 1,
+        );
 
-      var effectiveProgress = history.progressPercentage;
-      if (existingHistoryRows.isNotEmpty) {
-        final prevProgress =
-            (existingHistoryRows.first['progress_percentage'] as num).toDouble();
-        if (prevProgress > effectiveProgress) {
-          effectiveProgress = prevProgress;
+        var effectiveProgress = history.progressPercentage;
+        if (existingHistoryRows.isNotEmpty) {
+          final prevProgress =
+              (existingHistoryRows.first['progress_percentage'] as num)
+                  .toDouble();
+          if (prevProgress > effectiveProgress) {
+            effectiveProgress = prevProgress;
+          }
         }
-      }
 
-      final effectiveHistory =
-          history.copyWith(progressPercentage: effectiveProgress);
-      await txn.insert(
-        'local_reading_history',
-        effectiveHistory.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+        final effectiveHistory =
+            history.copyWith(progressPercentage: effectiveProgress);
+        await txn.insert(
+          'local_reading_history',
+          effectiveHistory.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
 
-      final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        final persisted = await _insertPendingMutationInTxn(txn, mutation);
 
-      if (onBeforeCommitHook != null) {
-        await onBeforeCommitHook(txn);
-      }
-      return persisted;
-    }, checkAdmission: checkAdmission);
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+        return persisted;
+      },
+    );
   }
 
   /// Lưu bookmark cục bộ (`local_library_bookmarks`) và enqueue `BOOKMARK UPSERT` nguyên tử.
   Future<PendingMutationRecord> putBookmarkWithMutation({
     required LocalBookmark bookmark,
     required PendingMutationRecord mutation,
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
-    assertValidScope(bookmark.ownerScope);
-    assertValidScope(mutation.ownerScope);
+    assertAccountScope(bookmark.ownerScope);
+    assertAccountScope(mutation.ownerScope);
 
     if (bookmark.ownerScope != mutation.ownerScope) {
       throw ArgumentError(
@@ -340,19 +391,24 @@ class SyncStorageDal {
         'EntityId mismatch: expected "${bookmark.storyId}", got "${mutation.entityId}".',
       );
     }
+    _validatePendingMutationFields(mutation);
 
-    return _runWriteTransaction<PendingMutationRecord>((txn) async {
-      await txn.insert(
-        'local_library_bookmarks',
-        bookmark.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-      final persisted = await _insertPendingMutationInTxn(txn, mutation);
-      if (onBeforeCommitHook != null) {
-        await onBeforeCommitHook(txn);
-      }
-      return persisted;
-    }, checkAdmission: checkAdmission);
+    return _runWriteTransaction<PendingMutationRecord>(
+      targetScope: mutation.ownerScope,
+      admission: admission,
+      action: (txn) async {
+        await txn.insert(
+          'local_library_bookmarks',
+          bookmark.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+        return persisted;
+      },
+    );
   }
 
   /// Xóa bookmark cục bộ và enqueue `BOOKMARK DELETE` nguyên tử.
@@ -360,11 +416,11 @@ class SyncStorageDal {
     required String ownerScope,
     required String storyId,
     required PendingMutationRecord mutation,
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
-    assertValidScope(ownerScope);
-    assertValidScope(mutation.ownerScope);
+    assertAccountScope(ownerScope);
+    assertAccountScope(mutation.ownerScope);
 
     if (ownerScope != mutation.ownerScope) {
       throw ArgumentError(
@@ -386,30 +442,35 @@ class SyncStorageDal {
         'EntityId mismatch: expected "$storyId", got "${mutation.entityId}".',
       );
     }
+    _validatePendingMutationFields(mutation);
 
-    return _runWriteTransaction<PendingMutationRecord>((txn) async {
-      await txn.delete(
-        'local_library_bookmarks',
-        where: 'owner_scope = ? AND story_id = ?',
-        whereArgs: <Object?>[ownerScope, storyId],
-      );
-      final persisted = await _insertPendingMutationInTxn(txn, mutation);
-      if (onBeforeCommitHook != null) {
-        await onBeforeCommitHook(txn);
-      }
-      return persisted;
-    }, checkAdmission: checkAdmission);
+    return _runWriteTransaction<PendingMutationRecord>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        await txn.delete(
+          'local_library_bookmarks',
+          where: 'owner_scope = ? AND story_id = ?',
+          whereArgs: <Object?>[ownerScope, storyId],
+        );
+        final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+        return persisted;
+      },
+    );
   }
 
-  /// Lưu preference theo scope (`local_preferences`) và enqueue `PREFERENCE UPSERT` nguyên tử.
+  /// Lưu preference theo Account scope (`local_preferences`) và enqueue `PREFERENCE UPSERT` nguyên tử.
   Future<PendingMutationRecord> putPreferenceWithMutation({
     required LocalPreferenceRecord preference,
     required PendingMutationRecord mutation,
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
-    assertValidScope(preference.ownerScope);
-    assertValidScope(mutation.ownerScope);
+    assertAccountScope(preference.ownerScope);
+    assertAccountScope(mutation.ownerScope);
 
     if (preference.ownerScope != mutation.ownerScope) {
       throw ArgumentError(
@@ -431,19 +492,24 @@ class SyncStorageDal {
         'EntityId mismatch: expected "${preference.prefKey}", got "${mutation.entityId}".',
       );
     }
+    _validatePendingMutationFields(mutation);
 
-    return _runWriteTransaction<PendingMutationRecord>((txn) async {
-      await txn.insert(
-        'local_preferences',
-        preference.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-      final persisted = await _insertPendingMutationInTxn(txn, mutation);
-      if (onBeforeCommitHook != null) {
-        await onBeforeCommitHook(txn);
-      }
-      return persisted;
-    }, checkAdmission: checkAdmission);
+    return _runWriteTransaction<PendingMutationRecord>(
+      targetScope: preference.ownerScope,
+      admission: admission,
+      action: (txn) async {
+        await txn.insert(
+          'local_preferences',
+          preference.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+        return persisted;
+      },
+    );
   }
 
   /// Xóa lịch sử + tiến độ cục bộ của 1 truyện (bảo toàn bookmark) và enqueue `HISTORY DELETE` nguyên tử.
@@ -451,11 +517,11 @@ class SyncStorageDal {
     required String ownerScope,
     required String storyId,
     required PendingMutationRecord mutation,
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
-    assertValidScope(ownerScope);
-    assertValidScope(mutation.ownerScope);
+    assertAccountScope(ownerScope);
+    assertAccountScope(mutation.ownerScope);
 
     if (ownerScope != mutation.ownerScope) {
       throw ArgumentError(
@@ -477,24 +543,29 @@ class SyncStorageDal {
         'EntityId mismatch: expected "$storyId", got "${mutation.entityId}".',
       );
     }
+    _validatePendingMutationFields(mutation);
 
-    return _runWriteTransaction<PendingMutationRecord>((txn) async {
-      await txn.delete(
-        'local_reading_history',
-        where: 'owner_scope = ? AND story_id = ?',
-        whereArgs: <Object?>[ownerScope, storyId],
-      );
-      await txn.delete(
-        'local_reading_progress',
-        where: 'owner_scope = ? AND story_id = ?',
-        whereArgs: <Object?>[ownerScope, storyId],
-      );
-      final persisted = await _insertPendingMutationInTxn(txn, mutation);
-      if (onBeforeCommitHook != null) {
-        await onBeforeCommitHook(txn);
-      }
-      return persisted;
-    }, checkAdmission: checkAdmission);
+    return _runWriteTransaction<PendingMutationRecord>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        await txn.delete(
+          'local_reading_history',
+          where: 'owner_scope = ? AND story_id = ?',
+          whereArgs: <Object?>[ownerScope, storyId],
+        );
+        await txn.delete(
+          'local_reading_progress',
+          where: 'owner_scope = ? AND story_id = ?',
+          whereArgs: <Object?>[ownerScope, storyId],
+        );
+        final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+        return persisted;
+      },
+    );
   }
 
   /// Xóa toàn bộ lịch sử + tiến độ cục bộ của scope (bảo toàn bookmark)
@@ -502,11 +573,11 @@ class SyncStorageDal {
   Future<PendingMutationRecord> clearAllHistoryWithMutation({
     required String ownerScope,
     required PendingMutationRecord mutation,
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
-    assertValidScope(ownerScope);
-    assertValidScope(mutation.ownerScope);
+    assertAccountScope(ownerScope);
+    assertAccountScope(mutation.ownerScope);
 
     if (ownerScope != mutation.ownerScope) {
       throw ArgumentError(
@@ -528,24 +599,29 @@ class SyncStorageDal {
         'EntityId mismatch for clearAllHistory: expected "$kGlobalHistoryAlias" or "$kGlobalHistorySentinelUuid", got "${mutation.entityId}".',
       );
     }
+    _validatePendingMutationFields(mutation);
 
-    return _runWriteTransaction<PendingMutationRecord>((txn) async {
-      await txn.delete(
-        'local_reading_history',
-        where: 'owner_scope = ?',
-        whereArgs: <Object?>[ownerScope],
-      );
-      await txn.delete(
-        'local_reading_progress',
-        where: 'owner_scope = ?',
-        whereArgs: <Object?>[ownerScope],
-      );
-      final persisted = await _insertPendingMutationInTxn(txn, mutation);
-      if (onBeforeCommitHook != null) {
-        await onBeforeCommitHook(txn);
-      }
-      return persisted;
-    }, checkAdmission: checkAdmission);
+    return _runWriteTransaction<PendingMutationRecord>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        await txn.delete(
+          'local_reading_history',
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[ownerScope],
+        );
+        await txn.delete(
+          'local_reading_progress',
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[ownerScope],
+        );
+        final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+        return persisted;
+      },
+    );
   }
 
   // ==================== PENDING MUTATIONS QUEUE (P1-M03) ====================
@@ -553,25 +629,30 @@ class SyncStorageDal {
   /// Đưa mutation mới vào hàng đợi `pending_mutations` với `sequence_no` tăng đơn điệu bền vững.
   Future<PendingMutationRecord> enqueuePendingMutation(
     PendingMutationRecord mutation, {
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
     _validatePendingMutationFields(mutation);
-    return _runWriteTransaction<PendingMutationRecord>((txn) async {
-      final persisted = await _insertPendingMutationInTxn(txn, mutation);
-      if (onBeforeCommitHook != null) {
-        await onBeforeCommitHook(txn);
-      }
-      return persisted;
-    }, checkAdmission: checkAdmission);
+    return _runWriteTransaction<PendingMutationRecord>(
+      targetScope: mutation.ownerScope,
+      admission: admission,
+      action: (txn) async {
+        final persisted = await _insertPendingMutationInTxn(txn, mutation);
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+        return persisted;
+      },
+    );
   }
 
   Future<PendingMutationRecord?> getPendingMutation(
     String ownerScope,
     String mutationId,
   ) async {
-    assertValidScope(ownerScope);
-    final rows = await _db.query(
+    assertAccountScope(ownerScope);
+    final db = await _acquireDatabase();
+    final rows = await db.query(
       'pending_mutations',
       where: 'owner_scope = ? AND mutation_id = ?',
       whereArgs: <Object?>[ownerScope, mutationId],
@@ -581,13 +662,14 @@ class SyncStorageDal {
     return PendingMutationRecord.fromMap(rows.first);
   }
 
-  /// Lấy danh sách pending mutations của [ownerScope] đúng thứ tự FIFO theo `sequence_no ASC`.
+  /// Lấy danh sách pending mutations của Account [ownerScope] đúng thứ tự FIFO theo `sequence_no ASC`.
   Future<List<PendingMutationRecord>> getPendingMutations(
     String ownerScope, {
     int limit = 100,
   }) async {
-    assertValidScope(ownerScope);
-    final rows = await _db.query(
+    assertAccountScope(ownerScope);
+    final db = await _acquireDatabase();
+    final rows = await db.query(
       'pending_mutations',
       where: 'owner_scope = ?',
       whereArgs: <Object?>[ownerScope],
@@ -600,36 +682,45 @@ class SyncStorageDal {
   Future<void> deletePendingMutation(
     String ownerScope,
     String mutationId, {
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
   }) async {
-    assertValidScope(ownerScope);
-    await _runWriteTransaction<void>((txn) async {
-      await txn.delete(
-        'pending_mutations',
-        where: 'owner_scope = ? AND mutation_id = ?',
-        whereArgs: <Object?>[ownerScope, mutationId],
-      );
-    }, checkAdmission: checkAdmission);
+    assertAccountScope(ownerScope);
+    await _runWriteTransaction<void>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        await txn.delete(
+          'pending_mutations',
+          where: 'owner_scope = ? AND mutation_id = ?',
+          whereArgs: <Object?>[ownerScope, mutationId],
+        );
+      },
+    );
   }
 
   Future<void> deletePendingMutationsBatch(
     String ownerScope,
     List<String> mutationIds, {
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
   }) async {
-    assertValidScope(ownerScope);
+    assertAccountScope(ownerScope);
     if (mutationIds.isEmpty) {
-      checkAdmission?.call();
+      admission.assertAdmitted(ownerScope);
       return;
     }
-    await _runWriteTransaction<void>((txn) async {
-      final placeholders = List<String>.filled(mutationIds.length, '?').join(',');
-      await txn.delete(
-        'pending_mutations',
-        where: 'owner_scope = ? AND mutation_id IN ($placeholders)',
-        whereArgs: <Object?>[ownerScope, ...mutationIds],
-      );
-    }, checkAdmission: checkAdmission);
+    await _runWriteTransaction<void>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        final placeholders =
+            List<String>.filled(mutationIds.length, '?').join(',');
+        await txn.delete(
+          'pending_mutations',
+          where: 'owner_scope = ? AND mutation_id IN ($placeholders)',
+          whereArgs: <Object?>[ownerScope, ...mutationIds],
+        );
+      },
+    );
   }
 
   /// Nguyên tử hóa xử lý lỗi tạm thời: tăng `retry_count` + tính backoff hoặc chuyển sang
@@ -638,106 +729,110 @@ class SyncStorageDal {
     required String ownerScope,
     required String mutationId,
     required RecordTransientFailureOptions options,
+    required AccountWriteAdmission admission,
   }) async {
-    assertValidScope(ownerScope);
-    return _runWriteTransaction<TransientFailureResult>((txn) async {
-      final rows = await txn.query(
-        'pending_mutations',
-        where: 'owner_scope = ? AND mutation_id = ?',
-        whereArgs: <Object?>[ownerScope, mutationId],
-        limit: 1,
-      );
-
-      if (rows.isEmpty) {
-        if (options.onBeforeCommitHook != null) {
-          await options.onBeforeCommitHook!(txn);
-        }
-        return const TransientFailureResult(
-          outcome: TransientFailureOutcome.notFound,
-        );
-      }
-
-      final item = PendingMutationRecord.fromMap(rows.first);
-      final newRetryCount = item.retryCount + 1;
-      final now = DateTime.now().toUtc();
-      final nowIso = now.toIso8601String();
-      final nowMs = now.millisecondsSinceEpoch;
-
-      if (newRetryCount >= options.maxRetries) {
-        await txn.delete(
+    assertAccountScope(ownerScope);
+    return _runWriteTransaction<TransientFailureResult>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        final rows = await txn.query(
           'pending_mutations',
           where: 'owner_scope = ? AND mutation_id = ?',
           whereArgs: <Object?>[ownerScope, mutationId],
+          limit: 1,
         );
 
-        final quarantined = QuarantinedMutationRecord(
-          ownerScope: item.ownerScope,
-          mutationId: item.mutationId,
-          clientId: item.clientId,
-          domain: item.domain,
-          entityId: item.entityId,
-          operation: item.operation,
-          baseServerRevision: item.baseServerRevision,
-          observedHistoryEpoch: item.observedHistoryEpoch,
-          payload: item.payload,
-          originalSequenceNo: item.sequenceNo,
-          originalRetryCount: item.retryCount,
-          originalCreatedAtIso: item.createdAtIso,
-          originalCreatedAtMs: item.createdAtMs,
-          rejectionReason: 'EXCEEDED_MAX_RETRIES: ${options.failureReason}',
-          rejectionStatus: 'EXCEEDED_MAX_RETRIES',
-          rejectedAtIso: nowIso,
-          rejectedAtMs: nowMs,
-          triageStatus: QuarantineTriageStatus.pending,
-          causalEvidence: null,
-        );
-
-        await txn.insert(
-          'quarantined_mutations',
-          quarantined.toMap(),
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
-
-        if (options.onBeforeCommitHook != null) {
-          await options.onBeforeCommitHook!(txn);
+        if (rows.isEmpty) {
+          if (options.onBeforeCommitHook != null) {
+            await options.onBeforeCommitHook!(txn);
+          }
+          return const TransientFailureResult(
+            outcome: TransientFailureOutcome.notFound,
+          );
         }
 
-        return TransientFailureResult(
-          outcome: TransientFailureOutcome.quarantined,
-          retryCount: newRetryCount,
-          quarantinedMutation: quarantined,
-        );
-      } else {
-        final rawDelay =
-            options.initialBackoffMs *
-            math.pow(options.backoffFactor, newRetryCount - 1);
-        final delayMs = math.max(
-          0,
-          math.min(options.maxBackoffMs, rawDelay.round()),
-        );
-        final nextRetryAtMs = nowMs + delayMs;
+        final item = PendingMutationRecord.fromMap(rows.first);
+        final newRetryCount = item.retryCount + 1;
+        final now = DateTime.now().toUtc();
+        final nowIso = now.toIso8601String();
+        final nowMs = now.millisecondsSinceEpoch;
 
-        await txn.update(
-          'pending_mutations',
-          <String, Object?>{
-            'retry_count': newRetryCount,
-            'next_retry_at_ms': nextRetryAtMs,
-          },
-          where: 'owner_scope = ? AND mutation_id = ?',
-          whereArgs: <Object?>[ownerScope, mutationId],
-        );
+        if (newRetryCount >= options.maxRetries) {
+          await txn.delete(
+            'pending_mutations',
+            where: 'owner_scope = ? AND mutation_id = ?',
+            whereArgs: <Object?>[ownerScope, mutationId],
+          );
 
-        if (options.onBeforeCommitHook != null) {
-          await options.onBeforeCommitHook!(txn);
+          final quarantined = QuarantinedMutationRecord(
+            ownerScope: item.ownerScope,
+            mutationId: item.mutationId,
+            clientId: item.clientId,
+            domain: item.domain,
+            entityId: item.entityId,
+            operation: item.operation,
+            baseServerRevision: item.baseServerRevision,
+            observedHistoryEpoch: item.observedHistoryEpoch,
+            payload: item.payload,
+            originalSequenceNo: item.sequenceNo,
+            originalRetryCount: item.retryCount,
+            originalCreatedAtIso: item.createdAtIso,
+            originalCreatedAtMs: item.createdAtMs,
+            rejectionReason: 'EXCEEDED_MAX_RETRIES: ${options.failureReason}',
+            rejectionStatus: 'EXCEEDED_MAX_RETRIES',
+            rejectedAtIso: nowIso,
+            rejectedAtMs: nowMs,
+            triageStatus: QuarantineTriageStatus.pending,
+            causalEvidence: null,
+          );
+
+          await txn.insert(
+            'quarantined_mutations',
+            quarantined.toMap(),
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+
+          if (options.onBeforeCommitHook != null) {
+            await options.onBeforeCommitHook!(txn);
+          }
+
+          return TransientFailureResult(
+            outcome: TransientFailureOutcome.quarantined,
+            retryCount: newRetryCount,
+            quarantinedMutation: quarantined,
+          );
+        } else {
+          final rawDelay = options.initialBackoffMs *
+              math.pow(options.backoffFactor, newRetryCount - 1);
+          final delayMs = math.max(
+            0,
+            math.min(options.maxBackoffMs, rawDelay.round()),
+          );
+          final nextRetryAtMs = nowMs + delayMs;
+
+          await txn.update(
+            'pending_mutations',
+            <String, Object?>{
+              'retry_count': newRetryCount,
+              'next_retry_at_ms': nextRetryAtMs,
+            },
+            where: 'owner_scope = ? AND mutation_id = ?',
+            whereArgs: <Object?>[ownerScope, mutationId],
+          );
+
+          if (options.onBeforeCommitHook != null) {
+            await options.onBeforeCommitHook!(txn);
+          }
+
+          return TransientFailureResult(
+            outcome: TransientFailureOutcome.retryScheduled,
+            retryCount: newRetryCount,
+            nextRetryAtMs: nextRetryAtMs,
+          );
         }
-
-        return TransientFailureResult(
-          outcome: TransientFailureOutcome.retryScheduled,
-          retryCount: newRetryCount,
-          nextRetryAtMs: nextRetryAtMs,
-        );
-      }
-    }, checkAdmission: options.checkAdmission);
+      },
+    );
   }
 
   // ==================== QUARANTINED MUTATIONS (P1-M04) ====================
@@ -750,83 +845,102 @@ class SyncStorageDal {
     required String reason,
     String status = 'MANUAL',
     CausalTriageProof? causalEvidence,
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
   }) async {
-    assertValidScope(ownerScope);
-    return _runWriteTransaction<QuarantinedMutationRecord?>((txn) async {
-      final rows = await txn.query(
-        'pending_mutations',
-        where: 'owner_scope = ? AND mutation_id = ?',
-        whereArgs: <Object?>[ownerScope, mutationId],
-        limit: 1,
-      );
-      if (rows.isEmpty) return null;
+    assertAccountScope(ownerScope);
+    return _runWriteTransaction<QuarantinedMutationRecord?>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        final rows = await txn.query(
+          'pending_mutations',
+          where: 'owner_scope = ? AND mutation_id = ?',
+          whereArgs: <Object?>[ownerScope, mutationId],
+          limit: 1,
+        );
+        if (rows.isEmpty) return null;
 
-      final target = PendingMutationRecord.fromMap(rows.first);
-      await txn.delete(
-        'pending_mutations',
-        where: 'owner_scope = ? AND mutation_id = ?',
-        whereArgs: <Object?>[ownerScope, mutationId],
-      );
+        final target = PendingMutationRecord.fromMap(rows.first);
+        await txn.delete(
+          'pending_mutations',
+          where: 'owner_scope = ? AND mutation_id = ?',
+          whereArgs: <Object?>[ownerScope, mutationId],
+        );
 
-      final now = DateTime.now().toUtc();
-      final quarantined = QuarantinedMutationRecord(
-        ownerScope: target.ownerScope,
-        mutationId: target.mutationId,
-        clientId: target.clientId,
-        domain: target.domain,
-        entityId: target.entityId,
-        operation: target.operation,
-        baseServerRevision: target.baseServerRevision,
-        observedHistoryEpoch: target.observedHistoryEpoch,
-        payload: target.payload,
-        originalSequenceNo: target.sequenceNo,
-        originalRetryCount: target.retryCount,
-        originalCreatedAtIso: target.createdAtIso,
-        originalCreatedAtMs: target.createdAtMs,
-        rejectionReason: reason,
-        rejectionStatus: status,
-        rejectedAtIso: now.toIso8601String(),
-        rejectedAtMs: now.millisecondsSinceEpoch,
-        triageStatus: QuarantineTriageStatus.pending,
-        causalEvidence: causalEvidence,
-      );
+        final now = DateTime.now().toUtc();
+        final quarantined = QuarantinedMutationRecord(
+          ownerScope: target.ownerScope,
+          mutationId: target.mutationId,
+          clientId: target.clientId,
+          domain: target.domain,
+          entityId: target.entityId,
+          operation: target.operation,
+          baseServerRevision: target.baseServerRevision,
+          observedHistoryEpoch: target.observedHistoryEpoch,
+          payload: target.payload,
+          originalSequenceNo: target.sequenceNo,
+          originalRetryCount: target.retryCount,
+          originalCreatedAtIso: target.createdAtIso,
+          originalCreatedAtMs: target.createdAtMs,
+          rejectionReason: reason,
+          rejectionStatus: status,
+          rejectedAtIso: now.toIso8601String(),
+          rejectedAtMs: now.millisecondsSinceEpoch,
+          triageStatus: QuarantineTriageStatus.pending,
+          causalEvidence: causalEvidence,
+        );
 
-      await txn.insert(
-        'quarantined_mutations',
-        quarantined.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-      return quarantined;
-    }, checkAdmission: checkAdmission);
+        await txn.insert(
+          'quarantined_mutations',
+          quarantined.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        return quarantined;
+      },
+    );
   }
 
   /// Ghi bản ghi vào `quarantined_mutations` và xóa khỏi `pending_mutations` nếu còn tồn tại.
   Future<void> quarantineMutation(
     QuarantinedMutationRecord record, {
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
   }) async {
-    assertValidScope(record.ownerScope);
-    await _runWriteTransaction<void>((txn) async {
-      await txn.delete(
-        'pending_mutations',
-        where: 'owner_scope = ? AND mutation_id = ?',
-        whereArgs: <Object?>[record.ownerScope, record.mutationId],
+    assertAccountScope(record.ownerScope);
+    if (record.mutationId.trim().isEmpty) {
+      throw ArgumentError('mutationId must be a non-empty string.');
+    }
+    _validateClientIdForAccountScope(record.ownerScope, record.clientId);
+    if (!isValidRevisionString(record.baseServerRevision)) {
+      throw ArgumentError(
+        'Invalid baseServerRevision "${record.baseServerRevision}". Expected canonical 64-bit BIGINT decimal string.',
       );
-      await txn.insert(
-        'quarantined_mutations',
-        record.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }, checkAdmission: checkAdmission);
+    }
+
+    await _runWriteTransaction<void>(
+      targetScope: record.ownerScope,
+      admission: admission,
+      action: (txn) async {
+        await txn.delete(
+          'pending_mutations',
+          where: 'owner_scope = ? AND mutation_id = ?',
+          whereArgs: <Object?>[record.ownerScope, record.mutationId],
+        );
+        await txn.insert(
+          'quarantined_mutations',
+          record.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      },
+    );
   }
 
   Future<QuarantinedMutationRecord?> getQuarantinedMutation(
     String ownerScope,
     String mutationId,
   ) async {
-    assertValidScope(ownerScope);
-    final rows = await _db.query(
+    assertAccountScope(ownerScope);
+    final db = await _acquireDatabase();
+    final rows = await db.query(
       'quarantined_mutations',
       where: 'owner_scope = ? AND mutation_id = ?',
       whereArgs: <Object?>[ownerScope, mutationId],
@@ -839,8 +953,9 @@ class SyncStorageDal {
   Future<List<QuarantinedMutationRecord>> getQuarantinedMutations(
     String ownerScope,
   ) async {
-    assertValidScope(ownerScope);
-    final rows = await _db.query(
+    assertAccountScope(ownerScope);
+    final db = await _acquireDatabase();
+    final rows = await db.query(
       'quarantined_mutations',
       where: 'owner_scope = ?',
       whereArgs: <Object?>[ownerScope],
@@ -852,16 +967,20 @@ class SyncStorageDal {
   Future<void> deleteQuarantinedMutation(
     String ownerScope,
     String mutationId, {
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
   }) async {
-    assertValidScope(ownerScope);
-    await _runWriteTransaction<void>((txn) async {
-      await txn.delete(
-        'quarantined_mutations',
-        where: 'owner_scope = ? AND mutation_id = ?',
-        whereArgs: <Object?>[ownerScope, mutationId],
-      );
-    }, checkAdmission: checkAdmission);
+    assertAccountScope(ownerScope);
+    await _runWriteTransaction<void>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        await txn.delete(
+          'quarantined_mutations',
+          where: 'owner_scope = ? AND mutation_id = ?',
+          whereArgs: <Object?>[ownerScope, mutationId],
+        );
+      },
+    );
   }
 
   /// Đưa mutation từ `quarantined_mutations` trở lại `pending_mutations` với `retry_count = 0`.
@@ -872,66 +991,70 @@ class SyncStorageDal {
     required String ownerScope,
     required String mutationId,
     CausalTriageProof? triageProof,
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
   }) async {
-    assertValidScope(ownerScope);
-    return _runWriteTransaction<PendingMutationRecord>((txn) async {
-      final rows = await txn.query(
-        'quarantined_mutations',
-        where: 'owner_scope = ? AND mutation_id = ?',
-        whereArgs: <Object?>[ownerScope, mutationId],
-        limit: 1,
-      );
-      if (rows.isEmpty) {
-        throw StateError(
-          'Quarantined mutation [$ownerScope, $mutationId] not found.',
+    assertAccountScope(ownerScope);
+    return _runWriteTransaction<PendingMutationRecord>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        final rows = await txn.query(
+          'quarantined_mutations',
+          where: 'owner_scope = ? AND mutation_id = ?',
+          whereArgs: <Object?>[ownerScope, mutationId],
+          limit: 1,
         );
-      }
+        if (rows.isEmpty) {
+          throw StateError(
+            'Quarantined mutation [$ownerScope, $mutationId] not found.',
+          );
+        }
 
-      final q = QuarantinedMutationRecord.fromMap(rows.first);
+        final q = QuarantinedMutationRecord.fromMap(rows.first);
 
-      if (q.rejectionStatus == 'REJECTED_TOMBSTONE') {
-        throw const RequeueProhibitedError(
-          'REQUEUE_PROHIBITED: Cannot requeue REJECTED_TOMBSTONE mutation. Entity has authoritative tombstone on server.',
+        if (q.rejectionStatus == 'REJECTED_TOMBSTONE') {
+          throw const RequeueProhibitedError(
+            'REQUEUE_PROHIBITED: Cannot requeue REJECTED_TOMBSTONE mutation. Entity has authoritative tombstone on server.',
+          );
+        }
+
+        if (q.rejectionStatus == 'REJECTED_STALE' ||
+            q.rejectionStatus == 'HTTP_410_GONE') {
+          throw const RequeueProhibitedError(
+            'REQUEUE_PROHIBITED: Requeuing REJECTED_STALE or HTTP_410_GONE mutations is locked until Stage 3 Causal Triage Engine is implemented.',
+          );
+        }
+
+        await txn.delete(
+          'quarantined_mutations',
+          where: 'owner_scope = ? AND mutation_id = ?',
+          whereArgs: <Object?>[ownerScope, mutationId],
         );
-      }
 
-      if (q.rejectionStatus == 'REJECTED_STALE' ||
-          q.rejectionStatus == 'HTTP_410_GONE') {
-        throw const RequeueProhibitedError(
-          'REQUEUE_PROHIBITED: Requeuing REJECTED_STALE or HTTP_410_GONE mutations is locked until Stage 3 Causal Triage Engine is implemented.',
+        final restored = PendingMutationRecord(
+          ownerScope: q.ownerScope,
+          mutationId: q.mutationId,
+          sequenceNo: q.originalSequenceNo ?? 0,
+          clientId: q.clientId,
+          domain: q.domain,
+          entityId: q.entityId,
+          operation: q.operation,
+          baseServerRevision: q.baseServerRevision,
+          observedHistoryEpoch: q.observedHistoryEpoch,
+          payload: q.payload,
+          retryCount: 0,
+          nextRetryAtMs: null,
+          createdAtIso: q.originalCreatedAtIso,
+          createdAtMs: q.originalCreatedAtMs,
         );
-      }
 
-      await txn.delete(
-        'quarantined_mutations',
-        where: 'owner_scope = ? AND mutation_id = ?',
-        whereArgs: <Object?>[ownerScope, mutationId],
-      );
-
-      final restored = PendingMutationRecord(
-        ownerScope: q.ownerScope,
-        mutationId: q.mutationId,
-        sequenceNo: q.originalSequenceNo ?? 0,
-        clientId: q.clientId,
-        domain: q.domain,
-        entityId: q.entityId,
-        operation: q.operation,
-        baseServerRevision: q.baseServerRevision,
-        observedHistoryEpoch: q.observedHistoryEpoch,
-        payload: q.payload,
-        retryCount: 0,
-        nextRetryAtMs: null,
-        createdAtIso: q.originalCreatedAtIso,
-        createdAtMs: q.originalCreatedAtMs,
-      );
-
-      return _insertPendingMutationInTxn(
-        txn,
-        restored,
-        preserveSequenceIfAvailable: true,
-      );
-    }, checkAdmission: checkAdmission);
+        return _insertPendingMutationInTxn(
+          txn,
+          restored,
+          preserveSequenceIfAvailable: true,
+        );
+      },
+    );
   }
 
   /// Anti-Tombstone Resurrection: xóa đồng thời bản sao cục bộ/shadow và pending mutation
@@ -942,179 +1065,253 @@ class SyncStorageDal {
     required String entityId,
     required String mutationId,
     Map<String, Object?>? payload,
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
-    assertValidScope(ownerScope);
-    await _runWriteTransaction<void>((txn) async {
-      switch (domain) {
-        case SyncDomain.bookmark:
-          await txn.delete(
-            'local_library_bookmarks',
-            where: 'owner_scope = ? AND story_id = ?',
-            whereArgs: <Object?>[ownerScope, entityId],
-          );
-          await txn.delete(
-            'sync_authoritative_replicas',
-            where: "owner_scope = ? AND domain = 'BOOKMARK' AND entity_key = ?",
-            whereArgs: <Object?>[ownerScope, entityId],
-          );
-          break;
-
-        case SyncDomain.progress:
-          await txn.delete(
-            'local_reading_progress',
-            where: 'owner_scope = ? AND story_id = ?',
-            whereArgs: <Object?>[ownerScope, entityId],
-          );
-          await txn.delete(
-            'sync_authoritative_replicas',
-            where: "owner_scope = ? AND domain = 'PROGRESS' AND entity_key = ?",
-            whereArgs: <Object?>[ownerScope, entityId],
-          );
-          break;
-
-        case SyncDomain.history:
-          if (isGlobalHistoryTarget(entityId)) {
+    assertAccountScope(ownerScope);
+    await _runWriteTransaction<void>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        switch (domain) {
+          case SyncDomain.bookmark:
             await txn.delete(
-              'local_reading_history',
-              where: 'owner_scope = ?',
-              whereArgs: <Object?>[ownerScope],
-            );
-            await txn.delete(
-              'local_reading_progress',
-              where: 'owner_scope = ?',
-              whereArgs: <Object?>[ownerScope],
+              'local_library_bookmarks',
+              where: 'owner_scope = ? AND story_id = ?',
+              whereArgs: <Object?>[ownerScope, entityId],
             );
             await txn.delete(
               'sync_authoritative_replicas',
-              where: "owner_scope = ? AND domain IN ('HISTORY', 'PROGRESS')",
-              whereArgs: <Object?>[ownerScope],
+              where:
+                  "owner_scope = ? AND domain = 'BOOKMARK' AND entity_key = ?",
+              whereArgs: <Object?>[ownerScope, entityId],
             );
-          } else {
-            final payloadStoryId = _nonEmptyString(payload?['storyId']);
-            final payloadChapterId = _nonEmptyString(payload?['chapterId']);
-            final colonIdx = entityId.indexOf(':');
+            break;
 
-            if (payloadStoryId != null && payloadChapterId != null) {
+          case SyncDomain.progress:
+            await txn.delete(
+              'local_reading_progress',
+              where: 'owner_scope = ? AND story_id = ?',
+              whereArgs: <Object?>[ownerScope, entityId],
+            );
+            await txn.delete(
+              'sync_authoritative_replicas',
+              where:
+                  "owner_scope = ? AND domain = 'PROGRESS' AND entity_key = ?",
+              whereArgs: <Object?>[ownerScope, entityId],
+            );
+            break;
+
+          case SyncDomain.history:
+            if (isGlobalHistoryTarget(entityId)) {
               await txn.delete(
                 'local_reading_history',
-                where: 'owner_scope = ? AND story_id = ? AND chapter_id = ?',
-                whereArgs: <Object?>[
-                  ownerScope,
-                  payloadStoryId,
-                  payloadChapterId,
-                ],
-              );
-              await txn.delete(
-                'sync_authoritative_replicas',
-                where:
-                    "owner_scope = ? AND domain = 'HISTORY' AND entity_key = ?",
-                whereArgs: <Object?>[
-                  ownerScope,
-                  canonicalHistoryEntityKey(payloadStoryId, payloadChapterId),
-                ],
-              );
-            } else if (colonIdx > 0 && colonIdx < entityId.length - 1) {
-              final sId = entityId.substring(0, colonIdx);
-              final cId = entityId.substring(colonIdx + 1);
-              await txn.delete(
-                'local_reading_history',
-                where: 'owner_scope = ? AND story_id = ? AND chapter_id = ?',
-                whereArgs: <Object?>[ownerScope, sId, cId],
-              );
-              await txn.delete(
-                'sync_authoritative_replicas',
-                where:
-                    "owner_scope = ? AND domain = 'HISTORY' AND entity_key = ?",
-                whereArgs: <Object?>[ownerScope, entityId],
-              );
-            } else {
-              await txn.delete(
-                'local_reading_history',
-                where: 'owner_scope = ? AND story_id = ?',
-                whereArgs: <Object?>[ownerScope, entityId],
+                where: 'owner_scope = ?',
+                whereArgs: <Object?>[ownerScope],
               );
               await txn.delete(
                 'local_reading_progress',
-                where: 'owner_scope = ? AND story_id = ?',
-                whereArgs: <Object?>[ownerScope, entityId],
-              );
-              final escapedPrefix = '${escapeSqlLikePattern(entityId)}:%';
-              await txn.delete(
-                'sync_authoritative_replicas',
-                where:
-                    r"owner_scope = ? AND domain = 'HISTORY' AND (entity_key = ? OR entity_key LIKE ? ESCAPE '\')",
-                whereArgs: <Object?>[ownerScope, entityId, escapedPrefix],
+                where: 'owner_scope = ?',
+                whereArgs: <Object?>[ownerScope],
               );
               await txn.delete(
                 'sync_authoritative_replicas',
-                where:
-                    "owner_scope = ? AND domain = 'PROGRESS' AND entity_key = ?",
-                whereArgs: <Object?>[ownerScope, entityId],
+                where: "owner_scope = ? AND domain IN ('HISTORY', 'PROGRESS')",
+                whereArgs: <Object?>[ownerScope],
               );
+            } else {
+              final payloadStoryId = _nonEmptyString(payload?['storyId']);
+              final payloadChapterId = _nonEmptyString(payload?['chapterId']);
+              final colonIdx = entityId.indexOf(':');
+
+              if (payloadStoryId != null && payloadChapterId != null) {
+                await txn.delete(
+                  'local_reading_history',
+                  where: 'owner_scope = ? AND story_id = ? AND chapter_id = ?',
+                  whereArgs: <Object?>[
+                    ownerScope,
+                    payloadStoryId,
+                    payloadChapterId,
+                  ],
+                );
+                await txn.delete(
+                  'sync_authoritative_replicas',
+                  where:
+                      "owner_scope = ? AND domain = 'HISTORY' AND entity_key = ?",
+                  whereArgs: <Object?>[
+                    ownerScope,
+                    canonicalHistoryEntityKey(payloadStoryId, payloadChapterId),
+                  ],
+                );
+              } else if (colonIdx > 0 && colonIdx < entityId.length - 1) {
+                final sId = entityId.substring(0, colonIdx);
+                final cId = entityId.substring(colonIdx + 1);
+                await txn.delete(
+                  'local_reading_history',
+                  where: 'owner_scope = ? AND story_id = ? AND chapter_id = ?',
+                  whereArgs: <Object?>[ownerScope, sId, cId],
+                );
+                await txn.delete(
+                  'sync_authoritative_replicas',
+                  where:
+                      "owner_scope = ? AND domain = 'HISTORY' AND entity_key = ?",
+                  whereArgs: <Object?>[ownerScope, entityId],
+                );
+              } else {
+                await txn.delete(
+                  'local_reading_history',
+                  where: 'owner_scope = ? AND story_id = ?',
+                  whereArgs: <Object?>[ownerScope, entityId],
+                );
+                await txn.delete(
+                  'local_reading_progress',
+                  where: 'owner_scope = ? AND story_id = ?',
+                  whereArgs: <Object?>[ownerScope, entityId],
+                );
+                final escapedPrefix = '${escapeSqlLikePattern(entityId)}:%';
+                await txn.delete(
+                  'sync_authoritative_replicas',
+                  where:
+                      r"owner_scope = ? AND domain = 'HISTORY' AND (entity_key = ? OR entity_key LIKE ? ESCAPE '\')",
+                  whereArgs: <Object?>[ownerScope, entityId, escapedPrefix],
+                );
+                await txn.delete(
+                  'sync_authoritative_replicas',
+                  where:
+                      "owner_scope = ? AND domain = 'PROGRESS' AND entity_key = ?",
+                  whereArgs: <Object?>[ownerScope, entityId],
+                );
+              }
             }
-          }
-          break;
+            break;
 
-        case SyncDomain.preference:
-          final prefKey = _nonEmptyString(payload?['key']) ?? entityId;
-          await txn.delete(
-            'local_preferences',
-            where: 'owner_scope = ? AND pref_key = ?',
-            whereArgs: <Object?>[ownerScope, prefKey],
-          );
-          await txn.delete(
-            'sync_authoritative_replicas',
-            where:
-                "owner_scope = ? AND domain = 'PREFERENCE' AND entity_key = ?",
-            whereArgs: <Object?>[ownerScope, prefKey],
-          );
-          break;
+          case SyncDomain.preference:
+            final prefKey = _nonEmptyString(payload?['key']) ?? entityId;
+            await txn.delete(
+              'local_preferences',
+              where: 'owner_scope = ? AND pref_key = ?',
+              whereArgs: <Object?>[ownerScope, prefKey],
+            );
+            await txn.delete(
+              'sync_authoritative_replicas',
+              where:
+                  "owner_scope = ? AND domain = 'PREFERENCE' AND entity_key = ?",
+              whereArgs: <Object?>[ownerScope, prefKey],
+            );
+            break;
 
-        case SyncDomain.follow:
-          await txn.delete(
-            'sync_authoritative_replicas',
-            where: "owner_scope = ? AND domain = 'FOLLOW' AND entity_key = ?",
-            whereArgs: <Object?>[ownerScope, entityId],
-          );
-          break;
-      }
+          case SyncDomain.follow:
+            await txn.delete(
+              'sync_authoritative_replicas',
+              where: "owner_scope = ? AND domain = 'FOLLOW' AND entity_key = ?",
+              whereArgs: <Object?>[ownerScope, entityId],
+            );
+            break;
+        }
 
-      await txn.delete(
-        'pending_mutations',
-        where: 'owner_scope = ? AND mutation_id = ?',
-        whereArgs: <Object?>[ownerScope, mutationId],
-      );
+        await txn.delete(
+          'pending_mutations',
+          where: 'owner_scope = ? AND mutation_id = ?',
+          whereArgs: <Object?>[ownerScope, mutationId],
+        );
 
-      if (onBeforeCommitHook != null) {
-        await onBeforeCommitHook(txn);
-      }
-    }, checkAdmission: checkAdmission);
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+      },
+    );
   }
 
-  // ==================== LOCAL PREFERENCES ====================
+  // ==================== SCOPED PREFERENCES (P0-M05 EXPLICIT SPLIT) ====================
 
-  Future<void> putPreference(
+  /// Lưu tùy chọn cục bộ cho Guest (`guest:<guestProfileId>`) — KHÔNG enqueue sync mutation.
+  Future<void> putGuestLocalPreference(
     LocalPreferenceRecord preference, {
-    void Function()? checkAdmission,
+    required GuestLocalWriteAdmission admission,
+    Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
-    assertValidScope(preference.ownerScope);
-    await _runWriteTransaction<void>((txn) async {
-      await txn.insert(
-        'local_preferences',
-        preference.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }, checkAdmission: checkAdmission);
+    assertGuestScope(preference.ownerScope);
+    await _runWriteTransaction<void>(
+      targetScope: preference.ownerScope,
+      admission: admission,
+      action: (txn) async {
+        await txn.insert(
+          'local_preferences',
+          preference.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+      },
+    );
   }
 
-  Future<LocalPreferenceRecord?> getPreference(
+  /// Đọc tùy chọn cục bộ của Guest (`guest:<guestProfileId>`).
+  Future<LocalPreferenceRecord?> getGuestLocalPreference(
+    String guestScope,
+    String prefKey,
+  ) async {
+    assertGuestScope(guestScope);
+    final db = await _acquireDatabase();
+    final rows = await db.query(
+      'local_preferences',
+      where: 'owner_scope = ? AND pref_key = ?',
+      whereArgs: <Object?>[guestScope, prefKey],
+      limit: 1,
+    );
+    if (rows.isEmpty) return null;
+    return LocalPreferenceRecord.fromMap(rows.first);
+  }
+
+  /// Đọc toàn bộ tùy chọn cục bộ của Guest (`guest:<guestProfileId>`).
+  Future<List<LocalPreferenceRecord>> getAllGuestLocalPreferences(
+    String guestScope,
+  ) async {
+    assertGuestScope(guestScope);
+    final db = await _acquireDatabase();
+    final rows = await db.query(
+      'local_preferences',
+      where: 'owner_scope = ?',
+      whereArgs: <Object?>[guestScope],
+      orderBy: 'pref_key ASC',
+    );
+    return rows.map(LocalPreferenceRecord.fromMap).toList();
+  }
+
+  /// Xóa tùy chọn cục bộ của Guest (`guest:<guestProfileId>`).
+  Future<void> deleteGuestLocalPreference(
+    String guestScope,
+    String prefKey, {
+    required GuestLocalWriteAdmission admission,
+    Future<void> Function(Transaction txn)? onBeforeCommitHook,
+  }) async {
+    assertGuestScope(guestScope);
+    await _runWriteTransaction<void>(
+      targetScope: guestScope,
+      admission: admission,
+      action: (txn) async {
+        await txn.delete(
+          'local_preferences',
+          where: 'owner_scope = ? AND pref_key = ?',
+          whereArgs: <Object?>[guestScope, prefKey],
+        );
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+      },
+    );
+  }
+
+  /// Đọc tùy chọn cục bộ của Account (`account:<userId>`).
+  /// Việc ghi preference đồng bộ của Account đi qua [putPreferenceWithMutation].
+  Future<LocalPreferenceRecord?> getAccountLocalPreference(
     String ownerScope,
     String prefKey,
   ) async {
-    assertValidScope(ownerScope);
-    final rows = await _db.query(
+    assertAccountScope(ownerScope);
+    final db = await _acquireDatabase();
+    final rows = await db.query(
       'local_preferences',
       where: 'owner_scope = ? AND pref_key = ?',
       whereArgs: <Object?>[ownerScope, prefKey],
@@ -1124,11 +1321,13 @@ class SyncStorageDal {
     return LocalPreferenceRecord.fromMap(rows.first);
   }
 
-  Future<List<LocalPreferenceRecord>> getAllPreferences(
+  /// Đọc toàn bộ tùy chọn cục bộ của Account (`account:<userId>`).
+  Future<List<LocalPreferenceRecord>> getAllAccountLocalPreferences(
     String ownerScope,
   ) async {
-    assertValidScope(ownerScope);
-    final rows = await _db.query(
+    assertAccountScope(ownerScope);
+    final db = await _acquireDatabase();
+    final rows = await db.query(
       'local_preferences',
       where: 'owner_scope = ?',
       whereArgs: <Object?>[ownerScope],
@@ -1137,26 +1336,12 @@ class SyncStorageDal {
     return rows.map(LocalPreferenceRecord.fromMap).toList();
   }
 
-  Future<void> deletePreference(
-    String ownerScope,
-    String prefKey, {
-    void Function()? checkAdmission,
-  }) async {
-    assertValidScope(ownerScope);
-    await _runWriteTransaction<void>((txn) async {
-      await txn.delete(
-        'local_preferences',
-        where: 'owner_scope = ? AND pref_key = ?',
-        whereArgs: <Object?>[ownerScope, prefKey],
-      );
-    }, checkAdmission: checkAdmission);
-  }
-
   // ==================== SYNC META & FAIL-CLOSED BASELINE LIFECYCLE ====================
 
   Future<SyncMeta?> getSyncMeta(String ownerScope) async {
-    assertValidScope(ownerScope);
-    final rows = await _db.query(
+    assertAccountScope(ownerScope);
+    final db = await _acquireDatabase();
+    final rows = await db.query(
       'sync_meta',
       where: 'owner_scope = ?',
       whereArgs: <Object?>[ownerScope],
@@ -1172,9 +1357,9 @@ class SyncStorageDal {
   ///    hoặc `effectiveHistoryEpochs` qua `putSyncMeta` (chỉ được sửa qua `applyAuthoritativeDeltaPage`).
   Future<void> putSyncMeta(
     SyncMeta meta, {
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
   }) async {
-    assertValidScope(meta.ownerScope);
+    assertAccountScope(meta.ownerScope);
     if (!isValidRevisionString(meta.lastSyncedServerRevision)) {
       throw ArgumentError(
         'Invalid lastSyncedServerRevision: "${meta.lastSyncedServerRevision}".',
@@ -1186,58 +1371,63 @@ class SyncStorageDal {
       );
     }
 
-    await _runWriteTransaction<void>((txn) async {
-      final rows = await txn.query(
-        'sync_meta',
-        where: 'owner_scope = ?',
-        whereArgs: <Object?>[meta.ownerScope],
-        limit: 1,
-      );
-      final existing = rows.isEmpty ? null : SyncMeta.fromMap(rows.first);
-
-      if (meta.authoritativeBaselineStatus ==
-              AuthoritativeBaselineStatus.ready &&
-          existing?.authoritativeBaselineStatus !=
-              AuthoritativeBaselineStatus.ready) {
-        throw const ReadyStatusTransitionForbiddenError(
-          'Cannot transition baseline status to READY via putSyncMeta without atomic baseline proof verification.',
+    await _runWriteTransaction<void>(
+      targetScope: meta.ownerScope,
+      admission: admission,
+      action: (txn) async {
+        final rows = await txn.query(
+          'sync_meta',
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[meta.ownerScope],
+          limit: 1,
         );
-      }
+        final existing = rows.isEmpty ? null : SyncMeta.fromMap(rows.first);
 
-      if (existing?.authoritativeBaselineStatus ==
-          AuthoritativeBaselineStatus.ready) {
-        if (meta.lastSyncedServerRevision != existing!.lastSyncedServerRevision) {
-          throw ReadyStatusTransitionForbiddenError(
-            'CHECKPOINT_MUTATION_FORBIDDEN: Mutating lastSyncedServerRevision on a READY scope via putSyncMeta is forbidden (attempted "${existing.lastSyncedServerRevision}" -> "${meta.lastSyncedServerRevision}").',
-          );
-        }
-        if (meta.minActiveRevision != existing.minActiveRevision) {
-          throw ReadyStatusTransitionForbiddenError(
-            'CHECKPOINT_MUTATION_FORBIDDEN: Mutating minActiveRevision on a READY scope via putSyncMeta is forbidden (attempted "${existing.minActiveRevision}" -> "${meta.minActiveRevision}").',
-          );
-        }
-        if (!areEpochMapsEqual(
-          meta.effectiveHistoryEpochs,
-          existing.effectiveHistoryEpochs,
-        )) {
+        if (meta.authoritativeBaselineStatus ==
+                AuthoritativeBaselineStatus.ready &&
+            existing?.authoritativeBaselineStatus !=
+                AuthoritativeBaselineStatus.ready) {
           throw const ReadyStatusTransitionForbiddenError(
-            'CHECKPOINT_MUTATION_FORBIDDEN: Mutating effectiveHistoryEpochs on a READY scope via putSyncMeta is forbidden.',
+            'Cannot transition baseline status to READY via putSyncMeta without atomic baseline proof verification.',
           );
         }
-      }
 
-      await txn.insert(
-        'sync_meta',
-        meta.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }, checkAdmission: checkAdmission);
+        if (existing?.authoritativeBaselineStatus ==
+            AuthoritativeBaselineStatus.ready) {
+          if (meta.lastSyncedServerRevision !=
+              existing!.lastSyncedServerRevision) {
+            throw ReadyStatusTransitionForbiddenError(
+              'CHECKPOINT_MUTATION_FORBIDDEN: Mutating lastSyncedServerRevision on a READY scope via putSyncMeta is forbidden (attempted "${existing.lastSyncedServerRevision}" -> "${meta.lastSyncedServerRevision}").',
+            );
+          }
+          if (meta.minActiveRevision != existing.minActiveRevision) {
+            throw ReadyStatusTransitionForbiddenError(
+              'CHECKPOINT_MUTATION_FORBIDDEN: Mutating minActiveRevision on a READY scope via putSyncMeta is forbidden (attempted "${existing.minActiveRevision}" -> "${meta.minActiveRevision}").',
+            );
+          }
+          if (!areEpochMapsEqual(
+            meta.effectiveHistoryEpochs,
+            existing.effectiveHistoryEpochs,
+          )) {
+            throw const ReadyStatusTransitionForbiddenError(
+              'CHECKPOINT_MUTATION_FORBIDDEN: Mutating effectiveHistoryEpochs on a READY scope via putSyncMeta is forbidden.',
+            );
+          }
+        }
+
+        await txn.insert(
+          'sync_meta',
+          meta.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      },
+    );
   }
 
   Future<AuthoritativeBaselineStatus> getAuthoritativeBaselineStatus(
     String ownerScope,
   ) async {
-    assertValidScope(ownerScope);
+    assertAccountScope(ownerScope);
     final meta = await getSyncMeta(ownerScope);
     return meta?.authoritativeBaselineStatus ??
         AuthoritativeBaselineStatus.uninitialized;
@@ -1248,45 +1438,50 @@ class SyncStorageDal {
   Future<void> setAuthoritativeBaselineStatus(
     String ownerScope,
     AuthoritativeBaselineStatus status, {
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
   }) async {
-    assertValidScope(ownerScope);
+    assertAccountScope(ownerScope);
     if (status == AuthoritativeBaselineStatus.ready) {
       throw const ReadyStatusTransitionForbiddenError(
         'Transition to READY baseline status is forbidden in Stage 1. Direct transition via setAuthoritativeBaselineStatus is locked.',
       );
     }
 
-    await _runWriteTransaction<void>((txn) async {
-      final rows = await txn.query(
-        'sync_meta',
-        where: 'owner_scope = ?',
-        whereArgs: <Object?>[ownerScope],
-        limit: 1,
-      );
-      final existing = rows.isEmpty ? null : SyncMeta.fromMap(rows.first);
-      final updated = existing != null
-          ? existing.copyWith(authoritativeBaselineStatus: status)
-          : SyncMeta(
-              ownerScope: ownerScope,
-              lastSyncedServerRevision: '0',
-              minActiveRevision: '0',
-              lastSyncTimestamp:
-                  DateTime.fromMillisecondsSinceEpoch(0, isUtc: true)
-                      .toIso8601String(),
-              effectiveHistoryEpochs: const <String, int>{},
-              syncState: SyncExecutionState.idle,
-              authoritativeBaselineStatus: status,
-            );
-      await txn.insert(
-        'sync_meta',
-        updated.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
-    }, checkAdmission: checkAdmission);
+    await _runWriteTransaction<void>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        final rows = await txn.query(
+          'sync_meta',
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[ownerScope],
+          limit: 1,
+        );
+        final existing = rows.isEmpty ? null : SyncMeta.fromMap(rows.first);
+        final updated = existing != null
+            ? existing.copyWith(authoritativeBaselineStatus: status)
+            : SyncMeta(
+                ownerScope: ownerScope,
+                lastSyncedServerRevision: '0',
+                minActiveRevision: '0',
+                lastSyncTimestamp:
+                    DateTime.fromMillisecondsSinceEpoch(0, isUtc: true)
+                        .toIso8601String(),
+                effectiveHistoryEpochs: const <String, int>{},
+                syncState: SyncExecutionState.idle,
+                authoritativeBaselineStatus: status,
+              );
+        await txn.insert(
+          'sync_meta',
+          updated.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      },
+    );
   }
 
   Future<bool> isAuthoritativeReady(String ownerScope) async {
+    assertAccountScope(ownerScope);
     final status = await getAuthoritativeBaselineStatus(ownerScope);
     return status == AuthoritativeBaselineStatus.ready;
   }
@@ -1296,36 +1491,40 @@ class SyncStorageDal {
   /// Giữ nguyên `lastSyncedServerRevision`, `minActiveRevision` và `effectiveHistoryEpochs`.
   Future<bool> recoverInterruptedBootstrapToUninitialized(
     String ownerScope, {
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
   }) async {
-    assertValidScope(ownerScope);
-    return _runWriteTransaction<bool>((txn) async {
-      final rows = await txn.query(
-        'sync_meta',
-        where: 'owner_scope = ?',
-        whereArgs: <Object?>[ownerScope],
-        limit: 1,
-      );
-      if (rows.isEmpty) return false;
+    assertAccountScope(ownerScope);
+    return _runWriteTransaction<bool>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        final rows = await txn.query(
+          'sync_meta',
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[ownerScope],
+          limit: 1,
+        );
+        if (rows.isEmpty) return false;
 
-      final existing = SyncMeta.fromMap(rows.first);
-      if (existing.authoritativeBaselineStatus !=
-          AuthoritativeBaselineStatus.bootstrapping) {
-        return false;
-      }
+        final existing = SyncMeta.fromMap(rows.first);
+        if (existing.authoritativeBaselineStatus !=
+            AuthoritativeBaselineStatus.bootstrapping) {
+          return false;
+        }
 
-      await txn.update(
-        'sync_meta',
-        <String, Object?>{
-          'authoritative_baseline_status':
-              AuthoritativeBaselineStatus.uninitialized.wireValue,
-          'sync_state': SyncExecutionState.idle.wireValue,
-        },
-        where: 'owner_scope = ?',
-        whereArgs: <Object?>[ownerScope],
-      );
-      return true;
-    }, checkAdmission: checkAdmission);
+        await txn.update(
+          'sync_meta',
+          <String, Object?>{
+            'authoritative_baseline_status':
+                AuthoritativeBaselineStatus.uninitialized.wireValue,
+            'sync_state': SyncExecutionState.idle.wireValue,
+          },
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[ownerScope],
+        );
+        return true;
+      },
+    );
   }
 
   // ==================== AUTHORITATIVE SHADOW READS & DELTA INGESTION ====================
@@ -1335,8 +1534,9 @@ class SyncStorageDal {
     SyncDomain domain,
     String entityKey,
   ) async {
-    assertValidScope(ownerScope);
-    final rows = await _db.query(
+    assertAccountScope(ownerScope);
+    final db = await _acquireDatabase();
+    final rows = await db.query(
       'sync_authoritative_replicas',
       where: 'owner_scope = ? AND domain = ? AND entity_key = ?',
       whereArgs: <Object?>[ownerScope, domain.wireValue, entityKey],
@@ -1350,8 +1550,9 @@ class SyncStorageDal {
     String ownerScope,
     SyncDomain domain,
   ) async {
-    assertValidScope(ownerScope);
-    final rows = await _db.query(
+    assertAccountScope(ownerScope);
+    final db = await _acquireDatabase();
+    final rows = await db.query(
       'sync_authoritative_replicas',
       where: 'owner_scope = ? AND domain = ?',
       whereArgs: <Object?>[ownerScope, domain.wireValue],
@@ -1363,8 +1564,9 @@ class SyncStorageDal {
   Future<List<AuthoritativeShadowRecord>> getAllAuthoritativeShadows(
     String ownerScope,
   ) async {
-    assertValidScope(ownerScope);
-    final rows = await _db.query(
+    assertAccountScope(ownerScope);
+    final db = await _acquireDatabase();
+    final rows = await db.query(
       'sync_authoritative_replicas',
       where: 'owner_scope = ?',
       whereArgs: <Object?>[ownerScope],
@@ -1378,16 +1580,19 @@ class SyncStorageDal {
   ///
   /// Tuân thủ đầy đủ điều kiện Gate Review:
   /// - `P0-M01`: Cursor/pagination integrity, compacted retention gap, causal revision bounds.
-  /// - `P0-M02`: Native SQLite transaction + OCC checkpoint verification trên DB + 3-barrier admission.
+  /// - `P0-M02`: Native SQLite transaction + OCC checkpoint verification trên DB.
+  /// - `P0-M05` & `P0-M06`: Chỉ nhận `account:*` + bắt buộc [AccountWriteAdmission] 4 hàng rào.
+  /// - `P1-M07`: Kiểm định fail-closed `readingMode` nếu delta `PROGRESS` mang trường này.
   /// - Bảo toàn nguyên trạng `authoritativeBaselineStatus` (không tự cấp `READY`).
   Future<ApplyAuthoritativeDeltaResult> applyAuthoritativeDeltaPage({
     required String ownerScope,
     required SyncChangesPage page,
     required String? expectedCheckpoint,
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
-    assertValidScope(ownerScope);
+    assertAccountScope(ownerScope);
+    admission.assertAdmitted(ownerScope);
 
     // 1. P0-M01: Validate mandatory OCC checkpoint & page metadata fail-closed
     if (!isValidRevisionString(expectedCheckpoint)) {
@@ -1467,7 +1672,7 @@ class SyncStorageDal {
       );
     }
 
-    // 5. P0-M01: Item-level validation
+    // 5. P0-M01 & P1-M07: Item-level validation
     BigInt? prevRev;
     for (var i = 0; i < page.changes.length; i++) {
       final change = page.changes[i];
@@ -1515,6 +1720,13 @@ class SyncStorageDal {
         );
       }
 
+      if (parsedDomain == SyncDomain.progress &&
+          parsedOp == SyncOperation.upsert &&
+          change.payload.containsKey('readingMode')) {
+        final rawMode = change.payload['readingMode'];
+        normalizeSyncReadingMode(rawMode is String ? rawMode : null);
+      }
+
       if (parsedDomain == SyncDomain.history &&
           parsedOp == SyncOperation.delete) {
         final rawEpoch = change.payload['epoch'];
@@ -1526,261 +1738,271 @@ class SyncStorageDal {
       }
     }
 
-    // 6. P0-M02: Atomic SQLite transaction with native OCC & 3-barrier checkAdmission
-    return _runWriteTransaction<ApplyAuthoritativeDeltaResult>((txn) async {
-      final metaRows = await txn.query(
-        'sync_meta',
-        where: 'owner_scope = ?',
-        whereArgs: <Object?>[ownerScope],
-        limit: 1,
-      );
-      final existingMeta =
-          metaRows.isEmpty ? null : SyncMeta.fromMap(metaRows.first);
-      final currentCheckpoint = existingMeta?.lastSyncedServerRevision ?? '0';
-
-      if (validExpected != currentCheckpoint) {
-        throw CheckpointConflictError(
-          'OCC_CHECKPOINT_MISMATCH: Expected checkpoint "$validExpected", but current checkpoint is "$currentCheckpoint".',
+    // 6. P0-M02 + P0-M06: Atomic SQLite transaction with native OCC & 4-barrier admission
+    return _runWriteTransaction<ApplyAuthoritativeDeltaResult>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        final metaRows = await txn.query(
+          'sync_meta',
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[ownerScope],
+          limit: 1,
         );
-      }
+        final existingMeta =
+            metaRows.isEmpty ? null : SyncMeta.fromMap(metaRows.first);
+        final currentCheckpoint = existingMeta?.lastSyncedServerRevision ?? '0';
 
-      if (targetCkptBigInt < parseRevisionBigInt(currentCheckpoint)) {
-        throw InvalidDeltaPayloadError(
-          'REGRESSIVE_CHECKPOINT: Target checkpoint "$targetCheckpoint" is less than current checkpoint "$currentCheckpoint".',
+        if (validExpected != currentCheckpoint) {
+          throw CheckpointConflictError(
+            'OCC_CHECKPOINT_MISMATCH: Expected checkpoint "$validExpected", but current checkpoint is "$currentCheckpoint".',
+          );
+        }
+
+        if (targetCkptBigInt < parseRevisionBigInt(currentCheckpoint)) {
+          throw InvalidDeltaPayloadError(
+            'REGRESSIVE_CHECKPOINT: Target checkpoint "$targetCheckpoint" is less than current checkpoint "$currentCheckpoint".',
+          );
+        }
+
+        final effectiveEpochs = Map<String, int>.from(
+          existingMeta?.effectiveHistoryEpochs ?? const <String, int>{},
         );
-      }
+        final now = DateTime.now().toUtc();
+        final nowMs = now.millisecondsSinceEpoch;
 
-      final effectiveEpochs = Map<String, int>.from(
-        existingMeta?.effectiveHistoryEpochs ?? const <String, int>{},
-      );
-      final now = DateTime.now().toUtc();
-      final nowMs = now.millisecondsSinceEpoch;
+        for (final change in page.changes) {
+          final domain = SyncDomain.fromWire(change.domain);
+          final op = SyncOperation.fromWire(change.operation);
+          final payload = change.payload;
 
-      for (final change in page.changes) {
-        final domain = SyncDomain.fromWire(change.domain);
-        final op = SyncOperation.fromWire(change.operation);
-        final payload = change.payload;
-
-        switch (domain) {
-          case SyncDomain.bookmark:
-            final entityKey = canonicalBookmarkEntityKey(
-              _nonEmptyString(payload['storyId']) ?? change.entityId,
-            );
-            if (op == SyncOperation.upsert) {
-              await _upsertShadow(
-                txn,
-                AuthoritativeShadowRecord(
-                  ownerScope: ownerScope,
-                  domain: SyncDomain.bookmark,
-                  entityKey: entityKey,
-                  serverRevision: change.revision,
-                  epoch: 0,
-                  payload: payload,
-                  isDeleted: false,
-                  updatedAtMs: nowMs,
-                ),
+          switch (domain) {
+            case SyncDomain.bookmark:
+              final entityKey = canonicalBookmarkEntityKey(
+                _nonEmptyString(payload['storyId']) ?? change.entityId,
               );
-            } else {
-              await _deleteShadow(
-                txn,
-                ownerScope,
-                SyncDomain.bookmark,
-                entityKey,
-              );
-            }
-            break;
-
-          case SyncDomain.progress:
-            final entityKey = canonicalProgressEntityKey(
-              _nonEmptyString(payload['storyId']) ?? change.entityId,
-            );
-            if (op == SyncOperation.upsert) {
-              final epoch = _extractInt(payload['observedHistoryEpoch']) ??
-                  _extractInt(payload['epoch']) ??
-                  0;
-              await _upsertShadow(
-                txn,
-                AuthoritativeShadowRecord(
-                  ownerScope: ownerScope,
-                  domain: SyncDomain.progress,
-                  entityKey: entityKey,
-                  serverRevision: change.revision,
-                  epoch: epoch,
-                  payload: payload,
-                  isDeleted: false,
-                  updatedAtMs: nowMs,
-                ),
-              );
-            } else {
-              await _deleteShadow(
-                txn,
-                ownerScope,
-                SyncDomain.progress,
-                entityKey,
-              );
-            }
-            break;
-
-          case SyncDomain.preference:
-            final entityKey = canonicalPreferenceEntityKey(
-              _nonEmptyString(payload['key']) ?? change.entityId,
-            );
-            if (op == SyncOperation.upsert) {
-              await _upsertShadow(
-                txn,
-                AuthoritativeShadowRecord(
-                  ownerScope: ownerScope,
-                  domain: SyncDomain.preference,
-                  entityKey: entityKey,
-                  serverRevision: change.revision,
-                  epoch: 0,
-                  payload: payload,
-                  isDeleted: false,
-                  updatedAtMs: nowMs,
-                ),
-              );
-            } else {
-              await _deleteShadow(
-                txn,
-                ownerScope,
-                SyncDomain.preference,
-                entityKey,
-              );
-            }
-            break;
-
-          case SyncDomain.history:
-            if (op == SyncOperation.upsert) {
-              final colonIdx = change.entityId.indexOf(':');
-              final fallbackStoryId = colonIdx >= 0
-                  ? change.entityId.substring(0, colonIdx)
-                  : change.entityId;
-              final fallbackChapterId = colonIdx >= 0
-                  ? change.entityId.substring(colonIdx + 1)
-                  : '';
-              final storyId =
-                  _nonEmptyString(payload['storyId']) ?? fallbackStoryId;
-              final chapterId =
-                  _nonEmptyString(payload['chapterId']) ?? fallbackChapterId;
-              final entityKey = canonicalHistoryEntityKey(storyId, chapterId);
-              final epoch = _extractInt(payload['observedHistoryEpoch']) ??
-                  _extractInt(payload['epoch']) ??
-                  0;
-              await _upsertShadow(
-                txn,
-                AuthoritativeShadowRecord(
-                  ownerScope: ownerScope,
-                  domain: SyncDomain.history,
-                  entityKey: entityKey,
-                  serverRevision: change.revision,
-                  epoch: epoch,
-                  payload: payload,
-                  isDeleted: false,
-                  updatedAtMs: nowMs,
-                ),
-              );
-            } else {
-              final newEpoch = payload['epoch'] as int;
-              if (isGlobalHistoryTarget(change.entityId)) {
-                final currentGlobalEpoch =
-                    effectiveEpochs[kGlobalHistorySentinelUuid] ?? 0;
-                if (newEpoch <= currentGlobalEpoch) {
-                  throw NonMonotonicHistoryEpochError(
-                    'NON_MONOTONIC_HISTORY_EPOCH: Incoming global HISTORY DELETE epoch ($newEpoch) must be strictly greater than current global epoch ($currentGlobalEpoch).',
-                  );
-                }
-                effectiveEpochs[kGlobalHistorySentinelUuid] = newEpoch;
-
-                await txn.delete(
-                  'sync_authoritative_replicas',
-                  where: "owner_scope = ? AND domain IN ('HISTORY', 'PROGRESS')",
-                  whereArgs: <Object?>[ownerScope],
+              if (op == SyncOperation.upsert) {
+                await _upsertShadow(
+                  txn,
+                  AuthoritativeShadowRecord(
+                    ownerScope: ownerScope,
+                    domain: SyncDomain.bookmark,
+                    entityKey: entityKey,
+                    serverRevision: change.revision,
+                    epoch: 0,
+                    payload: payload,
+                    isDeleted: false,
+                    updatedAtMs: nowMs,
+                  ),
                 );
               } else {
-                final storyId =
-                    _nonEmptyString(payload['storyId']) ?? change.entityId;
-                final currentEffective =
-                    getEffectiveHistoryEpoch(effectiveEpochs, storyId);
-                if (newEpoch <= currentEffective) {
-                  throw NonMonotonicHistoryEpochError(
-                    'NON_MONOTONIC_HISTORY_EPOCH: Incoming story HISTORY DELETE epoch ($newEpoch) for story "$storyId" must be strictly greater than current effective epoch ($currentEffective).',
-                  );
-                }
-                effectiveEpochs[storyId] = newEpoch;
-
-                final escapedPrefix = '${escapeSqlLikePattern(storyId)}:%';
-                await txn.delete(
-                  'sync_authoritative_replicas',
-                  where:
-                      r"owner_scope = ? AND domain = 'HISTORY' AND (entity_key = ? OR entity_key LIKE ? ESCAPE '\')",
-                  whereArgs: <Object?>[ownerScope, storyId, escapedPrefix],
-                );
-                await txn.delete(
-                  'sync_authoritative_replicas',
-                  where:
-                      "owner_scope = ? AND domain = 'PROGRESS' AND entity_key = ?",
-                  whereArgs: <Object?>[ownerScope, storyId],
+                await _deleteShadow(
+                  txn,
+                  ownerScope,
+                  SyncDomain.bookmark,
+                  entityKey,
                 );
               }
-            }
-            break;
+              break;
 
-          case SyncDomain.follow:
-            final entityKey = change.entityId;
-            if (op == SyncOperation.upsert) {
-              await _upsertShadow(
-                txn,
-                AuthoritativeShadowRecord(
-                  ownerScope: ownerScope,
-                  domain: SyncDomain.follow,
-                  entityKey: entityKey,
-                  serverRevision: change.revision,
-                  epoch: 0,
-                  payload: payload,
-                  isDeleted: false,
-                  updatedAtMs: nowMs,
-                ),
+            case SyncDomain.progress:
+              final entityKey = canonicalProgressEntityKey(
+                _nonEmptyString(payload['storyId']) ?? change.entityId,
               );
-            } else {
-              await _deleteShadow(txn, ownerScope, SyncDomain.follow, entityKey);
-            }
-            break;
+              if (op == SyncOperation.upsert) {
+                final epoch = _extractInt(payload['observedHistoryEpoch']) ??
+                    _extractInt(payload['epoch']) ??
+                    0;
+                await _upsertShadow(
+                  txn,
+                  AuthoritativeShadowRecord(
+                    ownerScope: ownerScope,
+                    domain: SyncDomain.progress,
+                    entityKey: entityKey,
+                    serverRevision: change.revision,
+                    epoch: epoch,
+                    payload: payload,
+                    isDeleted: false,
+                    updatedAtMs: nowMs,
+                  ),
+                );
+              } else {
+                await _deleteShadow(
+                  txn,
+                  ownerScope,
+                  SyncDomain.progress,
+                  entityKey,
+                );
+              }
+              break;
+
+            case SyncDomain.preference:
+              final entityKey = canonicalPreferenceEntityKey(
+                _nonEmptyString(payload['key']) ?? change.entityId,
+              );
+              if (op == SyncOperation.upsert) {
+                await _upsertShadow(
+                  txn,
+                  AuthoritativeShadowRecord(
+                    ownerScope: ownerScope,
+                    domain: SyncDomain.preference,
+                    entityKey: entityKey,
+                    serverRevision: change.revision,
+                    epoch: 0,
+                    payload: payload,
+                    isDeleted: false,
+                    updatedAtMs: nowMs,
+                  ),
+                );
+              } else {
+                await _deleteShadow(
+                  txn,
+                  ownerScope,
+                  SyncDomain.preference,
+                  entityKey,
+                );
+              }
+              break;
+
+            case SyncDomain.history:
+              if (op == SyncOperation.upsert) {
+                final colonIdx = change.entityId.indexOf(':');
+                final fallbackStoryId = colonIdx >= 0
+                    ? change.entityId.substring(0, colonIdx)
+                    : change.entityId;
+                final fallbackChapterId = colonIdx >= 0
+                    ? change.entityId.substring(colonIdx + 1)
+                    : '';
+                final storyId =
+                    _nonEmptyString(payload['storyId']) ?? fallbackStoryId;
+                final chapterId =
+                    _nonEmptyString(payload['chapterId']) ?? fallbackChapterId;
+                final entityKey = canonicalHistoryEntityKey(storyId, chapterId);
+                final epoch = _extractInt(payload['observedHistoryEpoch']) ??
+                    _extractInt(payload['epoch']) ??
+                    0;
+                await _upsertShadow(
+                  txn,
+                  AuthoritativeShadowRecord(
+                    ownerScope: ownerScope,
+                    domain: SyncDomain.history,
+                    entityKey: entityKey,
+                    serverRevision: change.revision,
+                    epoch: epoch,
+                    payload: payload,
+                    isDeleted: false,
+                    updatedAtMs: nowMs,
+                  ),
+                );
+              } else {
+                final newEpoch = payload['epoch'] as int;
+                if (isGlobalHistoryTarget(change.entityId)) {
+                  final currentGlobalEpoch =
+                      effectiveEpochs[kGlobalHistorySentinelUuid] ?? 0;
+                  if (newEpoch <= currentGlobalEpoch) {
+                    throw NonMonotonicHistoryEpochError(
+                      'NON_MONOTONIC_HISTORY_EPOCH: Incoming global HISTORY DELETE epoch ($newEpoch) must be strictly greater than current global epoch ($currentGlobalEpoch).',
+                    );
+                  }
+                  effectiveEpochs[kGlobalHistorySentinelUuid] = newEpoch;
+
+                  await txn.delete(
+                    'sync_authoritative_replicas',
+                    where:
+                        "owner_scope = ? AND domain IN ('HISTORY', 'PROGRESS')",
+                    whereArgs: <Object?>[ownerScope],
+                  );
+                } else {
+                  final storyId =
+                      _nonEmptyString(payload['storyId']) ?? change.entityId;
+                  final currentEffective =
+                      getEffectiveHistoryEpoch(effectiveEpochs, storyId);
+                  if (newEpoch <= currentEffective) {
+                    throw NonMonotonicHistoryEpochError(
+                      'NON_MONOTONIC_HISTORY_EPOCH: Incoming story HISTORY DELETE epoch ($newEpoch) for story "$storyId" must be strictly greater than current effective epoch ($currentEffective).',
+                    );
+                  }
+                  effectiveEpochs[storyId] = newEpoch;
+
+                  final escapedPrefix = '${escapeSqlLikePattern(storyId)}:%';
+                  await txn.delete(
+                    'sync_authoritative_replicas',
+                    where:
+                        r"owner_scope = ? AND domain = 'HISTORY' AND (entity_key = ? OR entity_key LIKE ? ESCAPE '\')",
+                    whereArgs: <Object?>[ownerScope, storyId, escapedPrefix],
+                  );
+                  await txn.delete(
+                    'sync_authoritative_replicas',
+                    where:
+                        "owner_scope = ? AND domain = 'PROGRESS' AND entity_key = ?",
+                    whereArgs: <Object?>[ownerScope, storyId],
+                  );
+                }
+              }
+              break;
+
+            case SyncDomain.follow:
+              final entityKey = change.entityId;
+              if (op == SyncOperation.upsert) {
+                await _upsertShadow(
+                  txn,
+                  AuthoritativeShadowRecord(
+                    ownerScope: ownerScope,
+                    domain: SyncDomain.follow,
+                    entityKey: entityKey,
+                    serverRevision: change.revision,
+                    epoch: 0,
+                    payload: payload,
+                    isDeleted: false,
+                    updatedAtMs: nowMs,
+                  ),
+                );
+              } else {
+                await _deleteShadow(
+                  txn,
+                  ownerScope,
+                  SyncDomain.follow,
+                  entityKey,
+                );
+              }
+              break;
+          }
         }
-      }
 
-      // INVARIANT: Stage 1 Delta Ingestion NEVER grants READY baseline status!
-      final preservedStatus = existingMeta?.authoritativeBaselineStatus ??
-          AuthoritativeBaselineStatus.uninitialized;
-      final immutableEpochs = Map<String, int>.unmodifiable(effectiveEpochs);
+        // INVARIANT: Stage 1 Delta Ingestion NEVER grants READY baseline status!
+        final preservedStatus = existingMeta?.authoritativeBaselineStatus ??
+            AuthoritativeBaselineStatus.uninitialized;
+        final immutableEpochs = Map<String, int>.unmodifiable(effectiveEpochs);
 
-      final updatedMeta = SyncMeta(
-        ownerScope: ownerScope,
-        lastSyncedServerRevision: targetCheckpoint,
-        minActiveRevision: page.minActiveRevision,
-        lastSyncTimestamp: now.toIso8601String(),
-        effectiveHistoryEpochs: immutableEpochs,
-        syncState: SyncExecutionState.idle,
-        authoritativeBaselineStatus: preservedStatus,
-        lastErrorMessage: null,
-      );
+        final updatedMeta = SyncMeta(
+          ownerScope: ownerScope,
+          lastSyncedServerRevision: targetCheckpoint,
+          minActiveRevision: page.minActiveRevision,
+          lastSyncTimestamp: now.toIso8601String(),
+          effectiveHistoryEpochs: immutableEpochs,
+          syncState: SyncExecutionState.idle,
+          authoritativeBaselineStatus: preservedStatus,
+          lastErrorMessage: null,
+        );
 
-      await txn.insert(
-        'sync_meta',
-        updatedMeta.toMap(),
-        conflictAlgorithm: ConflictAlgorithm.replace,
-      );
+        await txn.insert(
+          'sync_meta',
+          updatedMeta.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
 
-      if (onBeforeCommitHook != null) {
-        await onBeforeCommitHook(txn);
-      }
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
 
-      return ApplyAuthoritativeDeltaResult(
-        appliedCount: page.changes.length,
-        newCheckpoint: targetCheckpoint,
-        hasMore: page.hasMore,
-        effectiveEpochs: immutableEpochs,
-      );
-    }, checkAdmission: checkAdmission);
+        return ApplyAuthoritativeDeltaResult(
+          appliedCount: page.changes.length,
+          newCheckpoint: targetCheckpoint,
+          hasMore: page.hasMore,
+          effectiveEpochs: immutableEpochs,
+        );
+      },
+    );
   }
 
   Future<void> _upsertShadow(
@@ -1810,17 +2032,25 @@ class SyncStorageDal {
   // ==================== SNAPSHOT STAGING STORE (P1-M04) ====================
 
   /// Đưa các item của trang snapshot vào `snapshot_staging_store`, bảo đảm mọi item
-  /// trong cùng `(ownerScope, sessionId)` mang cùng một `snapshotRevision` đơn nhất.
-  Future<void> stageSnapshotItems(
-    List<SnapshotStagingItem> items, {
-    void Function()? checkAdmission,
+  /// đều thuộc [ownerScope] (`account:*`) và cùng `(ownerScope, sessionId)` mang cùng
+  /// một `snapshotRevision` đơn nhất.
+  Future<void> stageSnapshotItems({
+    required String ownerScope,
+    required List<SnapshotStagingItem> items,
+    required AccountWriteAdmission admission,
   }) async {
-    checkAdmission?.call();
+    assertAccountScope(ownerScope);
+    admission.assertAdmitted(ownerScope);
     if (items.isEmpty) return;
 
     final sessionRevisions = <String, String>{};
     for (final item in items) {
-      assertValidScope(item.ownerScope);
+      assertAccountScope(item.ownerScope);
+      if (item.ownerScope != ownerScope) {
+        throw SnapshotStagingConflictError(
+          'SNAPSHOT_SCOPE_MISMATCH: Snapshot item scope "${item.ownerScope}" does not match target ownerScope "$ownerScope".',
+        );
+      }
       if (item.sessionId.trim().isEmpty) {
         throw const SnapshotStagingConflictError(
           'Snapshot staging sessionId must be non-empty.',
@@ -1836,6 +2066,11 @@ class SyncStorageDal {
           'Invalid minActiveRevision "${item.minActiveRevision}".',
         );
       }
+      if (item.domain == SyncDomain.progress &&
+          item.payload.containsKey('readingMode')) {
+        final rawMode = item.payload['readingMode'];
+        normalizeSyncReadingMode(rawMode is String ? rawMode : null);
+      }
       final compositeSession = '${item.ownerScope}\u0000${item.sessionId}';
       final expectedRev = sessionRevisions[compositeSession];
       if (expectedRev == null) {
@@ -1847,41 +2082,46 @@ class SyncStorageDal {
       }
     }
 
-    await _runWriteTransaction<void>((txn) async {
-      for (final entry in sessionRevisions.entries) {
-        final sep = entry.key.indexOf('\u0000');
-        final scope = entry.key.substring(0, sep);
-        final sessionId = entry.key.substring(sep + 1);
-        final existingRows = await txn.rawQuery(
-          'SELECT DISTINCT snapshot_revision FROM snapshot_staging_store WHERE owner_scope = ? AND session_id = ? LIMIT 1',
-          <Object?>[scope, sessionId],
-        );
-        if (existingRows.isNotEmpty) {
-          final existingRev = existingRows.first['snapshot_revision'] as String;
-          if (existingRev != entry.value) {
-            throw SnapshotStagingConflictError(
-              'SNAPSHOT_REVISION_MISMATCH: Existing session "$sessionId" is pinned to snapshotRevision "$existingRev", cannot stage items at "${entry.value}". Clear staging session before restarting.',
-            );
+    await _runWriteTransaction<void>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        for (final entry in sessionRevisions.entries) {
+          final sep = entry.key.indexOf('\u0000');
+          final scope = entry.key.substring(0, sep);
+          final sessionId = entry.key.substring(sep + 1);
+          final existingRows = await txn.rawQuery(
+            'SELECT DISTINCT snapshot_revision FROM snapshot_staging_store WHERE owner_scope = ? AND session_id = ? LIMIT 1',
+            <Object?>[scope, sessionId],
+          );
+          if (existingRows.isNotEmpty) {
+            final existingRev = existingRows.first['snapshot_revision'] as String;
+            if (existingRev != entry.value) {
+              throw SnapshotStagingConflictError(
+                'SNAPSHOT_REVISION_MISMATCH: Existing session "$sessionId" is pinned to snapshotRevision "$existingRev", cannot stage items at "${entry.value}". Clear staging session before restarting.',
+              );
+            }
           }
         }
-      }
 
-      for (final item in items) {
-        await txn.insert(
-          'snapshot_staging_store',
-          item.toMap(),
-          conflictAlgorithm: ConflictAlgorithm.replace,
-        );
-      }
-    }, checkAdmission: checkAdmission);
+        for (final item in items) {
+          await txn.insert(
+            'snapshot_staging_store',
+            item.toMap(),
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+      },
+    );
   }
 
   Future<List<SnapshotStagingItem>> getSnapshotStagingItems(
     String ownerScope,
     String sessionId,
   ) async {
-    assertValidScope(ownerScope);
-    final rows = await _db.query(
+    assertAccountScope(ownerScope);
+    final db = await _acquireDatabase();
+    final rows = await db.query(
       'snapshot_staging_store',
       where: 'owner_scope = ? AND session_id = ?',
       whereArgs: <Object?>[ownerScope, sessionId],
@@ -1893,60 +2133,149 @@ class SyncStorageDal {
   Future<void> clearSnapshotStaging(
     String ownerScope, {
     String? sessionId,
-    void Function()? checkAdmission,
+    required AccountWriteAdmission admission,
   }) async {
-    assertValidScope(ownerScope);
-    await _runWriteTransaction<void>((txn) async {
-      if (sessionId != null) {
-        await txn.delete(
-          'snapshot_staging_store',
-          where: 'owner_scope = ? AND session_id = ?',
-          whereArgs: <Object?>[ownerScope, sessionId],
-        );
-      } else {
-        await txn.delete(
-          'snapshot_staging_store',
-          where: 'owner_scope = ?',
-          whereArgs: <Object?>[ownerScope],
-        );
-      }
-    }, checkAdmission: checkAdmission);
+    assertAccountScope(ownerScope);
+    await _runWriteTransaction<void>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        if (sessionId != null) {
+          await txn.delete(
+            'snapshot_staging_store',
+            where: 'owner_scope = ? AND session_id = ?',
+            whereArgs: <Object?>[ownerScope, sessionId],
+          );
+        } else {
+          await txn.delete(
+            'snapshot_staging_store',
+            where: 'owner_scope = ?',
+            whereArgs: <Object?>[ownerScope],
+          );
+        }
+      },
+    );
   }
 
-  // ==================== SCOPE PURGE (STORAGE ISOLATION) ====================
+  // ==================== LIFECYCLE-PROTECTED SCOPE PURGE (P0-M05) ====================
 
-  /// Dọn sạch toàn bộ dữ liệu Sync + Local Library của [ownerScope] trong 1 transaction.
+  /// Dọn sạch toàn bộ dữ liệu Sync + Local Library cache của Account [ownerScope]
+  /// theo [reason] hợp lệ (`AccountPurgeReason`), trong 1 SQLite transaction với 4 hàng rào [admission].
   ///
   /// TUYỆT ĐỐI bảo toàn:
   /// - `offline_chapters`, `download_tasks`, `offline_deletion_tombstones`
   /// - `guest_claim_recovery_journal`
   /// - Mọi scope khác (`guest:*` hoặc `account:*`).
-  Future<void> purgeScope(
-    String ownerScope, {
-    void Function()? checkAdmission,
+  Future<void> purgeAccountScope({
+    required String ownerScope,
+    required AccountPurgeReason reason,
+    required AccountWriteAdmission admission,
+    Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
-    assertValidScope(ownerScope);
-    await _runWriteTransaction<void>((txn) async {
-      const scopedTables = <String>[
-        'sync_meta',
-        'sync_mutation_sequences',
-        'sync_authoritative_replicas',
-        'pending_mutations',
-        'quarantined_mutations',
-        'snapshot_staging_store',
-        'local_preferences',
-        'local_library_bookmarks',
-        'local_reading_progress',
-        'local_reading_history',
-      ];
-      for (final table in scopedTables) {
-        await txn.delete(
-          table,
-          where: 'owner_scope = ?',
-          whereArgs: <Object?>[ownerScope],
+    assertAccountScope(ownerScope);
+    await _runWriteTransaction<void>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        const scopedTables = <String>[
+          'sync_meta',
+          'sync_mutation_sequences',
+          'sync_authoritative_replicas',
+          'pending_mutations',
+          'quarantined_mutations',
+          'snapshot_staging_store',
+          'local_preferences',
+          'local_library_bookmarks',
+          'local_reading_progress',
+          'local_reading_history',
+        ];
+        for (final table in scopedTables) {
+          await txn.delete(
+            table,
+            where: 'owner_scope = ?',
+            whereArgs: <Object?>[ownerScope],
+          );
+        }
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+      },
+    );
+  }
+
+  /// Dọn dữ liệu cục bộ của Guest [guestScope] (`guest:<guestProfileId>`) theo
+  /// [reason] lifecycle hợp lệ (`GuestLifecyclePurgeReason`).
+  ///
+  /// Bảo vệ fail-closed `P0-M05`:
+  /// - Cấm tuyệt đối xóa nếu `guestProfileId` đang có bản ghi trong `guest_claim_recovery_journal`
+  ///   (dù ở pha `prepared`, `committing`, hay `committedServer`).
+  /// - Cấm tuyệt đối xóa nếu `guestProfileId` nằm trong danh sách cách ly của [guestProfileProvider]
+  ///   (`listQuarantinedGuestScopes()`).
+  /// - Chỉ xóa trong 4 bảng cục bộ (`local_preferences`, `local_library_bookmarks`,
+  ///   `local_reading_progress`, `local_reading_history`); bảo toàn 100% `offline_*`,
+  ///   `guest_claim_recovery_journal`, và mọi scope khác.
+  Future<void> purgeGuestLocalScope({
+    required String guestScope,
+    required GuestLifecyclePurgeReason reason,
+    required GuestLocalWriteAdmission admission,
+    required GuestProfileIdentityProvider guestProfileProvider,
+    Future<void> Function(Transaction txn)? onBeforeCommitHook,
+  }) async {
+    assertGuestScope(guestScope);
+    admission.assertAdmitted(guestScope);
+
+    final guestProfileId = guestScope.substring('guest:'.length);
+    final preQuarantined = await guestProfileProvider.listQuarantinedGuestScopes();
+    if (preQuarantined.contains(guestProfileId)) {
+      throw PurgeProhibitedError(
+        'PURGE_PROHIBITED: Guest scope "$guestScope" is quarantined and cannot be purged.',
+      );
+    }
+
+    await _runWriteTransaction<void>(
+      targetScope: guestScope,
+      admission: admission,
+      action: (txn) async {
+        final quarantined =
+            await guestProfileProvider.listQuarantinedGuestScopes();
+        if (quarantined.contains(guestProfileId)) {
+          throw PurgeProhibitedError(
+            'PURGE_PROHIBITED: Guest scope "$guestScope" is quarantined and cannot be purged.',
+          );
+        }
+
+        final journalRows = await txn.query(
+          'guest_claim_recovery_journal',
+          columns: const <String>['claim_id', 'phase'],
+          where: 'guest_profile_id = ?',
+          whereArgs: <Object?>[guestProfileId],
+          limit: 1,
         );
-      }
-    }, checkAdmission: checkAdmission);
+        if (journalRows.isNotEmpty) {
+          throw PurgeProhibitedError(
+            'PURGE_PROHIBITED: Guest scope "$guestScope" has active/recoverable entries in guest_claim_recovery_journal (phase=${journalRows.first['phase']}).',
+          );
+        }
+
+        const guestLocalTables = <String>[
+          'local_preferences',
+          'local_library_bookmarks',
+          'local_reading_progress',
+          'local_reading_history',
+        ];
+        for (final table in guestLocalTables) {
+          await txn.delete(
+            table,
+            where: 'owner_scope = ?',
+            whereArgs: <Object?>[guestScope],
+          );
+        }
+
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+      },
+    );
   }
 
   // ==================== PRIVATE HELPERS ====================

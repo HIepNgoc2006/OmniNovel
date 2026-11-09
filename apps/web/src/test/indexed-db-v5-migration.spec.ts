@@ -2136,4 +2136,1182 @@ describe('Phase 5.2b P1-01 — Durable STORE_TOMBSTONES (IDB v5), Migration, Bou
       }
     });
   });
+
+  describe('P1-01-R10: P1-E Replacement Proof Integrity & Durable Terminal Receipt Lineage', () => {
+    it('P1-E REPRO: fails closed and retains tombstone="80" when APPROVED q_old has orphan replacementMutationId="new-id"', async () => {
+      const scope = 'account:usr-p1e-orphan';
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: scope,
+        lastSyncedServerRevision: '120',
+        minActiveRevision: '100',
+        lastSyncTimestamp: '2026-11-09T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
+      });
+
+      await dbClient.putAuthoritativeTombstone({
+        ownerScope: scope,
+        domain: SyncDomain.BOOKMARK,
+        entityKey: 'bm-p1e-80',
+        deletedAtRevision: '80',
+        updatedAt: Date.now(),
+      });
+
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q_old',
+        clientId: 'web-tab-1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-p1e-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '70',
+        payload: { storyId: 'bm-p1e-80', title: 'Offline Draft 70' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:05:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '100',
+          observedEpoch: 0,
+          triageReason: 'USER_REAPPLIED_AS_NEW_MUTATION',
+          evidence: {
+            tombstoneRevision: '80',
+            replacementMutationId: 'new-id',
+          },
+        },
+        originalCreatedAt: '2026-11-09T09:00:00.000Z',
+      });
+
+      // Intentionally DO NOT seed "new-id" in pending_mutations, quarantined_mutations, or durable receipts.
+      const gcRes = await dbClient.gcAuthoritativeTombstones(scope);
+
+      // Fail-closed requirement: orphan replacement proof MUST keep q_old in retention floor!
+      expect(gcRes.safeGcFloor).toBe('70');
+      expect(gcRes.deletedCount).toBe(0);
+      expect(gcRes.retainedCount).toBe(1);
+      expect(
+        (await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-p1e-80'))
+          ?.deletedAtRevision,
+      ).toBe('80');
+
+      // Must NOT auto-create replacement mutation in pending_mutations and must NOT delete q_old!
+      expect(await dbClient.getPendingMutations(scope)).toHaveLength(0);
+      const qPersisted = await dbClient.getQuarantinedMutation(scope, 'q_old');
+      expect(qPersisted).not.toBeNull();
+      expect(qPersisted?.payload).toEqual({ storyId: 'bm-p1e-80', title: 'Offline Draft 70' });
+    });
+
+    it('P1-E: allows GC eviction with valid pending replacement, conservative retention when pending baseRev < tombstone, and blocks cross-scope leakage', async () => {
+      const scopeA = 'account:usr-p1e-pending';
+      const scopeAOverlap = 'account:usr-p1e-pending-2';
+      const scopeB = 'account:usr-p1e-other';
+
+      for (const sc of [scopeA, scopeAOverlap, scopeB]) {
+        await seedRawReadySyncMeta(dbClient, {
+          ownerScope: sc,
+          lastSyncedServerRevision: '120',
+          minActiveRevision: '100',
+          lastSyncTimestamp: '2026-11-09T10:00:00.000Z',
+          effectiveHistoryEpochs: {},
+          syncState: 'IDLE',
+          authoritativeBaselineStatus: 'READY',
+        });
+      }
+
+      // Cross-scope guard: scopeB has 'new-id-pending' in pending_mutations, scopeA only has q_old -> MUST NOT unlock scopeA!
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scopeB,
+        mutationId: 'new-id-pending',
+        clientId: 'web-tab-b',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '100',
+        payload: { storyId: 'bm-80' },
+        createdAt: '2026-11-09T10:10:00.000Z',
+        retryCount: 0,
+      });
+      // Prefix-overlap scope also has 'new-id-pending'
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scopeAOverlap,
+        mutationId: 'new-id-pending',
+        clientId: 'web-tab-a2',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '100',
+        payload: { storyId: 'bm-80' },
+        createdAt: '2026-11-09T10:10:00.000Z',
+        retryCount: 0,
+      });
+
+      await dbClient.putAuthoritativeTombstone({
+        ownerScope: scopeA,
+        domain: SyncDomain.BOOKMARK,
+        entityKey: 'bm-80',
+        deletedAtRevision: '80',
+        updatedAt: Date.now(),
+      });
+      await dbClient.quarantineMutation({
+        ownerScope: scopeA,
+        mutationId: 'q_old_cross',
+        clientId: 'web-tab-a',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '70',
+        payload: { storyId: 'bm-80' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:05:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '100',
+          evidence: { replacementMutationId: 'new-id-pending' },
+        },
+      });
+
+      let res = await dbClient.gcAuthoritativeTombstones(scopeA);
+      expect(res.safeGcFloor).toBe('70');
+      expect(res.deletedCount).toBe(0);
+      expect(res.retainedCount).toBe(1);
+
+      // Now seed 'new-id-pending' in scopeA at baseRev=100 -> GC succeeds cleanly!
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scopeA,
+        mutationId: 'new-id-pending',
+        clientId: 'web-tab-a',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '100',
+        payload: { storyId: 'bm-80', title: 'Replacement 100' },
+        createdAt: '2026-11-09T10:12:00.000Z',
+        retryCount: 0,
+      });
+
+      res = await dbClient.gcAuthoritativeTombstones(scopeA);
+      expect(res.safeGcFloor).toBe('100');
+      expect(res.deletedCount).toBe(1);
+      expect(res.retainedCount).toBe(0);
+      expect(await dbClient.getAuthoritativeTombstone(scopeA, SyncDomain.BOOKMARK, 'bm-80')).toBeNull();
+      // Pending replacement itself is NEVER deleted by GC
+      expect(await dbClient.getPendingMutation(scopeA, 'new-id-pending')).not.toBeNull();
+    });
+
+    it.each<Array<'APPLIED' | 'DEDUPLICATED' | 'REJECTED_TOMBSTONE' | 'CONFLICT_MERGED'>[number]>([
+      'APPLIED',
+      'DEDUPLICATED',
+      'REJECTED_TOMBSTONE',
+      'CONFLICT_MERGED',
+    ])(
+      'P1-E ACKED (%s): retains durable receipt after pending deletion across DB close/reload and unblocks GC for APPROVED q_old',
+      async (settledStatus) => {
+        const scope = `account:usr-p1e-acked-${settledStatus.toLowerCase()}`;
+        const otherScope = `account:usr-p1e-acked-other-${settledStatus.toLowerCase()}`;
+
+        for (const sc of [scope, otherScope]) {
+          await seedRawReadySyncMeta(dbClient, {
+            ownerScope: sc,
+            lastSyncedServerRevision: '120',
+            minActiveRevision: '100',
+            lastSyncTimestamp: '2026-11-09T10:00:00.000Z',
+            effectiveHistoryEpochs: {},
+            syncState: 'IDLE',
+            authoritativeBaselineStatus: 'READY',
+          });
+        }
+
+        await dbClient.putAuthoritativeTombstone({
+          ownerScope: scope,
+          domain: SyncDomain.BOOKMARK,
+          entityKey: 'bm-ack-80',
+          deletedAtRevision: '80',
+          updatedAt: Date.now(),
+        });
+
+        await dbClient.quarantineMutation({
+          ownerScope: scope,
+          mutationId: 'q_old_ack',
+          clientId: 'web-tab-1',
+          domain: SyncDomain.BOOKMARK,
+          entityId: 'bm-ack-80',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '70',
+          payload: { storyId: 'bm-ack-80', title: 'Draft 70' },
+          rejectionReason: 'REJECTED_STALE',
+          rejectionStatus: 'REJECTED_STALE',
+          rejectedAt: '2026-11-09T10:05:00.000Z',
+          triageStatus: 'APPROVED',
+          causalEvidence: {
+            triageApproved: true,
+            validatedRevision: '100',
+            triageReason: 'USER_REAPPLIED_AS_NEW_MUTATION',
+            evidence: {
+              tombstoneRevision: '80',
+              replacementMutationId: 'mut-new-acked',
+            },
+          },
+        });
+
+        const queue = new MutationQueue({
+          ownerScope: scope,
+          identityStateProvider: createStaticIdentityProvider(scope),
+          dbClient,
+          onAuthoritativeDeltaPullRequired: async () => {},
+        });
+
+        await queue.enqueue({
+          ownerScope: scope,
+          mutationId: 'mut-new-acked',
+          clientId: 'web-tab-1',
+          domain: SyncDomain.BOOKMARK,
+          entityId: 'bm-ack-80',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '100',
+          payload: { storyId: 'bm-ack-80', title: 'Replaced 100' },
+          createdAt: '2026-11-09T10:10:00.000Z',
+          retryCount: 0,
+        });
+
+        // Push and settle replacement in another scope shouldn't touch scope, and vice versa
+        const otherQueue = new MutationQueue({
+          ownerScope: otherScope,
+          identityStateProvider: createStaticIdentityProvider(otherScope),
+          dbClient,
+          onAuthoritativeDeltaPullRequired: async () => {},
+        });
+        await otherQueue.enqueue({
+          ownerScope: otherScope,
+          mutationId: 'mut-other-acked',
+          clientId: 'web-tab-2',
+          domain: SyncDomain.BOOKMARK,
+          entityId: 'bm-other',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '100',
+          payload: { storyId: 'bm-other' },
+          createdAt: '2026-11-09T10:10:00.000Z',
+          retryCount: 0,
+        });
+
+        const batch = await queue.preparePushBatch();
+        expect(batch.mutations.map((m) => m.mutationId)).toEqual(['mut-new-acked']);
+
+        await queue.processServerBatchResults({
+          batch,
+          results: [
+            {
+              mutationId: 'mut-new-acked',
+              status: settledStatus,
+              assignedRevision:
+                settledStatus === 'APPLIED' || settledStatus === 'DEDUPLICATED' ? '125' : null,
+            },
+          ],
+        });
+
+        // Replacement mutation is legitimately deleted from pending_mutations
+        expect(await dbClient.getPendingMutation(scope, 'mut-new-acked')).toBeNull();
+
+        // Subsequent delta pull / benign putSyncMeta MUST preserve durable receipts
+        await dbClient.putSyncMeta({
+          ownerScope: scope,
+          lastSyncedServerRevision: '120',
+          minActiveRevision: '100',
+          lastSyncTimestamp: '2026-11-09T10:12:00.000Z',
+          effectiveHistoryEpochs: {},
+          syncState: 'IDLE',
+          authoritativeBaselineStatus: 'READY',
+        });
+        await dbClient.applyAuthoritativeDeltaPage({
+          ownerScope: scope,
+          expectedCheckpoint: '120',
+          page: {
+            currentServerRevision: '130',
+            minActiveRevision: '100',
+            nextRevision: null,
+            hasMore: false,
+            changes: [],
+          },
+        });
+
+        // Cross-scope check before reload: `otherScope` has q_old referencing `'mut-new-acked'` (only settled in `scope`) -> MUST NOT unlock `otherScope`!
+        await dbClient.putAuthoritativeTombstone({
+          ownerScope: otherScope,
+          domain: SyncDomain.BOOKMARK,
+          entityKey: 'bm-other-80',
+          deletedAtRevision: '80',
+          updatedAt: Date.now(),
+        });
+        await dbClient.quarantineMutation({
+          ownerScope: otherScope,
+          mutationId: 'q_other_cross',
+          clientId: 'web-tab-2',
+          domain: SyncDomain.BOOKMARK,
+          entityId: 'bm-other-80',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '70',
+          payload: { storyId: 'bm-other-80' },
+          rejectionReason: 'REJECTED_STALE',
+          rejectionStatus: 'REJECTED_STALE',
+          rejectedAt: '2026-11-09T10:05:00.000Z',
+          triageStatus: 'APPROVED',
+          causalEvidence: {
+            triageApproved: true,
+            validatedRevision: '100',
+            evidence: { replacementMutationId: 'mut-new-acked' },
+          },
+        });
+
+        // Browser restart / DB close & reload
+        dbClient.close();
+        const reloadedClient = new IndexedDbClient();
+        try {
+          const otherGc = await reloadedClient.gcAuthoritativeTombstones(otherScope);
+          expect(otherGc.safeGcFloor).toBe('70');
+          expect(otherGc.retainedCount).toBe(1);
+          expect(
+            await reloadedClient.getAuthoritativeTombstone(otherScope, SyncDomain.BOOKMARK, 'bm-other-80'),
+          ).not.toBeNull();
+
+          const gcRes = await reloadedClient.gcAuthoritativeTombstones(scope);
+          expect(gcRes.safeGcFloor).toBe('100');
+          expect(gcRes.deletedCount).toBe(1);
+          expect(gcRes.retainedCount).toBe(0);
+          expect(
+            await reloadedClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-ack-80'),
+          ).toBeNull();
+          // Zero auto-created mutations and q_old preserved
+          expect(await reloadedClient.getPendingMutations(scope)).toHaveLength(0);
+          expect(await reloadedClient.getQuarantinedMutation(scope, 'q_old_ack')).not.toBeNull();
+        } finally {
+          reloadedClient.close();
+        }
+      },
+    );
+
+    it('P1-E: fails closed (aborts with InvalidDeltaPayloadError and retains tombstones) on circular APPROVED quarantine chain or manual un-ACKed deletion', async () => {
+      const scope = 'account:usr-p1e-cycle-and-manual';
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: scope,
+        lastSyncedServerRevision: '120',
+        minActiveRevision: '100',
+        lastSyncTimestamp: '2026-11-09T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
+      });
+
+      await dbClient.putAuthoritativeTombstone({
+        ownerScope: scope,
+        domain: SyncDomain.BOOKMARK,
+        entityKey: 'bm-50-early',
+        deletedAtRevision: '50',
+        updatedAt: Date.now(),
+      });
+      await dbClient.putAuthoritativeTombstone({
+        ownerScope: scope,
+        domain: SyncDomain.BOOKMARK,
+        entityKey: 'bm-80-late',
+        deletedAtRevision: '80',
+        updatedAt: Date.now(),
+      });
+
+      // 1. Circular quarantine chain q1 <-> q2 (zero pending, zero receipts) MUST fail closed!
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q-cycle-1',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80-late',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '70',
+        payload: { storyId: 'bm-80-late' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:00:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '100',
+          evidence: { replacementMutationId: 'q-cycle-2' },
+        },
+      });
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q-cycle-2',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80-late',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '75',
+        payload: { storyId: 'bm-80-late' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:01:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '100',
+          evidence: { replacementMutationId: 'q-cycle-1' },
+        },
+      });
+
+      await expect(dbClient.gcAuthoritativeTombstones(scope)).rejects.toThrow(
+        InvalidDeltaPayloadError,
+      );
+      expect(await dbClient.getAllAuthoritativeTombstones(scope)).toHaveLength(2);
+
+      // Clean up cycle; verify manual deletePendingMutation WITHOUT server ACK does NOT grant receipt!
+      await dbClient.clearQuarantinedMutations(scope);
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q_old_manual_del',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80-late',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '70',
+        payload: { storyId: 'bm-80-late' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:02:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '100',
+          evidence: { replacementMutationId: 'mut-manual-deleted' },
+        },
+      });
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scope,
+        mutationId: 'mut-manual-deleted',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80-late',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '100',
+        payload: { storyId: 'bm-80-late' },
+        createdAt: '2026-11-09T10:03:00.000Z',
+        retryCount: 0,
+      });
+      await dbClient.deletePendingMutation(scope, 'mut-manual-deleted');
+
+      const afterManualDelete = await dbClient.gcAuthoritativeTombstones(scope);
+      expect(afterManualDelete.safeGcFloor).toBe('70');
+      expect(
+        await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-80-late'),
+      ).not.toBeNull();
+    });
+
+    it('P1-E ROLLBACK: tx.abort() & admission revocation roll back receipt writes atomically across deletePendingMutation, evictReplicaAndRemovePending (incl. HISTORY), and GC without polluting getSyncMeta', async () => {
+      const scope = 'account:usr-p1e-rollback';
+
+      // Verify getSyncMeta stays null on an UNINITIALIZED scope even when receipts exist
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scope,
+        mutationId: 'mut-uninit-app',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-u1',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '90',
+        payload: { storyId: 'bm-u1' },
+        createdAt: '2026-11-09T10:00:00.000Z',
+        retryCount: 0,
+      });
+
+      // 1a. deletePendingMutation abort -> pending preserved & zero phantom receipt
+      await expect(
+        dbClient.deletePendingMutation(scope, 'mut-uninit-app', {
+          terminalReceipt: {
+            status: 'APPLIED',
+            assignedRevision: '105',
+            baseServerRevision: '90',
+          },
+          _testHookBeforeComplete: (tx) => tx.abort(),
+        }),
+      ).rejects.toThrow();
+      expect(await dbClient.getPendingMutation(scope, 'mut-uninit-app')).not.toBeNull();
+      expect(await dbClient.getMutationTerminalReceipt(scope, 'mut-uninit-app')).toBeNull();
+
+      // 1b. deletePendingMutation admission failure -> pending preserved & zero phantom receipt
+      await expect(
+        dbClient.deletePendingMutation(scope, 'mut-uninit-app', {
+          terminalReceipt: {
+            status: 'APPLIED',
+            assignedRevision: '105',
+            baseServerRevision: '90',
+          },
+          checkAdmission: () => {
+            throw new Error('ADMISSION_REVOKED');
+          },
+        }),
+      ).rejects.toThrow('ADMISSION_REVOKED');
+      expect(await dbClient.getPendingMutation(scope, 'mut-uninit-app')).not.toBeNull();
+      expect(await dbClient.getMutationTerminalReceipt(scope, 'mut-uninit-app')).toBeNull();
+
+      // Commit cleanly & confirm getSyncMeta still returns null (not confused by receipt row)
+      await dbClient.deletePendingMutation(scope, 'mut-uninit-app', {
+        terminalReceipt: {
+          status: 'APPLIED',
+          assignedRevision: '105',
+          baseServerRevision: '90',
+        },
+      });
+      expect(await dbClient.getSyncMeta(scope)).toBeNull();
+      expect((await dbClient.getMutationTerminalReceipt(scope, 'mut-uninit-app'))?.status).toBe('APPLIED');
+
+      // 2. evictReplicaAndRemovePending rollback on BOOKMARK and HISTORY (cursor domain)
+      await dbClient.putBookmark({
+        ownerScope: scope,
+        storyId: 'bm-rb',
+        title: 'Protected Bookmark',
+        createdAt: '2026-11-09T10:00:00.000Z',
+      });
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scope,
+        mutationId: 'mut-rb-bm',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-rb',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '95',
+        payload: { storyId: 'bm-rb' },
+        createdAt: '2026-11-09T10:01:00.000Z',
+        retryCount: 0,
+      });
+      await expect(
+        dbClient.evictReplicaAndRemovePending(
+          scope,
+          SyncDomain.BOOKMARK,
+          'bm-rb',
+          'mut-rb-bm',
+          undefined,
+          {
+            terminalReceipt: {
+              status: 'REJECTED_TOMBSTONE',
+              assignedRevision: null,
+              baseServerRevision: '95',
+            },
+            _testHookBeforeComplete: (tx) => tx.abort(),
+          },
+        ),
+      ).rejects.toThrow();
+      expect(await dbClient.getBookmark(scope, 'bm-rb')).not.toBeNull();
+      expect(await dbClient.getPendingMutation(scope, 'mut-rb-bm')).not.toBeNull();
+      expect(await dbClient.getMutationTerminalReceipt(scope, 'mut-rb-bm')).toBeNull();
+
+      await dbClient.recordReadingSession(
+        {
+          ownerScope: scope,
+          storyId: 'story-rb-hist',
+          chapterId: 'chap-1',
+          readingMode: ReadingMode.WEBTOON,
+          progressPercentage: 55,
+          scrollPosition: 0,
+          pageIndex: 1,
+          deviceTimestamp: 1731146400000,
+          updatedAt: '2026-11-09T10:02:00.000Z',
+        },
+        {
+          ownerScope: scope,
+          storyId: 'story-rb-hist',
+          chapterId: 'chap-1',
+          storyTitle: 'History Rollback',
+          chapterNumber: 1,
+          progressPercentage: 55,
+          lastReadAt: '2026-11-09T10:02:00.000Z',
+        },
+      );
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scope,
+        mutationId: 'mut-rb-hist',
+        clientId: 'c1',
+        domain: SyncDomain.HISTORY,
+        entityId: 'story-rb-hist',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '95',
+        payload: { storyId: 'story-rb-hist' },
+        createdAt: '2026-11-09T10:03:00.000Z',
+        retryCount: 0,
+      });
+
+      await expect(
+        dbClient.evictReplicaAndRemovePending(
+          scope,
+          SyncDomain.HISTORY,
+          'story-rb-hist',
+          'mut-rb-hist',
+          undefined,
+          {
+            terminalReceipt: {
+              status: 'REJECTED_TOMBSTONE',
+              assignedRevision: null,
+              baseServerRevision: '95',
+            },
+            _testHookBeforeComplete: (tx) => tx.abort(),
+          },
+        ),
+      ).rejects.toThrow();
+
+      expect(await dbClient.getHistory(scope)).toHaveLength(1);
+      expect(await dbClient.getProgress(scope, 'story-rb-hist')).not.toBeNull();
+      expect(await dbClient.getPendingMutation(scope, 'mut-rb-hist')).not.toBeNull();
+      expect(await dbClient.getMutationTerminalReceipt(scope, 'mut-rb-hist')).toBeNull();
+
+      // 3. GC tx.abort() retains all tombstones and valid receipts atomically
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: scope,
+        lastSyncedServerRevision: '150',
+        minActiveRevision: '120',
+        lastSyncTimestamp: '2026-11-09T10:05:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
+      });
+      await dbClient.putAuthoritativeTombstone({
+        ownerScope: scope,
+        domain: SyncDomain.BOOKMARK,
+        entityKey: 'bm-tomb-50',
+        deletedAtRevision: '50',
+        updatedAt: Date.now(),
+      });
+      await expect(
+        dbClient.gcAuthoritativeTombstones(scope, {
+          _testHookBeforeComplete: (tx) => tx.abort(),
+        }),
+      ).rejects.toThrow();
+      expect(await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-tomb-50')).not.toBeNull();
+      expect((await dbClient.getMutationTerminalReceipt(scope, 'mut-uninit-app'))?.status).toBe('APPLIED');
+    });
+
+    it('P1-E FLOOR & CHAINS: enforces pending baseRev < tombstone retention, regressive/incomplete receipt blocking, and chained quarantine resolution + downstream cycle detection', async () => {
+      const scope = 'account:usr-p1e-chains';
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: scope,
+        lastSyncedServerRevision: '150',
+        minActiveRevision: '120',
+        lastSyncTimestamp: '2026-11-09T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
+      });
+
+      const seedTombstones = async () => {
+        await dbClient.putAuthoritativeTombstone({
+          ownerScope: scope,
+          domain: SyncDomain.BOOKMARK,
+          entityKey: 'bm-50',
+          deletedAtRevision: '50',
+          updatedAt: Date.now(),
+        });
+        await dbClient.putAuthoritativeTombstone({
+          ownerScope: scope,
+          domain: SyncDomain.BOOKMARK,
+          entityKey: 'bm-80',
+          deletedAtRevision: '80',
+          updatedAt: Date.now(),
+        });
+      };
+
+      // Case 1: Pending replacement at baseRev=75 (< tombstone=80) retains 80 and deletes 50
+      await seedTombstones();
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q-chain-base70',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '70',
+        payload: { storyId: 'bm-80' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:00:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '100',
+          evidence: { replacementMutationId: 'mut-pending-75' },
+        },
+      });
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scope,
+        mutationId: 'mut-pending-75',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '75',
+        payload: { storyId: 'bm-80' },
+        createdAt: '2026-11-09T10:01:00.000Z',
+        retryCount: 0,
+      });
+
+      let gcRes = await dbClient.gcAuthoritativeTombstones(scope);
+      expect(gcRes.safeGcFloor).toBe('75');
+      expect(gcRes.deletedCount).toBe(1);
+      expect(gcRes.retainedCount).toBe(1);
+      expect(await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-80')).not.toBeNull();
+      await dbClient.deletePendingMutation(scope, 'mut-pending-75');
+      await dbClient.clearQuarantinedMutations(scope);
+
+      // Case 2: Receipt with regressive baseServerRevision (60 < q.baseRev=70) or missing baseServerRevision fails closed!
+      await seedTombstones();
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q-regressive-receipt',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '70',
+        payload: { storyId: 'bm-80' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:02:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '100',
+          evidence: { replacementMutationId: 'mut-receipt-regressive' },
+        },
+      });
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scope,
+        mutationId: 'mut-receipt-regressive',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '60',
+        payload: { storyId: 'bm-80' },
+        createdAt: '2026-11-09T10:02:30.000Z',
+        retryCount: 0,
+      });
+      await dbClient.deletePendingMutation(scope, 'mut-receipt-regressive', {
+        terminalReceipt: {
+          status: 'APPLIED',
+          assignedRevision: '125',
+          baseServerRevision: '60',
+        },
+      });
+      gcRes = await dbClient.gcAuthoritativeTombstones(scope);
+      expect(gcRes.safeGcFloor).toBe('70');
+      expect(await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-80')).not.toBeNull();
+
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scope,
+        mutationId: 'mut-receipt-no-baserev',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '100',
+        payload: { storyId: 'bm-80' },
+        createdAt: '2026-11-09T10:02:40.000Z',
+        retryCount: 0,
+      });
+      await dbClient.deletePendingMutation(scope, 'mut-receipt-no-baserev', {
+        terminalReceipt: {
+          status: 'APPLIED',
+          assignedRevision: '126',
+        },
+      });
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q-regressive-receipt',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '70',
+        payload: { storyId: 'bm-80' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:02:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '100',
+          evidence: { replacementMutationId: 'mut-receipt-no-baserev' },
+        },
+      });
+      gcRes = await dbClient.gcAuthoritativeTombstones(scope);
+      expect(gcRes.safeGcFloor).toBe('70');
+      expect(await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-80')).not.toBeNull();
+      await dbClient.clearQuarantinedMutations(scope);
+
+      // Case 3: Chained APPROVED q1(70) -> q2(85) -> ACKed receipt(100) unblocks GC!
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scope,
+        mutationId: 'mut-chain-final',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '100',
+        payload: { storyId: 'bm-80' },
+        createdAt: '2026-11-09T10:03:00.000Z',
+        retryCount: 0,
+      });
+      await dbClient.deletePendingMutation(scope, 'mut-chain-final', {
+        terminalReceipt: {
+          status: 'CONFLICT_MERGED',
+          assignedRevision: null,
+          baseServerRevision: '100',
+        },
+      });
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q1',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '70',
+        payload: { storyId: 'bm-80' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:00:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '90',
+          evidence: { replacementMutationId: 'q2' },
+        },
+      });
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q2',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '85',
+        payload: { storyId: 'bm-80' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:01:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '110',
+          evidence: { replacementMutationId: 'mut-chain-final' },
+        },
+      });
+
+      gcRes = await dbClient.gcAuthoritativeTombstones(scope);
+      expect(gcRes.safeGcFloor).toBe('120');
+      expect(gcRes.deletedCount).toBe(1);
+      expect(await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-80')).toBeNull();
+
+      // Case 4: Chained q1(70) -> q2(75, PENDING) retains 80 at floor 75
+      await seedTombstones();
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q2',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '75',
+        payload: { storyId: 'bm-80' },
+        rejectionReason: 'EXCEEDED_MAX_RETRIES',
+        rejectionStatus: 'EXCEEDED_MAX_RETRIES',
+        rejectedAt: '2026-11-09T10:01:00.000Z',
+        triageStatus: 'PENDING',
+      });
+      gcRes = await dbClient.gcAuthoritativeTombstones(scope);
+      expect(gcRes.safeGcFloor).toBe('75');
+      expect(await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-80')).not.toBeNull();
+
+      // Case 5: Chained q1(70) -> q2(90, DISCARDED) deletes 80 cleanly
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q2',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '90',
+        payload: { storyId: 'bm-80' },
+        rejectionReason: 'REJECTED_TOMBSTONE',
+        rejectionStatus: 'REJECTED_TOMBSTONE',
+        rejectedAt: '2026-11-09T10:01:00.000Z',
+        triageStatus: 'DISCARDED',
+      });
+      gcRes = await dbClient.gcAuthoritativeTombstones(scope);
+      expect(gcRes.safeGcFloor).toBe('120');
+      expect(await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-80')).toBeNull();
+
+      // Case 6: Downstream cycle q0 -> q1 <-> q2 aborts fail-closed with InvalidDeltaPayloadError & deletes 0 tombstones
+      await seedTombstones();
+      await dbClient.clearQuarantinedMutations(scope);
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q0',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '65',
+        payload: { storyId: 'bm-80' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:00:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '100',
+          evidence: { replacementMutationId: 'q1' },
+        },
+      });
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q1',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '70',
+        payload: { storyId: 'bm-80' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:01:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '100',
+          evidence: { replacementMutationId: 'q2' },
+        },
+      });
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q2',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-80',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '75',
+        payload: { storyId: 'bm-80' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:02:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: '100',
+          evidence: { replacementMutationId: 'q1' },
+        },
+      });
+
+      await expect(dbClient.gcAuthoritativeTombstones(scope)).rejects.toThrow(
+        InvalidDeltaPayloadError,
+      );
+      expect(await dbClient.getAllAuthoritativeTombstones(scope)).toHaveLength(2);
+    });
+
+    it('P1-E CORRUPT RECEIPTS: aborts GC atomically with InvalidDeltaPayloadError (0 tombstones deleted) on any tampered/corrupt durable receipt in sync_meta', async () => {
+      const scope = 'account:usr-p1e-corrupt-receipt';
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: scope,
+        lastSyncedServerRevision: '150',
+        minActiveRevision: '120',
+        lastSyncTimestamp: '2026-11-09T10:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
+      });
+      await dbClient.putAuthoritativeTombstone({
+        ownerScope: scope,
+        domain: SyncDomain.BOOKMARK,
+        entityKey: 'bm-early-20',
+        deletedAtRevision: '20',
+        updatedAt: Date.now(),
+      });
+
+      const canonicalKey = `__omninovel_mutation_receipt__|${encodeURIComponent(scope).replace(/~/g, '%7E')}|mut-corrupt`;
+      const baseValid = {
+        ownerScope: canonicalKey,
+        kind: 'OMNINOVEL_MUTATION_TERMINAL_RECEIPT_V1',
+        receiptScope: scope,
+        mutationId: 'mut-corrupt',
+        status: 'APPLIED',
+        assignedRevision: '130',
+        baseServerRevision: '100',
+        recordedAt: '2026-11-09T10:00:00.000Z',
+      };
+
+      const corruptRecords: Array<Record<string, unknown>> = [
+        { ...baseValid, kind: 'WRONG_KIND' },
+        { ...baseValid, receiptScope: 'account:evil-other' },
+        { ...baseValid, ownerScope: `${canonicalKey}-tampered` },
+        { ...baseValid, status: 'UNKNOWN_TERMINAL_STATUS' },
+        { ...baseValid, assignedRevision: '12.34' },
+        { ...baseValid, baseServerRevision: '-10' },
+        { ...baseValid, recordedAt: 'not-a-valid-date' },
+      ];
+
+      const rawDb = await dbClient.getDatabase();
+      for (const badRecord of corruptRecords) {
+        await new Promise<void>((resolve, reject) => {
+          const wTx = rawDb.transaction(STORE_SYNC_META, 'readwrite');
+          wTx.objectStore(STORE_SYNC_META).put(badRecord);
+          wTx.oncomplete = () => resolve();
+          wTx.onerror = () => reject(wTx.error);
+        });
+
+        await expect(dbClient.gcAuthoritativeTombstones(scope)).rejects.toThrow(
+          InvalidDeltaPayloadError,
+        );
+        expect(
+          await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-early-20'),
+        ).not.toBeNull();
+
+        // Clean up tampered key before next case
+        await new Promise<void>((resolve, reject) => {
+          const dTx = rawDb.transaction(STORE_SYNC_META, 'readwrite');
+          dTx.objectStore(STORE_SYNC_META).delete(String(badRecord.ownerScope));
+          dTx.oncomplete = () => resolve();
+          dTx.onerror = () => reject(dTx.error);
+        });
+      }
+    });
+
+    it('P1-E PURGE, TILDE/PREFIX ISOLATION & 64-BIT BIGINT LINEAGE: preserves schema v5 (10 stores), isolates receipts, purges cleanly per scope, and enforces 64-bit precision across reload', async () => {
+      const scopeA = 'account:usr~p1e-tilde';
+      const scopeAOverlap = 'account:usr~p1e-tilde-2';
+
+      const db = await dbClient.getDatabase();
+      expect(DB_VERSION).toBe(5);
+      expect(db.version).toBe(5);
+      expect(Array.from(db.objectStoreNames)).toHaveLength(10);
+
+      const safePlus1 = '9007199254740992'; // 2^53
+      const safePlus2 = '9007199254740993'; // conflated with safePlus1 in Number()
+      const safePlus4 = '9007199254740995';
+      const safePlus5 = '9007199254740996';
+
+      for (const sc of [scopeA, scopeAOverlap]) {
+        await seedRawReadySyncMeta(dbClient, {
+          ownerScope: sc,
+          lastSyncedServerRevision: safePlus5,
+          minActiveRevision: safePlus4,
+          lastSyncTimestamp: '2026-11-09T10:00:00.000Z',
+          effectiveHistoryEpochs: {},
+          syncState: 'IDLE',
+          authoritativeBaselineStatus: 'READY',
+        });
+      }
+
+      // 64-bit BigInt lineage in scopeA: q_old@9007199254740992, tomb@9007199254740993
+      await dbClient.putAuthoritativeTombstone({
+        ownerScope: scopeA,
+        domain: SyncDomain.BOOKMARK,
+        entityKey: 'bm-64-p1e',
+        deletedAtRevision: safePlus2,
+        updatedAt: Date.now(),
+      });
+      await dbClient.quarantineMutation({
+        ownerScope: scopeA,
+        mutationId: 'q-64-old',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-64-p1e',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: safePlus1,
+        payload: { storyId: 'bm-64-p1e' },
+        rejectionReason: 'REJECTED_STALE',
+        rejectionStatus: 'REJECTED_STALE',
+        rejectedAt: '2026-11-09T10:00:00.000Z',
+        triageStatus: 'APPROVED',
+        causalEvidence: {
+          triageApproved: true,
+          validatedRevision: safePlus4,
+          evidence: { replacementMutationId: 'mut-64-new' },
+        },
+      });
+
+      // Before ACK/pending exists in scopeA (even though scopeAOverlap has ACKed mut-64-new), scopeA fails closed!
+      const overlapQueue = new MutationQueue({
+        ownerScope: scopeAOverlap,
+        identityStateProvider: createStaticIdentityProvider(scopeAOverlap),
+        dbClient,
+      });
+      await overlapQueue.enqueue({
+        ownerScope: scopeAOverlap,
+        mutationId: 'mut-64-new',
+        clientId: 'c2',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-64-p1e',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: safePlus4,
+        payload: { storyId: 'bm-64-p1e' },
+        createdAt: '2026-11-09T10:01:00.000Z',
+        retryCount: 0,
+      });
+      const batchOverlap = await overlapQueue.preparePushBatch();
+      await overlapQueue.processServerBatchResults({
+        batch: batchOverlap,
+        results: [{ mutationId: 'mut-64-new', status: 'APPLIED', assignedRevision: safePlus5 }],
+      });
+
+      let gcA = await dbClient.gcAuthoritativeTombstones(scopeA);
+      expect(gcA.safeGcFloor).toBe(safePlus1);
+      expect(gcA.retainedCount).toBe(1);
+
+      // Now ACK mut-64-new in scopeA across reload -> safeGcFloor advances to safePlus4 and deletes safePlus2!
+      const queueA = new MutationQueue({
+        ownerScope: scopeA,
+        identityStateProvider: createStaticIdentityProvider(scopeA),
+        dbClient,
+      });
+      await queueA.enqueue({
+        ownerScope: scopeA,
+        mutationId: 'mut-64-new',
+        clientId: 'c1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-64-p1e',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: safePlus4,
+        payload: { storyId: 'bm-64-p1e' },
+        createdAt: '2026-11-09T10:02:00.000Z',
+        retryCount: 0,
+      });
+      const batchA = await queueA.preparePushBatch();
+      await queueA.processServerBatchResults({
+        batch: batchA,
+        results: [{ mutationId: 'mut-64-new', status: 'APPLIED', assignedRevision: safePlus5 }],
+      });
+
+      dbClient.close();
+      const reloaded = new IndexedDbClient();
+      try {
+        gcA = await reloaded.gcAuthoritativeTombstones(scopeA);
+        expect(gcA.safeGcFloor).toBe(safePlus4);
+        expect(gcA.deletedCount).toBe(1);
+        expect(
+          await reloaded.getAuthoritativeTombstone(scopeA, SyncDomain.BOOKMARK, 'bm-64-p1e'),
+        ).toBeNull();
+
+        expect(await reloaded.getMutationTerminalReceipts(scopeA)).toHaveLength(1);
+        expect(await reloaded.getMutationTerminalReceipts(scopeAOverlap)).toHaveLength(1);
+
+        // purgeScope(scopeA) removes scopeA receipts & meta while preserving scopeAOverlap 100%
+        await reloaded.purgeScope(scopeA);
+        expect(await reloaded.getMutationTerminalReceipts(scopeA)).toHaveLength(0);
+        expect(await reloaded.getMutationTerminalReceipt(scopeA, 'mut-64-new')).toBeNull();
+        expect(await reloaded.getMutationTerminalReceipts(scopeAOverlap)).toHaveLength(1);
+        expect(
+          (await reloaded.getMutationTerminalReceipt(scopeAOverlap, 'mut-64-new'))?.assignedRevision,
+        ).toBe(safePlus5);
+      } finally {
+        reloaded.close();
+      }
+    });
+  });
 });

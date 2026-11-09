@@ -951,6 +951,11 @@ export class MutationQueue {
         switch (res.status) {
           case 'APPLIED':
             await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId, {
+              terminalReceipt: {
+                status: 'APPLIED',
+                assignedRevision: res.assignedRevision ?? null,
+                baseServerRevision: mutation.baseServerRevision,
+              },
               checkAdmission: () => {
                 this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
                 this.assertBatchOwnership(batch, mutation.mutationId);
@@ -962,6 +967,11 @@ export class MutationQueue {
 
           case 'DEDUPLICATED':
             await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId, {
+              terminalReceipt: {
+                status: 'DEDUPLICATED',
+                assignedRevision: res.assignedRevision ?? null,
+                baseServerRevision: mutation.baseServerRevision,
+              },
               checkAdmission: () => {
                 this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
                 this.assertBatchOwnership(batch, mutation.mutationId);
@@ -980,6 +990,11 @@ export class MutationQueue {
               mutation.mutationId,
               mutation.payload,
               {
+                terminalReceipt: {
+                  status: 'REJECTED_TOMBSTONE',
+                  assignedRevision: res.assignedRevision ?? null,
+                  baseServerRevision: mutation.baseServerRevision,
+                },
                 checkAdmission: () => {
                   this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
                   this.assertBatchOwnership(batch, mutation.mutationId);
@@ -1040,6 +1055,11 @@ export class MutationQueue {
           case 'CONFLICT_MERGED': {
             // Invariant: Response has no resolvedPayload. Remove pending and trigger authoritative delta pull.
             await this.dbClient.deletePendingMutation(batchOwnerScope, mutation.mutationId, {
+              terminalReceipt: {
+                status: 'CONFLICT_MERGED',
+                assignedRevision: res.assignedRevision ?? null,
+                baseServerRevision: mutation.baseServerRevision,
+              },
               checkAdmission: () => {
                 this.assertAuthorityAtBoundary(batchOwnerScope, batchScopeGeneration);
                 this.assertBatchOwnership(batch, mutation.mutationId);

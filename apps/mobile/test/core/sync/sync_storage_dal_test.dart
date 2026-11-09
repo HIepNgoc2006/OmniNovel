@@ -868,10 +868,32 @@ void main() {
         admission: otherGuestAdmission,
       );
 
+      // R-03 fail-closed default (discardUnsyncedMutations: false): blocks delete while pending_mutations exist
+      await expectLater(
+        () => dal.purgeAccountScope(
+          ownerScope: targetScope,
+          reason: AccountPurgeReason.accountDeleted,
+          admission: targetAdmission,
+        ),
+        throwsA(
+          isA<PurgeProhibitedError>().having(
+            (e) => e.message,
+            'message',
+            contains('UNSYNCED_MUTATIONS_PRESENT'),
+          ),
+        ),
+      );
+      expect(await dal.getSyncMeta(targetScope), isNotNull);
+      expect(await dal.getPendingMutations(targetScope), hasLength(2));
+      expect((await dal.getAccountLocalPreference(targetScope, 'theme'))?.value, 'dark');
+      expect(await localDao.isBookmarked(ownerScope: targetScope, storyId: 's-target'), isTrue);
+
+      // Explicit confirmed wipe (discardUnsyncedMutations: true) wipes target scope only
       await dal.purgeAccountScope(
         ownerScope: targetScope,
         reason: AccountPurgeReason.accountDeleted,
         admission: targetAdmission,
+        discardUnsyncedMutations: true,
       );
 
       // Target scope wiped

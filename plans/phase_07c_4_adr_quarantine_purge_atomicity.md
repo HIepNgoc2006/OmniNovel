@@ -1,269 +1,305 @@
-# 🏛️ ADR-07C4-001: Architecture Decision Proposal — Guest Quarantine/Purge Atomicity (SQLite v6 SSoT) & Purge/DI Safety Audit
+# 🏛️ ADR-07C4-001: Architecture Decision Proposal — Guest Quarantine/Purge Atomicity, Lifecycle Eligibility Contract & Production DI Proof
 
-> **Mã tài liệu:** `ADR-07C4-001`  
+> **Mã tài liệu:** `ADR-07C4-001` *(Bản cập nhật Stage 1 Final Safety Remediation)*  
 > **Thuộc Phase:** OmniNovel Mobile Sync Engine — Phase 7C.4 Stage 1  
-> **Trạng thái ADR:** `PROPOSED — PENDING GATE APPROVAL`  
+> **Trạng thái ADR:** `PROPOSED — PENDING GATE APPROVAL FOR SQLite v6 CONTROLLED UNLOCK`  
 > **Trạng thái Stage 1:** **`PENDING GATE REVIEW`** *(Chưa cấp `READY`, chưa cấp `FROZEN CLEAN`, PR [`#209`](https://github.com/HIepNgoc2006/OmniNovel/pull/209) giữ nguyên Draft)*  
-> **Baseline mã nguồn kiểm định:** `a17495aa117c11009ddd81e97ce4e6c8dc5463db` trên nhánh `feat/7c4-mobile-sync` (Hosted CI `#42585874049`: `6 SUCCESS + 1 SKIPPED`)  
-> **Tính chất thực thi:** **Tài liệu Audit & Architecture Decision Proposal.** Chưa chỉnh sửa bất kỳ frozen module nào, giữ nguyên [`OfflineDatabase.databaseVersion = 5`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/storage/offline_database.dart#L8), chưa can thiệp runtime code.
+> **Phạm vi Đã Sửa Trong Stage 1 (`v5`):** Khắc phục xong **`R-02`** & **`R-03`** trong [`SyncStorageDal`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2400-L2684); giữ nguyên [`OfflineDatabase.databaseVersion = 5`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/storage/offline_database.dart#L8) và **0 sửa đổi** đối với mọi frozen modules.  
+> **Cảnh báo An toàn Trọng tâm:** **R-01 vẫn là OPEN RESIDUAL RISK trên SQLite `v5`** cho tới khi Hội đồng phê duyệt mở khóa migration `v6`.
 
 ---
 
-## 1. Tóm tắt Điều hành (Executive Summary)
+## 1. Tóm tắt Điều hành & Hiện trạng Sau Stage 1 Final Safety Remediation
 
-Qua rà soát trực tiếp toàn bộ mã nguồn Stage 1 tại commit `a17495a`, kiến trúc hiện hành đã giải quyết tốt OCC đa kết nối (`P0-M02`), 4 hàng rào admission (`P0-M06`), FIFO bền vững (`P1-M03`), reading mode fail-closed (`P1-M07`), và chống giả mạo `clientId` khi dùng `SyncStorageDal.bound(...)` (`P1-M08`). Tuy nhiên, cuộc kiểm toán phát hiện **3 điểm rủi ro cấp `P0`/`P1`** cần Hội đồng Gate Review phê duyệt phương án xử lý trước khi đóng băng Stage 1 hoặc tiến sang Stage 2:
+Sau vòng kiểm toán từ baseline `a17495a` và chỉ đạo của Hội đồng (chấp thuận hướng SQLite SSoT về nguyên tắc nhưng **chưa phê duyệt nâng `v5 -> v6`** tại đợt này), nhóm thực thi đã tách rành mạch hai lớp xử lý:
 
-1. **`P0` — Guest Quarantine / Purge Cross-Store Atomicity Gap:** Cờ cách ly Guest hiện nằm trong `SharedPreferences` ([`GuestProfileIdentityProvider`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/identity/guest_profile_identity_provider.dart#L4-L67)), tách rời khỏi SQLite WAL/`BEGIN IMMEDIATE` của `guest_claim_recovery_journal` và 4 bảng `local_*`. Kiến trúc kiến nghị chuyển SSoT sang bảng SQLite v6 **`guest_quarantined_scopes`** (**Option A**).
-2. **`P0/P1` — `AccountPurgeReason.signOutReset` Xóa Không Điều Kiện Pending/Quarantined Mutations:** [`SyncStorageDal.purgeAccountScope`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2393-L2420) xóa sạch `pending_mutations` và `quarantined_mutations` ngay cả khi chưa đồng bộ hoặc chưa được người dùng xác nhận (trái ngược với `evictDetachedAccountScope`).
-3. **`P0` — `GuestLifecyclePurgeReason.verifiedUnusedGuestEviction` Chấp nhận Nhầm `GuestLocalWriteAdmission`:** Tại [`SyncStorageDal.purgeGuestLocalScope`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2538-L2568), nếu caller truyền `GuestLocalWriteAdmission` (admission của **Active Guest**) kèm `reason: verifiedUnusedGuestEviction`, nhánh kiểm tra active guest ở dòng `2556` bị bỏ qua hoàn toàn, cho phép xóa dữ liệu Active Guest.
+1. **Đã Khắc phục Trực tiếp Trong Stage 1 (`v5` — Không đụng Frozen Modules):**
+   - **R-02 — Đã đóng (`REMEDIATED IN STAGE 1`):** [`SyncStorageDal.purgeGuestLocalScope`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2580-L2684) áp đặt ánh xạ đơn trị 1-1:
+     - `GuestLifecyclePurgeReason.userClearedGuestData` **CHỈ** chấp nhận `GuestLocalWriteAdmission`.
+     - `GuestLifecyclePurgeReason.verifiedUnusedGuestEviction` **CHỈ** chấp nhận `UnusedGuestEvictionAdmission` (từ chối tuyệt đối `GuestLocalWriteAdmission`, đồng thời kiểm tra cả `!snap.isAuthenticated || snap.scopeState == ActiveScopeState.guest` với persisted `currentGuestId`).
+   - **R-03 — Đã đóng (`REMEDIATED IN STAGE 1`):** [`SyncStorageDal.purgeAccountScope`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2400-L2472) áp đặt mặc định `discardUnsyncedMutations = false` (fail-closed):
+     - Kiểm tra `pending_mutations` & `quarantined_mutations` **trong SQLite transaction cả trước khi xóa và ngay trước khi commit** (`assertAccountPurgeSafe(txn)`), ném `PurgeProhibitedError('... UNSYNCED_MUTATIONS_PRESENT')` và rollback 100% toàn bộ 8 bảng nếu phát hiện dữ liệu chưa đồng bộ.
+     - Cho phép xóa sạch khi truyền tường minh `discardUnsyncedMutations: true` (chỉ khi policy xóa có xác nhận và cấm tuyệt đối trên `AccountPurgeReason.fullResyncReset`).
 
----
-
-## 2. Architecture Decision cho P0 Guest Quarantine / Purge Atomicity (Hạng mục 1 & 2)
-
-### 2.1 Bằng chứng Lỗ hổng Kiến trúc Hiện hành (Dual-Store Boundary)
-
-Kiểm tra trực tiếp mã nguồn tại `a17495a` xác nhận các điểm gãy bất đồng bộ giữa hai hệ lưu trữ:
-
-1. **Quarantine lưu ngoài SQLite:** [`GuestProfileIdentityProvider.quarantineGuestScope`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/identity/guest_profile_identity_provider.dart#L52-L60) đọc/ghi key `'omninovel_quarantined_guest_profiles'` trong `SharedPreferences` (XML/plist trên đĩa + cache RAM per-isolate).
-2. **`skipClaim()` tách 2 bước rời rạc (Non-Atomic Handoff):** Tại [`GuestClaimCoordinator.skipClaim`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/claim/guest_claim_coordinator.dart#L560-L571):
-   - Bước 1 (dòng `562`): `await _guestProvider.quarantineGuestScope(guestProfileId);` ghi vào `SharedPreferences`.
-   - Bước 2 (dòng `566-570`): `await _offlineDb.database.delete('guest_claim_recovery_journal', ...);` xóa sổ cái claim trong SQLite.
-   - Nếu process crash giữa 2 dòng này, hệ thống rơi vào trạng thái lai (vừa có quarantine flag vừa còn journal `prepared`); nếu đảo thứ tự xóa journal trước khi ghi `SharedPreferences`, sẽ xuất hiện cửa sổ không còn journal mà cũng chưa có quarantine.
-3. **Khe hở Post-Callback COMMIT trong `purgeGuestLocalScope()`:** Mặc dù [`SyncStorageDal.purgeGuestLocalScope`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2547-L2619) đã thực hiện kiểm tra 3 lớp (pre-tx, in-tx pre-delete, và Barrier 4 trước khi trả về `txn` callback), nhưng trong `sqflite`, khi callback Dart kết thúc tại dòng `148-150` (`_runWriteTransaction`), `sqflite` phải gửi lệnh `COMMIT` bất đồng bộ qua platform-channel/FFI tới native SQLite engine. Trong khoảng thời gian hậu-callback đó, một isolate khác hoặc microtask gọi `quarantineGuestScope()` vẫn ghi thành công vào `SharedPreferences` mà SQLite `BEGIN IMMEDIATE` không hề hay biết để hủy `COMMIT`.
-
-### 2.2 Đánh giá So sánh Các Phương án Kiến trúc
-
-| Tiêu chí Đánh giá | **Option A (KHUYẾN NGHỊ): SQLite v6 `guest_quarantined_scopes` SSoT** | **Option B: Pure Dart Serialization / Lifecycle Mutex (giữ `SharedPreferences`)** | **Option C: Dual-Write / Two-Phase Coordinator trên 2 Store** |
-|---|---|---|---|
-| **Triệt tiêu Post-Callback COMMIT Race** | **Có — 100% nguyên tử tại SQLite Engine.** Khóa ghi SQLite giữ từ lúc mutate tới khi `COMMIT` vật lý hoàn tất. | **Không.** Vẫn tồn tại khe hở cross-isolate hoặc caller không dùng chung mutex. | **Không hoàn toàn.** Không có 2PC coordinator chuẩn trên XML `SharedPreferences`. |
-| **Bảo vệ Multi-Isolate / Background Worker** | **Có.** Thực thi bằng WAL + file lock + `PRAGMA busy_timeout = 5000` ở cấp OS/SQLite. | **Không.** Mutex/Completer trong Dart chỉ có hiệu lực trong bộ nhớ 1 isolate duy nhất. | **Không.** `SharedPreferences` cache RAM khác nhau giữa các isolate. |
-| **Crash Atomicity cho `skipClaim()`** | **Có.** Insert quarantine + Delete journal chạy chung 1 SQLite transaction -> cả hai cùng thắng hoặc cùng rollback. | **Không.** Crash giữa `prefs.setStringList` và `sqlite.delete` vẫn để lại half-state. | **Không.** `SharedPreferences` không có `ROLLBACK` nguyên tử theo transaction SQLite. |
-| **Defense-in-Depth ở Tầng SQL** | **Có.** Câu `DELETE FROM local_*` có thể ràng buộc trực tiếp `AND NOT EXISTS (...)`. | **Không.** Câu SQL không thể tham chiếu khóa nằm ở XML/plist. | **Phức tạp cao**, dễ sinh Split-Brain giữa 2 SSoT. |
-| **Chi phí / Tác động Mở khóa** | Trung bình: Cần mở khóa có kiểm soát 3 frozen files (`OfflineDatabase`, `GuestProfileIdentityProvider`, `GuestClaimCoordinator`), nâng `v5 -> v6`, kèm migration từ `SharedPreferences`. | Thấp hơn về schema nhưng **không giải quyết triệt để P0 Race & Crash**. | Cao nhất (vi phạm KISS/YAGNI), vẫn không đạt invariant P0. |
-
-**Quyết định kiến nghị:** Chọn **Option A** — đưa `guest_quarantined_scopes` vào SQLite schema `v6` làm SSoT duy nhất cho toàn bộ quyết định quarantine/purge. *(Có thể kèm thêm thin async mutex nội bộ trong `GuestProfileIdentityProvider` / lifecycle coordinator nhằm giảm va chạm `SQLITE_BUSY`, nhưng tuyệt đối không dùng Dart mutex làm ranh giới an toàn thay thế SQLite transaction.)*
+2. **Vấn đề Tồn dư Chờ Phê duyệt Mở khóa `v6` (`R-01`, `R-04`) & Stage 2 (`R-05`):**
+   - **R-01 (`P0` — Open Residual Risk ở `v5`):** [`GuestProfileIdentityProvider`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/identity/guest_profile_identity_provider.dart#L4-L67) và [`GuestClaimCoordinator`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/claim/guest_claim_coordinator.dart#L532-L585) vẫn đang ghi quarantine vào **`SharedPreferences`** ngoài ranh giới SQLite `v5`. Tài liệu ADR này phân tích đầy đủ cả hai chiều **`quarantine-before-purge` lẫn `purge-before-quarantine`**, định nghĩa **Lifecycle Eligibility Contract** để chặn claim/quarantine một Guest đã bị purge, và chứng minh vì sao **SQLite lock một mình KHÔNG bảo đảm toàn bộ vòng đời an toàn**.
+   - **R-05 (Stage 2 Production DI):** Làm rõ `@visibleForTesting` + rule `analysis_options.yaml` chỉ là **static guard**, KHÔNG phải **runtime proof**, và đề xuất cơ chế cưỡng chế runtime bắt buộc cho `SyncStorageDal.bound(...)` và `clientId` SSoT.
 
 ---
 
-## 3. Thiết kế Chi tiết SQLite v6: Thứ tự Ghi, Locking, Crash Recovery & Dual-Source Migration (Hạng mục 3)
+## 2. Phân tích Chuyên sâu R-01: Cả Hai Thứ Tự Thực Thi & Vì Sao SQLite Lock Một Mình Là Không Đủ
 
-### 3.1 Thiết kế Bảng Mới SQLite `v6`
+> [!IMPORTANT]
+> **Tuyên bố Kiến trúc Bắt buộc (Anti-Overclaim Principle):**
+> **SQLite write lock (`WAL` / `BEGIN IMMEDIATE` / `db.transaction`) một mình TUYỆT ĐỐI KHÔNG bảo đảm toàn bộ vòng đời Guest Quarantine / Claim / Purge an toàn.**
+> SQLite lock chỉ tuần tự hóa được các thao tác DB **trùng lặp tại cùng thời điểm vật lý**. Trong vòng đời thực tế của Mobile App, an toàn bị phá vỡ bởi 4 yếu tố nằm ngoài một lệnh lock SQLite đơn lẻ:
+> 1. **Khoảng cách Thời gian Tuần tự (`Sequential Non-Overlapping Transactions`):** Nếu Transaction $T_1$ (`purge`) kết thúc và **nhả SQLite lock**, sau đó Transaction $T_2$ (`quarantine` hoặc `claim`) mới chạy, SQLite lock không hề xảy ra tranh chấp để chặn $T_2$ trừ phi có **trạng thái bền vững đơn điệu (`PURGED` tombstone)** được ghi lại và kiểm chứng trong Eligibility Contract.
+> 2. **Cửa sổ Mạng Bất đồng bộ (`Cross-Network Async Window`):** Trong [`GuestClaimCoordinator.checkAndPrepareClaim`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/claim/guest_claim_coordinator.dart#L177-L239) và `confirmClaim`, ứng dụng gửi HTTP `POST /prepare` hoặc `POST /commit` ở **giữa** hai lần chạm DB. **Nghiêm cấm tuyệt đối** giữ SQLite transaction/write lock qua I/O mạng (gây treo UI & ANR), nên giữa bước đọc pre-HTTP và bước ghi post-HTTP luôn tồn tại khoảng trống thời gian.
+> 3. **Dual-Store Boundary ở `v5`:** Hiện tại `SharedPreferences` nằm hoàn toàn ngoài SQLite `BEGIN IMMEDIATE` — mọi ghi vào `'omninovel_quarantined_guest_profiles'` không bị ràng buộc bởi transaction SQLite của `purgeGuestLocalScope` hoặc `guest_claim_recovery_journal`.
+> 4. **Đa Actor & Điều phối Bộ nhớ (`AuthScopeBridge` / Isolate / UI State):** Việc mở hoặc khóa `ActiveScopeState.transitioning`, tăng `transitionGeneration`, và kiểm định `SyncWriteAdmission` 4 hàng rào phải đồng bộ với SSoT SQLite chứ không thể giao phó hoàn toàn cho một khóa bảng SQLite.
 
-Tạo bảng thứ 15 hoàn toàn **additive** (bảo toàn 100% 14 bảng `v2–v5`):
+### 2.1 Phân tích Hai Thứ Tự Thực Thi: `quarantine-before-purge` vs `purge-before-quarantine`
+
+#### Chiều A: `quarantine-before-purge` ($T_{\text{quarantine/claim}} \prec T_{\text{purge}}$ hoặc Xen kẽ Song song)
+*Kịch bản:* Người dùng đăng nhập -> [`GuestClaimCoordinator.checkAndPrepareClaim`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/claim/guest_claim_coordinator.dart#L143) tạo `guest_claim_recovery_journal` (`prepared` -> `committing` -> `committedServer`) hoặc người dùng bấm Skip -> [`skipClaim`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/claim/guest_claim_coordinator.dart#L532) đưa `guestProfileId` vào quarantine; sau đó (hoặc song song từ isolate/worker dọn rác) `purgeGuestLocalScope` cố gắng xóa 4 bảng `local_*` của `guest:g1`.
+
+- **Lỗ hổng tại Stage 1 (`v5` hiện hành — Open Residual Risk):**
+  1. Trong `skipClaim()` ([`guest_claim_coordinator.dart#L560-L571`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/claim/guest_claim_coordinator.dart#L560-L571)), ghi `SharedPreferences` (dòng `562`) và `sqlite.delete('guest_claim_recovery_journal')` (dòng `566`) là **2 bước tách rời**. Crash giữa 2 dòng hoặc multi-isolate cache lệch RAM dẫn tới trạng thái không đồng nhất.
+  2. Trong `purgeGuestLocalScope()` ([`sync_storage_dal.dart#L2650-L2683`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2650-L2683)), dẫu đã kiểm tra kép trước xóa và trước khi callback return (dòng `2681`), khoảng thời gian từ lúc Dart callback kết thúc tới lúc native SQLite hoàn tất `COMMIT` vật lý vẫn mở cho một thao tác `quarantineGuestScope` ghi vào `SharedPreferences` thành công mà SQLite **không thể hủy `COMMIT`**.
+- **Giải pháp khi mở khóa `v6`:** Chuyển quarantine SSoT vào bảng SQLite `guest_quarantined_scopes`, gộp `skipClaim()` vào **1 transaction nguyên tử**, và dùng SQL `DELETE FROM local_* ... AND NOT EXISTS (SELECT 1 FROM guest_quarantined_scopes ...) AND NOT EXISTS (SELECT 1 FROM guest_claim_recovery_journal ...)` kết hợp pre-commit check để write lock giữ xuyên suốt tới tận sau `COMMIT` vật lý.
+
+#### Chiều B: `purge-before-quarantine` / `purge-before-claim` ($T_{\text{purge}} \prec T_{\text{quarantine/claim}}$ hoặc Xen kẽ Qua HTTP)
+*Kịch bản (thường bị bỏ sót nếu chỉ phân tích lock!):*
+1. **Tình huống Tuần tự (`T1` commit xong -> `T2` đến sau):** `purgeGuestLocalScope` (`userClearedGuestData` hoặc `verifiedUnusedGuestEviction`) hoặc `LocalLibraryDao.rebindScope` (`commitClaim` hoàn tất) đã **xóa sạch toàn bộ dữ liệu của `guest:g1` và `COMMIT`** tại $T_1$. SQLite lock đã được nhả hoàn toàn. Tại $T_2 > T_1$, một tác vụ trễ — ví dụ stale callback từ UI cũ gọi `skipClaim()`/`quarantineGuestScope(g1)`, worker phục hồi đọc cache cũ, hoặc luồng restore backup — yêu cầu cách ly hoặc mở lại claim cho `g1`.
+   - **Vì sao SQLite lock một mình thất bại?** Khi $T_2$ bắt đầu, $T_1$ đã kết thúc từ lâu nên SQLite lock cấp ngay cho $T_2$. Nếu DB chỉ xóa trắng 4 bảng `local_*` mà **không để lại dấu vết (`PURGED` tombstone)**, $T_2$ tưởng `g1` vẫn bình thường -> ghi bậy vào `guest_quarantined_scopes(g1)` (tạo *zombie quarantine*) hoặc khởi tạo claim journal cho một Guest đã bị hủy vĩnh viễn!
+2. **Tình huống Xen kẽ qua HTTP trong `checkAndPrepareClaim()`:**
+   - Tại $T_0$, [`checkAndPrepareClaim`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/claim/guest_claim_coordinator.dart#L177-L239) đọc `hasData = true` trên `guest:g1`, rồi nhả SQLite lock để gọi `await _apiClient.post('/guest-claim/prepare')`.
+   - Giả sử có bất kỳ biến cố hoặc transition nào khiến `guest:g1` bị `purgeGuestLocalScope` (hoặc claimed bởi session/cơ chế khác) tại $T_1$ trong lúc `POST /prepare` đang bay qua mạng.
+   - Tại $T_2$, HTTP trả `200 OK`, dòng `225` ghi `guest_claim_recovery_journal(phase='prepared')` vào SQLite! Nếu chỉ giữ `isSessionValid()` trên RAM mà **không kiểm tra `guest_purged_tombstones` & `guest_quarantined_scopes` bên trong transaction SQLite lúc ghi journal**, hệ thống sinh **claim journal mồ côi cho Guest đã purge**.
+
+---
+
+## 3. Lifecycle Eligibility Contract (Hợp đồng Hợp lệ Toàn Vòng Đời cho `v6`)
+
+Để chặn triệt để cả **chiều `quarantine-before-purge`**, **chiều `purge-before-quarantine`**, lẫn **claim lại một Guest đã bị purge**, thiết kế `v6` định nghĩa **Máy trạng thái Đơn điệu 4 Trạng thái** làm SSoT trên từng `guestProfileId`:
+
+```mermaid
+stateDiagram-v2
+    [*] --> ACTIVE : "generateUUIDv4() (New Guest ID)"
+    ACTIVE --> CLAIMING : "POST /prepare -> INSERT journal(prepared)"
+    ACTIVE --> PURGED : "purgeGuestLocalScope() -> INSERT purged_tombstone"
+    CLAIMING --> QUARANTINED : "skipClaim() tx [check NOT PURGED -> INSERT quarantine + DELETE journal]"
+    CLAIMING --> ACTIVE : "Prepare aborted / Journal cleared before commit"
+    CLAIMING --> PURGED : "rebindScope(finalization) tx -> INSERT purged_tombstone"
+    QUARANTINED --> QUARANTINED : "Terminal Preservation (Chặn mọi Purge & Auto-Claim)"
+    PURGED --> PURGED : "Terminal Absorbing State (Chặn mọi Claim, Re-Prepare, Skip & Quarantine)"
+```
+
+### 3.1 Schema Bổ sung Đề xuất cho SQLite `v6` (2 Bảng Additive Thuần túy)
 
 ```sql
+-- 1. SSoT Cách ly Guest đã Skip Claim (Chặn Purge vĩnh viễn)
 CREATE TABLE IF NOT EXISTS guest_quarantined_scopes (
   guest_profile_id TEXT PRIMARY KEY,
   quarantined_at_ms INTEGER NOT NULL,
   source_user_id TEXT,
   reason TEXT NOT NULL DEFAULT 'SKIP_CLAIM'
 );
+
+-- 2. SSoT Tombstone Hủy Guest (Chặn Claim & Quarantine sau Purge — Absorbing State)
+CREATE TABLE IF NOT EXISTS guest_purged_tombstones (
+  guest_profile_id TEXT PRIMARY KEY,
+  purged_at_ms INTEGER NOT NULL,
+  purge_reason TEXT NOT NULL
+    CHECK (purge_reason IN (
+      'USER_CLEARED_GUEST_DATA',
+      'VERIFIED_UNUSED_GUEST_EVICTION',
+      'CLAIMED_AND_REBOUND'
+    )),
+  purged_by_user_id TEXT
+);
 ```
 
-*Ghi chú thiết kế:* `guest_profile_id TEXT PRIMARY KEY` tự tạo B-Tree index duy nhất cho mọi truy vấn kiểm tra `WHERE guest_profile_id = ?` và `NOT EXISTS (...)` ở tốc độ $O(\log N)$, không trùng lặp bản ghi. Cột `source_user_id` và `reason` (`'SKIP_CLAIM'`, `'LEGACY_PREFS_MIGRATED'`) hỗ trợ kiểm toán nguồn gốc cách ly và triage lỗi nâng cấp.
+*Ghi chú bất biến:* Do `GuestProfileIdentityProvider.rotateGuestProfileId()` luôn sinh **UUIDv4 mới tinh** sau mỗi lần logout, mỗi `guestProfileId` là **duy nhất 1 lần đời (`single-use lifetime`)**. Việc tách bảng tombstone nhỏ gọn `guest_purged_tombstones` giúp lưu lại trạng thái `PURGED` vĩnh viễn không cần giữ dữ liệu `local_*`. *(Chính sách cắt tỉa/retention tombstone dài hạn chỉ xem xét sau ≥ 180 ngày và chỉ khi chắc chắn không còn claim journal/legacy backup nào tham chiếu UUID cũ.)*
 
-### 3.2 Thứ tự Ghi & Cơ chế Transaction Locking (Loại bỏ Khe hở Snapshot WAL)
+### 3.2 Quy tắc Eligibility & Invariants theo Từng Nghiệp vụ (`Contract Matrix`)
 
-Điểm tinh tế kỹ thuật trong SQLite WAL: nếu một transaction bắt đầu ở chế độ `DEFERRED`, các câu `SELECT` ban đầu chỉ lấy *read snapshot* và **chưa** lấy writer lock (`RESERVED/EXCLUSIVE`) cho tới câu `INSERT`/`UPDATE`/`DELETE` đầu tiên. Do đó, thiết kế v6 cưỡng chế thứ tự khóa và kiểm tra **sau khi đã nắm writer lock**:
+| Nghiệp vụ / Điểm Gọi | Trạng thái Yêu cầu (Precondition Trong SQLite Tx) | Hành động Nguyên tử (Atomic Write) | Điều kiện Từ chối Fail-Closed |
+|---|---|---|---|
+| **1. Đọc / Ghi Local Guest** (`LocalLibraryDao`, `putGuestLocalPreference`) | **`ACTIVE`** (`NOT IN purged_tombstones`, `NOT IN quarantined_scopes`, coordinator ở `guest` đúng scope) | Đọc / ghi 4 bảng `local_*` với `GuestLocalWriteAdmission`. | Nếu đã `PURGED` hoặc `QUARANTINED` (khi không còn là `currentGuestId`) hoặc đang `transitioning` -> từ chối ghi. |
+| **2. Bắt đầu Claim (`checkAndPrepareClaim`)** | **`ACTIVE`** (`NOT IN purged_tombstones` AND `NOT IN quarantined_scopes` AND `NOT EXISTS journal`) | - **Pre-HTTP:** Check DB `isGuestEligibleForClaim(gId)` + `hasData`. Nếu đã `PURGED`/`QUARANTINED` -> **KHÔNG gọi `POST /prepare`**, cho phép `resolveToAccount`.<br>- **Post-HTTP:** Trước khi ghi `guest_claim_recovery_journal('prepared')`, mở `db.transaction`, đọc lại `guest_purged_tombstones` & `guest_quarantined_scopes` -> nếu bị `PURGED`/`QUARANTINED` trong lúc chờ HTTP -> rollback, **KHÔNG ghi journal**. | Ném/ghi nhận trạng thái bị từ chối claim (`GUEST_ALREADY_PURGED` / `GUEST_QUARANTINED`), không để kẹt account transition. |
+| **3. Skip Claim (`skipClaim`)** | **`ACTIVE` hoặc `CLAIMING(phase='prepared')`** (`NOT IN purged_tombstones` AND `journal.phase NOT IN ('committing','committedServer')`) | Trong **1 `db.transaction` duy nhất**:<br>1) Khẳng định `NOT EXISTS` trong `guest_purged_tombstones`;<br>2) `INSERT OR IGNORE INTO guest_quarantined_scopes`;<br>3) `DELETE FROM guest_claim_recovery_journal` -> `COMMIT` -> mới `resolveToAccount`. | Nếu đã có trong `guest_purged_tombstones` -> **ROLLBACK & `throw StateError('PURGE_ELIGIBILITY_VIOLATION: Cannot quarantine purged guest')`**.<br>Nếu journal ở `committing`/`committedServer` -> `throw StateError('Cannot skip claim once commit has started')`. |
+| **4. Confirm Claim (`rebindScope` với `finalization != null`)** | **`CLAIMING(phase='committedServer')`** (`NOT IN purged_tombstones`) | Trong **1 `db.transaction` duy nhất**:<br>Rebind dữ liệu sang `account:<userId>` -> xóa `local_*` của guest -> xóa `guest_claim_recovery_journal` -> **`INSERT OR IGNORE INTO guest_purged_tombstones(..., reason='CLAIMED_AND_REBOUND')`**. | Nếu `guest_purged_tombstones` đã tồn tại từ trước -> fail-closed (hoặc idempotent nếu trùng chính `claim_id` đang recovery), cấm resurrect dữ liệu đã xóa sạch. |
+| **5. Quarantine trực tiếp (`quarantineGuestScope`)** | **`ACTIVE` hoặc `CLAIMING(prepared)`** (`NOT IN purged_tombstones`) | `INSERT INTO guest_quarantined_scopes` trong transaction kiểm tra `NOT EXISTS (SELECT 1 FROM guest_purged_tombstones ...)`. | Nếu đã `PURGED` -> ném `GuestLifecycleStateError('GUEST_ALREADY_PURGED')`. **CẤM** tạo quarantine cho scope đã purge! |
+| **6. Purge Guest (`purgeGuestLocalScope`)** | **`ACTIVE`** (`NOT IN quarantined_scopes` AND `NOT IN journal` AND 4-Barrier `GuestPurgeAdmission` + Bijection R-02) | Trong `db.transaction`:<br>1) Pre-delete check 2 bảng chặn;<br>2) `DELETE FROM local_* WHERE owner_scope = ? AND NOT EXISTS(quarantine) AND NOT EXISTS(journal)`;<br>3) **`INSERT OR REPLACE INTO guest_purged_tombstones(...)`**;<br>4) Re-check `quarantine`/`journal` & Barrier 4 trước commit. | Nếu tồn tại trong `guest_quarantined_scopes` hoặc `guest_claim_recovery_journal` -> ném **`PurgeProhibitedError`** & rollback 100%. (Lưu ý: nếu User chọn xóa data của `currentGuestId` đang active via `userClearedGuestData`, nên xoay luôn sang `rotateGuestProfileId()` mới ở tầng coordinator sau commit để tách ID đã `PURGED` khỏi phiên tiếp theo!) |
+| **7. Crash Recovery (`checkCrashRecovery`)** | Journal tồn tại -> kiểm tra đối chiếu `guest_purged_tombstones` & `guest_quarantined_scopes` | Nếu journal `committing`/`committedServer` -> vẫn ưu tiên hỏi `/status` hoàn tất rebind nếu server đã commit (bảo toàn quyền user), còn nếu journal `prepared` mà guest đã `PURGED` -> dọn journal mồ côi fail-closed, không mở modal claim dữ liệu rỗng. | Ngăn UI mở modal Claim cho Guest không còn dữ liệu cục bộ. |
 
-#### A. Luồng `GuestClaimCoordinator.skipClaim(String userId)` (1 Transaction Duy nhất)
-Thực thi trọn vẹn `Step 1 + Step 2` bên trong `await _offlineDb.database.transaction((txn) async { ... })`:
-1. **Kiểm tra trạng thái sổ cái trong `txn`:** Truy vấn `guest_claim_recovery_journal` theo `claim_id` / `guest_profile_id`. Nếu `phase IN ('committing', 'committedServer')` -> rollback và ném `StateError('Cannot skip claim once commit has started')` (đóng race nếu crash recovery vừa chuyển `committing`).
-2. **Ghi Quarantine SSoT:** Thực thi `INSERT OR IGNORE INTO guest_quarantined_scopes(guest_profile_id, quarantined_at_ms, source_user_id, reason) VALUES (?, ?, ?, 'SKIP_CLAIM')`. Ngay tại lệnh `INSERT` này, SQLite chắc chắn nắm **exclusive write lock** trên DB.
-3. **Xóa Journal `prepared`:** Thực thi `DELETE FROM guest_claim_recovery_journal WHERE claim_id = ? AND user_id = ?`.
-4. **`COMMIT` vật lý:** Từ bước 2 tới `COMMIT`, không một writer nào (dù ở connection #2 hay isolate #2) có thể đọc thấy trạng thái "đã xóa journal nhưng chưa có quarantine". Handoff là **Zero-Gap 100%**.
+---
 
-#### B. Luồng `SyncStorageDal.purgeGuestLocalScope(...)` (Read-After-Write-Lock Defense-in-Depth)
-1. **Pre-Transaction Gate:**
-   - Kiểm tra 4 hàng rào [`SyncWriteAdmission`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/authority/sync_write_admission.dart#L84-L93) + khớp đơn trị `reason <-> admission` (Mục 6).
-   - Bảo đảm nếu có `guestProfileProvider` gắn legacy `SharedPreferences` chưa migrate xong thì thực hiện **idempotent migration trước khi mở purge** (chi tiết ở Mục 3.4).
-   - Nếu `!snap.isAuthenticated`: kiểm tra `guestProfileId != currentGuestId`.
-2. **Bên trong `_runWriteTransaction` (`db.transaction`):**
-   - **Pre-Delete Check:** Query `guest_quarantined_scopes` và `guest_claim_recovery_journal` theo `guestProfileId` -> nếu tồn tại bất kỳ dòng nào, `throw PurgeProhibitedError`.
-   - **Conditional SQL Delete trên 4 bảng `local_*` (`local_preferences`, `local_library_bookmarks`, `local_reading_progress`, `local_reading_history`):**
-     ```sql
-     DELETE FROM <table_name>
-     WHERE owner_scope = ?
-       AND NOT EXISTS (
-         SELECT 1 FROM guest_quarantined_scopes WHERE guest_profile_id = ?
-       )
-       AND NOT EXISTS (
-         SELECT 1 FROM guest_claim_recovery_journal WHERE guest_profile_id = ?
+## 4. Đánh giá Chi tiết So sánh Phương án, Migration, Crash Recovery & Đường Ghi `SharedPreferences` Cũ
+
+### 4.1 Đánh giá So sánh Kiến trúc Cho `v6`
+
+| Tiêu chí Đánh giá | **Option A (KHUYẾN NGHỊ): SQLite v6 SSoT (`guest_quarantined_scopes` + `guest_purged_tombstones`) + Eligibility Contract** | **Option B: Pure Dart Serialization / Lifecycle Mutex (giữ `SharedPreferences`)** | **Option C: Dual-Write / Two-Phase Coordinator trên 2 Store** |
+|---|---|---|---|
+| **Triệt tiêu Post-Callback COMMIT Race** | **Có** trên SQLite Engine (`DELETE ... NOT EXISTS` giữ write lock tới sau `COMMIT`). | **Không** (vẫn hở giữa Dart isolate & crash). | **Không hoàn toàn** (không có rollback nguyên tử trên XML `SharedPreferences`). |
+| **Chặn `purge-before-quarantine` & Claim Guest Đã Purge** | **Có** qua `guest_purged_tombstones` + Pre/Post-HTTP Eligibility Contract. | **Không** nếu giữ nguyên mô hình không tombstone hoặc crash giữa 2 store. | **Rất phức tạp**, nguy cơ Split-Brain cao giữa SQLite và `SharedPreferences`. |
+| **Bảo vệ Multi-Isolate / Background Worker** | **Có** (WAL + file lock + `PRAGMA busy_timeout = 5000`). | **Không** (Dart mutex chỉ sống trong 1 isolate RAM). | **Không** (`SharedPreferences` cache RAM lệch giữa các isolate). |
+| **Crash Atomicity cho `skipClaim()` & `purgeGuestLocalScope()`** | **Có** (`INSERT` + `DELETE` chung 1 `db.transaction`). | **Không** (half-state khi kill app giữa `prefs.setStringList` và `sqlite.delete`). | **Không** (crash sau khi ghi `SharedPreferences` trước khi `COMMIT` SQLite vẫn lỗi). |
+
+### 4.2 Đường Ghi `SharedPreferences` Cũ (`v5` Hiện tại vs `v6` Tương lai) & Rủi ro Tương tác
+
+Kiểm tra tại [`GuestProfileIdentityProvider`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/identity/guest_profile_identity_provider.dart#L5-L66):
+- **Tại Stage 1 (`SQLite v5` — Hiện hành):**
+  - Đường ghi `'omninovel_quarantined_guest_profiles'` trong `SharedPreferences` vẫn là **đường ghi sống (live write path)** duy nhất của `quarantineGuestScope()` vì 3 frozen modules chưa được mở khóa.
+  - Do đó, trong `v5`, **R-01 và R-04 còn tồn đọng như Open Residual Risks đã nhận diện minh bạch** (được giảm nhẹ tạm thời nhờ `SyncStorageDal.purgeGuestLocalScope` kiểm tra 3 lớp & R-02 khóa nhầm admission, nhưng chưa đóng kín hoàn toàn ở biên giới SQLite/OS crash/multi-isolate và chưa có `guest_purged_tombstones`).
+- **Khi Phê duyệt `v6` (Ngừng hoàn toàn đường ghi mới vào `SharedPreferences`):**
+  1. **`quarantineGuestScope()` không còn ghi vào `SharedPreferences`**: Chuyển sang ghi trực tiếp vào `guest_quarantined_scopes` trong SQLite `v6` (nhận optional `Transaction? txn` để `skipClaim()` chạy chung 1 transaction).
+  2. **Legacy key `'omninovel_quarantined_guest_profiles'` chuyển sang trạng thái `READ-ONLY SHADOW`:**
+     - **Tuyệt đối không xóa vội key cũ** ở phiên bản `v6.0` (để bảo toàn dữ liệu nếu môi trường dev/staging downgrade schema hoặc crash trong lúc nâng cấp).
+     - Tuy nhiên, mọi đường code `v6+` **KHÔNG BAO GIỜ** ghi thêm phần tử mới vào `omninovel_quarantined_guest_profiles`.
+  3. **Xung đột Cloud Backup (Android Auto Backup / iCloud) & Dual-Read Fallback:**
+     - Nếu người dùng khôi phục thiết bị làm `SharedPreferences` chứa danh sách cũ (chưa có flag `omninovel_quarantined_profiles_migrated_v6`) trong khi file `.db` đã chạy tới `v6`:
+       - Khi `migrateLegacyQuarantinesToSqlite()` chạy (`AppBootstrap.run()` trước auth/worker, hoặc lazy fallback khi `listQuarantinedGuestScopes()` được gọi nếu chưa migrate), câu SQL di trú bắt buộc phải là:
+         ```sql
+         INSERT OR IGNORE INTO guest_quarantined_scopes(guest_profile_id, quarantined_at_ms, source_user_id, reason)
+         SELECT ?, ?, NULL, 'LEGACY_PREFS_MIGRATED'
+         WHERE NOT EXISTS (
+           SELECT 1 FROM guest_purged_tombstones WHERE guest_profile_id = ?
+         );
+         ```
+       - **Ưu tiên bất biến:** **`PURGED` tombstone luôn thắng legacy `SharedPreferences`**! Nghĩa là nếu ID `g-old` đã bị purge hợp lệ và được ghi nhận trong `guest_purged_tombstones`, quá trình hydrate từ `SharedPreferences` cũ **không được phép** resurrect nó thành `QUARANTINED`. Ngược lại, nếu ID chưa bị purge, nó được bảo toàn 100% sang `guest_quarantined_scopes` trước khi bật marker `migrated_v6 = true`.
+     - Trong thời gian `migrated_v6 != true` (khi hàm `listQuarantinedGuestScopes()` bị gọi trước bootstrap hoàn tất), `listQuarantinedGuestScopes()` trả về `(SQLite UNION legacyPrefs) \ SQLite_Purged_Tombstones`. Khi `migrated_v6 == true`, chỉ đọc duy nhất từ SQLite SSoT (0 phụ thuộc `SharedPreferences` cache RAM đa isolate).
+
+### 4.3 Ma trận Phục hồi Sự cố (`Crash Recovery Matrix` Mở rộng)
+
+| Điểm Process Crash / Interleaving | Trạng thái SQLite & Prefs Sau Restart | Cơ chế Tự phục hồi | Kết quả Toàn vẹn |
+|---|---|---|---|
+| **1. Crash trong `skipClaim()` trước `COMMIT`** (`v6`) | SQLite rollback: chưa có `guest_quarantined_scopes`, journal `prepared` nguyên vẹn, `local_*` nguyên vẹn. | `checkCrashRecovery` thấy `prepared` -> mở lại modal Claim; mọi `purge` vẫn bị journal chặn. | **0% split-state, 0% mất dữ liệu.** |
+| **2. Crash trong `purgeGuestLocalScope()` giữa `DELETE local_*` và `INSERT guest_purged_tombstones`** (`v6`) | SQLite rollback nguyên tử: 4 bảng `local_*` giữ nguyên, chưa có `PURGED` tombstone. | Guest giữ trạng thái `ACTIVE`, lần sau người dùng/worker quyết định lại sạch sẽ. | **Không có Guest mất data một nửa mà chưa mang tombstone.** |
+| **3. Crash ngay sau `purgeGuestLocalScope()` `COMMIT`, trước khi caller kế tiếp đọc kết quả** | `local_*` đã sạch, `guest_purged_tombstones` đã bền vững trên đĩa. | Mọi luồng `skipClaim()`/`checkAndPrepareClaim()`/`quarantineGuestScope()` khởi động lại đều thấy `PURGED` tombstone -> **từ chối tạo zombie quarantine/claim**. | **Chặn tuyệt đối `purge-before-quarantine` zombie.** |
+| **4. Crash giữa HTTP `POST /guest-claim/prepare` và ghi `guest_claim_recovery_journal`** | Chưa ghi journal; nếu luồng khác đã `purge` trong khi đợi mạng -> đã có `guest_purged_tombstones`. | Khi resume, `checkAndPrepareClaim` chạy lại; nếu thấy `PURGED` -> không claim; nếu còn `ACTIVE` -> prepare an toàn. | **An toàn không cần giữ SQLite lock qua HTTP.** |
+| **5. Crash giữa Migration `SharedPreferences -> v6` (trước hoặc sau SQLite `COMMIT`, trước lúc đặt `migrated_v6`)** | Trước `COMMIT`: SQLite giữ v5/rỗng, `SharedPreferences` nguyên vẹn. Sau `COMMIT`: SQLite đã có dữ liệu (nhưng tôn trọng `guest_purged_tombstones`), chưa có marker `migrated_v6`. | Lần khởi động kế tiếp chạy lại `migrateLegacyQuarantinesToSqlite()` hoàn toàn idempotent (`INSERT OR IGNORE ... WHERE NOT EXISTS purged`), sau đó đặt `migrated_v6 = true`. | **0% thất thoát dữ liệu quarantine từ bản v5.** |
+| **6. Downgrade APK `v6 -> v5`** | `OfflineDatabase` không cấu hình `onDowngrade` (`onDatabaseDowngradeDelete` bị cấm). | `sqflite` ném `DatabaseException` fail-closed, không xóa `.db`; legacy `omninovel_quarantined_guest_profiles` vẫn tồn tại dạng read-only shadow. | **0% phá hủy dữ liệu khi rollback binary.** |
+
+### 4.4 Đánh giá Tác động Mở khóa Frozen Modules Cho `v6`
+
+Khi Hội đồng phê duyệt đợt mở khóa có kiểm soát cho `v6` (cần làm gọn trong **1 đợt mở khóa tách biệt**, không làm ngoài phạm vi):
+1. **[`OfflineDatabase`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/storage/offline_database.dart#L8-L125):** Nâng `databaseVersion` `5 -> 6`; thêm `guest_quarantined_scopes` và `guest_purged_tombstones` (additive 100%, giữ nguyên 14 bảng `v2–v5`). Cần cập nhật assertion version cứng tại `offline_database_v5_migration_test.dart#L42,L566`.
+2. **[`GuestProfileIdentityProvider`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/identity/guest_profile_identity_provider.dart#L11-L66):** Bổ sung `OfflineDatabase? offlineDatabase` (giữ optional cho compatibility hơn 25 test cũ, bắt buộc non-null trong `AppBootstrap`), bổ sung `{Transaction? txn, String? sourceUserId, String reason}` cho `quarantineGuestScope`, thêm `recordGuestPurgedTombstone(...)`, `isGuestPurged(...)`, `migrateLegacyQuarantinesToSqlite()`.
+3. **[`GuestClaimCoordinator`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/claim/guest_claim_coordinator.dart#L143-L585) & [`LocalLibraryDao.rebindScope`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/storage/local_library_dao.dart#L565-L595):**
+   - `skipClaim()` chạy trọn trong `_offlineDb.database.transaction(...)` (kiểm tra journal & `guest_purged_tombstones` -> `INSERT quarantine` -> `DELETE journal`). Cần cập nhật [`guest_claim_coordinator_test.dart#L492`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/test/core/claim/guest_claim_coordinator_test.dart#L492) kiểm tra qua SQLite/provider thay vì chỉ đọc thẳng `prefs.getStringList(...)`.
+   - `checkAndPrepareClaim()` kiểm tra eligibility trước HTTP và trước khi ghi journal sau HTTP.
+   - `LocalLibraryDao.rebindScope()` (khi `finalization != null`) ghi nhận `CLAIMED_AND_REBOUND` vào `guest_purged_tombstones` trong chính transaction rebind.
+4. **[`AppBootstrap.run()`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/app/bootstrap.dart#L81-L97):** Đưa `offlineDatabase.initialize()` lên trước `GuestProfileIdentityProvider`, truyền non-null `offlineDatabase` và `await guestProfileProvider.migrateLegacyQuarantinesToSqlite()` **trước** `authService.initializeAuth()`.
+
+---
+
+## 5. Rà soát Production DI: Vì Sao Static Guard Không Phải Runtime Proof & Kiến trúc Cưỡng chế Thực thi
+
+> [!WARNING]
+> **Ranh giới Thẩm định Chính thức (`Static Guard` $\neq$ `Runtime Proof`):**
+> Annotation **`@visibleForTesting`** kết hợp rule **`invalid_use_of_visible_for_testing_member: error`** trong [`analysis_options.yaml`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/analysis_options.yaml#L8-L16) **CHỈ LÀ HÀNG RÀO PHÂN TÍCH TĨNH (`STATIC GUARD`), TUYỆT ĐỐI KHÔNG PHẢI LÀ BẰNG CHỨNG RUNTIME (`RUNTIME PROOF`)**.
+> 1. Bất kỳ tệp nào trong `lib/` đều có thể lách `flutter analyze` bằng `// ignore: invalid_use_of_visible_for_testing_member` hoặc `// ignore_for_file: ...`.
+> 2. Tear-off, helper wrapper trả kiểu dynamic, hoặc fallback `SyncClientIdentityProvider?` nullable vẫn có thể chạy ở runtime mà analyzer không chặn được.
+> 3. `assert(...)` trong Dart **bị biên dịch bỏ hoàn toàn** ở bản `--release`, nên không thể dùng `assert` làm bằng chứng an toàn cho production binary.
+
+### 5.1 Cơ chế 4 Tầng Cưỡng chế Runtime (`Production Runtime Enforcement` cho Stage 2)
+
+Hiện trạng Stage 1: Constructor [`SyncStorageDal(...)`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L41-L91) vẫn đang public với `clientIdentityProvider` nullable để phục vụ bộ test Stage 1, và `AppBootstrap.run()` chưa khởi tạo `SyncStorageDal`. Khi mở **Stage 2 (Wiring & Repositories)**, phải triển khai đồng thời đủ 4 tầng cưỡng chế runtime sau:
+
+#### Tầng 1: Khóa Private Constructor + `kReleaseMode` Runtime Kill-Switch (Không phụ thuộc Analyzer)
+Chuyển constructor generative không bound thành **private** `SyncStorageDal._(...)`, chỉ giữ 2 factory public:
+1. **`SyncStorageDal.bound(...)`**: Con đường production duy nhất — nhận `required SyncClientIdentityProvider clientIdentityProvider` và `required GuestProfileIdentityProvider guestProfileProvider` non-null; gán `_isProductionBound = true`.
+2. **`SyncStorageDal.forTesting(...)`** (gắn `@visibleForTesting`):
+   - Thực thi **runtime kill-switch không thể tắt ở release** (`package:flutter/foundation.dart` `kReleaseMode`):
+     ```dart
+     @visibleForTesting
+     factory SyncStorageDal.forTesting({
+       OfflineDatabase? offlineDatabase,
+       Database? customDb,
+       Future<Database> Function()? asyncDatabaseProvider,
+       Duration busyRetryTimeout = defaultBusyRetryTimeout,
+       SyncClientIdentityProvider? clientIdentityProvider,
+       GuestProfileIdentityProvider? guestProfileProvider,
+     }) {
+       if (kReleaseMode) {
+         throw UnsupportedError(
+           'SECURITY_VIOLATION: SyncStorageDal.forTesting is strictly prohibited in release runtime; use SyncStorageDal.bound(...).',
+         );
+       }
+       return SyncStorageDal._(
+         offlineDatabase: offlineDatabase,
+         customDb: customDb,
+         asyncDatabaseProvider: asyncDatabaseProvider,
+         busyRetryTimeout: busyRetryTimeout,
+         clientIdentityProvider: clientIdentityProvider,
+         guestProfileProvider: guestProfileProvider,
+         isProductionBound: false,
        );
+     }
      ```
-     *Tác dụng khóa kép:* Nếu trước lúc `DELETE` chạy có một writer khác (`skipClaim`) vừa commit xen kẽ làm thay đổi snapshot, câu `DELETE` đầu tiên sẽ lập tức gặp `SQLITE_BUSY_SNAPSHOT` (rollback & retry ở vòng ngoài) hoặc chờ lock tới lượt; ngay khi `DELETE` chạy xong, connection này chắc chắn **đang giữ write lock độc quyền cho tới sau `COMMIT`**.
-   - **Hook (nếu có) & Post-Write-Lock Re-Verification (Barrier 4):** Chạy lại query kiểm tra `guest_quarantined_scopes`, `guest_claim_recovery_journal` (và kiểm tra lại admission + persisted active guest ID). Nếu phát hiện bất kỳ vi phạm nào -> `throw PurgeProhibitedError` khiến SQLite rollback toàn bộ các bảng `local_*` đã xóa ở trên.
-   - **`COMMIT` vật lý:** Vì write lock được giữ liên tục cho tới sau `COMMIT`, **cửa sổ hậu-callback bị triệt tiêu hoàn toàn** — mọi kết nối/isolate khác muốn ghi `guest_quarantined_scopes` hoặc `guest_claim_recovery_journal` buộc phải xếp hàng sau `COMMIT`.
+   - Kể cả khi một dev dùng `// ignore:` qua mặt `flutter analyze`, app build `--release` sẽ fail cứng ngay lập tức ở runtime nếu đụng vào `forTesting(...)`!
 
-### 3.3 Ma trận Phục hồi Sự cố (Crash Recovery Matrix)
-
-| Điểm Process Crash / Kill | Trạng thái SQLite trên Đĩa Sau Restart | Hành vi Phục hồi Tự động | Đảm bảo Toàn vẹn Dữ liệu |
-|---|---|---|---|
-| **1. Crash giữa `skipClaim()` trước `COMMIT`** (sau `INSERT quarantine`, trước hoặc sau `DELETE journal`) | SQLite rollback nguyên tử: `guest_quarantined_scopes` **chưa có** dòng mới, `guest_claim_recovery_journal` vẫn giữ nguyên `phase = 'prepared'`, `local_*` còn nguyên. | Lần mở app / login tiếp theo, [`GuestClaimCoordinator.checkCrashRecovery`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/claim/guest_claim_coordinator.dart#L590-L715) thấy dòng `prepared` nên mở lại modal Claim để user chọn lại Merge hoặc Skip; đồng thời mọi lệnh `purgeGuestLocalScope` đều bị journal `prepared` chặn. | **0% mất dữ liệu, 0% split-state.** |
-| **2. Crash ngay sau `skipClaim()` `COMMIT`** (trước lúc `resolveToAccount` mở UI) | `guest_quarantined_scopes` đã có `guestProfileId`, journal đã sạch, `local_*` nguyên vẹn. | User đăng nhập lại sẽ không bị kẹt claim cũ (vì journal đã xong) và `guest:gOld` được bảo vệ vĩnh viễn bởi bảng `guest_quarantined_scopes`. | **Bảo toàn 100% guest đã skip.** |
-| **3. Crash giữa `purgeGuestLocalScope()`** (sau khi xóa 2/4 bảng `local_*`) | SQLite rollback toàn phần nhờ chưa `COMMIT`. | Cả 4 bảng `local_*` còn nguyên vẹn 100%. | **Không có partial purge.** |
-| **4. Crash giữa Dual-Source Migration (`SharedPreferences -> v6`) trước `COMMIT`** | SQLite rollback bảng `guest_quarantined_scopes`; key `omninovel_quarantined_guest_profiles` trong `SharedPreferences` vẫn nguyên vẹn và chưa có flag `migrated_v6`. | Lần restart kế tiếp, migration chạy lại hoàn toàn idempotent (`INSERT OR IGNORE`). | **Không rớt bất kỳ quarantine ID nào từ v5.** |
-| **5. Crash sau SQLite Migration `COMMIT` nhưng trước khi đặt flag trong `SharedPreferences`** | SQLite đã có đủ IDs; `SharedPreferences` vẫn còn list cũ & chưa có flag. | Lần restart kế tiếp chạy lại `INSERT OR IGNORE` (idempotent, giữ nguyên `quarantined_at_ms` gốc nếu đã tồn tại), sau đó mới đặt flag `migrated_v6 = true`. | **Idempotent tuyệt đối.** |
-
-### 3.4 Dual-Source Migration (`SharedPreferences -> SQLite v6`) & Tình huống Nâng cấp Ứng dụng
-
-Một ràng buộc quan trọng đã xác minh tại [`OfflineDatabase._onUpgrade`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/storage/offline_database.dart#L95-L125): callback `_onUpgrade(Database db, int oldVersion, int newVersion)` chỉ nhận SQLite `Database db` và không tự truy cập được `SharedPreferences`. Do đó, chiến lược di trú dữ liệu từ key `'omninovel_quarantined_guest_profiles'` phải theo **Mô hình 2 Pha Kết hợp Fallback Fail-Closed**:
-
-1. **Pha 1 — Schema DDL (`OfflineDatabase._onUpgrade`, khi `oldVersion < 6`):**
-   - Tạo bảng trống `guest_quarantined_scopes` hoàn toàn additive. Không phụ thuộc `SharedPreferences` trong DDL nên các unit test mở `OfflineDatabase` thuần SQLite vẫn chạy độc lập.
-2. **Pha 2 — Hydrate Idempotent Có Thứ Tự (`GuestProfileIdentityProvider.migrateLegacyQuarantinesToSqlite()`):**
-   - Trong [`AppBootstrap.run()`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/app/bootstrap.dart#L76-L149): khởi tạo `OfflineDatabase.initialize()` **trước**, truyền vào `GuestProfileIdentityProvider(prefs: rawPrefs, offlineDatabase: offlineDatabase)`, và **`await guestProfileProvider.migrateLegacyQuarantinesToSqlite()` ngay trước khi chạy `authService.initializeAuth()` / `authScopeBridge.settle()`** (bảo đảm xong trước bất kỳ worker eviction nào).
-   - Bên trong `migrateLegacyQuarantinesToSqlite()` (bọc bởi in-memory future lock `_migrationFuture` chống gọi trùng):
-     1. Đọc `legacyIds = prefs.getStringList('omninovel_quarantined_guest_profiles') ?? []`. Lọc chuỗi rỗng/khoảng trắng.
-     2. Nếu danh sách không rỗng và có `offlineDatabase`: mở `db.transaction((txn) async { ... })`, thực thi `INSERT OR IGNORE INTO guest_quarantined_scopes (guest_profile_id, quarantined_at_ms, source_user_id, reason) VALUES (?, ?, NULL, 'LEGACY_PREFS_MIGRATED')`.
-     3. Query verify trong `txn` rằng toàn bộ `legacyIds` hợp lệ đều đã hiện diện trong `guest_quarantined_scopes`.
-     4. **CHỈ SAU KHI `COMMIT` SQLite thành công:** Ghi marker `'omninovel_quarantined_profiles_migrated_v6': true` vào `SharedPreferences`.
-   - **Chính sách giữ Legacy Key (`omninovel_quarantined_guest_profiles`):** **KHÔNG** xóa ngay list cũ trong `SharedPreferences` ở phiên bản v6.0 (đặt ở trạng thái read-only legacy shadow, giữ tối thiểu tới v6.x mới cân nhắc prune). Đồng thời trong [`listQuarantinedGuestScopes`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/identity/guest_profile_identity_provider.dart#L63-L66) và `isGuestScopeQuarantined`: tự động chạy `_ensureLegacyQuarantinesMigrated()` (nếu caller không khởi động qua `AppBootstrap`), và hợp nhất (`UNION`) kết quả SQLite với `prefs.getStringList(...)` nếu migration chưa hoàn tất.
-
-#### Các Edge Cases Nâng cấp & Hạ cấp Ứng dụng đã Kiểm định
-- **Upgrade nhảy cóc (`v2/v3/v4/v5 -> v6`):** `_onUpgrade` giữ nguyên chuỗi điều kiện `if (oldVersion < 3) ... if (oldVersion < 4) ... if (oldVersion < 5) ... if (oldVersion < 6)` nên mọi bảng cũ và dữ liệu đều được giữ 100%, tiếp theo là hydrate từ `SharedPreferences`.
-- **Dữ liệu `SharedPreferences` bẩn ở bản cũ:** Danh sách chứa phần tử rỗng `''`, khoảng trắng, hoặc ID trùng lặp -> hàm migrate chuẩn hóa `trim()`, bỏ rỗng, deduplicate trước khi `INSERT OR IGNORE`.
-- **Ảnh hưởng từ `PreferencesService.clearPreferences()`:** Tại [`preferences_service.dart#L63`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/storage/preferences_service.dart#L63), các key tiền tố `'omninovel_'` được bảo toàn; khi chuyển về SQLite, ngay cả trường hợp OS cloud-backup khôi phục thiếu `SharedPreferences` nhưng còn tệp `.db`, danh sách quarantine vẫn đồng bộ 100% cùng `local_*`.
-- **App Downgrade (`v6 -> v5`):** Hiện tại [`OfflineDatabase.initialize`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/storage/offline_database.dart#L48-L66) **không cấu hình `onDowngrade`**. Theo mặc định `sqflite`, mở DB v6 bằng binary v5 sẽ **ném `DatabaseException` (fail-closed)** thay vì xóa DB. **Nghiêm cấm tuyệt đối** sử dụng `onDatabaseDowngradeDelete` vì sẽ phá hủy `offline_chapters`, `guest_claim_recovery_journal` và `guest_quarantined_scopes`. Việc giữ read-only key cũ ở `SharedPreferences` cũng giúp dữ liệu quarantine cũ từ thời v5 không bị mất oan nếu môi trường dev rollback schema.
-
----
-
-## 4. Đánh giá Tác động Mở khóa Frozen Modules (`GuestProfileIdentityProvider`, `GuestClaimCoordinator`, `OfflineDatabase`) (Hạng mục 4)
-
-Dựa trên kết quả grep toàn bộ `apps/mobile/lib/` và `apps/mobile/test/`, phạm vi ảnh hưởng khi được Hội đồng cho phép mở khóa 3 module như sau:
-
-| Module Mở khóa | Thay đổi Dự kiến | Tác động API / Callers trong `lib/` | Tác động Trực tiếp lên Tests Hiện hành |
-|---|---|---|---|
-| **[`OfflineDatabase`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/storage/offline_database.dart)** | Nâng `databaseVersion` `5 -> 6`; thêm `_createV6QuarantineTable(db)` vào `_onCreate` và `if (oldVersion < 6)` trong `_onUpgrade`. | Không đổi signature `initialize()`; 14 bảng v2–v5 giữ nguyên 100%. | **2 tệp test cần cập nhật assertion version cứng:**<br>- [`offline_database_v5_migration_test.dart#L42`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/test/core/storage/offline_database_v5_migration_test.dart#L42) (`expect(OfflineDatabase.databaseVersion, 5)`) & [`#L566`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/test/core/storage/offline_database_v5_migration_test.dart#L566) (`expect(await db.getVersion(), 5)`).<br>- [`offline_database_v3_migration_test.dart#L162`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/test/core/storage/offline_database_v3_migration_test.dart#L162) & [`offline_database_migration_v4_test.dart#L245`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/test/core/storage/offline_database_migration_v4_test.dart#L245) đang dùng biến động `OfflineDatabase.databaseVersion` (chỉ cần chỉnh chuỗi `reason` nếu muốn đồng bộ chữ v6).<br>- [`storage_quota_eviction_acceptance_test.dart#L148`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/test/features/offline/storage_quota_eviction_acceptance_test.dart#L148) (`>= 2`) giữ nguyên PASS. |
-| **[`GuestProfileIdentityProvider`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/identity/guest_profile_identity_provider.dart)** | Bổ sung tham số optional `OfflineDatabase? offlineDatabase`; thêm `{Transaction? txn, String? sourceUserId, String reason}` cho `quarantineGuestScope` & `listQuarantinedGuestScopes`; thêm `isGuestScopeQuarantined` & `migrateLegacyQuarantinesToSqlite()`. | - **Trong [`AppBootstrap.run()`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/app/bootstrap.dart#L85-L97):** hiện tạo `guestProfileProvider` (dòng `85`) *trước* `offlineDatabase.initialize()` (dòng `96`). Cần đưa `offlineDatabase.initialize()` lên trước để truyền non-null `offlineDatabase` vào `guestProfileProvider` (an toàn vì `OfflineDatabase` không phụ thuộc `prefs`/`ActiveScopeCoordinator`).<br>- [`ActiveScopeCoordinator`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/identity/active_scope_coordinator.dart#L141-L199) chỉ gọi `getOrCreateGuestProfileId()` / `rotateGuestProfileId()`, không bị ảnh hưởng. | - **>25 điểm gọi `GuestProfileIdentityProvider(prefs: prefs)` trong test** (như [`active_scope_coordinator_test.dart#L100-L267`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/test/core/identity/active_scope_coordinator_test.dart#L100-L267), `auth_scope_bridge_test.dart`, `guest_identity_isolation_test.dart`, `guest_library_repository_test.dart`, `sync_authority_remediation_test.dart`) **không gãy biên dịch** nhờ giữ `offlineDatabase` là optional ở constructor mặc định (production bootstrap truyền non-null).<br>- [`preferences_service_test.dart#L17,L33`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/test/core/storage/preferences_service_test.dart#L17-L33) giữ PASS do legacy key vẫn là `omninovel_*`. |
-| **[`GuestClaimCoordinator`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/claim/guest_claim_coordinator.dart)** | Chỉ sửa thân hàm [`skipClaim`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/claim/guest_claim_coordinator.dart#L532-L585) thành **1 `_offlineDb.database.transaction` duy nhất** gọi `quarantineGuestScope(..., txn: txn)` + `txn.delete('guest_claim_recovery_journal', ...)`. | Constructor [`GuestClaimCoordinator(...)`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/claim/guest_claim_coordinator.dart#L49-L63) vốn **đã có** `_offlineDb` và `_guestProvider`, nên không đổi signature; [`LocalLibraryDao.rebindScope`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/storage/local_library_dao.dart#L368-L595) không cần sửa. | - **[`guest_claim_coordinator_test.dart#L492`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/test/core/claim/guest_claim_coordinator_test.dart#L492) BẮT BUỘC CẬP NHẬT:** dòng `492` đang kiểm tra trực tiếp `prefs.getStringList(GuestProfileIdentityProvider.keyQuarantinedProfiles)`. Khi chuyển SSoT sang SQLite v6, test này phải kiểm tra qua `guestProvider.listQuarantinedGuestScopes()` và row trong bảng SQLite `guest_quarantined_scopes`.<br>- `guest_claim_acceptance_test.dart`, `guest_claim_bottom_sheet_test.dart`, `guest_claim_listener_test.dart` không bị gãy signature. |
-
----
-
-## 5. Audit `AccountPurgeReason.signOutReset` vs Pending / Quarantined Offline Mutations (Hạng mục 5)
-
-### 5.1 Phát hiện Rủi ro Hiện hữu (`P0/P1 Data Loss Finding`)
-
-Kiểm tra trực tiếp tại [`SyncStorageDal.purgeAccountScope`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2393-L2420):
-
-- Nếu `reason == AccountPurgeReason.fullResyncReset`, DAL chỉ xóa `_accountSyncCacheTablesOnly` (`sync_meta`, `sync_authoritative_replicas`, `snapshot_staging_store`), bảo toàn toàn bộ `pending_mutations`, `quarantined_mutations`, `sync_mutation_sequences` và 4 bảng `local_*`.
-- **NHƯNG** nếu `reason == AccountPurgeReason.signOutReset` (hoặc `accountDeleted`), dòng `2400-2402` chọn `_accountFullScopeTables` ([`sync_storage_dal.dart#L2362-L2372`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2362-L2372)) — danh sách này **xóa cả `pending_mutations`, `quarantined_mutations`, và `sync_mutation_sequences`** — và **HOÀN TOÀN KHÔNG kiểm tra** xem account có còn mutation chưa được server xác nhận hoặc mutation đang quarantined chờ triage hay không!
-- Điều này mâu thuẫn với chính `evictDetachedAccountScope(..., discardUnsyncedMutations: false)` ([`sync_storage_dal.dart#L2459-L2484`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2459-L2484)) vốn chặn `UNSYNCED_MUTATIONS_PRESENT` theo mặc định.
-- Hiện tại ở tầng UI, cả [`HomeScreen`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/features/home/presentation/home_screen.dart#L193) và [`ProfileScreen`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/features/profile/presentation/profile_screen.dart#L197) gọi trực tiếp `authService.logout()`. Nếu Stage 2/3 đấu nối thêm `purgeAccountScope(reason: AccountPurgeReason.signOutReset)` trước `authService.logout()` mà người dùng đang đọc truyện ngoại tuyến hoặc còn `pending_mutations`/`quarantined_mutations`, dữ liệu chưa đồng bộ sẽ **mất vĩnh viễn không cần xác nhận**.
-
-### 5.2 Khuyến nghị Bắt buộc Trước Stage 2/3 Logout Integration
-
-1. **Khóa Fail-Closed tại DAL:** Bổ sung tham số `bool discardUnsyncedMutations = false` vào [`SyncStorageDal.purgeAccountScope`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2393). Khi `reason != AccountPurgeReason.fullResyncReset && !discardUnsyncedMutations`, thực hiện kiểm tra trong transaction (cả trước xóa và ngay trước Barrier 4): nếu tồn tại bản ghi trong `pending_mutations` hoặc `quarantined_mutations` của `ownerScope` -> ném `PurgeProhibitedError('PURGE_PROHIBITED: Active account "$ownerScope" has unsynced or quarantined mutations (UNSYNCED_MUTATIONS_PRESENT).')` và rollback 100%.
-2. **Quy trình Logout 3 Nhánh ở Stage 2/3:**
-   - *Bước 1 (Best-effort Flush):* Nếu có mạng, worker đẩy `pending_mutations` và nhận ACK trước khi logout.
-   - *Bước 2 (Preserve-on-Logout mặc định nếu còn unsynced):* Nếu vẫn còn `pending_mutations` hoặc `quarantined_mutations` và user không chọn xóa bỏ -> chỉ gọi `AuthService.logout()` để tách `account:<userId>` và xoay sang fresh Guest **mà KHÔNG xóa bảng `account:<userId>`** (tận dụng cơ chế phân vùng `owner_scope` vốn đã cô lập dữ liệu hoàn toàn với Guest mới và tài khoản khác, chờ chính `userId` này đăng nhập lại để tiếp tục đồng bộ).
-   - *Bước 3 (Confirmed Wipe):* Chỉ truyền `discardUnsyncedMutations: true` cho `signOutReset` (hoặc `accountDeleted`) sau khi người dùng xác nhận tường minh trên hộp thoại cảnh báo mất dữ liệu cục bộ chưa đồng bộ.
-
----
-
-## 6. Audit `GuestLifecyclePurgeReason.verifiedUnusedGuestEviction` Chống Xóa Nhầm Active Guest (Hạng mục 6)
-
-### 6.1 Các Lớp Bảo vệ Đã Có vs Lỗ Hổng Thực tế Tìm Thấy
-
-1. **Lớp bảo vệ đã hoạt động tốt khi dùng đúng [`UnusedGuestEvictionAdmission`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/authority/sync_write_admission.dart#L369-L460):**
-   - `assertAdmitted(targetScope)` kiểm tra tại cả 4 barrier: `scopeState` phải là `guest` hoặc `account` (từ chối `bootstrapping` & `transitioning`), `canMutateUserState == true`, `snapshot.activeScope != authorizedScope`, và `transitionGeneration` chưa đổi.
-   - Trong [`purgeGuestLocalScope`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2556-L2568): khi `!snap.isAuthenticated` (kể cả trong `AuthStatus.pendingVerification` nơi `ActiveScopeCoordinator` duy trì `ActiveScopeState.guest`), DAL đối chiếu thêm `guestProfileId == await guestProfileProvider.getOrCreateGuestProfileId()`, chặn cả kịch bản coordinator bị lệch so với persisted Guest ID trên đĩa.
-2. **LỖ HỔNG NGHIÊM TRỌNG TÌM THẤY (`P0` Authority Confusion Gap):**
-   - Tại [`sync_storage_dal.dart#L2538-L2558`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2538-L2558):
-     - Dòng `2538` chỉ chặn khi `reason == userClearedGuestData && admission is! GuestLocalWriteAdmission`.
-     - Dòng `2556` lại viết `if (reason == verifiedUnusedGuestEviction && admission is UnusedGuestEvictionAdmission)` — **KHÔNG từ chối `GuestLocalWriteAdmission`!**
-     - Hậu quả trực tiếp: Nếu caller truyền **`GuestLocalWriteAdmission`** (capability được cấp cho **chính Active Guest đang hoạt động**) kèm `reason: GuestLifecyclePurgeReason.verifiedUnusedGuestEviction`, toàn bộ khối check `UnusedGuestEvictionAdmission` ở dòng `2556` bị bỏ qua và **Active Guest bị xóa sạch 4 bảng `local_*` dưới danh nghĩa `verifiedUnusedGuestEviction`**.
-     - Bằng chứng thực tế trong test: [`sync_authority_remediation_test.dart#L490-L495`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/test/core/sync/sync_authority_remediation_test.dart#L490-L495) đã truyền `testGuestAdmission(journalGuestScope)` (kiểu `GuestLocalWriteAdmission`) cho `verifiedUnusedGuestEviction` mà chỉ bị chặn bởi `guest_claim_recovery_journal` chứ chưa bị chặn ở ranh giới reason-admission!
-3. **Timing Edge Case `AuthScopeBridge` khi `onLogout()` bất đồng bộ:**
-   - Khi [`AuthService.logout()`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/auth/auth_service.dart#L199-L215) hoặc `handleSessionExpired()` đổi `AuthState` về `unauthenticated`, [`AuthScopeBridge`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/identity/auth_scope_bridge.dart#L118-L135) xếp hàng bất đồng bộ `coordinator.onLogout()`. Trong lát cắt microtask trước khi `onLogout()` chạy dòng `194`, `snap.isAuthenticated` đã là `false` nên check `persisted currentGuestId` vẫn bảo vệ Guest hiện tại trước khi `rotateGuestProfileId()` xoay ID, và khi `onLogout()` bump `transitionGeneration`, mọi capability cũ đều hết hạn ngay.
-
-### 6.2 Khuyến nghị Sửa Bắt buộc
-
-Áp dụng **Bijective Reason-Admission Enforcement (Ánh xạ đơn trị 1-1)** ngay đầu `purgeGuestLocalScope`:
-- `GuestLifecyclePurgeReason.userClearedGuestData` **CHỈ** chấp nhận `GuestLocalWriteAdmission`.
-- `GuestLifecyclePurgeReason.verifiedUnusedGuestEviction` **CHỈ** chấp nhận `UnusedGuestEvictionAdmission` — **ném `PurgeProhibitedError` ngay lập tức nếu nhận `GuestLocalWriteAdmission`!**
-- Cập nhật [`sync_storage_dal.dart#L2516-L2558`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2516-L2558) (kể cả doc comment dòng `2518`) và chỉnh lời gọi tại [`sync_authority_remediation_test.dart#L493`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/test/core/sync/sync_authority_remediation_test.dart#L493) dùng `UnusedGuestEvictionAdmission` đúng nghĩa.
-
----
-
-## 7. Kế hoạch Production DI & Chứng minh Zero-Bypass `SyncStorageDal.bound(...)` / `clientId` (Hạng mục 7)
-
-### 7.1 Hiện trạng tại Stage 1
-- Trong [`AppBootstrap.run()`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/app/bootstrap.dart#L70-L198) và [`OmniNovelApp`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/app/app.dart#L1-L61), `SyncClientIdentityProvider` và `SyncStorageDal` **chưa được nối vào DI** (nằm trong ranh giới hoãn tới Stage 2).
-- Constructor không ràng buộc [`SyncStorageDal(...)`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L41-L68) hiện vẫn là **public** với `SyncClientIdentityProvider? clientIdentityProvider` tùy chọn nullable -> nếu vô tình gọi trong Stage 2 sẽ làm tắt check `_assertBoundClientIdentityIfConfigured` ở dòng `265`.
-
-### 7.2 Kiến trúc Production DI 4 Lớp Chứng minh Không thể Bypass
-
-Khi mở Stage 2, toàn bộ luồng khởi tạo production tuân thủ 4 lớp kiểm soát cứng:
-
-1. **Single-Origin Chain trong `AppBootstrap.run()`:**
-   ```text
-   PreferencesService.create() (rawPrefs)
-     └─► InstallationIdentityProvider(secureStorage, prefs: rawPrefs) [Single Instance]
-           ├─► SyncClientIdentityProvider(installationProvider)
-           └─► ActiveScopeCoordinator(installProvider, guestProfileProvider)
-   OfflineDatabase.initialize() [SQLite v6]
-     └─► GuestProfileIdentityProvider(prefs: rawPrefs, offlineDatabase: offlineDatabase)
-           └─► await migrateLegacyQuarantinesToSqlite() [Chạy TRƯỚC Auth & Sync]
-     └─► SyncStorageDal.bound(
-           offlineDatabase: offlineDatabase,
-           clientIdentityProvider: syncClientIdentityProvider, // required non-null!
-           guestProfileProvider: guestProfileProvider,         // required non-null!
-         )
+#### Tầng 2: Fail-Closed Runtime Assertion (`StateError`) Tại Mọi Consumer & `AppBootstrap` (Không dùng `assert`)
+1. Bổ sung getter `bool get hasBoundClientIdentity => _isProductionBound && _clientIdentityProvider != null && _guestProfileProvider != null;` trên [`SyncStorageDal`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L91).
+2. Toàn bộ các consumer của Stage 2 (`SyncRepository`, `SyncWorker`, `DeltaPullEngine`, `MutationPushEngine`, UI library adapters) và chính `AppBootstrap.run()` **BẮT BUỘC** thực thi câu lệnh runtime thường trực (không bọc trong `assert(...)`):
+   ```dart
+   if (!syncStorageDal.hasBoundClientIdentity) {
+     throw StateError(
+       'PRODUCTION_DI_VIOLATION: SyncStorageDal must be wired via SyncStorageDal.bound(...) with non-null SyncClientIdentityProvider and GuestProfileIdentityProvider.',
+     );
+   }
    ```
-   Cung cấp singleton `syncStorageDal` và `syncClientIdentityProvider` qua `BootstrapResult` vào `MultiProvider` trong `OmniNovelApp`. Các Repository/Adapter của Stage 2 chỉ nhận `SyncStorageDal` qua DI, cấm tự khởi tạo trực tiếp.
+   -> Ngăn chặn 100% trường hợp test helper `SyncStorageDal.forTesting()` lọt vào dependency graph thật trong debug/profile/integration runtime!
 
-2. **Khóa Constructor Test bằng `@visibleForTesting` + Static Analyzer Gate:**
-   - Gắn annotation `@visibleForTesting` lên constructor không bound `SyncStorageDal(...)` / `SyncStorageDal.forTesting(...)` trong `sync_storage_dal.dart`. Như vậy **`SyncStorageDal.bound(...)`** (với `required SyncClientIdentityProvider clientIdentityProvider`) là **constructor public duy nhất** khả dụng cho mã production trong `apps/mobile/lib/**`.
-   - Trong [`analysis_options.yaml#L8-L16`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/analysis_options.yaml#L8-L16) (vốn đã nâng `missing_required_param: error`, `missing_return: error`), bổ sung `invalid_use_of_visible_for_testing_member: error` để `flutter analyze` ở CI ([`.github/workflows/ci-cd.yml#L251`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/.github/workflows/ci-cd.yml#L251)) thất bại cứng nếu bất kỳ tệp nào trong `apps/mobile/lib/**` gọi constructor unbound.
+#### Tầng 3: Single-Origin `InstallationIdentityProvider` SSoT & Runtime Identity Cross-Check
+Trong [`AppBootstrap.run()`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/app/bootstrap.dart#L81-L198):
+1. Khởi tạo **duy nhất 1 instance** [`InstallationIdentityProvider`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/app/bootstrap.dart#L81-L84) từ `customSecureStorage` + `rawPrefs` (đối chiếu [`SyncClientIdentityProvider`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/authority/sync_client_identity_provider.dart#L37-L100)).
+2. Nối cùng instance đó vào **cả `ActiveScopeCoordinator` lẫn `SyncClientIdentityProvider`** -> truyền `SyncClientIdentityProvider` vào **`SyncStorageDal.bound(...)`**:
+   ```text
+   InstallationIdentityProvider (1 Singleton Instance SSoT)
+     ├─► ActiveScopeCoordinator.getDeviceScope()  == "device:<installId>"
+     └─► SyncClientIdentityProvider
+           ├─► SyncStorageDal.bound(clientIdentityProvider: ..., guestProfileProvider: ...)
+           └─► SyncMutationFactory(clientIdentityProvider: ...)
+   ```
+3. Kiểm chứng đối xứng ngay lúc bootstrap trước khi trả `BootstrapResult`:
+   - `final clientId = await syncClientIdentityProvider.getOrCreateClientId();`
+   - `final deviceScope = await activeScopeCoordinator.getDeviceScope();`
+   - Nếu `'device:$clientId' != deviceScope` (case-insensitive check đã normalize UUIDv4 lowercase) -> ném `StateError('CLIENT_ID_SSOT_MISMATCH')` (fail-closed trước khi vào router!).
+4. Cung cấp `syncStorageDal`, `syncClientIdentityProvider` và `syncMutationFactory` qua `BootstrapResult` + `MultiProvider` trong `OmniNovelApp`. Feature/UI/Repository chỉ gọi `SyncMutationFactory`, không bao giờ truyền `clientId` thô bằng chuỗi thủ công; và ở mọi thao tác queue/quarantine/requeue, [`SyncStorageDal._assertBoundClientIdentityIfConfigured`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L254-L284) tiếp tục đối chiếu byte-to-byte với `InstallationIdentityProvider` SSoT và từ chối va chạm `userId`, `guestProfileId`, JWT `sid`.
 
-3. **Khóa Đầu vào `clientId` via `SyncMutationFactory` + DAL Defense-in-Depth:**
-   - Stage 2 cung cấp `SyncMutationFactory` nhận `SyncClientIdentityProvider`, tự lấy `clientId` bền vững (`getOrCreateClientId`) khi tạo `PendingMutationRecord` — tầng UI/Feature không bao giờ truyền string `clientId` thô.
-   - Bên trong `SyncStorageDal.bound(...)`, [`_assertBoundClientIdentityIfConfigured`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L254-L284) tiếp tục đối chiếu `clientId` ở cả 9 đường mutate/quarantine/requeue chống spoof UUID ngẫu nhiên, chống trùng `userId`, `guestProfileId`, và JWT `sid`.
-
-4. **Architecture Verification Test Bổ sung cho DI:**
-   - Test `AppBootstrap.run()` xác nhận `bootstrap.syncStorageDal.hasBoundClientIdentity == true` và từ chối mọi `PendingMutationRecord` mang `clientId` khác với `InstallationIdentityProvider`.
-   - Test tĩnh quét cây `apps/mobile/lib/**` xác nhận không có lời gọi `SyncStorageDal(` ngoài chính file `sync_storage_dal.dart` và 1 singleton duy nhất qua `SyncStorageDal.bound(...)` trong `bootstrap.dart`.
+#### Tầng 4: Runtime E2E DI Proof Test + Static CI Gate (Defense-in-Depth)
+- **Runtime E2E Proof trên `AppBootstrap.run()` thật:** Kiểm chứng:
+  1. `result.syncStorageDal.hasBoundClientIdentity == true`;
+  2. `'device:${await result.syncClientIdentityProvider.getOrCreateClientId()}' == await result.activeScopeCoordinator.getDeviceScope()`;
+  3. Gọi thử `result.syncStorageDal.enqueuePendingMutation(...)` với một `clientId` UUIDv4 ngẫu nhiên khác `InstallationIdentityProvider` ngay trên instance lấy từ `AppBootstrap.run()` -> **bắt buộc ném `InvalidClientIdentityException`** (`CLIENT_ID_IDENTITY_MISMATCH`)!
+  4. Cố tình tiêm `SyncStorageDal.forTesting(...)` (unbound) vào `SyncWorker` / `SyncRepository` -> **bắt buộc ném `StateError('PRODUCTION_DI_VIOLATION')`** ngay khi khởi tạo (không phải `assert`, chạy cả ở release-like profile)!
+- **Static Defense-in-Depth bổ trợ:** Giữ `@visibleForTesting` trên `SyncStorageDal.forTesting`, bật `invalid_use_of_visible_for_testing_member: error` trong `analysis_options.yaml`, và thêm unit test quét `apps/mobile/lib/**` cấm sự xuất hiện của `SyncStorageDal.forTesting` và `// ignore.*visible_for_testing`.
 
 ---
 
-## 8. Đề xuất Ma trận Kiểm thử Bắt buộc cho Phase Tiếp theo (Hạng mục 8)
+## 6. Kiểm chứng Đã Thực hiện Trong Stage 1 (`R-02` & `R-03`) & Ma trận Kiểm thử `v6` Tiếp theo
 
-| Nhóm Kiểm thử | Các Kịch bản Cốt lõi Bắt buộc Phủ Kín |
+### 6.1 Kiểm thử Đã Triển khai & PASS Trong Đợt Sửa Này (Trên SQLite `v5`)
+- **R-02 (`sync_storage_dal.dart` + `sync_authority_remediation_test.dart`):**
+  - Chặn `verifiedUnusedGuestEviction` nếu nhận `GuestLocalWriteAdmission` (kể cả admission hợp lệ của Active Guest đang đọc truyện hay admission giả của guest khác).
+  - Chặn `verifiedUnusedGuestEviction` khi `AuthStatus.pendingVerification` hoặc coordinator lệch trạng thái với `currentGuestId` persisted.
+  - Chặn `userClearedGuestData` nếu nhận `UnusedGuestEvictionAdmission`.
+  - Chứng minh bảo toàn 100% 4 bảng `local_*` (`local_library_bookmarks`, `local_reading_progress`, `local_reading_history`, `local_preferences`), scopes khác và `offline_chapters`.
+- **R-03 (`sync_storage_dal.dart` + `sync_authority_remediation_test.dart` + `sync_storage_dal_test.dart`):**
+  - `signOutReset` & `accountDeleted` mặc định (`discardUnsyncedMutations = false`) từ chối với `PurgeProhibitedError('UNSYNCED_MUTATIONS_PRESENT')` khi chỉ có `pending_mutations`, khi chỉ có `quarantined_mutations`, hoặc khi có cả hai.
+  - Chứng minh **SQLite transaction guard & 100% rollback** qua `onBeforeCommitHook(txn)`: xóa hết 8 bảng tài khoản rồi bơm 1 dòng `pending_mutations` (cho `signOutReset`) hoặc 1 dòng `quarantined_mutations` (cho `accountDeleted`) ngay trước commit -> `PurgeProhibitedError` ném ra và **cả 8 bảng + 2 bảng queue phục hồi nguyên trạng 100%**.
+  - Cô lập scope: `account:A` còn pending/quarantined không chặn `signOutReset` trên `account:B` vốn sạch hàng đợi; luôn bảo toàn `offline_chapters`, `download_tasks`, `offline_deletion_tombstones`, `guest_claim_recovery_journal`.
+  - Cấm `discardUnsyncedMutations: true` trên `AccountPurgeReason.fullResyncReset`.
+
+### 6.2 Ma trận Kiểm thử Bắt buộc Khi Mở khóa `v6` & Stage 2 DI
+
+| Nhóm Kiểm thử | Các Kịch bản Bắt buộc Phủ Kín |
 |---|---|
-| **1. Interleaving & Multi-Connection / Multi-Isolate Concurrency** | - **Dual-Connection Race (`skipClaim` vs `purgeGuestLocalScope`):** Mở 2 `OfflineDatabase` (`singleInstance: false`) trỏ cùng tệp DB WAL; kết nối A giữ transaction trong `purgeGuestLocalScope` (sau 2/4 `DELETE`), kết nối B chạy `skipClaim` (insert `guest_quarantined_scopes`) -> kiểm chứng serialization SQLite lock (`busy_timeout`), zero corruption, A không bao giờ xóa được dữ liệu sau khi B commit quarantine.<br>- **50-Iteration Concurrent Stress Race (`Future.wait`):** Chạy đua ngẫu nhiên `skipClaim` và `purgeGuestLocalScope` -> Bất biến bất khả xâm phạm: **không bao giờ** đồng thời tồn tại bản ghi `guest_quarantined_scopes` và bảng `local_*` rỗng.<br>- **Cross-Isolate (`Isolate.spawn`):** Isolate phụ chạy `quarantineGuestScope`/`skipClaim` trong khi Isolate chính chạy `purgeGuestLocalScope` trên cùng file DB (chứng minh ưu thế tuyệt đối so với Dart Mutex).<br>- **Reason-Admission Bijection:** `verifiedUnusedGuestEviction` truyền `GuestLocalWriteAdmission` phải ném `PurgeProhibitedError`. |
-| **2. Process Crash & Fault-Injection Matrix** | - **Crash giữa `skipClaim()` (giữa `INSERT guest_quarantined_scopes` và `DELETE guest_claim_recovery_journal`):** Đóng/throw trên DB wrapper -> mở lại connection mới kiểm tra SQLite rollback 100%, journal `prepared` vẫn nguyên để `checkCrashRecovery` mở lại modal, `local_*` nguyên vẹn.<br>- **Crash giữa Dual-Source Migration (trước & sau SQLite `COMMIT`):** Ném lỗi giữa `txn` trước commit -> restart chạy lại migration không mất phần tử nào; crash sau commit trước khi set `migrated_v6 = true` -> restart chạy lại lần 2 không lỗi PK (`INSERT OR IGNORE`).<br>- **Crash giữa `purgeGuestLocalScope()` (sau 2/4 bảng `local_*`):** Mở lại DB xác nhận cả 4 bảng `local_*` còn đủ 100%.<br>- **Crash recovery sau mọi phase `prepared` / `committing` / `committedServer`:** Cold-reopen DB thử gọi `purgeGuestLocalScope` -> chặn fail-closed với `PurgeProhibitedError`. |
-| **3. Migration `v5 -> v6` & Edge Cases `SharedPreferences`** | - **Fresh `v6` Install:** `getVersion() == 6`, đủ **15 bảng**, khóa chính `guest_quarantined_scopes(guest_profile_id)`.<br>- **Additive Upgrade `v2/v3/v4/v5 -> v6`:** Seed dữ liệu đầy đủ ở cả 14 bảng v5 (`offline_*`, `local_*`, `guest_claim_recovery_journal`, `sync_*`) -> upgrade lên `v6` giữ 100% số dòng cũ.<br>- **Legacy Dual-Source Hydration:** `SharedPreferences` chứa `['g-1', 'g-2', '', '  ', 'g-1']` -> migrate vào SQLite sạch trùng & rỗng còn đúng 2 dòng; gọi migration 3 lần liên tiếp không đổi timestamp cũ; test tình huống chưa gọi bootstrap migration nhưng `purgeGuestLocalScope` chạy qua `GuestProfileIdentityProvider` vẫn tự hydrate / UNION fail-closed chặn xóa `'g-1'`.<br>- **Empty/Missing `SharedPreferences`:** Upgrade v6 thành công không lỗi. |
-| **4. Downgrade, Rollback, `signOutReset` & DI Proof** | - **Strict Downgrade Guard (`v6 -> v5`):** DB đã upgrade v6 (có dữ liệu `guest_quarantined_scopes` & `local_*`), thử mở lại bằng version `5` không `onDowngrade` -> SQLite ném `DatabaseException` fail-closed, **không** xóa dữ liệu trên đĩa; mở lại bằng `v6` dữ liệu vẫn còn 100%.<br>- **Legacy Key Survival on Failed Migration:** Migration thất bại giữa chừng không bao giờ xóa `omninovel_quarantined_guest_profiles` trong `SharedPreferences`.<br>- **`signOutReset` Guard:** Account còn `pending_mutations` hoặc `quarantined_mutations` gọi `purgeAccountScope(signOutReset)` với default `discardUnsyncedMutations: false` -> ném `PurgeProhibitedError('UNSYNCED_MUTATIONS_PRESENT')`; truyền `true` hoặc queue rỗng mới xóa sạch.<br>- **Production DI Proof:** `AppBootstrap.run()` kiểm chứng `hasBoundClientIdentity == true`, `guestProfileProvider` gắn `offlineDatabase` thực và chặn mọi `clientId` giả mạo. |
+| **1. Dual-Order Atomicity & Concurrency (`v6`)** | - **`quarantine-before-purge` & Multi-Connection Race:** 2 `OfflineDatabase(singleInstance: false)` tranh chấp `skipClaim()` (giữ transaction `guest_quarantined_scopes`) vs `purgeGuestLocalScope()` trên cùng file WAL.<br>- **50-Iteration Concurrent Stress:** Chạy đua `skipClaim()` vs `purgeGuestLocalScope()` -> bất biến: không bao giờ có cặp `(in guest_quarantined_scopes && local_* bị xóa)`.<br>- **`purge-before-quarantine` & Zombie Claim Rejection:** Chạy xong `purgeGuestLocalScope` (hoặc `rebindScope`) tạo `guest_purged_tombstones` -> sau đó gọi `quarantineGuestScope`, `skipClaim`, hoặc `checkAndPrepareClaim` (kể cả xen vào giữa HTTP `POST /prepare` và ghi journal) -> **bị từ chối 100%**, không sinh row quarantine hay journal.<br>- **Cross-Isolate (`Isolate.spawn`):** Hai isolate cùng thao tác DB file thật kiểm chứng WAL + `busy_timeout`. |
+| **2. Crash Recovery Matrix (`v6`)** | - Crash trong `skipClaim()` giữa `INSERT quarantine` và `DELETE journal` -> restart thấy journal `prepared`, quarantine rỗng, `local_*` còn đủ.<br>- Crash trong `purgeGuestLocalScope()` giữa `DELETE local_*` và `INSERT tombstone` -> restart thấy `local_*` còn đủ, chưa có tombstone.<br>- Crash giữa migration `SharedPreferences -> v6` (cả trước commit và sau commit trước flag `migrated_v6`) -> restart idempotent 100%.<br>- Restart kiểm tra journal `prepared` cho một guest đã `PURGED` -> dọn journal fail-closed, không mở claim rỗng. |
+| **3. Migration `v5 -> v6` & Backup Conflict** | - Fresh `v6` (`16` bảng gồm 14 bảng `v5` + `guest_quarantined_scopes` + `guest_purged_tombstones`).<br>- Additive upgrade `v2/v3/v4/v5 -> v6` giữ 100% dữ liệu cũ.<br>- `SharedPreferences` chứa `['g-1', 'g-2', '', '  ', 'g-1', 'g-already-purged']` (với `g-already-purged` nằm trong `guest_purged_tombstones`) -> migrate tạo đúng `g-1`, `g-2`, **tuyệt đối không resurrect `g-already-purged`**, đọc lại không phụ thuộc cache RAM sau `migrated_v6 = true`.<br>- Downgrade `v6 -> v5`: `DatabaseException` fail-closed, không mất `.db` và còn shadow key cũ. |
+| **4. Runtime Production DI Proof (Stage 2)** | - Test `AppBootstrap.run()` thực thụ: `hasBoundClientIdentity == true`, `clientId == deviceScope`, chặn `clientId` ngẫu nhiên trên instance DI thật.<br>- Test tiêm `SyncStorageDal.forTesting(...)` vào Stage 2 repo/worker -> ném `StateError('PRODUCTION_DI_VIOLATION')` ngay trong runtime (không dùng `assert`).<br>- Static scan test cấm `SyncStorageDal.forTesting(` & `// ignore.*visible_for_testing` trong `apps/mobile/lib/**`. |
 
 ---
 
-## 9. Tổng hợp Mức độ Rủi ro & Phạm vi Xin Phê duyệt Gate Review
+## 7. Tổng hợp Trạng thái Rủi ro & Đề xuất Gate Review Stage 1
 
-### 9.1 Bảng Đánh giá Rủi ro
+### 7.1 Bảng Đánh giá Rủi ro Cập nhật
 
-| Mã Rủi ro | Mô tả Rủi ro | Mức độ | Trạng thái Hiện tại (Baseline `a17495a`) | Biện pháp Kiểm soát Đề xuất |
+| Mã Rủi ro | Mô tả Rủi ro | Mức độ | Trạng thái Hiện tại | Biện pháp / Đề xuất |
 |---|---|---|---|---|
-| **R-01** | Cross-store race giữa `SharedPreferences` quarantine và SQLite `purgeGuestLocalScope` (post-callback COMMIT gap, đa isolate, crash giữa 2 bước `skipClaim`) | **`P0` (Critical)** | Còn khe hở hậu-callback trên Dual-Store | Chuyển `guest_quarantined_scopes` thành SQLite `v6` SSoT + 1 transaction `skipClaim` + Post-Write-Lock verification (Option A). |
-| **R-02** | `verifiedUnusedGuestEviction` truyền nhầm `GuestLocalWriteAdmission` làm xóa Active Guest | **`P0` (Critical)** | **Chưa chặn** tại `sync_storage_dal.dart:2538-2568` | Cưỡng chế ánh xạ 1-1: `verifiedUnusedGuestEviction` CHỈ chấp nhận `UnusedGuestEvictionAdmission`. |
-| **R-03** | `AccountPurgeReason.signOutReset` xóa `pending_mutations`/`quarantined_mutations` chưa ACK nếu Stage 2/3 nối vào Logout | **`P0/P1` (High)** | Chưa có check `UNSYNCED_MUTATIONS_PRESENT` | Thêm `discardUnsyncedMutations: false` fail-closed default + Preserve-on-Logout trừ khi user confirm. |
-| **R-04** | Rơi rớt danh sách quarantine cũ trong `SharedPreferences` khi nâng cấp v5 -> v6 | **`P1` (High)** | Chưa có v6 | Hydrate idempotent trong `AppBootstrap` + lazy auto-migrate + UNION fallback + giữ legacy key dạng shadow read-only. |
-| **R-05** | Bypass `SyncStorageDal.bound(...)` ở Stage 2 khi constructor mặc định còn public | **`P1` (High)** | Constructor mặc định còn public cho Stage 1 test | Khóa bằng `@visibleForTesting` + `analysis_options.yaml` `error` + `AppBootstrap` singleton DI. |
-| **R-06** | Downgrade APK v6 -> v5 làm hỏng DB hoặc mất dữ liệu | **`P2` (Medium)** | Fail-closed mặc định (không `onDowngrade`) | Duy trì cấm `onDatabaseDowngradeDelete` + thêm regression test strict reject downgrade. |
+| **R-02** | `verifiedUnusedGuestEviction` truyền nhầm `GuestLocalWriteAdmission` xóa Active Guest | **`P0` (Critical)** | **`CLOSED — REMEDIATED IN STAGE 1`** | Ánh xạ 1-1 `reason <-> admission` + check `!isAuthenticated || scopeState == guest` tại [`sync_storage_dal.dart#L2588-L2632`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2588-L2632) + regression test `R-02`. |
+| **R-03** | `signOutReset`/`accountDeleted` xóa `pending_mutations`/`quarantined_mutations` chưa ACK | **`P0/P1` (High)** | **`CLOSED — REMEDIATED IN STAGE 1`** | Default `discardUnsyncedMutations = false` + pre-delete & pre-commit SQLite tx guard (`UNSYNCED_MUTATIONS_PRESENT`) + rollback test 8 bảng `R-03` tại [`sync_storage_dal.dart#L2400-L2472`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart#L2400-L2472). |
+| **R-01** | Cross-store race `SharedPreferences` vs SQLite & thiếu `PURGED` tombstone (`purge-before-quarantine` / crash `skipClaim`) | **`P0` (Critical)** | **`OPEN RESIDUAL RISK (v5)`** *(Chưa được phép sửa frozen modules)* | Chờ Hội đồng phê duyệt **Controlled Unlock `v6`** cho `OfflineDatabase`, `GuestProfileIdentityProvider`, `GuestClaimCoordinator`, `LocalLibraryDao.rebindScope` theo ADR Mục 3–4. |
+| **R-04** | Rơi rớt hoặc xung đột danh sách quarantine `SharedPreferences` khi nâng cấp `v5 -> v6` / cloud backup | **`P1` (High)** | **`OPEN PENDING v6 UNLOCK`** | Di trú 2 pha trong `AppBootstrap.run()`, ưu tiên `guest_purged_tombstones` thắng legacy prefs, giữ key cũ read-only shadow. |
+| **R-05** | Bypass `SyncStorageDal.bound(...)` ở Stage 2 | **`P1` (High)** | **`DEFERRED TO STAGE 2 DI`** | Private `SyncStorageDal._`, `kReleaseMode` kill-switch trên `forTesting`, runtime `!hasBoundClientIdentity` `StateError` ở consumers & `AppBootstrap.run()`, test E2E. |
+| **R-06** | Downgrade APK `v6 -> v5` làm hỏng DB hoặc mất dữ liệu | **`P2` (Medium)** | **`MITIGATED BY DESIGN`** | Giữ fail-closed default `sqflite` (cấm `onDatabaseDowngradeDelete`) + test strict reject downgrade khi mở `v6`. |
 
-### 9.2 Phạm vi Đề xuất Xin Hội đồng Gate Review Phê duyệt (`Controlled Unlock — Stage 1B`)
+### 7.2 Đề xuất Quyết định Gate cho Stage 1
 
-Để đóng kín triệt để toàn bộ **R-01 .. R-04** trước khi cấp `FROZEN CLEAN` cho Stage 1 (vẫn tách biệt sạch trước khi mở Stage 2 Projection & Background Worker), nhóm thực thi đề xuất Hội đồng phê duyệt mở khóa có kiểm soát phạm vi chính xác sau trên nhánh `feat/7c4-mobile-sync`:
-
-1. **Mở khóa có kiểm soát 3 Frozen Files (phạm vi tối thiểu):**
-   - [`apps/mobile/lib/core/storage/offline_database.dart`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/storage/offline_database.dart): Nâng `databaseVersion` `5 -> 6` với bảng additive `guest_quarantined_scopes`.
-   - [`apps/mobile/lib/core/identity/guest_profile_identity_provider.dart`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/identity/guest_profile_identity_provider.dart): Bổ sung optional `OfflineDatabase?`, hỗ trợ `Transaction? txn`, `migrateLegacyQuarantinesToSqlite()` idempotent và UNION fallback an toàn.
-   - [`apps/mobile/lib/core/claim/guest_claim_coordinator.dart`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/claim/guest_claim_coordinator.dart): Gộp `skipClaim()` vào 1 `db.transaction` duy nhất (chỉ sửa thân `skipClaim`, không đổi API/phase model khác).
-   - *(Đảo thứ tự 2 dòng trong [`apps/mobile/lib/app/bootstrap.dart`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/app/bootstrap.dart#L85-L97) để `offlineDatabase.initialize()` chạy trước `guestProfileProvider` và gọi `migrateLegacyQuarantinesToSqlite()`, vẫn giữ nguyên chưa nối `SyncStorageDal` UI adapters cho Stage 2.)*
-2. **Cập nhật [`apps/mobile/lib/core/sync/storage/sync_storage_dal.dart`](file:///e:/Workspace2/Doctruyen_project_7c4_mobile/apps/mobile/lib/core/sync/storage/sync_storage_dal.dart):**
-   - Khóa `purgeGuestLocalScope` vào SQLite `guest_quarantined_scopes` + SQL `NOT EXISTS` + barrier post-write-lock.
-   - Đóng lỗ hổng R-02: chỉ chấp nhận `UnusedGuestEvictionAdmission` cho `verifiedUnusedGuestEviction`.
-   - Đóng lỗ hổng R-03: thêm `bool discardUnsyncedMutations = false` vào `purgeAccountScope`.
-3. **Cập nhật & Bổ sung Bộ Test:** Cập nhật các assertion cứng ở `offline_database_v5_migration_test.dart`, `guest_claim_coordinator_test.dart#L492`, `sync_authority_remediation_test.dart#L493` và bổ sung đầy đủ 4 nhóm test mục 8 (`v6` migration, interleaving, multi-isolate, crash matrix, downgrade, `signOutReset`).
-4. **Giữ Đóng băng Tuyệt đối Cho Tới Gate Stage 2:** Toàn bộ `apps/web/**`, `services/api/**`, `packages/shared/**`, `apps/mobile/lib/core/auth/**`, `local_library_dao.dart`, `deploy/**`, `.github/**`, `.trivyignore`, trạng thái `UNINITIALIZED` (cấm cấp `READY`), và không gộp PR `#209` vào `main`.
+Do Hội đồng chưa mở khóa migration `v6` trong đợt này, nhóm thực thi **không yêu cầu cấp `READY` hay `FROZEN CLEAN` cho Stage 1 nếu thiếu xử lý R-01**, mà trình Hội đồng 1 trong 2 phương án quyết định rõ ràng:
+- **Phương án 1 (Khuyến nghị — Controlled Unlock `Stage 1B` trước khi `FROZEN CLEAN`):** Chấp thuận sửa có kiểm soát 4 hạng mục tối thiểu (`OfflineDatabase` v5 -> v6, `GuestProfileIdentityProvider`, `GuestClaimCoordinator`, `LocalLibraryDao.rebindScope` + 2 dòng thứ tự trong `AppBootstrap.run()`) để đóng kín triệt để **R-01, R-04, R-06**, chạy đủ 4 nhóm test Mục 6.2 rồi mới đóng băng `FROZEN CLEAN` cho toàn bộ Stage 1 & chuyển Stage 2.
+- **Phương án 2 (Conditional Stage 1 Storage DAL Acceptance):** Ghi nhận **R-02 & R-03 đã đóng sạch trong `SyncStorageDal`**, chấp nhận phần `SyncStorageDal` Storage Foundation (`v5`), và lập **Mandatory Blocker Gate Item trước Stage 3 Background Worker** cho R-01/R-04 (`v6`) và trước Stage 2 DI Integration cho R-05 (tuyệt đối chưa nối `purgeGuestLocalScope` tự động từ `SharedPreferences` sang worker nền khi chưa lên `v6`).

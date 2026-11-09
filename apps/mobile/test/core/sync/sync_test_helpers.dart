@@ -99,3 +99,22 @@ GuestLocalWriteAdmission testGuestAdmission(
     expectedGeneration: generation,
   );
 }
+
+/// Tạo [UnusedGuestEvictionAdmission] hợp lệ cho Guest cũ đã tách khỏi active scope.
+UnusedGuestEvictionAdmission testUnusedGuestAdmission(
+  String guestScope, {
+  String activeAccountUserId = 'other-account',
+  int generation = 1,
+}) {
+  final profileId = guestScope.startsWith('guest:')
+      ? guestScope.substring('guest:'.length)
+      : guestScope;
+  return UnusedGuestEvictionAdmission(
+    authoritySource: MutableSyncAuthoritySource.activeAccount(
+      activeAccountUserId,
+      generation: generation,
+    ),
+    targetGuestProfileId: profileId,
+    expectedGeneration: generation,
+  );
+}

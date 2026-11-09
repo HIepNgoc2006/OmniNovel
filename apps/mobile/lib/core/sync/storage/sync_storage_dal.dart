@@ -2,6 +2,7 @@ import 'dart:math' as math;
 
 import 'package:sqflite/sqflite.dart';
 
+import '../../identity/active_scope_coordinator.dart';
 import '../../identity/guest_profile_identity_provider.dart';
 import '../../storage/local_library_models.dart';
 import '../../storage/offline_database.dart';
@@ -2382,9 +2383,15 @@ class SyncStorageDal {
   /// - [AccountPurgeReason.fullResyncReset]: chỉ xóa `sync_meta`, `sync_authoritative_replicas`,
   ///   `snapshot_staging_store`; **bảo toàn** `pending_mutations`, `quarantined_mutations`,
   ///   `sync_mutation_sequences` và 4 bảng `local_*` để tránh mất chỉnh sửa cục bộ chưa đẩy.
-  /// - [AccountPurgeReason.signOutReset] & [AccountPurgeReason.accountDeleted]:
-  ///   xóa toàn bộ 10 bảng scoped theo `account:<userId>` (khi session vẫn đang active, tức
-  ///   chạy **trước** `AuthService.logout()`).
+  ///   Cấm truyền `discardUnsyncedMutations: true` cùng `fullResyncReset`.
+  /// - [AccountPurgeReason.signOutReset] & [AccountPurgeReason.accountDeleted] (R-03 fail-closed):
+  ///   Mặc định (`discardUnsyncedMutations == false`) **bảo toàn** hàng đợi đồng bộ chưa xác nhận:
+  ///   kiểm tra `pending_mutations` & `quarantined_mutations` trong SQLite transaction cả trước
+  ///   khi xóa lẫn ngay trước commit; nếu còn dữ liệu chưa đồng bộ sẽ ném [PurgeProhibitedError]
+  ///   (`UNSYNCED_MUTATIONS_PRESENT`) và rollback 100%.
+  ///   Chỉ xóa toàn bộ 10 bảng scoped theo `account:<userId>` khi caller truyền tường minh
+  ///   `discardUnsyncedMutations: true` theo chính sách xóa có xác nhận (khi session vẫn đang
+  ///   active, tức chạy **trước** `AuthService.logout()`), hoặc khi hàng đợi đã trống.
   ///
   /// TUYỆT ĐỐI bảo toàn ở mọi reason:
   /// - `offline_chapters`, `download_tasks`, `offline_deletion_tombstones`
@@ -2394,17 +2401,58 @@ class SyncStorageDal {
     required String ownerScope,
     required AccountPurgeReason reason,
     required AccountWriteAdmission admission,
+    bool discardUnsyncedMutations = false,
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
     assertAccountScope(ownerScope);
+    if (reason == AccountPurgeReason.fullResyncReset &&
+        discardUnsyncedMutations) {
+      throw const PurgeProhibitedError(
+        'PURGE_PROHIBITED: AccountPurgeReason.fullResyncReset preserves unsynced mutations and forbids discardUnsyncedMutations=true.',
+      );
+    }
+
     final tablesToPurge = reason == AccountPurgeReason.fullResyncReset
         ? _accountSyncCacheTablesOnly
         : _accountFullScopeTables;
+
+    Future<void> assertAccountPurgeSafe(Transaction txn) async {
+      if (reason == AccountPurgeReason.fullResyncReset ||
+          discardUnsyncedMutations) {
+        return;
+      }
+      final pendingRows = await txn.query(
+        'pending_mutations',
+        columns: const <String>['mutation_id'],
+        where: 'owner_scope = ?',
+        whereArgs: <Object?>[ownerScope],
+        limit: 1,
+      );
+      if (pendingRows.isNotEmpty) {
+        throw PurgeProhibitedError(
+          'PURGE_PROHIBITED: Active account "$ownerScope" has unsent pending_mutations for $reason (UNSYNCED_MUTATIONS_PRESENT).',
+        );
+      }
+      final quarantinedRows = await txn.query(
+        'quarantined_mutations',
+        columns: const <String>['mutation_id'],
+        where: 'owner_scope = ?',
+        whereArgs: <Object?>[ownerScope],
+        limit: 1,
+      );
+      if (quarantinedRows.isNotEmpty) {
+        throw PurgeProhibitedError(
+          'PURGE_PROHIBITED: Active account "$ownerScope" has quarantined_mutations pending triage for $reason (UNSYNCED_MUTATIONS_PRESENT).',
+        );
+      }
+    }
 
     await _runWriteTransaction<void>(
       targetScope: ownerScope,
       admission: admission,
       action: (txn) async {
+        await assertAccountPurgeSafe(txn);
+
         for (final table in tablesToPurge) {
           await txn.delete(
             table,
@@ -2415,6 +2463,10 @@ class SyncStorageDal {
         if (onBeforeCommitHook != null) {
           await onBeforeCommitHook(txn);
         }
+
+        // Pre-commit re-check: nếu hook hoặc xen kẽ trong transaction vừa tạo pending/quarantined
+        // trong khi discardUnsyncedMutations=false -> ném lỗi để SQLite rollback 100%.
+        await assertAccountPurgeSafe(txn);
       },
     );
   }
@@ -2510,12 +2562,12 @@ class SyncStorageDal {
   /// Dọn dữ liệu cục bộ của Guest [guestScope] (`guest:<guestProfileId>`) theo
   /// [reason] lifecycle hợp lệ (`GuestLifecyclePurgeReason`).
   ///
-  /// Ràng buộc theo [reason] (`P0-M05` / Purge Lifecycle):
-  /// - [GuestLifecyclePurgeReason.userClearedGuestData]: Bắt buộc dùng [GuestLocalWriteAdmission]
-  ///   (chỉ Guest đang active mới được xóa dữ liệu của chính mình).
-  /// - [GuestLifecyclePurgeReason.verifiedUnusedGuestEviction]: Chấp nhận [UnusedGuestEvictionAdmission]
-  ///   (thu hồi Guest cũ sau `onLogout()` xoay ID hoặc sau khi đã sang Account mà không tạo deadlock)
-  ///   hoặc [GuestLocalWriteAdmission]; cấm evict scope đang trùng Guest active hiện tại.
+  /// Ràng buộc đơn trị 1-1 theo [reason] (`P0-M05` / R-02):
+  /// - [GuestLifecyclePurgeReason.userClearedGuestData]: **CHỈ** chấp nhận [GuestLocalWriteAdmission]
+  ///   (chỉ Guest đang active mới được chủ động xóa dữ liệu của chính mình).
+  /// - [GuestLifecyclePurgeReason.verifiedUnusedGuestEviction]: **CHỈ** chấp nhận [UnusedGuestEvictionAdmission]
+  ///   (thu hồi Guest cũ đã tách khỏi active scope sau `onLogout()` xoay ID hoặc sau khi đã sang Account);
+  ///   từ chối tuyệt đối [GuestLocalWriteAdmission] và cấm evict scope đang trùng Guest active/persisted.
   ///
   /// Bảo vệ fail-closed kép (trước khi xóa & ngay trước khi commit):
   /// - Cấm tuyệt đối xóa nếu `guestProfileId` đang có bản ghi trong `guest_claim_recovery_journal`
@@ -2533,7 +2585,6 @@ class SyncStorageDal {
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
   }) async {
     assertGuestScope(guestScope);
-    admission.assertAdmitted(guestScope);
 
     if (reason == GuestLifecyclePurgeReason.userClearedGuestData &&
         admission is! GuestLocalWriteAdmission) {
@@ -2541,7 +2592,14 @@ class SyncStorageDal {
         'PURGE_PROHIBITED: GuestLifecyclePurgeReason.userClearedGuestData requires an active GuestLocalWriteAdmission.',
       );
     }
+    if (reason == GuestLifecyclePurgeReason.verifiedUnusedGuestEviction &&
+        admission is! UnusedGuestEvictionAdmission) {
+      throw const PurgeProhibitedError(
+        'PURGE_PROHIBITED: GuestLifecyclePurgeReason.verifiedUnusedGuestEviction requires UnusedGuestEvictionAdmission (GuestLocalWriteAdmission is prohibited).',
+      );
+    }
 
+    admission.assertAdmitted(guestScope);
     final guestProfileId = guestScope.substring('guest:'.length);
 
     Future<void> assertGuestPurgeAllowed(Transaction? txn) async {
@@ -2553,13 +2611,19 @@ class SyncStorageDal {
         );
       }
 
-      if (reason == GuestLifecyclePurgeReason.verifiedUnusedGuestEviction &&
-          admission is UnusedGuestEvictionAdmission) {
+      if (reason == GuestLifecyclePurgeReason.verifiedUnusedGuestEviction) {
+        if (admission is! UnusedGuestEvictionAdmission) {
+          throw const PurgeProhibitedError(
+            'PURGE_PROHIBITED: GuestLifecyclePurgeReason.verifiedUnusedGuestEviction requires UnusedGuestEvictionAdmission.',
+          );
+        }
         final snap = admission.readAuthoritySnapshot();
-        if (!snap.isAuthenticated) {
+        if (!snap.isAuthenticated || snap.scopeState == ActiveScopeState.guest) {
           final currentGuestId =
               await guestProfileProvider.getOrCreateGuestProfileId();
-          if (guestProfileId == currentGuestId) {
+          if (guestProfileId == currentGuestId ||
+              (snap.currentGuestProfileId != null &&
+                  guestProfileId == snap.currentGuestProfileId)) {
             throw PurgeProhibitedError(
               'PURGE_PROHIBITED: Cannot run verifiedUnusedGuestEviction on active persisted guestProfileId "$guestProfileId".',
             );

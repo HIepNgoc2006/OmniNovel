@@ -490,11 +490,24 @@ void main() {
           () => dal.purgeGuestLocalScope(
             guestScope: journalGuestScope,
             reason: GuestLifecyclePurgeReason.verifiedUnusedGuestEviction,
+            admission: testUnusedGuestAdmission(
+              journalGuestScope,
+              activeAccountUserId: 'safe-owner',
+            ),
+            guestProfileProvider: guestProvider,
+          ),
+          throwsA(isA<PurgeProhibitedError>()),
+          reason: 'Should prohibit unused eviction during claim phase=$phase',
+        );
+        await expectLater(
+          () => dal.purgeGuestLocalScope(
+            guestScope: journalGuestScope,
+            reason: GuestLifecyclePurgeReason.userClearedGuestData,
             admission: testGuestAdmission(journalGuestScope),
             guestProfileProvider: guestProvider,
           ),
           throwsA(isA<PurgeProhibitedError>()),
-          reason: 'Should prohibit purge during claim phase=$phase',
+          reason: 'Should prohibit user clear during claim phase=$phase',
         );
         expect(await localDao.isBookmarked(ownerScope: journalGuestScope, storyId: 's-1'), isTrue);
 
@@ -2063,20 +2076,45 @@ void main() {
         'manifest_json': '{}',
       });
 
-      // 1. Pre-AuthService.logout(): signOutReset MUST SUCCEED
+      // 1. Pre-AuthService.logout(): signOutReset fail-closed blocks when pending/quarantined exist,
+      //    then succeeds only with explicit discardUnsyncedMutations: true
       await signInAndResolve('user-A');
       final admPreLogout = AccountWriteAdmission.captureFromLive(
         coordinator: coordinator,
         authService: authService,
       );
       await seedAccountFull('user-A', admPreLogout);
+      await expectLater(
+        () => dal.purgeAccountScope(
+          ownerScope: 'account:user-A',
+          reason: AccountPurgeReason.signOutReset,
+          admission: admPreLogout,
+        ),
+        throwsA(
+          isA<PurgeProhibitedError>().having(
+            (e) => e.message,
+            'message',
+            contains('UNSYNCED_MUTATIONS_PRESENT'),
+          ),
+        ),
+      );
+      expect(await dal.getSyncMeta('account:user-A'), isNotNull);
+      expect(await dal.getPendingMutations('account:user-A'), hasLength(1));
+      expect(await dal.getQuarantinedMutations('account:user-A'), hasLength(1));
+      expect(await localDao.isBookmarked(ownerScope: 'account:user-A', storyId: 's-user-A'), isTrue);
+      expect(await localDao.getProgress(ownerScope: 'account:user-A', storyId: 's-user-A'), isNotNull);
+      expect(await localDao.getHistoryItem(ownerScope: 'account:user-A', storyId: 's-user-A', chapterId: 'c-1'), isNotNull);
+      expect((await dal.getAccountLocalPreference('account:user-A', 'theme'))?.value, 'sepia');
+
       await dal.purgeAccountScope(
         ownerScope: 'account:user-A',
         reason: AccountPurgeReason.signOutReset,
         admission: admPreLogout,
+        discardUnsyncedMutations: true,
       );
       expect(await dal.getSyncMeta('account:user-A'), isNull);
       expect(await dal.getPendingMutations('account:user-A'), isEmpty);
+      expect(await dal.getQuarantinedMutations('account:user-A'), isEmpty);
       expect(await localDao.isBookmarked(ownerScope: 'account:user-A', storyId: 's-user-A'), isFalse);
       expect(await db.query('offline_chapters'), hasLength(1));
 
@@ -2262,11 +2300,31 @@ void main() {
       expect(await dal.getPendingMutations('account:user-D'), hasLength(1));
       expect(await db.query('offline_chapters'), hasLength(1));
 
-      // AccountPurgeReason.accountDeleted while active deletes all 10 account tables & preserves offline_chapters
+      // AccountPurgeReason.accountDeleted fail-closed blocks default while unsynced exist,
+      // then confirmed discardUnsyncedMutations: true deletes all 10 account tables & preserves offline_chapters
+      await expectLater(
+        () => dal.purgeAccountScope(
+          ownerScope: 'account:user-D',
+          reason: AccountPurgeReason.accountDeleted,
+          admission: admD,
+        ),
+        throwsA(
+          isA<PurgeProhibitedError>().having(
+            (e) => e.message,
+            'message',
+            contains('UNSYNCED_MUTATIONS_PRESENT'),
+          ),
+        ),
+      );
+      expect(await dal.getSyncMeta('account:user-D'), isNotNull);
+      expect(await dal.getPendingMutations('account:user-D'), hasLength(1));
+      expect(await dal.getQuarantinedMutations('account:user-D'), hasLength(1));
+
       await dal.purgeAccountScope(
         ownerScope: 'account:user-D',
         reason: AccountPurgeReason.accountDeleted,
         admission: admD,
+        discardUnsyncedMutations: true,
       );
       expect(await dal.getSyncMeta('account:user-D'), isNull);
       expect(await dal.getPendingMutations('account:user-D'), isEmpty);
@@ -2497,6 +2555,605 @@ void main() {
       );
       expect(await localDao.getBookmarks(ownerScope: gNewScope), isEmpty);
       expect(await localDao.isBookmarked(ownerScope: 'account:u-guest-evict', storyId: 's-acc'), isTrue);
+    });
+
+    test('R-02: verifiedUnusedGuestEviction strictly rejects GuestLocalWriteAdmission & protects active persisted Guest', () async {
+      final mockApiClient = _MockApiClient();
+      final mockTokenStorage = _MockTokenStorage();
+      final mockSecureStorage = _MockSecureStorage();
+      final secureData = <String, String>{};
+
+      when(() => mockSecureStorage.read(key: any(named: 'key')))
+          .thenAnswer((inv) async => secureData[inv.namedArguments[#key] as String]);
+      when(() => mockSecureStorage.write(key: any(named: 'key'), value: any(named: 'value')))
+          .thenAnswer((inv) async {
+        secureData[inv.namedArguments[#key] as String] = inv.namedArguments[#value] as String;
+      });
+      when(() => mockTokenStorage.getAccessToken()).thenAnswer((_) async => null);
+      when(() => mockTokenStorage.getRefreshToken()).thenAnswer((_) async => null);
+      when(() => mockTokenStorage.saveTokens(
+            accessToken: any(named: 'accessToken'),
+            refreshToken: any(named: 'refreshToken'),
+          )).thenAnswer((_) async {});
+      when(() => mockTokenStorage.clearTokens()).thenAnswer((_) async {});
+
+      final installProvider = InstallationIdentityProvider(secureStorage: mockSecureStorage, prefs: prefs);
+      final guestProvider = GuestProfileIdentityProvider(prefs: prefs);
+      final coordinator = ActiveScopeCoordinator(
+        installProvider: installProvider,
+        guestProfileProvider: guestProvider,
+      );
+      final authService = AuthService(apiClient: mockApiClient, tokenStorage: mockTokenStorage);
+      final bridge = AuthScopeBridge(authService: authService, coordinator: coordinator)..attach();
+      addTearDown(bridge.dispose);
+
+      await authService.initializeAuth();
+      await bridge.settle();
+      expect(coordinator.state, ActiveScopeState.guest);
+
+      final gActiveId = await guestProvider.getOrCreateGuestProfileId();
+      final gActiveScope = 'guest:$gActiveId';
+      const gOtherScope = 'guest:g-other-keep';
+      const accKeepScope = 'account:u-r02-keep';
+      final t = DateTime.utc(2026, 2, 10);
+      final db = offlineDb.database;
+
+      // Seed active Guest across ALL 4 local tables + unrelated scopes + offline_chapters
+      await localDao.saveBookmark(
+        LocalBookmark(ownerScope: gActiveScope, storyId: 's-r02', title: 'Active Guest BM', createdAt: t),
+      );
+      await localDao.saveProgress(
+        LocalReadingProgress(
+          ownerScope: gActiveScope,
+          storyId: 's-r02',
+          chapterId: 'c-1',
+          readingMode: 'WEBTOON',
+          progressPercentage: 45,
+          scrollPosition: 120,
+          updatedAt: t,
+          deviceTimestamp: t,
+        ),
+      );
+      await localDao.saveHistory(
+        LocalReadingHistory(
+          ownerScope: gActiveScope,
+          storyId: 's-r02',
+          chapterId: 'c-1',
+          storyTitle: 'Active Guest Story',
+          chapterNumber: '1',
+          progressPercentage: 45,
+          lastReadAt: t,
+        ),
+      );
+      await dal.putGuestLocalPreference(
+        LocalPreferenceRecord(
+          ownerScope: gActiveScope,
+          prefKey: 'theme',
+          value: 'dark',
+          updatedAt: t.toIso8601String(),
+        ),
+        admission: GuestLocalWriteAdmission.captureFromLive(
+          coordinator: coordinator,
+          authService: authService,
+        ),
+      );
+      await localDao.saveBookmark(
+        LocalBookmark(ownerScope: gOtherScope, storyId: 's-other', title: 'Other Guest', createdAt: t),
+      );
+      await localDao.saveBookmark(
+        LocalBookmark(ownerScope: accKeepScope, storyId: 's-acc', title: 'Keep Account', createdAt: t),
+      );
+      await db.insert('offline_chapters', <String, Object?>{
+        'chapter_version_id': 'cv-r02-keep',
+        'user_id': gActiveId,
+        'chapter_id': 'c-1',
+        'story_id': 's-r02',
+        'story_title': 'Offline Keep',
+        'chapter_number': '1',
+        'media_format': 'WEBTOON',
+        'installed_dir': '/offline/r02',
+        'total_files': 1,
+        'total_bytes': 10,
+        'installed_at': 1000,
+        'manifest_json': '{}',
+      });
+
+      final activeGuestAdm = GuestLocalWriteAdmission.captureFromLive(
+        coordinator: coordinator,
+        authService: authService,
+      );
+
+      // 1. Live Active Guest passing GuestLocalWriteAdmission with verifiedUnusedGuestEviction MUST FAIL!
+      await expectLater(
+        () => dal.purgeGuestLocalScope(
+          guestScope: gActiveScope,
+          reason: GuestLifecyclePurgeReason.verifiedUnusedGuestEviction,
+          admission: activeGuestAdm,
+          guestProfileProvider: guestProvider,
+        ),
+        throwsA(isA<PurgeProhibitedError>()),
+      );
+
+      // 2. Synthetic GuestLocalWriteAdmission for another guest ID with verifiedUnusedGuestEviction MUST ALSO FAIL!
+      await expectLater(
+        () => dal.purgeGuestLocalScope(
+          guestScope: gOtherScope,
+          reason: GuestLifecyclePurgeReason.verifiedUnusedGuestEviction,
+          admission: testGuestAdmission(gOtherScope),
+          guestProfileProvider: guestProvider,
+        ),
+        throwsA(isA<PurgeProhibitedError>()),
+      );
+
+      // 3. PendingVerification keeps guest active -> both UnusedGuestEvictionAdmission (live/desynced) & wrong admission fail!
+      when(() => mockTokenStorage.getAccessToken()).thenAnswer(
+        (_) async => _encodeJwt(<String, Object?>{
+          'sub': 'u-pending',
+          'username': 'u_pending',
+          'role': 'READER',
+          'sid': 'sid-p',
+        }),
+      );
+      when(() => mockTokenStorage.getRefreshToken()).thenAnswer((_) async => 'refresh-p');
+      when(() => mockApiClient.get<Map<String, dynamic>>(ApiEndpoints.me)).thenThrow(
+        DioException(
+          requestOptions: RequestOptions(path: ApiEndpoints.me),
+          type: DioExceptionType.connectionError,
+        ),
+      );
+      await authService.initializeAuth();
+      await bridge.settle();
+      expect(authService.state.status, AuthStatus.pendingVerification);
+      expect(coordinator.state, ActiveScopeState.guest);
+      expect(coordinator.activeScope, gActiveScope);
+
+      expect(
+        () => UnusedGuestEvictionAdmission.captureFromLive(
+          coordinator: coordinator,
+          authService: authService,
+          targetGuestProfileId: gActiveId,
+        ),
+        throwsA(isA<SyncAdmissionRejectedError>()),
+      );
+      await expectLater(
+        () => dal.purgeGuestLocalScope(
+          guestScope: gActiveScope,
+          reason: GuestLifecyclePurgeReason.verifiedUnusedGuestEviction,
+          admission: GuestLocalWriteAdmission.captureFromLive(
+            coordinator: coordinator,
+            authService: authService,
+          ),
+          guestProfileProvider: guestProvider,
+        ),
+        throwsA(isA<PurgeProhibitedError>()),
+      );
+      await expectLater(
+        () => dal.purgeGuestLocalScope(
+          guestScope: gActiveScope,
+          reason: GuestLifecyclePurgeReason.verifiedUnusedGuestEviction,
+          admission: UnusedGuestEvictionAdmission(
+            authoritySource: MutableSyncAuthoritySource.activeGuest('g-desynced-other'),
+            targetGuestProfileId: gActiveId,
+            expectedGeneration: 1,
+          ),
+          guestProfileProvider: guestProvider,
+        ),
+        throwsA(isA<PurgeProhibitedError>()),
+      );
+
+      // Verify ALL 4 local tables of gActiveScope + gOtherScope + accKeepScope + offline_chapters survived 100%
+      expect(await localDao.isBookmarked(ownerScope: gActiveScope, storyId: 's-r02'), isTrue);
+      expect(await localDao.getProgress(ownerScope: gActiveScope, storyId: 's-r02'), isNotNull);
+      expect(await localDao.getHistoryItem(ownerScope: gActiveScope, storyId: 's-r02', chapterId: 'c-1'), isNotNull);
+      expect((await dal.getGuestLocalPreference(gActiveScope, 'theme'))?.value, 'dark');
+      expect(await localDao.isBookmarked(ownerScope: gOtherScope, storyId: 's-other'), isTrue);
+      expect(await localDao.isBookmarked(ownerScope: accKeepScope, storyId: 's-acc'), isTrue);
+      expect(await db.query('offline_chapters'), hasLength(1));
+
+      // 4. Reverse mismatch: userClearedGuestData rejects UnusedGuestEvictionAdmission
+      await expectLater(
+        () => dal.purgeGuestLocalScope(
+          guestScope: gOtherScope,
+          reason: GuestLifecyclePurgeReason.userClearedGuestData,
+          admission: testUnusedGuestAdmission(gOtherScope),
+          guestProfileProvider: guestProvider,
+        ),
+        throwsA(isA<PurgeProhibitedError>()),
+      );
+      expect(await localDao.isBookmarked(ownerScope: gOtherScope, storyId: 's-other'), isTrue);
+
+      // 5. Legitimate explicit clear by active Guest using GuestLocalWriteAdmission succeeds cleanly
+      await dal.purgeGuestLocalScope(
+        guestScope: gActiveScope,
+        reason: GuestLifecyclePurgeReason.userClearedGuestData,
+        admission: GuestLocalWriteAdmission.captureFromLive(
+          coordinator: coordinator,
+          authService: authService,
+        ),
+        guestProfileProvider: guestProvider,
+      );
+      expect(await localDao.getBookmarks(ownerScope: gActiveScope), isEmpty);
+      expect(await localDao.getProgress(ownerScope: gActiveScope, storyId: 's-r02'), isNull);
+      expect(await dal.getGuestLocalPreference(gActiveScope, 'theme'), isNull);
+      expect(await localDao.isBookmarked(ownerScope: gOtherScope, storyId: 's-other'), isTrue);
+      expect(await db.query('offline_chapters'), hasLength(1));
+    });
+
+    test('R-03: purgeAccountScope preserves unsynced/quarantined edits fail-closed, enforces SQLite tx rollback on intra-tx insert, & isolates scopes', () async {
+      const scopePendingOnly = 'account:user-pending-only';
+      const scopeQuarantinedOnly = 'account:user-quarantined-only';
+      const scopeCleanable = 'account:user-cleanable';
+      const scopeRollback = 'account:user-rollback';
+      const guestKeep = 'guest:g-r03-keep';
+      final admPending = testAccountAdmission(scopePendingOnly);
+      final admQuarantined = testAccountAdmission(scopeQuarantinedOnly);
+      final admCleanable = testAccountAdmission(scopeCleanable);
+      final admRollback = testAccountAdmission(scopeRollback);
+      final db = offlineDb.database;
+      final now = DateTime.utc(2026, 2, 11);
+
+      Future<void> seedPreservedNonSyncTables() async {
+        await db.insert('offline_chapters', <String, Object?>{
+          'chapter_version_id': 'cv-r03-keep',
+          'user_id': 'user-rollback',
+          'chapter_id': 'c-1',
+          'story_id': 's-1',
+          'story_title': 'Offline Keep',
+          'chapter_number': '1',
+          'media_format': 'WEBTOON',
+          'installed_dir': '/offline/r03',
+          'total_files': 2,
+          'total_bytes': 100,
+          'installed_at': 1000,
+          'manifest_json': '{}',
+        });
+        await db.insert('download_tasks', <String, Object?>{
+          'task_id': 'task-r03-keep',
+          'user_id': 'user-rollback',
+          'chapter_version_id': 'cv-r03-keep',
+          'chapter_id': 'c-1',
+          'story_id': 's-1',
+          'story_title': 'Offline Keep',
+          'chapter_number': '1',
+          'media_format': 'WEBTOON',
+          'status': 'COMPLETED',
+          'created_at': 1000,
+          'updated_at': 1000,
+        });
+        await db.insert('offline_deletion_tombstones', <String, Object?>{
+          'tombstone_id': 'tb-r03-keep',
+          'user_id': 'user-rollback',
+          'chapter_version_id': 'cv-old',
+          'created_at': 1000,
+        });
+        await db.insert('guest_claim_recovery_journal', <String, Object?>{
+          'claim_id': 'claim-r03-keep',
+          'user_id': 'user-rollback',
+          'guest_profile_id': 'g-r03-keep',
+          'expected_state_fingerprint': 'fp',
+          'conflict_decisions': '{}',
+          'phase': 'prepared',
+          'created_at': 1000,
+          'updated_at': 1000,
+        });
+        await localDao.saveBookmark(
+          LocalBookmark(ownerScope: guestKeep, storyId: 's-g', title: 'Guest Keep', createdAt: now),
+        );
+      }
+
+      Future<void> seedEightNonQueueAccountTables(String scope, AccountWriteAdmission adm) async {
+        await dal.putSyncMeta(
+          SyncMeta(
+            ownerScope: scope,
+            lastSyncedServerRevision: '10',
+            minActiveRevision: '1',
+            lastSyncTimestamp: now.toIso8601String(),
+          ),
+          admission: adm,
+        );
+        await dal.applyAuthoritativeDeltaPage(
+          ownerScope: scope,
+          expectedCheckpoint: '10',
+          admission: adm,
+          page: SyncChangesPage(
+            currentServerRevision: '11',
+            minActiveRevision: '1',
+            nextRevision: null,
+            hasMore: false,
+            changes: <SyncChangeItem>[
+              SyncChangeItem.typed(
+                revision: '11',
+                domain: SyncDomain.bookmark,
+                entityId: 's-rep',
+                operation: SyncOperation.upsert,
+                payload: const <String, Object?>{'storyId': 's-rep'},
+              ),
+            ],
+          ),
+        );
+        await dal.stageSnapshotItems(
+          ownerScope: scope,
+          admission: adm,
+          items: <SnapshotStagingItem>[
+            SnapshotStagingItem(
+              ownerScope: scope,
+              sessionId: 'sess-r03',
+              snapshotRevision: '20',
+              minActiveRevision: '1',
+              domain: SyncDomain.bookmark,
+              entityKey: 's-stage',
+              payload: const <String, Object?>{'storyId': 's-stage'},
+              stagedAtIso: now.toIso8601String(),
+              stagedAtMs: now.millisecondsSinceEpoch,
+            ),
+          ],
+        );
+        // Ensure sync_mutation_sequences has a durable row while pending_mutations starts empty
+        final tmpMut = await dal.enqueuePendingMutation(
+          PendingMutationRecord.create(
+            ownerScope: scope,
+            mutationId: 'mut-tmp-$scope',
+            clientId: kTestClientId,
+            domain: SyncDomain.bookmark,
+            entityId: 's-tmp',
+            operation: SyncOperation.upsert,
+            baseServerRevision: '11',
+            payload: const <String, Object?>{'storyId': 's-tmp'},
+            createdAt: now,
+          ),
+          admission: adm,
+        );
+        await dal.deletePendingMutation(scope, tmpMut.mutationId, admission: adm);
+        await localDao.saveBookmark(
+          LocalBookmark(ownerScope: scope, storyId: 's-loc', title: 'BM', createdAt: now),
+        );
+        await localDao.saveProgress(
+          LocalReadingProgress(
+            ownerScope: scope,
+            storyId: 's-loc',
+            chapterId: 'c-1',
+            readingMode: 'WEBTOON',
+            progressPercentage: 70,
+            scrollPosition: 10,
+            updatedAt: now,
+            deviceTimestamp: now,
+          ),
+        );
+        await localDao.saveHistory(
+          LocalReadingHistory(
+            ownerScope: scope,
+            storyId: 's-loc',
+            chapterId: 'c-1',
+            storyTitle: 'Story',
+            chapterNumber: '1',
+            progressPercentage: 70,
+            lastReadAt: now,
+          ),
+        );
+        await db.insert('local_preferences', <String, Object?>{
+          'owner_scope': scope,
+          'pref_key': 'theme',
+          'value_json': jsonEncode('dark'),
+          'updated_at': now.toIso8601String(),
+        });
+      }
+
+      await seedPreservedNonSyncTables();
+
+      // A. Pending ONLY (empty quarantined) blocks both signOutReset & accountDeleted by default
+      await dal.putBookmarkWithMutation(
+        bookmark: LocalBookmark(ownerScope: scopePendingOnly, storyId: 's-p', title: 'Pending', createdAt: now),
+        mutation: PendingMutationRecord.create(
+          ownerScope: scopePendingOnly,
+          mutationId: 'mut-p-only',
+          clientId: kTestClientId,
+          domain: SyncDomain.bookmark,
+          entityId: 's-p',
+          operation: SyncOperation.upsert,
+          baseServerRevision: '0',
+          payload: const <String, Object?>{'storyId': 's-p'},
+          createdAt: now,
+        ),
+        admission: admPending,
+      );
+      for (final reason in <AccountPurgeReason>[
+        AccountPurgeReason.signOutReset,
+        AccountPurgeReason.accountDeleted,
+      ]) {
+        await expectLater(
+          () => dal.purgeAccountScope(
+            ownerScope: scopePendingOnly,
+            reason: reason,
+            admission: admPending,
+          ),
+          throwsA(
+            isA<PurgeProhibitedError>().having(
+              (e) => e.message,
+              'message',
+              contains('UNSYNCED_MUTATIONS_PRESENT'),
+            ),
+          ),
+        );
+      }
+      expect(await dal.getPendingMutations(scopePendingOnly), hasLength(1));
+      expect(await localDao.isBookmarked(ownerScope: scopePendingOnly, storyId: 's-p'), isTrue);
+
+      // B. Quarantined ONLY (empty pending) blocks both signOutReset & accountDeleted by default
+      await dal.putPreferenceWithMutation(
+        preference: LocalPreferenceRecord(
+          ownerScope: scopeQuarantinedOnly,
+          prefKey: 'font',
+          value: 'serif',
+          updatedAt: now.toIso8601String(),
+        ),
+        mutation: PendingMutationRecord.create(
+          ownerScope: scopeQuarantinedOnly,
+          mutationId: 'mut-q-only',
+          clientId: kTestClientId,
+          domain: SyncDomain.preference,
+          entityId: 'font',
+          operation: SyncOperation.upsert,
+          baseServerRevision: '0',
+          payload: const <String, Object?>{'key': 'font', 'value': 'serif'},
+          createdAt: now,
+        ),
+        admission: admQuarantined,
+      );
+      await dal.quarantinePendingMutationByKey(
+        ownerScope: scopeQuarantinedOnly,
+        mutationId: 'mut-q-only',
+        reason: 'conflict',
+        admission: admQuarantined,
+      );
+      expect(await dal.getPendingMutations(scopeQuarantinedOnly), isEmpty);
+      for (final reason in <AccountPurgeReason>[
+        AccountPurgeReason.signOutReset,
+        AccountPurgeReason.accountDeleted,
+      ]) {
+        await expectLater(
+          () => dal.purgeAccountScope(
+            ownerScope: scopeQuarantinedOnly,
+            reason: reason,
+            admission: admQuarantined,
+          ),
+          throwsA(
+            isA<PurgeProhibitedError>().having(
+              (e) => e.message,
+              'message',
+              contains('UNSYNCED_MUTATIONS_PRESENT'),
+            ),
+          ),
+        );
+      }
+      expect(await dal.getQuarantinedMutations(scopeQuarantinedOnly), hasLength(1));
+      expect((await dal.getAccountLocalPreference(scopeQuarantinedOnly, 'font'))?.value, 'serif');
+
+      // C. SQLite Transaction Pre-Commit Guard & 100% Rollback across ALL 8 account tables
+      await seedEightNonQueueAccountTables(scopeRollback, admRollback);
+
+      // C1: signOutReset + intra-tx pending_mutations insert before commit -> rolls back all 8 tables!
+      await expectLater(
+        () => dal.purgeAccountScope(
+          ownerScope: scopeRollback,
+          reason: AccountPurgeReason.signOutReset,
+          admission: admRollback,
+          onBeforeCommitHook: (txn) async {
+            await txn.insert('pending_mutations', <String, Object?>{
+              'owner_scope': scopeRollback,
+              'mutation_id': 'mut-race-pending',
+              'sequence_no': 99,
+              'client_id': kTestClientId,
+              'domain': SyncDomain.bookmark.wireValue,
+              'entity_id': 's-race',
+              'operation': SyncOperation.upsert.wireValue,
+              'base_server_revision': '11',
+              'payload_json': '{"storyId":"s-race"}',
+              'retry_count': 0,
+              'created_at_iso': now.toIso8601String(),
+              'created_at_ms': now.millisecondsSinceEpoch,
+            });
+          },
+        ),
+        throwsA(
+          isA<PurgeProhibitedError>().having(
+            (e) => e.message,
+            'message',
+            contains('UNSYNCED_MUTATIONS_PRESENT'),
+          ),
+        ),
+      );
+
+      // C2: accountDeleted + intra-tx quarantined_mutations insert before commit -> rolls back all 8 tables!
+      await expectLater(
+        () => dal.purgeAccountScope(
+          ownerScope: scopeRollback,
+          reason: AccountPurgeReason.accountDeleted,
+          admission: admRollback,
+          onBeforeCommitHook: (txn) async {
+            await txn.insert('quarantined_mutations', <String, Object?>{
+              'owner_scope': scopeRollback,
+              'mutation_id': 'mut-race-quarantine',
+              'client_id': kTestClientId,
+              'domain': SyncDomain.bookmark.wireValue,
+              'entity_id': 's-race',
+              'operation': SyncOperation.upsert.wireValue,
+              'base_server_revision': '11',
+              'payload_json': '{"storyId":"s-race"}',
+              'original_sequence_no': 1,
+              'original_retry_count': 0,
+              'original_created_at_iso': now.toIso8601String(),
+              'original_created_at_ms': now.millisecondsSinceEpoch,
+              'rejection_reason': 'race-conflict',
+              'rejection_status': 'MANUAL',
+              'rejected_at_iso': now.toIso8601String(),
+              'rejected_at_ms': now.millisecondsSinceEpoch,
+              'triage_status': 'PENDING',
+            });
+          },
+        ),
+        throwsA(
+          isA<PurgeProhibitedError>().having(
+            (e) => e.message,
+            'message',
+            contains('UNSYNCED_MUTATIONS_PRESENT'),
+          ),
+        ),
+      );
+
+      // Verify ALL 8 deleted tables rolled back 100%, and the injected pending/quarantined rows rolled back too!
+      expect(await dal.getSyncMeta(scopeRollback), isNotNull);
+      expect(await dal.getAllAuthoritativeShadows(scopeRollback), hasLength(1));
+      expect(await dal.getSnapshotStagingItems(scopeRollback, 'sess-r03'), hasLength(1));
+      expect(
+        await db.query(
+          'sync_mutation_sequences',
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[scopeRollback],
+        ),
+        hasLength(1),
+      );
+      expect(await localDao.isBookmarked(ownerScope: scopeRollback, storyId: 's-loc'), isTrue);
+      expect(await localDao.getProgress(ownerScope: scopeRollback, storyId: 's-loc'), isNotNull);
+      expect(await localDao.getHistoryItem(ownerScope: scopeRollback, storyId: 's-loc', chapterId: 'c-1'), isNotNull);
+      expect((await dal.getAccountLocalPreference(scopeRollback, 'theme'))?.value, 'dark');
+      expect(await dal.getPendingMutations(scopeRollback), isEmpty);
+      expect(await dal.getQuarantinedMutations(scopeRollback), isEmpty);
+
+      // D. Forbids discardUnsyncedMutations=true on fullResyncReset
+      await expectLater(
+        () => dal.purgeAccountScope(
+          ownerScope: scopeRollback,
+          reason: AccountPurgeReason.fullResyncReset,
+          admission: admRollback,
+          discardUnsyncedMutations: true,
+        ),
+        throwsA(isA<PurgeProhibitedError>()),
+      );
+      expect(await dal.getSyncMeta(scopeRollback), isNotNull);
+
+      // E. Empty queues on target scope ALLOWS signOutReset by default (scope isolated: other accounts/guest/offline untouched)
+      await seedEightNonQueueAccountTables(scopeCleanable, admCleanable);
+      await dal.purgeAccountScope(
+        ownerScope: scopeCleanable,
+        reason: AccountPurgeReason.signOutReset,
+        admission: admCleanable,
+      );
+      expect(await dal.getSyncMeta(scopeCleanable), isNull);
+      expect(await dal.getAllAuthoritativeShadows(scopeCleanable), isEmpty);
+      expect(await localDao.getBookmarks(ownerScope: scopeCleanable), isEmpty);
+      expect(await localDao.getProgress(ownerScope: scopeCleanable, storyId: 's-loc'), isNull);
+      expect(await localDao.getHistoryItem(ownerScope: scopeCleanable, storyId: 's-loc', chapterId: 'c-1'), isNull);
+      expect(await dal.getAccountLocalPreference(scopeCleanable, 'theme'), isNull);
+
+      // Verify complete isolation: pendingOnly, quarantinedOnly, scopeRollback, guestKeep & 4 non-sync tables remain 100% intact
+      expect(await dal.getPendingMutations(scopePendingOnly), hasLength(1));
+      expect(await dal.getQuarantinedMutations(scopeQuarantinedOnly), hasLength(1));
+      expect(await dal.getSyncMeta(scopeRollback), isNotNull);
+      expect(await localDao.isBookmarked(ownerScope: guestKeep, storyId: 's-g'), isTrue);
+      expect(await db.query('offline_chapters'), hasLength(1));
+      expect(await db.query('download_tasks'), hasLength(1));
+      expect(await db.query('offline_deletion_tombstones'), hasLength(1));
+      expect(await db.query('guest_claim_recovery_journal'), hasLength(1));
     });
   });
 }

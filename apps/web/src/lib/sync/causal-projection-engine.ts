@@ -8,6 +8,7 @@ import {
 } from '@omninovel/shared';
 import {
   AuthoritativeShadowRecord,
+  InvalidDeltaPayloadError,
   LocalPendingMutation,
   LocalPreference,
   assertValidScope,
@@ -69,6 +70,7 @@ export interface ProtectedPendingEntities {
 export interface CausalProjectionInput {
   ownerScope: string;
   syncedServerRevision?: string;
+  minActiveRevision?: string;
   effectiveHistoryEpochs?: Record<string, number>;
   shadows: AuthoritativeShadowRecord[];
   pendingMutations: LocalPendingMutation[];
@@ -318,6 +320,13 @@ export function resolveCausalProjection(input: CausalProjectionInput): CausalPro
     ? input.syncedServerRevision
     : '0';
   const syncedRevBigInt = BigInt(syncedServerRevision);
+
+  if (input.minActiveRevision !== undefined && !isValidRevisionString(input.minActiveRevision)) {
+    throw new InvalidDeltaPayloadError(
+      `Invalid minActiveRevision in resolveCausalProjection: "${input.minActiveRevision}".`,
+    );
+  }
+  const minActiveRevBigInt = BigInt(input.minActiveRevision ?? '0');
   const hasExplicitNowMs = typeof input.nowMs === 'number' && Number.isFinite(input.nowMs);
   const nowMs = hasExplicitNowMs ? (input.nowMs as number) : 0;
 
@@ -557,6 +566,18 @@ export function resolveCausalProjection(input: CausalProjectionInput): CausalPro
   ): { applied: boolean } => {
     const payload = (mutation.payload ?? {}) as Record<string, unknown>;
     const baseRev = parseRevisionBigInt(mutation.baseServerRevision);
+
+    // P1-B: Post-GC stale pending suppression using revision watermark (minActiveRevision).
+    // Pending mutations created below minActiveRevision cannot be pushed to Core API and must
+    // not mask authoritative state or deleted/evicted entities after tombstones have been GC'd.
+    if (
+      source === 'PENDING' &&
+      minActiveRevBigInt > 0n &&
+      (baseRev === null || baseRev < minActiveRevBigInt)
+    ) {
+      suppressedMutationCount += 1;
+      return { applied: false };
+    }
 
     if (mutation.domain === SyncDomain.BOOKMARK) {
       const storyId = getCanonicalEntityKey(SyncDomain.BOOKMARK, mutation.entityId, payload);

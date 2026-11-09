@@ -79,6 +79,19 @@ export interface GcTombstonesResult {
   safeGcFloor: string;
 }
 
+export interface QuarantineStaleByWatermarkOptions {
+  excludeMutationIds?: Iterable<string>;
+  checkAdmission?: () => void;
+  _testHookBeforeComplete?: (tx: IDBTransaction) => void;
+}
+
+export interface QuarantineStaleByWatermarkResult {
+  minActiveRevision: string;
+  scannedCount: number;
+  quarantinedCount: number;
+  quarantinedMutations: LocalQuarantinedMutation[];
+}
+
 export interface LocalSyncMeta {
   ownerScope: string;
   lastSyncedServerRevision: string;
@@ -3177,18 +3190,23 @@ export class IndexedDbClient {
 
   /**
    * Atomic Primitive: Requeues a quarantined mutation back to pending_mutations with retryCount = 0.
-   * Transfers from quarantined_mutations to pending_mutations in a single atomic IDB transaction.
+   * Transfers from quarantined_mutations to pending_mutations in a single atomic IDB transaction
+   * alongside STORE_SYNC_META so revision watermarks cannot be bypassed via TOCTOU races.
    * Strictly preserves exact mutationId, payload, and baseServerRevision.
    *
-   * Invariant Enforcement (P0-05):
-   * - REJECTED_TOMBSTONE mutations are strictly PERMANENT and CANNOT be requeued (anti-resurrection).
-   * - REJECTED_STALE or HTTP_410 mutations are locked until Step 6 Causal Triage Engine is implemented.
+   * Invariant Enforcement:
+   * - P1-A: DISCARDED triageStatus is strictly terminal and CANNOT be requeued inside IDB transaction.
+   * - P0-05: REJECTED_TOMBSTONE, REJECTED_STALE, and HTTP_410_GONE cannot be requeued.
+   * - P1-B: Mutations with baseServerRevision < sync_meta.minActiveRevision cannot be requeued.
    */
   async requeueQuarantinedMutation(
     ownerScope: string,
     mutationId: string,
     triageProof?: CausalTriageProof,
-    options?: { checkAdmission?: () => void }
+    options?: {
+      checkAdmission?: () => void;
+      _testHookBeforeComplete?: (tx: IDBTransaction) => void;
+    }
   ): Promise<void> {
     assertValidScope(ownerScope);
     const db = await this.getDatabase();
@@ -3196,56 +3214,346 @@ export class IndexedDbClient {
       options.checkAdmission();
     }
     return new Promise((resolve, reject) => {
+      let settled = false;
+      let tx: IDBTransaction;
+
+      const fail = (err: unknown) => {
+        if (!settled) {
+          settled = true;
+          try {
+            tx.abort();
+          } catch {
+            // ignore
+          }
+          reject(err);
+        }
+      };
+
       try {
-        const tx = db.transaction([STORE_QUARANTINED_MUTATIONS, STORE_PENDING_MUTATIONS], 'readwrite');
+        tx = db.transaction(
+          [STORE_QUARANTINED_MUTATIONS, STORE_PENDING_MUTATIONS, STORE_SYNC_META],
+          'readwrite'
+        );
         const qStore = tx.objectStore(STORE_QUARANTINED_MUTATIONS);
         const pStore = tx.objectStore(STORE_PENDING_MUTATIONS);
+        const metaStore = tx.objectStore(STORE_SYNC_META);
 
-        const getReq = qStore.get([ownerScope, mutationId]);
-        getReq.onsuccess = () => {
-          const q = getReq.result as LocalQuarantinedMutation | undefined;
-          if (!q) {
-            reject(new Error(`Quarantined mutation [${ownerScope}, ${mutationId}] not found.`));
-            return;
+        let qRecord: LocalQuarantinedMutation | undefined;
+        let syncMeta: LocalSyncMeta | undefined;
+        let remaining = 2;
+
+        const onBothLoaded = () => {
+          if (settled) return;
+          try {
+            if (options?.checkAdmission) {
+              options.checkAdmission();
+            }
+
+            if (!qRecord) {
+              fail(new Error(`Quarantined mutation [${ownerScope}, ${mutationId}] not found.`));
+              return;
+            }
+
+            if (qRecord.triageStatus === 'DISCARDED') {
+              fail(
+                new Error(
+                  'REQUEUE_PROHIBITED: Cannot requeue DISCARDED quarantined mutation. User discard decision is terminal.'
+                )
+              );
+              return;
+            }
+
+            if (qRecord.rejectionStatus === 'REJECTED_TOMBSTONE') {
+              fail(
+                new Error(
+                  'REQUEUE_PROHIBITED: Cannot requeue REJECTED_TOMBSTONE mutation. Entity has authoritative tombstone on server.'
+                )
+              );
+              return;
+            }
+
+            if (
+              qRecord.rejectionStatus === 'REJECTED_STALE' ||
+              qRecord.rejectionStatus === 'HTTP_410_GONE'
+            ) {
+              fail(
+                new Error(
+                  'REQUEUE_PROHIBITED: Requeuing REJECTED_STALE or HTTP_410 mutations is locked until Step 6 Causal Triage Engine is implemented.'
+                )
+              );
+              return;
+            }
+
+            if (syncMeta?.minActiveRevision !== undefined && syncMeta?.minActiveRevision !== null) {
+              if (!isValidRevisionString(syncMeta.minActiveRevision)) {
+                fail(
+                  new InvalidDeltaPayloadError(
+                    `Invalid minActiveRevision during requeue: "${syncMeta.minActiveRevision}".`
+                  )
+                );
+                return;
+              }
+              const minActiveRev = BigInt(syncMeta.minActiveRevision);
+              if (minActiveRev > 0n) {
+                if (!isValidRevisionString(qRecord.baseServerRevision)) {
+                  fail(
+                    new InvalidDeltaPayloadError(
+                      `Invalid baseServerRevision on quarantined mutation "${qRecord.mutationId}": "${qRecord.baseServerRevision}".`
+                    )
+                  );
+                  return;
+                }
+                if (BigInt(qRecord.baseServerRevision) < minActiveRev) {
+                  fail(
+                    new Error(
+                      `REQUEUE_PROHIBITED: Cannot requeue stale mutation "${qRecord.mutationId}" with baseServerRevision "${qRecord.baseServerRevision}" older than minActiveRevision "${syncMeta.minActiveRevision}".`
+                    )
+                  );
+                  return;
+                }
+              }
+            }
+
+            qStore.delete([ownerScope, mutationId]);
+            const pending: LocalPendingMutation = {
+              ownerScope: qRecord.ownerScope,
+              mutationId: qRecord.mutationId,
+              clientId: qRecord.clientId,
+              domain: qRecord.domain,
+              entityId: qRecord.entityId,
+              operation: qRecord.operation,
+              baseServerRevision: qRecord.baseServerRevision,
+              payload: qRecord.payload,
+              createdAt: qRecord.originalCreatedAt || new Date().toISOString(),
+              retryCount: 0,
+              nextRetryAt: undefined,
+            };
+            pStore.add(pending);
+
+            if (options?._testHookBeforeComplete) {
+              options._testHookBeforeComplete(tx);
+            }
+          } catch (err) {
+            fail(err);
           }
-
-          if (q.rejectionStatus === 'REJECTED_TOMBSTONE') {
-            reject(new Error('REQUEUE_PROHIBITED: Cannot requeue REJECTED_TOMBSTONE mutation. Entity has authoritative tombstone on server.'));
-            return;
-          }
-
-          if (
-            q.rejectionStatus === 'REJECTED_STALE' ||
-            q.rejectionStatus === 'HTTP_410_GONE'
-          ) {
-            reject(
-              new Error(
-                'REQUEUE_PROHIBITED: Requeuing REJECTED_STALE or HTTP_410 mutations is locked until Step 6 Causal Triage Engine is implemented.'
-              )
-            );
-            return;
-          }
-
-          qStore.delete([ownerScope, mutationId]);
-          const pending: LocalPendingMutation = {
-            ownerScope: q.ownerScope,
-            mutationId: q.mutationId,
-            clientId: q.clientId,
-            domain: q.domain,
-            entityId: q.entityId,
-            operation: q.operation,
-            baseServerRevision: q.baseServerRevision,
-            payload: q.payload,
-            createdAt: q.originalCreatedAt || new Date().toISOString(),
-            retryCount: 0,
-            nextRetryAt: undefined,
-          };
-          pStore.add(pending);
         };
 
-        tx.oncomplete = () => resolve();
-        tx.onerror = () => reject(tx.error);
-        tx.onabort = () => reject(tx.error || new Error('Transaction aborted in requeueQuarantinedMutation.'));
+        const qReq = qStore.get([ownerScope, mutationId]);
+        qReq.onerror = () => fail(qReq.error || new Error('Failed reading quarantined mutation.'));
+        qReq.onsuccess = () => {
+          qRecord = qReq.result as LocalQuarantinedMutation | undefined;
+          remaining -= 1;
+          if (remaining === 0) onBothLoaded();
+        };
+
+        const mReq = metaStore.get(ownerScope);
+        mReq.onerror = () => fail(mReq.error || new Error('Failed reading sync_meta during requeue.'));
+        mReq.onsuccess = () => {
+          syncMeta = mReq.result as LocalSyncMeta | undefined;
+          remaining -= 1;
+          if (remaining === 0) onBothLoaded();
+        };
+
+        tx.oncomplete = () => {
+          if (!settled) {
+            settled = true;
+            resolve();
+          }
+        };
+        tx.onerror = () => fail(tx.error || new Error('Transaction error in requeueQuarantinedMutation.'));
+        tx.onabort = () => fail(tx.error || new Error('Transaction aborted in requeueQuarantinedMutation.'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * P1-B Atomic Watermark Sweep: Moves stale pending mutations (baseServerRevision < sync_meta.minActiveRevision)
+   * from pending_mutations to quarantined_mutations inside ONE readwrite transaction shared with sync_meta.
+   * Preserves full user payload and mutation metadata instead of silently deleting unconfirmed offline data.
+   */
+  async quarantineStalePendingMutationsByWatermark(
+    ownerScope: string,
+    options?: QuarantineStaleByWatermarkOptions
+  ): Promise<QuarantineStaleByWatermarkResult> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    if (options?.checkAdmission) {
+      options.checkAdmission();
+    }
+
+    const excludedIds = options?.excludeMutationIds ? new Set(options.excludeMutationIds) : null;
+
+    return new Promise<QuarantineStaleByWatermarkResult>((resolve, reject) => {
+      let settled = false;
+      let tx: IDBTransaction;
+      let result: QuarantineStaleByWatermarkResult = {
+        minActiveRevision: '0',
+        scannedCount: 0,
+        quarantinedCount: 0,
+        quarantinedMutations: [],
+      };
+
+      const fail = (err: unknown) => {
+        if (!settled) {
+          settled = true;
+          try {
+            tx.abort();
+          } catch {
+            // ignore
+          }
+          reject(err);
+        }
+      };
+
+      try {
+        tx = db.transaction(
+          [STORE_SYNC_META, STORE_PENDING_MUTATIONS, STORE_QUARANTINED_MUTATIONS],
+          'readwrite'
+        );
+        const metaStore = tx.objectStore(STORE_SYNC_META);
+        const pStore = tx.objectStore(STORE_PENDING_MUTATIONS);
+        const qStore = tx.objectStore(STORE_QUARANTINED_MUTATIONS);
+
+        let syncMeta: LocalSyncMeta | undefined;
+        const scopedPending: LocalPendingMutation[] = [];
+        let remaining = 2;
+
+        const onAllLoaded = () => {
+          if (settled) return;
+          try {
+            if (options?.checkAdmission) {
+              options.checkAdmission();
+            }
+
+            let minActiveRevisionStr = '0';
+            if (syncMeta?.minActiveRevision !== undefined && syncMeta?.minActiveRevision !== null) {
+              if (!isValidRevisionString(syncMeta.minActiveRevision)) {
+                fail(
+                  new InvalidDeltaPayloadError(
+                    `Invalid minActiveRevision during watermark quarantine: "${syncMeta.minActiveRevision}".`
+                  )
+                );
+                return;
+              }
+              minActiveRevisionStr = syncMeta.minActiveRevision;
+            }
+
+            const minActiveRev = BigInt(minActiveRevisionStr);
+            if (minActiveRev <= 0n) {
+              result = {
+                minActiveRevision: minActiveRevisionStr,
+                scannedCount: scopedPending.length,
+                quarantinedCount: 0,
+                quarantinedMutations: [],
+              };
+              if (options?._testHookBeforeComplete) {
+                options._testHookBeforeComplete(tx);
+              }
+              return;
+            }
+
+            // Fail-closed validation across ALL pending mutations before applying any delete/put
+            const staleTargets: LocalPendingMutation[] = [];
+            for (const item of scopedPending) {
+              if (!isValidRevisionString(item.baseServerRevision)) {
+                fail(
+                  new InvalidDeltaPayloadError(
+                    `Invalid baseServerRevision "${item.baseServerRevision}" on pending mutation "${item.mutationId}".`
+                  )
+                );
+                return;
+              }
+              if (excludedIds?.has(item.mutationId)) {
+                continue;
+              }
+              if (BigInt(item.baseServerRevision) < minActiveRev) {
+                staleTargets.push(item);
+              }
+            }
+
+            const rejectedAtIso = new Date().toISOString();
+            const quarantinedMutations: LocalQuarantinedMutation[] = [];
+
+            for (const target of staleTargets) {
+              pStore.delete([ownerScope, target.mutationId]);
+              const quarantined: LocalQuarantinedMutation = {
+                ownerScope: target.ownerScope,
+                mutationId: target.mutationId,
+                clientId: target.clientId,
+                domain: target.domain,
+                entityId: target.entityId,
+                operation: target.operation,
+                baseServerRevision: target.baseServerRevision,
+                payload: target.payload,
+                rejectionReason: `BASE_REVISION_EXPIRED: baseServerRevision (${target.baseServerRevision}) is older than minActiveRevision (${minActiveRevisionStr}).`,
+                rejectionStatus: 'REJECTED_STALE',
+                rejectedAt: rejectedAtIso,
+                triageStatus: 'PENDING',
+                originalCreatedAt: target.createdAt,
+              };
+              qStore.put(quarantined);
+              quarantinedMutations.push(quarantined);
+            }
+
+            result = {
+              minActiveRevision: minActiveRevisionStr,
+              scannedCount: scopedPending.length,
+              quarantinedCount: quarantinedMutations.length,
+              quarantinedMutations,
+            };
+
+            if (options?._testHookBeforeComplete) {
+              options._testHookBeforeComplete(tx);
+            }
+          } catch (err) {
+            fail(err);
+          }
+        };
+
+        const mReq = metaStore.get(ownerScope);
+        mReq.onerror = () =>
+          fail(mReq.error || new Error('Failed reading sync_meta during watermark quarantine.'));
+        mReq.onsuccess = () => {
+          syncMeta = mReq.result as LocalSyncMeta | undefined;
+          remaining -= 1;
+          if (remaining === 0) onAllLoaded();
+        };
+
+        const pIndex = pStore.index('by_scope_created');
+        const pRange = IDBKeyRange.bound([ownerScope, ''], [ownerScope, '\uffff']);
+        const pReq = pIndex.openCursor(pRange, 'next');
+        pReq.onerror = () =>
+          fail(pReq.error || new Error('Failed scanning pending_mutations during watermark quarantine.'));
+        pReq.onsuccess = () => {
+          try {
+            const cursor = pReq.result;
+            if (cursor) {
+              const item = cursor.value as LocalPendingMutation;
+              if (item && item.ownerScope === ownerScope) {
+                scopedPending.push(item);
+              }
+              cursor.continue();
+            } else {
+              remaining -= 1;
+              if (remaining === 0) onAllLoaded();
+            }
+          } catch (err) {
+            fail(err);
+          }
+        };
+
+        tx.oncomplete = () => {
+          if (!settled) {
+            settled = true;
+            resolve(result);
+          }
+        };
+        tx.onerror = () =>
+          fail(tx.error || new Error('Transaction error in quarantineStalePendingMutationsByWatermark.'));
+        tx.onabort = () =>
+          fail(tx.error || new Error('Transaction aborted in quarantineStalePendingMutationsByWatermark.'));
       } catch (err) {
         reject(err);
       }

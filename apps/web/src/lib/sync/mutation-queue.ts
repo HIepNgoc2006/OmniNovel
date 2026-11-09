@@ -12,6 +12,8 @@ import {
   QuarantineRejectionStatus,
   CausalTriageProof,
   assertValidScope,
+  InvalidDeltaPayloadError,
+  isValidRevisionString,
   RecordTransientFailureOptions,
   TransientFailureResult,
 } from '../storage/indexed-db-client';
@@ -543,6 +545,75 @@ export class MutationQueue {
       return emptyBatch;
     }
 
+    const activeInFlightIds = new Set<string>();
+    for (const [mId, owner] of this.inFlightMap.entries()) {
+      if (owner.ownerScope === currentScope && owner.scopeGeneration === currentGeneration) {
+        activeInFlightIds.add(mId);
+      }
+    }
+
+    const emitQuarantinedEvents = (quarantinedList: LocalQuarantinedMutation[]) => {
+      if (
+        quarantinedList.length === 0 ||
+        this.ownerScope !== currentScope ||
+        this.scopeGeneration !== currentGeneration ||
+        options?.leaderSignal?.aborted
+      ) {
+        return;
+      }
+      for (const quarantinedItem of quarantinedList) {
+        try {
+          this.assertAuthorityAtBoundary(currentScope, currentGeneration);
+          if (options?.leaderSignal?.aborted) break;
+          this.onMutationQuarantined?.(currentScope, quarantinedItem);
+        } catch {
+          break;
+        }
+      }
+    };
+
+    const isLeaderAbortedError = (err: unknown): boolean =>
+      Boolean(options?.leaderSignal?.aborted) ||
+      (err instanceof Error && err.message === 'Leader signal aborted during preparePushBatch.');
+
+    let watermarkSweep;
+    try {
+      watermarkSweep = await this.dbClient.quarantineStalePendingMutationsByWatermark(
+        currentScope,
+        {
+          excludeMutationIds: activeInFlightIds,
+          checkAdmission: () => {
+            this.assertAuthorityAtBoundary(currentScope, currentGeneration);
+            if (options?.leaderSignal?.aborted) {
+              throw new Error('Leader signal aborted during preparePushBatch.');
+            }
+          },
+        }
+      );
+    } catch (err) {
+      if (
+        isLeaderAbortedError(err) ||
+        err instanceof ScopeTransitioningError ||
+        err instanceof ScopeMismatchError ||
+        err instanceof StaleBatchRejectedError
+      ) {
+        return emptyBatch;
+      }
+      throw err;
+    }
+
+    emitQuarantinedEvents(watermarkSweep.quarantinedMutations);
+
+    try {
+      this.assertAuthorityAtBoundary(currentScope, currentGeneration);
+    } catch {
+      return emptyBatch;
+    }
+
+    if (options?.leaderSignal?.aborted) {
+      return emptyBatch;
+    }
+
     const pending = await this.dbClient.getPendingMutations(currentScope, limit * 2);
 
     // Asynchronous boundary check: ensure scope, generation, and authority haven't changed during getPendingMutations
@@ -556,18 +627,69 @@ export class MutationQueue {
       return emptyBatch;
     }
 
-    const selected: LocalPendingMutation[] = [];
+    const minActiveRev = BigInt(watermarkSweep.minActiveRevision);
+    const candidates: LocalPendingMutation[] = [];
+    let lateStaleDetected = false;
 
     for (const item of pending) {
-      if (selected.length >= limit) {
-        break;
-      }
       if (this.inFlightMap.has(item.mutationId)) {
         continue;
       }
       // Persistent Backoff Invariant: item.nextRetryAt stored in IndexedDB
       if (item.nextRetryAt && item.nextRetryAt > now) {
         continue;
+      }
+      if (minActiveRev > 0n) {
+        if (!isValidRevisionString(item.baseServerRevision)) {
+          throw new InvalidDeltaPayloadError(
+            `Invalid baseServerRevision "${item.baseServerRevision}" on pending mutation "${item.mutationId}".`
+          );
+        }
+        if (BigInt(item.baseServerRevision) < minActiveRev) {
+          lateStaleDetected = true;
+          continue;
+        }
+      }
+      candidates.push(item);
+    }
+
+    if (lateStaleDetected) {
+      try {
+        const followUpSweep = await this.dbClient.quarantineStalePendingMutationsByWatermark(
+          currentScope,
+          {
+            excludeMutationIds: activeInFlightIds,
+            checkAdmission: () => {
+              this.assertAuthorityAtBoundary(currentScope, currentGeneration);
+              if (options?.leaderSignal?.aborted) {
+                throw new Error('Leader signal aborted during preparePushBatch.');
+              }
+            },
+          }
+        );
+        emitQuarantinedEvents(followUpSweep.quarantinedMutations);
+        this.assertAuthorityAtBoundary(currentScope, currentGeneration);
+      } catch (err) {
+        if (
+          isLeaderAbortedError(err) ||
+          err instanceof ScopeTransitioningError ||
+          err instanceof ScopeMismatchError ||
+          err instanceof StaleBatchRejectedError
+        ) {
+          return emptyBatch;
+        }
+        throw err;
+      }
+      if (options?.leaderSignal?.aborted) {
+        return emptyBatch;
+      }
+    }
+
+    const selected: LocalPendingMutation[] = [];
+
+    for (const item of candidates) {
+      if (selected.length >= limit) {
+        break;
       }
 
       this.inFlightMap.set(item.mutationId, {
@@ -1214,6 +1336,12 @@ export class MutationQueue {
 
     this.assertAuthorityAtBoundary(currentScope, currentGen);
 
+    if (quarantined.triageStatus === 'DISCARDED') {
+      throw new RequeueProhibitedError(
+        `Cannot requeue mutation "${mutationId}": mutation triageStatus is DISCARDED (terminal user decision).`
+      );
+    }
+
     if (quarantined.rejectionStatus === 'REJECTED_TOMBSTONE') {
       throw new RequeueProhibitedError(
         `Cannot requeue mutation "${mutationId}": mutation was REJECTED_TOMBSTONE because the entity was deleted on server. Replaying would violate anti-resurrection invariant.`
@@ -1229,11 +1357,42 @@ export class MutationQueue {
       );
     }
 
-    await this.dbClient.requeueQuarantinedMutation(currentScope, mutationId, triageProof, {
-      checkAdmission: () => {
-        this.assertAuthorityAtBoundary(currentScope, currentGen);
-      },
-    });
+    const syncMeta = await this.dbClient.getSyncMeta(currentScope);
+    this.assertAuthorityAtBoundary(currentScope, currentGen);
+
+    if (syncMeta?.minActiveRevision !== undefined && syncMeta?.minActiveRevision !== null) {
+      if (!isValidRevisionString(syncMeta.minActiveRevision)) {
+        throw new InvalidDeltaPayloadError(
+          `Invalid minActiveRevision during requeue for scope "${currentScope}": "${syncMeta.minActiveRevision}".`
+        );
+      }
+      const minActiveRev = BigInt(syncMeta.minActiveRevision);
+      if (minActiveRev > 0n) {
+        if (!isValidRevisionString(quarantined.baseServerRevision)) {
+          throw new InvalidDeltaPayloadError(
+            `Invalid baseServerRevision on quarantined mutation "${mutationId}": "${quarantined.baseServerRevision}".`
+          );
+        }
+        if (BigInt(quarantined.baseServerRevision) < minActiveRev) {
+          throw new RequeueProhibitedError(
+            `Cannot requeue mutation "${mutationId}": baseServerRevision "${quarantined.baseServerRevision}" is older than minActiveRevision "${syncMeta.minActiveRevision}".`
+          );
+        }
+      }
+    }
+
+    try {
+      await this.dbClient.requeueQuarantinedMutation(currentScope, mutationId, triageProof, {
+        checkAdmission: () => {
+          this.assertAuthorityAtBoundary(currentScope, currentGen);
+        },
+      });
+    } catch (err) {
+      if (err instanceof Error && err.message.startsWith('REQUEUE_PROHIBITED:')) {
+        throw new RequeueProhibitedError(err.message);
+      }
+      throw err;
+    }
   }
 
   /**

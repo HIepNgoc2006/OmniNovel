@@ -24,6 +24,11 @@ import {
   hydrateProjectionFromIndexedDb,
 } from '../lib/sync/projection-hydrator';
 import {
+  MutationQueue,
+  RequeueProhibitedError,
+  createStaticIdentityProvider,
+} from '../lib/sync/mutation-queue';
+import {
   SyncDomain,
   SyncOperation,
   ReadingMode,
@@ -1042,11 +1047,47 @@ describe('Phase 5.2b P1-01 — Durable STORE_TOMBSTONES (IDB v5), Migration, Bou
       expect(whilePendingQuarantined.safeGcFloor).toBe('75');
       expect(whilePendingQuarantined.retainedCount).toBe(1);
 
-      // Requeue q-transient-75 -> delete from pending -> now only DISCARDED exists
-      await dbClient.requeueQuarantinedMutation(scope, 'q-transient-75');
+      // P1-B watermark lock: q-transient-75 (baseRev=75 < minActiveRevision=100) cannot be requeued directly
+      await expect(dbClient.requeueQuarantinedMutation(scope, 'q-transient-75')).rejects.toThrow(
+        /REQUEUE_PROHIBITED/,
+      );
+
+      // Move baseRev=75 check to pending_mutations explicitly to verify pending-queue GC floor, then clear it
+      await dbClient.deleteQuarantinedMutation(scope, 'q-transient-75');
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scope,
+        mutationId: 'p-transient-75',
+        clientId: 'web-tab-1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-keep-90',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '75',
+        payload: { storyId: 'bm-keep-90', title: 'Transient Failure' },
+        createdAt: '2026-11-01T01:05:00.000Z',
+        retryCount: 0,
+      });
       expect((await dbClient.gcAuthoritativeTombstones(scope)).safeGcFloor).toBe('75');
 
-      await dbClient.deletePendingMutation(scope, 'q-transient-75');
+      await dbClient.deletePendingMutation(scope, 'p-transient-75');
+
+      // Requeue-able transient mutation at baseRev=100 (>= minActiveRevision=100) still requeues cleanly
+      await dbClient.quarantineMutation({
+        ownerScope: scope,
+        mutationId: 'q-transient-100',
+        clientId: 'web-tab-1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-valid-100',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '100',
+        payload: { storyId: 'bm-valid-100', title: 'Valid Requeue At Watermark' },
+        rejectionReason: 'EXCEEDED_MAX_RETRIES',
+        rejectionStatus: 'EXCEEDED_MAX_RETRIES',
+        rejectedAt: '2026-11-01T01:06:00.000Z',
+        triageStatus: 'PENDING',
+      });
+      await dbClient.requeueQuarantinedMutation(scope, 'q-transient-100');
+      expect(await dbClient.getPendingMutation(scope, 'q-transient-100')).not.toBeNull();
+      await dbClient.deletePendingMutation(scope, 'q-transient-100');
 
       // APPROVED quarantined entry (baseRev=78) ALSO pins safeGcFloor (only DISCARDED is excluded)
       await dbClient.quarantineMutation({
@@ -1704,6 +1745,179 @@ describe('Phase 5.2b P1-01 — Durable STORE_TOMBSTONES (IDB v5), Migration, Bou
       const hydrated = await hydrateProjectionFromIndexedDb(dbClient, scope);
       expect(hydrated.bookmarks).toHaveLength(0);
       expect(hydrated.suppressedMutationCount).toBe(1);
+    });
+  });
+
+  describe('P1-01-R9: End-to-End Post-GC Slow-Tab Stale Pending Remediation (P1-A & P1-B)', () => {
+    it('suppresses slow-tab pending(baseRev=70) after DELETE@80 + GC@minActive=100 across reload, blocks push/requeue while preserving unconfirmed data in quarantine, and enforces DISCARDED guard', async () => {
+      const scope = 'account:usr-p1-01-r9-main';
+      const scopeOther = 'account:usr-p1-01-r9-other';
+
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: scope,
+        lastSyncedServerRevision: '50',
+        minActiveRevision: '10',
+        lastSyncTimestamp: '2026-11-01T00:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
+      });
+      await seedRawReadySyncMeta(dbClient, {
+        ownerScope: scopeOther,
+        lastSyncedServerRevision: '50',
+        minActiveRevision: '10',
+        lastSyncTimestamp: '2026-11-01T00:00:00.000Z',
+        effectiveHistoryEpochs: {},
+        syncState: 'IDLE',
+        authoritativeBaselineStatus: 'READY',
+      });
+
+      // Step 1: Delta delivers DELETE@80 (creates tombstone@80, checkpoint='105'), then minActiveRevision advances to 100
+      await dbClient.applyAuthoritativeDeltaPage({
+        ownerScope: scope,
+        expectedCheckpoint: '50',
+        page: {
+          currentServerRevision: '105',
+          minActiveRevision: '10',
+          nextRevision: null,
+          hasMore: false,
+          changes: [
+            {
+              revision: '80',
+              domain: SyncDomain.BOOKMARK,
+              entityId: 'bm-postgc',
+              operation: SyncOperation.DELETE,
+              payload: { storyId: 'bm-postgc' },
+              createdAt: '2026-11-01T00:30:00.000Z',
+            },
+          ],
+        },
+      });
+      expect(
+        (await dbClient.getAuthoritativeTombstone(scope, SyncDomain.BOOKMARK, 'bm-postgc'))
+          ?.deletedAtRevision,
+      ).toBe('80');
+
+      await dbClient.applyAuthoritativeDeltaPage({
+        ownerScope: scope,
+        expectedCheckpoint: '105',
+        page: {
+          currentServerRevision: '120',
+          minActiveRevision: '100',
+          nextRevision: null,
+          hasMore: false,
+          changes: [],
+        },
+      });
+
+      // Step 2: GC removes expired tombstone '80' because safeGcFloor='100'
+      const gcRes = await dbClient.gcAuthoritativeTombstones(scope);
+      expect(gcRes.deletedCount).toBe(1);
+      expect(await dbClient.getAllAuthoritativeTombstones(scope)).toHaveLength(0);
+
+      // Step 3: Slow tab wakes up and writes unconfirmed local bookmark + pending(baseRev=70)
+      await dbClient.putBookmarkWithMutation(
+        {
+          ownerScope: scope,
+          storyId: 'bm-postgc',
+          title: 'Slow Tab Offline Edit',
+          createdAt: '2026-11-01T00:10:00.000Z',
+        },
+        {
+          ownerScope: scope,
+          mutationId: 'mut-slow-tab-70',
+          clientId: 'slow-tab-offline',
+          domain: SyncDomain.BOOKMARK,
+          entityId: 'bm-postgc',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '70',
+          payload: { storyId: 'bm-postgc', title: 'Slow Tab Offline Edit', note: 'User draft' },
+          createdAt: '2026-11-01T00:10:00.000Z',
+          retryCount: 0,
+        },
+      );
+      await dbClient.enqueuePendingMutation({
+        ownerScope: scopeOther,
+        mutationId: 'mut-other-70',
+        clientId: 'other-tab',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-other',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '70',
+        payload: { storyId: 'bm-other', title: 'Valid in Other Scope' },
+        createdAt: '2026-11-01T00:10:00.000Z',
+        retryCount: 0,
+      });
+
+      // Step 4: Close DB and reopen to simulate browser reload
+      dbClient.close();
+      const reloadedClient = new IndexedDbClient();
+      try {
+        // Projection hides stale pending without tombstones AND materializer cleans legacy store
+        const hydratedAfterReload = await hydrateProjectionFromIndexedDb(reloadedClient, scope);
+        expect(hydratedAfterReload.mode).toBe('AUTHORITATIVE_PROJECTION');
+        expect(hydratedAfterReload.baselineStatus).toBe('READY');
+        expect(hydratedAfterReload.bookmarks).toHaveLength(0);
+        expect(hydratedAfterReload.suppressedMutationCount).toBe(1);
+
+        const hydrator = new SyncProjectionHydrator(reloadedClient);
+        await hydrator.materializeToLegacyStores(scope);
+        expect(await reloadedClient.getBookmark(scope, 'bm-postgc')).toBeNull();
+
+        // Data is NOT silently deleted from queue before quarantine transfer
+        expect(await reloadedClient.getPendingMutation(scope, 'mut-slow-tab-70')).not.toBeNull();
+
+        // Step 5: Queue push preparation blocks push and atomically quarantines with sync_meta
+        const queue = new MutationQueue({
+          ownerScope: scope,
+          identityStateProvider: createStaticIdentityProvider(scope),
+          dbClient: reloadedClient,
+        });
+        const pushBatch = await queue.preparePushBatch();
+        expect(pushBatch.mutations).toHaveLength(0);
+
+        expect(await reloadedClient.getPendingMutation(scope, 'mut-slow-tab-70')).toBeNull();
+        const quarantined = await reloadedClient.getQuarantinedMutation(scope, 'mut-slow-tab-70');
+        expect(quarantined).not.toBeNull();
+        expect(quarantined?.rejectionStatus).toBe('REJECTED_STALE');
+        expect(quarantined?.triageStatus).toBe('PENDING');
+        expect(quarantined?.payload).toEqual({
+          storyId: 'bm-postgc',
+          title: 'Slow Tab Offline Edit',
+          note: 'User draft',
+        });
+
+        // Cross-scope isolation: scopeOther's baseRev=70 (>= minActiveRevision=10) untouched
+        expect(await reloadedClient.getPendingMutation(scopeOther, 'mut-other-70')).not.toBeNull();
+        expect(await reloadedClient.getQuarantinedMutations(scopeOther)).toHaveLength(0);
+
+        // Step 6: Both watermark guard and DISCARDED guard prohibit requeue across reload
+        await expect(queue.requeue('mut-slow-tab-70')).rejects.toThrow(RequeueProhibitedError);
+        await expect(
+          reloadedClient.requeueQuarantinedMutation(scope, 'mut-slow-tab-70'),
+        ).rejects.toThrow(/REQUEUE_PROHIBITED/);
+
+        // Transition record to DISCARDED (simulating user discard) and prove P1-A lock
+        const rawDb = await reloadedClient.getDatabase();
+        await new Promise<void>((resolve, reject) => {
+          const wTx = rawDb.transaction(STORE_QUARANTINED_MUTATIONS, 'readwrite');
+          wTx.objectStore(STORE_QUARANTINED_MUTATIONS).put({
+            ...quarantined!,
+            triageStatus: 'DISCARDED',
+          });
+          wTx.oncomplete = () => resolve();
+          wTx.onerror = () => reject(wTx.error);
+        });
+
+        await expect(queue.requeue('mut-slow-tab-70')).rejects.toThrow(RequeueProhibitedError);
+        await expect(
+          reloadedClient.requeueQuarantinedMutation(scope, 'mut-slow-tab-70'),
+        ).rejects.toThrow(/REQUEUE_PROHIBITED/);
+        expect(await reloadedClient.getBookmark(scope, 'bm-postgc')).toBeNull();
+        expect(await reloadedClient.getPendingMutation(scope, 'mut-slow-tab-70')).toBeNull();
+      } finally {
+        reloadedClient.close();
+      }
     });
   });
 });

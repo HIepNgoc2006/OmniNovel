@@ -613,6 +613,7 @@ export class SyncProjectionHydrator {
     const projected: CausalProjectionResult = resolveCausalProjection({
       ownerScope,
       syncedServerRevision: syncedRevision,
+      minActiveRevision: snapshot.syncMeta?.minActiveRevision,
       effectiveHistoryEpochs: effectiveEpochs,
       shadows: snapshot.shadows,
       pendingMutations: snapshot.pendingMutations,
@@ -732,6 +733,7 @@ export class SyncProjectionHydrator {
             const projected = resolveCausalProjection({
               ownerScope,
               syncedServerRevision: syncedRevision,
+              minActiveRevision: snapshot.syncMeta?.minActiveRevision,
               effectiveHistoryEpochs: snapshot.syncMeta?.effectiveHistoryEpochs || {},
               shadows: snapshot.shadows,
               pendingMutations: snapshot.pendingMutations,

@@ -1,10 +1,6 @@
 # OmniNovel Scoped Trivy Ignore: prometheus
 # Target Image: prometheus
-# Count: 5 CVEs
+# Count: 1 CVEs
 # Standard: Fail-Closed Gate with Governed Exception Policy (SEC-REG-6.4.4A)
 
-CVE-2026-111943
-CVE-2026-42154
-CVE-2026-78667
-CVE-2026-78669
-CVE-2026-97031
+CVE-2026-78661

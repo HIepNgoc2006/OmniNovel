@@ -753,6 +753,234 @@ describe('Phase 5.2c — Pure Deterministic Causal Projection Engine & Hydration
       expect(afterTtlExpired.activeGraceCount).toBe(0);
     });
 
+    it('P2-01: fails closed deterministically when graceEntries are passed without finite nowMs', () => {
+      const shadowChap3: AuthoritativeShadowRecord = {
+        ownerScope: scope,
+        domain: SyncDomain.PROGRESS,
+        entityKey: 'story-p201',
+        serverRevision: '100',
+        epoch: 0,
+        payload: {
+          storyId: 'story-p201',
+          chapterId: 'chap-3',
+          readingMode: ReadingMode.WEBTOON,
+          pageIndex: 1,
+          scrollPosition: 300,
+          progressPercentage: 50,
+        },
+        isDeleted: false,
+        updatedAt: 1730419200000,
+      };
+      const t0 = 1_730_440_000_000;
+      const graceEntries: GraceProjectionEntry[] = [
+        {
+          ownerScope: scope,
+          mutation: {
+            ownerScope: scope,
+            mutationId: 'm-p201-grace',
+            clientId: 'c1',
+            domain: SyncDomain.PROGRESS,
+            entityId: 'story-p201',
+            operation: SyncOperation.UPSERT,
+            baseServerRevision: '100',
+            payload: {
+              storyId: 'story-p201',
+              chapterId: 'chap-5',
+              readingMode: ReadingMode.WEBTOON,
+              pageIndex: 1,
+              scrollPosition: 100,
+              progressPercentage: 25,
+            },
+            createdAt: '2026-11-01T04:00:00.000Z',
+          },
+          assignedRevision: '105',
+          recordedAtMs: t0,
+          expiresAtMs: t0 + DEFAULT_POST_RECEIPT_GRACE_TTL_MS,
+        },
+      ];
+
+      const withoutNowA = resolveCausalProjection({
+        ownerScope: scope,
+        syncedServerRevision: '100',
+        shadows: [shadowChap3],
+        pendingMutations: [],
+        graceEntries,
+      });
+      const withoutNowB = resolveCausalProjection({
+        ownerScope: scope,
+        syncedServerRevision: '100',
+        shadows: [shadowChap3],
+        pendingMutations: [],
+        graceEntries,
+      });
+      const withNaNNow = resolveCausalProjection({
+        ownerScope: scope,
+        syncedServerRevision: '100',
+        shadows: [shadowChap3],
+        pendingMutations: [],
+        graceEntries,
+        nowMs: Number.NaN,
+      });
+
+      expect(withoutNowA).toEqual(withoutNowB);
+      expect(withoutNowA.activeGraceCount).toBe(0);
+      expect(withoutNowA.progress[0]).toMatchObject({
+        chapterId: 'chap-3',
+        source: 'SHADOW',
+      });
+      expect(withNaNNow).toEqual(withoutNowA);
+    });
+
+    it('integrates SyncProjectionHydrator.recordAppliedGrace() through GRACE -> Delta Pull catch-up SHADOW & TTL expiration', async () => {
+      await seedRawReadySyncMeta(dbClient, makeReadyMeta(scope, { lastSyncedServerRevision: '100' }));
+      await dbClient.putAuthoritativeShadow({
+        ownerScope: scope,
+        domain: SyncDomain.PROGRESS,
+        entityKey: 'story-grace-idb',
+        serverRevision: '100',
+        epoch: 0,
+        payload: {
+          storyId: 'story-grace-idb',
+          chapterId: 'chap-3',
+          readingMode: ReadingMode.WEBTOON,
+          pageIndex: 1,
+          scrollPosition: 300,
+          progressPercentage: 50,
+        },
+        isDeleted: false,
+        updatedAt: 1730419200000,
+      });
+      await dbClient.putAuthoritativeShadow({
+        ownerScope: scope,
+        domain: SyncDomain.PREFERENCE,
+        entityKey: 'reader_theme',
+        serverRevision: '100',
+        epoch: 0,
+        payload: { key: 'reader_theme', value: 'light' },
+        isDeleted: false,
+        updatedAt: 1730419200000,
+      });
+
+      const t0 = 1_730_440_000_000;
+      let fakeNow = t0;
+      const hydrator = new SyncProjectionHydrator(dbClient, () => fakeNow);
+
+      // Simulate Step 4 receiving APPLIED receipts after dequeuing/deleting pending mutations
+      hydrator.recordAppliedGrace(
+        scope,
+        {
+          ownerScope: scope,
+          mutationId: 'm-grace-chap5',
+          clientId: 'c1',
+          domain: SyncDomain.PROGRESS,
+          entityId: 'story-grace-idb',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '100',
+          payload: {
+            storyId: 'story-grace-idb',
+            chapterId: 'chap-5',
+            readingMode: ReadingMode.WEBTOON,
+            pageIndex: 1,
+            scrollPosition: 120,
+            progressPercentage: 20,
+          },
+          createdAt: '2026-11-01T04:00:00.000Z',
+        },
+        '105',
+        5_000,
+      );
+      hydrator.recordAppliedGrace(
+        scope,
+        {
+          ownerScope: scope,
+          mutationId: 'm-grace-pref',
+          clientId: 'c1',
+          domain: SyncDomain.PREFERENCE,
+          entityId: 'reader_theme',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '100',
+          payload: { key: 'reader_theme', value: 'sepia' },
+          createdAt: '2026-11-01T04:01:00.000Z',
+        },
+        '110',
+        5_000,
+      );
+
+      // 1. Inside TTL before Delta Pull catches up -> both show GRACE
+      fakeNow = t0 + 1_000;
+      const inGrace = await hydrator.hydrateScope(scope);
+      expect(inGrace.activeGraceCount).toBe(2);
+      expect(inGrace.progress[0]).toMatchObject({
+        chapterId: 'chap-5',
+        progressPercentage: 20,
+        source: 'GRACE',
+      });
+      expect(inGrace.preferences[0]).toMatchObject({
+        key: 'reader_theme',
+        value: 'sepia',
+        source: 'GRACE',
+      });
+
+      // 2. Step 5.2b Delta Pull catches up to rev '105' -> rev '105' grace retires to SHADOW; rev '110' remains GRACE
+      await dbClient.applyAuthoritativeDeltaPage({
+        ownerScope: scope,
+        expectedCheckpoint: '100',
+        page: {
+          currentServerRevision: '105',
+          minActiveRevision: '0',
+          nextRevision: null,
+          hasMore: false,
+          changes: [
+            {
+              revision: '105',
+              domain: SyncDomain.PROGRESS,
+              entityId: 'story-grace-idb',
+              operation: SyncOperation.UPSERT,
+              payload: {
+                storyId: 'story-grace-idb',
+                chapterId: 'chap-5',
+                readingMode: ReadingMode.WEBTOON,
+                pageIndex: 1,
+                scrollPosition: 180,
+                progressPercentage: 25,
+              },
+              createdAt: '2026-11-01T04:00:01.000Z',
+            },
+          ],
+        },
+      });
+
+      fakeNow = t0 + 2_000;
+      const afterCatchup = await hydrator.hydrateScope(scope);
+      expect(afterCatchup.activeGraceCount).toBe(1);
+      expect(afterCatchup.progress[0]).toMatchObject({
+        chapterId: 'chap-5',
+        progressPercentage: 25,
+        source: 'SHADOW',
+      });
+      expect(afterCatchup.preferences[0]).toMatchObject({
+        key: 'reader_theme',
+        value: 'sepia',
+        source: 'GRACE',
+      });
+
+      // 3. TTL expires at t0 + 5000ms without rev 110 Delta Pull -> remaining grace pruned & reverts cleanly to Shadow
+      fakeNow = t0 + 5_000;
+      const afterTtl = await hydrator.hydrateScope(scope);
+      expect(afterTtl.activeGraceCount).toBe(0);
+      expect(afterTtl.preferences[0]).toMatchObject({
+        key: 'reader_theme',
+        value: 'light',
+        source: 'SHADOW',
+      });
+
+      // Pruned grace entry was permanently evicted from internal map (does not revive if clock checked earlier)
+      fakeNow = t0 + 2_500;
+      const afterPruneReCheck = await hydrator.hydrateScope(scope);
+      expect(afterPruneReCheck.activeGraceCount).toBe(0);
+      expect(afterPruneReCheck.preferences[0].value).toBe('light');
+    });
+
     it('fails closed into DEGRADED_COMPATIBILITY mode for UNINITIALIZED / BOOTSTRAPPING / missing sync_meta', async () => {
       const guestScope = 'guest:dev-degraded-1';
       await dbClient.putBookmark({
@@ -1528,6 +1756,355 @@ describe('Phase 5.2c — Pure Deterministic Causal Projection Engine & Hydration
       } finally {
         reloadedClient.close();
       }
+    });
+
+    it('P1-02: updates stale legacy progress/history when Shadow wins monotonic merge while keeping concurrent pending protection intact', async () => {
+      await seedRawReadySyncMeta(dbClient, makeReadyMeta(scope));
+
+      // Offline Session 1: device persisted lower progress (40%) & history (40% / 30%) + pending mutations
+      await dbClient.recordReadingSessionWithMutation(
+        {
+          ownerScope: scope,
+          storyId: 'story-p102',
+          chapterId: 'chap-2',
+          readingMode: ReadingMode.WEBTOON,
+          pageIndex: 1,
+          scrollPosition: 200,
+          progressPercentage: 40,
+          updatedAt: '2026-11-01T01:00:00.000Z',
+          deviceTimestamp: 1730422800000,
+        },
+        {
+          ownerScope: scope,
+          storyId: 'story-p102',
+          chapterId: 'chap-2',
+          storyTitle: 'P102 Monotonic Novel',
+          chapterNumber: 2,
+          progressPercentage: 40,
+          lastReadAt: '2026-11-01T01:00:00.000Z',
+        },
+        {
+          ownerScope: scope,
+          mutationId: 'mut-p102-prog40',
+          clientId: 'c1',
+          domain: SyncDomain.PROGRESS,
+          entityId: 'story-p102',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '90',
+          payload: {
+            storyId: 'story-p102',
+            chapterId: 'chap-2',
+            readingMode: ReadingMode.WEBTOON,
+            pageIndex: 1,
+            scrollPosition: 200,
+            progressPercentage: 40,
+            observedHistoryEpoch: 0,
+          },
+          createdAt: '2026-11-01T01:00:00.000Z',
+        },
+      );
+
+      await dbClient.recordReadingSessionWithMutation(
+        {
+          ownerScope: scope,
+          storyId: 'story-hist-only',
+          chapterId: 'chap-1',
+          readingMode: ReadingMode.WEBTOON,
+          pageIndex: 1,
+          scrollPosition: 100,
+          progressPercentage: 30,
+          updatedAt: '2026-11-01T01:05:00.000Z',
+          deviceTimestamp: 1730423100000,
+        },
+        {
+          ownerScope: scope,
+          storyId: 'story-hist-only',
+          chapterId: 'chap-1',
+          storyTitle: 'History Shadow Winner Novel',
+          chapterNumber: 1,
+          progressPercentage: 30,
+          lastReadAt: '2026-11-01T01:05:00.000Z',
+        },
+        {
+          ownerScope: scope,
+          mutationId: 'mut-hist-only-30',
+          clientId: 'c1',
+          domain: SyncDomain.HISTORY,
+          entityId: 'story-hist-only',
+          operation: SyncOperation.UPSERT,
+          baseServerRevision: '90',
+          payload: {
+            storyId: 'story-hist-only',
+            chapterId: 'chap-1',
+            progressPercentage: 30,
+            observedHistoryEpoch: 0,
+          },
+          createdAt: '2026-11-01T01:05:00.000Z',
+        },
+      );
+
+      // Authoritative Shadow arrives with higher same-chapter values (Progress 60%, History 80%)
+      await dbClient.putAuthoritativeShadow({
+        ownerScope: scope,
+        domain: SyncDomain.PROGRESS,
+        entityKey: 'story-p102',
+        serverRevision: '100',
+        epoch: 0,
+        payload: {
+          storyId: 'story-p102',
+          chapterId: 'chap-2',
+          readingMode: ReadingMode.WEBTOON,
+          pageIndex: 1,
+          scrollPosition: 450,
+          progressPercentage: 60,
+          updatedAt: '2026-11-01T02:00:00.000Z',
+        },
+        isDeleted: false,
+        updatedAt: 1730426400000,
+      });
+      await dbClient.putAuthoritativeShadow({
+        ownerScope: scope,
+        domain: SyncDomain.HISTORY,
+        entityKey: 'story-p102:chap-2',
+        serverRevision: '100',
+        epoch: 0,
+        payload: {
+          storyId: 'story-p102',
+          chapterId: 'chap-2',
+          progressPercentage: 80,
+          lastReadAt: '2026-11-01T02:00:00.000Z',
+        },
+        isDeleted: false,
+        updatedAt: 1730426400000,
+      });
+      await dbClient.putAuthoritativeShadow({
+        ownerScope: scope,
+        domain: SyncDomain.HISTORY,
+        entityKey: 'story-hist-only:chap-1',
+        serverRevision: '100',
+        epoch: 0,
+        payload: {
+          storyId: 'story-hist-only',
+          chapterId: 'chap-1',
+          progressPercentage: 80,
+          lastReadAt: '2026-11-01T02:05:00.000Z',
+        },
+        isDeleted: false,
+        updatedAt: 1730426700000,
+      });
+      // Concurrent story where Shadow has 50% on chap-1
+      await dbClient.putAuthoritativeShadow({
+        ownerScope: scope,
+        domain: SyncDomain.PROGRESS,
+        entityKey: 'story-concurrent',
+        serverRevision: '100',
+        epoch: 0,
+        payload: {
+          storyId: 'story-concurrent',
+          chapterId: 'chap-1',
+          readingMode: ReadingMode.WEBTOON,
+          pageIndex: 1,
+          scrollPosition: 250,
+          progressPercentage: 50,
+          updatedAt: '2026-11-01T02:00:00.000Z',
+        },
+        isDeleted: false,
+        updatedAt: 1730426400000,
+      });
+
+      const hydrator = new SyncProjectionHydrator(dbClient);
+
+      // Materialize while a concurrent winning local write (88% on story-concurrent) runs right before tx lock
+      const matRes = await hydrator.materializeToLegacyStores(scope, {
+        _testHookBeforeTransaction: async () => {
+          await dbClient.recordReadingSessionWithMutation(
+            {
+              ownerScope: scope,
+              storyId: 'story-concurrent',
+              chapterId: 'chap-1',
+              readingMode: ReadingMode.WEBTOON,
+              pageIndex: 1,
+              scrollPosition: 700,
+              progressPercentage: 88,
+              updatedAt: '2026-11-01T06:00:00.000Z',
+              deviceTimestamp: 1730440800000,
+            },
+            {
+              ownerScope: scope,
+              storyId: 'story-concurrent',
+              chapterId: 'chap-1',
+              storyTitle: 'Concurrent Winner Novel',
+              chapterNumber: 1,
+              progressPercentage: 88,
+              lastReadAt: '2026-11-01T06:00:00.000Z',
+            },
+            {
+              ownerScope: scope,
+              mutationId: 'mut-concurrent-win88',
+              clientId: 'c1',
+              domain: SyncDomain.PROGRESS,
+              entityId: 'story-concurrent',
+              operation: SyncOperation.UPSERT,
+              baseServerRevision: '100',
+              payload: {
+                storyId: 'story-concurrent',
+                chapterId: 'chap-1',
+                readingMode: ReadingMode.WEBTOON,
+                pageIndex: 1,
+                scrollPosition: 700,
+                progressPercentage: 88,
+                observedHistoryEpoch: 0,
+              },
+              createdAt: '2026-11-01T06:00:00.000Z',
+            },
+          );
+        },
+      });
+
+      expect(matRes.materialized).toBe(true);
+      // Concurrent winning write MUST stay protected in preservedPendingKeys; Shadow-won keys MUST NOT!
+      expect(matRes.preservedPendingKeys).toContain('PROGRESS:story-concurrent');
+      expect(matRes.preservedPendingKeys).toContain('HISTORY:story-concurrent:chap-1');
+      expect(matRes.preservedPendingKeys).not.toContain('PROGRESS:story-p102');
+      expect(matRes.preservedPendingKeys).not.toContain('HISTORY:story-p102:chap-2');
+      expect(matRes.preservedPendingKeys).not.toContain('HISTORY:story-hist-only:chap-1');
+
+      // 1. Legacy progress for story-p102 updated from stale 40% -> Shadow 60% (and scrollPosition 450)
+      const legP102 = await dbClient.getProgress(scope, 'story-p102');
+      expect(legP102).toMatchObject({
+        chapterId: 'chap-2',
+        progressPercentage: 60,
+        scrollPosition: 450,
+      });
+
+      // 2. Legacy history updated to Shadow 80% for both PROGRESS-mirrored and direct HISTORY entries
+      const allLegHist = await dbClient.getHistory(scope);
+      expect(
+        allLegHist.find((h) => h.storyId === 'story-p102' && h.chapterId === 'chap-2'),
+      ).toMatchObject({
+        storyTitle: 'P102 Monotonic Novel',
+        chapterNumber: 2,
+        progressPercentage: 80,
+      });
+      expect(
+        allLegHist.find((h) => h.storyId === 'story-hist-only' && h.chapterId === 'chap-1'),
+      ).toMatchObject({
+        storyTitle: 'History Shadow Winner Novel',
+        chapterNumber: 1,
+        progressPercentage: 80,
+      });
+
+      // 3. Pending mutations remain untouched in pending_mutations for Step 4 push
+      expect(await dbClient.getPendingMutation(scope, 'mut-p102-prog40')).not.toBeNull();
+      expect(await dbClient.getPendingMutation(scope, 'mut-hist-only-30')).not.toBeNull();
+      expect(await dbClient.getPendingMutation(scope, 'mut-concurrent-win88')).not.toBeNull();
+
+      // 4. Concurrent winning write preserved 100%
+      const legConcurrent = await dbClient.getProgress(scope, 'story-concurrent');
+      expect(legConcurrent).toMatchObject({
+        chapterId: 'chap-1',
+        progressPercentage: 88,
+        scrollPosition: 700,
+      });
+    });
+
+    it('checkAdmission rollback: fails pre-transaction AND atomically aborts mid-transaction without mutating legacy stores', async () => {
+      await seedRawReadySyncMeta(dbClient, makeReadyMeta(scope));
+      await dbClient.putAuthoritativeShadow({
+        ownerScope: scope,
+        domain: SyncDomain.BOOKMARK,
+        entityKey: 'story-shadow-new',
+        serverRevision: '100',
+        epoch: 0,
+        payload: { storyId: 'story-shadow-new', title: 'New From Server' },
+        isDeleted: false,
+        updatedAt: 1730426400000,
+      });
+      await dbClient.putAuthoritativeShadow({
+        ownerScope: scope,
+        domain: SyncDomain.PROGRESS,
+        entityKey: 'story-prog-rb',
+        serverRevision: '100',
+        epoch: 0,
+        payload: {
+          storyId: 'story-prog-rb',
+          chapterId: 'chap-5',
+          readingMode: ReadingMode.WEBTOON,
+          pageIndex: 1,
+          scrollPosition: 500,
+          progressPercentage: 90,
+        },
+        isDeleted: false,
+        updatedAt: 1730426400000,
+      });
+
+      // Seed existing legacy state that materialization would overwrite / delete
+      await dbClient.putBookmark({
+        ownerScope: scope,
+        storyId: 'story-legacy-keep-on-abort',
+        title: 'Must Survive Rollback',
+        createdAt: '2026-11-01T00:00:00.000Z',
+      });
+      await dbClient.putProgress({
+        ownerScope: scope,
+        storyId: 'story-prog-rb',
+        chapterId: 'chap-1',
+        readingMode: ReadingMode.WEBTOON,
+        pageIndex: 1,
+        scrollPosition: 10,
+        progressPercentage: 10,
+        updatedAt: '2026-11-01T00:00:00.000Z',
+        deviceTimestamp: 1730419200000,
+      });
+
+      const hydrator = new SyncProjectionHydrator(dbClient);
+
+      // Case 1: Pre-transaction checkAdmission fails after _testHookBeforeTransaction (authority revoked before opening tx)
+      let authorityValid = true;
+      await expect(
+        hydrator.materializeToLegacyStores(scope, {
+          checkAdmission: () => {
+            if (!authorityValid) {
+              throw new Error('PRE_TX_ADMISSION_REVOKED');
+            }
+          },
+          _testHookBeforeTransaction: () => {
+            authorityValid = false;
+          },
+        }),
+      ).rejects.toThrow('PRE_TX_ADMISSION_REVOKED');
+
+      expect((await dbClient.getBookmarks(scope)).map((b) => b.storyId)).toEqual([
+        'story-legacy-keep-on-abort',
+      ]);
+      expect(await dbClient.getProgress(scope, 'story-prog-rb')).toMatchObject({
+        chapterId: 'chap-1',
+        progressPercentage: 10,
+      });
+
+      // Case 2: Mid-transaction checkAdmission throws on 3rd check (after queued bmStore.put/delete & progStore.put) -> tx.abort() rolls back
+      let callCount = 0;
+      await expect(
+        hydrator.materializeToLegacyStores(scope, {
+          checkAdmission: () => {
+            callCount += 1;
+            if (callCount >= 3) {
+              throw new Error('MID_TX_ADMISSION_REVOKED');
+            }
+          },
+        }),
+      ).rejects.toThrow('MID_TX_ADMISSION_REVOKED');
+
+      // Assert complete atomic IDB rollback
+      expect(callCount).toBe(3);
+      expect((await dbClient.getBookmarks(scope)).map((b) => b.storyId)).toEqual([
+        'story-legacy-keep-on-abort',
+      ]);
+      expect(await dbClient.getBookmark(scope, 'story-shadow-new')).toBeNull();
+      expect(await dbClient.getProgress(scope, 'story-prog-rb')).toMatchObject({
+        chapterId: 'chap-1',
+        progressPercentage: 10,
+      });
     });
 
     it('fails closed when IndexedDB is unavailable (SSR environment)', async () => {

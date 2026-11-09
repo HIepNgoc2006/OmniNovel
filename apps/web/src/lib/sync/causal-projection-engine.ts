@@ -75,6 +75,11 @@ export interface CausalProjectionInput {
   graceEntries?: GraceProjectionEntry[];
   tombstoneRevisions?: Partial<Record<SyncDomain, Record<string, string>>>;
   catalog?: PresentationCatalog;
+  /**
+   * Caller-supplied epoch milliseconds used deterministically for `graceEntries` TTL evaluation.
+   * Fail-closed: if omitted or non-finite when `graceEntries` are present, grace entries are treated
+   * as expired instead of lingering indefinitely at `0ms`, preserving pure determinism.
+   */
   nowMs?: number;
 }
 
@@ -313,7 +318,8 @@ export function resolveCausalProjection(input: CausalProjectionInput): CausalPro
     ? input.syncedServerRevision
     : '0';
   const syncedRevBigInt = BigInt(syncedServerRevision);
-  const nowMs = typeof input.nowMs === 'number' && Number.isFinite(input.nowMs) ? input.nowMs : 0;
+  const hasExplicitNowMs = typeof input.nowMs === 'number' && Number.isFinite(input.nowMs);
+  const nowMs = hasExplicitNowMs ? (input.nowMs as number) : 0;
 
   const effectiveEpochs: Record<string, number> = {};
   if (input.effectiveHistoryEpochs) {
@@ -522,17 +528,20 @@ export function resolveCausalProjection(input: CausalProjectionInput): CausalPro
     .sort(compareMutationsChronologically);
   const pendingMutationIds = new Set(scopedPending.map((m) => m.mutationId));
 
-  // Filter bounded post-receipt grace entries (TTL & synced revision retirement)
-  const activeGraceEntries = (input.graceEntries ?? [])
-    .filter((g) => {
-      if (!g || g.ownerScope !== ownerScope || !g.mutation) return false;
-      if (pendingMutationIds.has(g.mutation.mutationId)) return false;
-      if (nowMs >= g.expiresAtMs) return false;
-      const assignedRev = parseRevisionBigInt(g.assignedRevision);
-      if (assignedRev !== null && syncedRevBigInt >= assignedRev) return false;
-      return true;
-    })
-    .sort((a, b) => compareMutationsChronologically(a.mutation, b.mutation));
+  // Filter bounded post-receipt grace entries (TTL & synced revision retirement).
+  // Fail-closed (P2-01): without a finite caller-supplied nowMs, grace entries are retired instead of lingering at 0ms.
+  const activeGraceEntries = hasExplicitNowMs
+    ? (input.graceEntries ?? [])
+        .filter((g) => {
+          if (!g || g.ownerScope !== ownerScope || !g.mutation) return false;
+          if (pendingMutationIds.has(g.mutation.mutationId)) return false;
+          if (!Number.isFinite(g.expiresAtMs) || nowMs >= g.expiresAtMs) return false;
+          const assignedRev = parseRevisionBigInt(g.assignedRevision);
+          if (assignedRev !== null && syncedRevBigInt >= assignedRev) return false;
+          return true;
+        })
+        .sort((a, b) => compareMutationsChronologically(a.mutation, b.mutation))
+    : [];
 
   let suppressedMutationCount = 0;
   let activeGraceAppliedCount = 0;
@@ -645,11 +654,14 @@ export function resolveCausalProjection(input: CausalProjectionInput): CausalPro
         for (const [k, item] of historyMap.entries()) {
           if (item.storyId === storyId) {
             historyMap.delete(k);
+            if (source === 'PENDING') {
+              protectedHistoryKeys.delete(k);
+            }
           }
         }
         progressMap.delete(storyId);
         if (source === 'PENDING') {
-          protectedProgressKeys.add(storyId);
+          protectedProgressKeys.delete(storyId);
         }
         return { applied: true };
       }
@@ -683,10 +695,15 @@ export function resolveCausalProjection(input: CausalProjectionInput): CausalPro
         }
 
         const existing = historyMap.get(chapterKey);
+        const incomingPct = clampPercentage(payload.progressPercentage);
         const mergedPct = Math.max(
           existing?.progressPercentage ?? 0,
-          clampPercentage(payload.progressPercentage),
+          incomingPct,
         );
+        const resultingSource: ProjectionSource =
+          existing && mergedPct === existing.progressPercentage && mergedPct > incomingPct
+            ? existing.source
+            : source;
         const incomingLastRead = resolveTimestampIso(payload, mutation.createdAt);
         const mergedLastRead = pickLatestIso(existing?.lastReadAt, incomingLastRead);
 
@@ -725,15 +742,13 @@ export function resolveCausalProjection(input: CausalProjectionInput): CausalPro
           chapterTitle,
           progressPercentage: mergedPct,
           lastReadAt: mergedLastRead,
-          source: existing && mergedPct === existing.progressPercentage && mergedPct > clampPercentage(payload.progressPercentage)
-            ? existing.source
-            : source,
+          source: resultingSource,
           serverRevision: existing?.serverRevision,
           epoch: acceptedEpoch,
           needsHydration: storyTitle.length === 0,
         });
 
-        if (source === 'PENDING') {
+        if (resultingSource === 'PENDING') {
           protectedHistoryKeys.add(chapterKey);
         }
         return { applied: true };
@@ -822,7 +837,7 @@ export function resolveCausalProjection(input: CausalProjectionInput): CausalPro
           });
         }
 
-        if (source === 'PENDING') {
+        if (progressMap.get(storyId)?.source === 'PENDING') {
           protectedProgressKeys.add(storyId);
         }
 
@@ -838,6 +853,10 @@ export function resolveCausalProjection(input: CausalProjectionInput): CausalPro
         if (canMirrorToHistory) {
           const existingHist = historyMap.get(chapterKey);
           const mergedPct = Math.max(existingHist?.progressPercentage ?? 0, incomingPct);
+          const resultingMirrorSource: ProjectionSource =
+            existingHist && mergedPct === existingHist.progressPercentage && mergedPct > incomingPct
+              ? existingHist.source
+              : source;
           const catStory = storiesCatalog[storyId];
           const catChap = chaptersCatalog[chapterId];
           const storyTitle =
@@ -875,16 +894,13 @@ export function resolveCausalProjection(input: CausalProjectionInput): CausalPro
             chapterTitle,
             progressPercentage: mergedPct,
             lastReadAt: pickLatestIso(existingHist?.lastReadAt, updatedAt),
-            source:
-              existingHist && mergedPct === existingHist.progressPercentage && mergedPct > incomingPct
-                ? existingHist.source
-                : source,
+            source: resultingMirrorSource,
             serverRevision: existingHist?.serverRevision,
             epoch: resolvedEpoch,
             needsHydration: storyTitle.length === 0,
           });
 
-          if (source === 'PENDING') {
+          if (resultingMirrorSource === 'PENDING') {
             protectedHistoryKeys.add(chapterKey);
           }
         }

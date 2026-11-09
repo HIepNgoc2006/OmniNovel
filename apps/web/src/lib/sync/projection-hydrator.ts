@@ -369,7 +369,7 @@ export class SyncProjectionHydrator {
     ttlMs: number = DEFAULT_POST_RECEIPT_GRACE_TTL_MS,
   ): void {
     assertValidScope(ownerScope);
-    if (!isValidRevisionString(assignedRevision) || ttlMs <= 0) {
+    if (!isValidRevisionString(assignedRevision) || !Number.isFinite(ttlMs) || ttlMs <= 0) {
       return;
     }
 
@@ -406,7 +406,9 @@ export class SyncProjectionHydrator {
 
     const syncedBigInt = isValidRevisionString(syncedRevision) ? BigInt(syncedRevision) : 0n;
     const retained = entries.filter((entry) => {
-      if (nowMs >= entry.expiresAtMs) return false;
+      if (!Number.isFinite(nowMs) || !Number.isFinite(entry.expiresAtMs) || nowMs >= entry.expiresAtMs) {
+        return false;
+      }
       const assignedBigInt = isValidRevisionString(entry.assignedRevision)
         ? BigInt(entry.assignedRevision)
         : 0n;
@@ -769,6 +771,9 @@ export class SyncProjectionHydrator {
                 deletedCounts.preferences += 1;
               }
             }
+
+            // Re-verify admission before committing the readwrite transaction (atomic rollback on revoke)
+            options?.checkAdmission?.();
 
             result = {
               ownerScope,

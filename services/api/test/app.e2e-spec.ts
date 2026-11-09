@@ -1778,19 +1778,42 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         .expect(202);
 
       expect(res.body.jobId).toBeDefined();
-      expect(res.body.status).toBe(TranslationJobStatus.QUEUED);
+      expect([
+        TranslationJobStatus.QUEUED,
+        TranslationJobStatus.PREPROCESSING,
+      ]).toContain(res.body.status);
       expect(res.body.isDuplicate).toBe(false);
       aiJobId = res.body.jobId;
 
-      // Kiểm tra DB: Đã pin đúng source_upload_session_id
+      // Kiểm tra DB: Đã pin đúng source_upload_session_id & nhất quán hợp đồng QUEUED -> PREPROCESSING
       const jobDb = await dataSource.query(
         `SELECT * FROM translation_jobs WHERE id = $1`,
         [aiJobId],
       );
-      expect([TranslationJobStatus.QUEUED, TranslationJobStatus.PREPROCESSING]).toContain(
-        jobDb[0].status,
-      );
-      expect(jobDb[0].attempt_count).toBeGreaterThanOrEqual(0);
+      expect(jobDb).toHaveLength(1);
+      expect(jobDb[0].source_version_id).toBe(versionA1Id);
+      expect(jobDb[0].source_upload_session_id).toBe(promotedSessionId);
+      expect([
+        TranslationJobStatus.QUEUED,
+        TranslationJobStatus.PREPROCESSING,
+      ]).toContain(jobDb[0].status);
+      expect(jobDb[0].last_sequence).toBe(0);
+      expect(jobDb[0].error_trace).toBeNull();
+      expect(jobDb[0].completed_at).toBeNull();
+      expect(jobDb[0].workspace_revision).toBeGreaterThanOrEqual(2);
+
+      // Ràng buộc đơn điệu giữa HTTP 202 response và DB state
+      if (res.body.status === TranslationJobStatus.PREPROCESSING) {
+        expect(jobDb[0].status).toBe(TranslationJobStatus.PREPROCESSING);
+      }
+      if (jobDb[0].status === TranslationJobStatus.QUEUED) {
+        expect(jobDb[0].attempt_count).toBe(0);
+        expect(jobDb[0].started_at).toBeNull();
+      } else {
+        expect(jobDb[0].status).toBe(TranslationJobStatus.PREPROCESSING);
+        expect(jobDb[0].attempt_count).toBeGreaterThanOrEqual(1);
+        expect(jobDb[0].started_at).not.toBeNull();
+      }
       projectId = jobDb[0].project_id;
     });
 
@@ -1810,6 +1833,10 @@ describe('OmniNovel Backend Core API (e2e)', () => {
         .expect(202);
 
       expect(res.body.jobId).toBe(aiJobId);
+      expect([
+        TranslationJobStatus.QUEUED,
+        TranslationJobStatus.PREPROCESSING,
+      ]).toContain(res.body.status);
       expect(res.body.isDuplicate).toBe(true);
     });
 

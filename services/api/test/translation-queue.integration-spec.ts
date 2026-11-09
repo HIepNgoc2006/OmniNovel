@@ -6,6 +6,8 @@ import { TranslationService } from '../src/modules/translation/translation.servi
 import { TranslationProcessor } from '../src/modules/translation/translation.processor';
 import { TranslationWatchdogService } from '../src/modules/translation/translation-watchdog.service';
 import { TranslationJobStatus } from '@omninovel/shared';
+import { getQueueToken } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 
 describe('Translation Queue Lifecycle, Cancel & Watchdog Suite (Integration)', () => {
   let app: INestApplication;
@@ -13,10 +15,12 @@ describe('Translation Queue Lifecycle, Cancel & Watchdog Suite (Integration)', (
   let service: TranslationService;
   let processor: TranslationProcessor;
   let watchdog: TranslationWatchdogService;
+  let translationQueue: Queue;
 
   let ownerUser: any;
   let versionId: string;
   let editionId: string;
+  let promotedSessionId: string;
 
   beforeAll(async () => {
     const moduleFixture: TestingModule = await Test.createTestingModule({
@@ -30,6 +34,7 @@ describe('Translation Queue Lifecycle, Cancel & Watchdog Suite (Integration)', (
     service = app.get(TranslationService);
     processor = app.get(TranslationProcessor);
     watchdog = app.get(TranslationWatchdogService);
+    translationQueue = app.get<Queue>(getQueueToken('translation'));
 
     const uRes = await dataSource.query(
       `INSERT INTO users (username, email, password_hash, role, is_active)
@@ -73,11 +78,13 @@ describe('Translation Queue Lifecycle, Cancel & Watchdog Suite (Integration)', (
     );
     versionId = vRes[0].id;
 
-    await dataSource.query(
+    const sessRes = await dataSource.query(
       `INSERT INTO upload_sessions (story_edition_id, chapter_version_id, file_type, expected_size, quarantine_key, final_key, status, user_id, expires_at)
-       VALUES ($1, $2, 'MANGA_ZIP', 1024, 'quar', 'final_q.zip', 'PROMOTED', $3, NOW() + INTERVAL '15 minutes')`,
+       VALUES ($1, $2, 'MANGA_ZIP', 1024, 'quar', 'final_q.zip', 'PROMOTED', $3, NOW() + INTERVAL '15 minutes')
+       RETURNING id`,
       [editionId, versionId, ownerUser.id],
     );
+    promotedSessionId = sessRes[0].id;
   });
 
   afterAll(async () => {
@@ -304,5 +311,421 @@ describe('Translation Queue Lifecycle, Cancel & Watchdog Suite (Integration)', (
     await expect(service.startAttempt(jobRes.id, 1)).rejects.toThrow(
       'MISSING_INPUT_MANIFEST',
     );
+  });
+
+  // Deterministic Regression Suite: BullMQ worker vs createJob timing race & worker lifecycle invariants
+  let activeTestCleanupHooks: Array<() => void> = [];
+
+  afterEach(() => {
+    for (const fn of activeTestCleanupHooks.splice(0)) {
+      try {
+        fn();
+      } catch {}
+    }
+    jest.restoreAllMocks();
+  });
+
+  const createDeferred = <T = void>() => {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  };
+
+  const attachWorkerSettleListener = (getTargetJobId: () => string | null) => {
+    const deferred = createDeferred<
+      | { event: 'completed'; returnvalue: any }
+      | { event: 'failed'; error: string }
+    >();
+    const onCompleted = (job: any, returnvalue: any) => {
+      const targetId = getTargetJobId();
+      if (targetId && (job?.id === targetId || job?.data?.translationJobId === targetId)) {
+        cleanup();
+        deferred.resolve({ event: 'completed', returnvalue });
+      }
+    };
+    const onFailed = (job: any, err: Error) => {
+      const targetId = getTargetJobId();
+      if (targetId && (job?.id === targetId || job?.data?.translationJobId === targetId)) {
+        cleanup();
+        deferred.resolve({ event: 'failed', error: err?.message || 'unknown' });
+      }
+    };
+    const cleanup = () => {
+      processor.worker.off('completed', onCompleted);
+      processor.worker.off('failed', onFailed);
+    };
+    processor.worker.on('completed', onCompleted);
+    processor.worker.on('failed', onFailed);
+    activeTestCleanupHooks.push(cleanup);
+    return { promise: deferred.promise, cleanup };
+  };
+
+  it('Deterministic Race (Worker wins): createJob should return PREPROCESSING and preserve attempt/workspace invariants without lost update', async () => {
+    let targetJobId: string | null = null;
+    let workerAttempt1Invoked = false;
+    const workerAttempt1Done = createDeferred<void>();
+    activeTestCleanupHooks.push(() => workerAttempt1Done.resolve());
+    const workerSettle = attachWorkerSettleListener(() => targetJobId);
+
+    const origQueueAdd = Queue.prototype.add;
+    const origStartAttempt = TranslationService.prototype.startAttempt;
+    const origQuery = DataSource.prototype.query;
+
+    const queueAddSpy = jest
+      .spyOn(Queue.prototype, 'add')
+      .mockImplementation(async function (this: Queue, name: any, data: any, opts: any) {
+        if (!targetJobId && this.name === 'translation' && data?.translationJobId) {
+          targetJobId = data.translationJobId;
+        }
+        return origQueueAdd.call(this, name, data, opts);
+      });
+
+    const startAttemptSpy = jest
+      .spyOn(service, 'startAttempt')
+      .mockImplementation(async (jobId: string, attemptNumber: number) => {
+        try {
+          if (jobId === targetJobId && attemptNumber === 1) {
+            workerAttempt1Invoked = true;
+          }
+          return await origStartAttempt.apply(service, [jobId, attemptNumber]);
+        } finally {
+          if (jobId === targetJobId && attemptNumber === 1) {
+            workerAttempt1Done.resolve();
+          }
+        }
+      });
+
+    const querySpy = jest
+      .spyOn(dataSource, 'query')
+      .mockImplementation((async (query: string, parameters?: any[]) => {
+        if (
+          typeof query === 'string' &&
+          query.includes('UPDATE translation_jobs') &&
+          query.includes("SET status = 'QUEUED'") &&
+          query.includes("AND status = 'VALIDATING'") &&
+          targetJobId &&
+          parameters?.[0] === targetJobId
+        ) {
+          await workerAttempt1Done.promise;
+        }
+        return origQuery.apply(dataSource, [query, parameters]);
+      }) as any);
+
+    try {
+      const jobRes = await service.createJob(
+        ownerUser,
+        { chapterVersionId: versionId, sourceLang: 'ja', targetLang: 'vi', provider: 'MOCK' },
+        `race-worker-wins-${Date.now()}`,
+      );
+
+      expect(workerAttempt1Invoked).toBe(true);
+      expect(jobRes.status).toBe(TranslationJobStatus.PREPROCESSING);
+      expect(jobRes.isDuplicate).toBe(false);
+
+      const jobDb = await origQuery.apply(dataSource, [
+        `SELECT status, attempt_count, last_sequence, workspace_revision, started_at, error_trace, source_version_id, source_upload_session_id
+         FROM translation_jobs WHERE id = $1`,
+        [jobRes.id],
+      ]);
+      expect(jobDb).toHaveLength(1);
+      expect(jobDb[0].status).toBe(TranslationJobStatus.PREPROCESSING);
+      expect(jobDb[0].attempt_count).toBe(1);
+      expect(jobDb[0].last_sequence).toBe(0);
+      expect(jobDb[0].workspace_revision).toBe(2);
+      expect(jobDb[0].started_at).not.toBeNull();
+      expect(jobDb[0].error_trace).toBeNull();
+      expect(jobDb[0].source_version_id).toBe(versionId);
+      expect(jobDb[0].source_upload_session_id).toBe(promotedSessionId);
+    } finally {
+      workerAttempt1Done.resolve();
+      querySpy.mockRestore();
+      startAttemptSpy.mockRestore();
+      queueAddSpy.mockRestore();
+      if (targetJobId) {
+        await service.cancelJob(targetJobId, ownerUser).catch(() => {});
+        if (workerAttempt1Invoked) {
+          await workerSettle.promise;
+        }
+        await translationQueue.remove(targetJobId).catch(() => {});
+      }
+      workerSettle.cleanup();
+    }
+  });
+
+  it('Deterministic Race (DB wins): createJob returns QUEUED and BullMQ attempt 1 advances DB forward to PREPROCESSING', async () => {
+    let targetJobId: string | null = null;
+    let workerEnteredGate = false;
+    const workerReachedGate = createDeferred<void>();
+    const releaseWorkerGate = createDeferred<void>();
+    const workerTransitionDone = createDeferred<void>();
+    activeTestCleanupHooks.push(() => {
+      releaseWorkerGate.resolve();
+      workerTransitionDone.resolve();
+    });
+    const workerSettle = attachWorkerSettleListener(() => targetJobId);
+
+    const origQueueAdd = Queue.prototype.add;
+    const origStartAttempt = TranslationService.prototype.startAttempt;
+
+    const queueAddSpy = jest
+      .spyOn(Queue.prototype, 'add')
+      .mockImplementation(async function (this: Queue, name: any, data: any, opts: any) {
+        if (!targetJobId && this.name === 'translation' && data?.translationJobId) {
+          targetJobId = data.translationJobId;
+        }
+        return origQueueAdd.call(this, name, data, opts);
+      });
+
+    const startAttemptSpy = jest
+      .spyOn(service, 'startAttempt')
+      .mockImplementation(async (jobId: string, attemptNumber: number) => {
+        if (jobId === targetJobId && attemptNumber === 1) {
+          workerEnteredGate = true;
+          workerReachedGate.resolve();
+          await releaseWorkerGate.promise;
+          try {
+            return await origStartAttempt.apply(service, [jobId, attemptNumber]);
+          } finally {
+            workerTransitionDone.resolve();
+          }
+        }
+        return origStartAttempt.apply(service, [jobId, attemptNumber]);
+      });
+
+    try {
+      const jobRes = await service.createJob(
+        ownerUser,
+        { chapterVersionId: versionId, sourceLang: 'ja', targetLang: 'vi', provider: 'MOCK' },
+        `race-db-wins-${Date.now()}`,
+      );
+
+      expect(jobRes.status).toBe(TranslationJobStatus.QUEUED);
+      expect(jobRes.isDuplicate).toBe(false);
+
+      const queuedDb = await dataSource.query(
+        `SELECT status, attempt_count, last_sequence, workspace_revision, started_at, source_upload_session_id
+         FROM translation_jobs WHERE id = $1`,
+        [jobRes.id],
+      );
+      expect(queuedDb[0].status).toBe(TranslationJobStatus.QUEUED);
+      expect(queuedDb[0].attempt_count).toBe(0);
+      expect(queuedDb[0].last_sequence).toBe(0);
+      expect(queuedDb[0].workspace_revision).toBe(2);
+      expect(queuedDb[0].started_at).toBeNull();
+      expect(queuedDb[0].source_upload_session_id).toBe(promotedSessionId);
+
+      await workerReachedGate.promise;
+      releaseWorkerGate.resolve();
+      await workerTransitionDone.promise;
+
+      const runningDb = await dataSource.query(
+        `SELECT status, attempt_count, workspace_revision, started_at, error_trace
+         FROM translation_jobs WHERE id = $1`,
+        [jobRes.id],
+      );
+      expect(runningDb[0].status).toBe(TranslationJobStatus.PREPROCESSING);
+      expect(runningDb[0].attempt_count).toBe(1);
+      expect(runningDb[0].workspace_revision).toBe(3);
+      expect(runningDb[0].started_at).not.toBeNull();
+      expect(runningDb[0].error_trace).toBeNull();
+    } finally {
+      releaseWorkerGate.resolve();
+      workerTransitionDone.resolve();
+      startAttemptSpy.mockRestore();
+      queueAddSpy.mockRestore();
+      if (targetJobId) {
+        await service.cancelJob(targetJobId, ownerUser).catch(() => {});
+        if (workerEnteredGate) {
+          await workerSettle.promise;
+        }
+        await translationQueue.remove(targetJobId).catch(() => {});
+      }
+      workerSettle.cleanup();
+    }
+  });
+
+  it('Deterministic Pre-Attempt-1 Cancel vs Worker Race should keep DB CANCELED and skip attempt 1 without resurrection', async () => {
+    let targetJobId: string | null = null;
+    let workerEnteredGate = false;
+    let startAttemptResult: unknown = undefined;
+    const workerReachedGate = createDeferred<void>();
+    const releaseWorkerGate = createDeferred<void>();
+    activeTestCleanupHooks.push(() => releaseWorkerGate.resolve());
+    const workerSettle = attachWorkerSettleListener(() => targetJobId);
+
+    const origQueueAdd = Queue.prototype.add;
+    const origStartAttempt = TranslationService.prototype.startAttempt;
+
+    const queueAddSpy = jest
+      .spyOn(Queue.prototype, 'add')
+      .mockImplementation(async function (this: Queue, name: any, data: any, opts: any) {
+        if (!targetJobId && this.name === 'translation' && data?.translationJobId) {
+          targetJobId = data.translationJobId;
+        }
+        return origQueueAdd.call(this, name, data, opts);
+      });
+
+    const startAttemptSpy = jest
+      .spyOn(service, 'startAttempt')
+      .mockImplementation(async (jobId: string, attemptNumber: number) => {
+        if (jobId === targetJobId && attemptNumber === 1) {
+          workerEnteredGate = true;
+          workerReachedGate.resolve();
+          await releaseWorkerGate.promise;
+          startAttemptResult = await origStartAttempt.apply(service, [
+            jobId,
+            attemptNumber,
+          ]);
+          return startAttemptResult as any;
+        }
+        return origStartAttempt.apply(service, [jobId, attemptNumber]);
+      });
+
+    try {
+      const jobRes = await service.createJob(
+        ownerUser,
+        { chapterVersionId: versionId, sourceLang: 'ja', targetLang: 'vi', provider: 'MOCK' },
+        `race-cancel-before-attempt1-${Date.now()}`,
+      );
+      expect(jobRes.status).toBe(TranslationJobStatus.QUEUED);
+
+      await workerReachedGate.promise;
+      const cancelRes = await service.cancelJob(jobRes.id, ownerUser);
+      expect(cancelRes.status).toBe(TranslationJobStatus.CANCELED);
+
+      releaseWorkerGate.resolve();
+      const settleResult = await workerSettle.promise;
+
+      expect(startAttemptResult).toBeNull();
+      expect(settleResult).toEqual({
+        event: 'completed',
+        returnvalue: { skipped: true, reason: 'JOB_TERMINAL_OR_CANCELED' },
+      });
+
+      const jobDb = await dataSource.query(
+        `SELECT status, attempt_count, started_at, completed_at
+         FROM translation_jobs WHERE id = $1`,
+        [jobRes.id],
+      );
+      expect(jobDb[0].status).toBe(TranslationJobStatus.CANCELED);
+      expect(jobDb[0].attempt_count).toBe(0);
+      expect(jobDb[0].started_at).toBeNull();
+      expect(jobDb[0].completed_at).not.toBeNull();
+    } finally {
+      releaseWorkerGate.resolve();
+      startAttemptSpy.mockRestore();
+      queueAddSpy.mockRestore();
+      if (targetJobId) {
+        if (workerEnteredGate) {
+          await workerSettle.promise.catch(() => {});
+        }
+        await translationQueue.remove(targetJobId).catch(() => {});
+      }
+      workerSettle.cleanup();
+    }
+  });
+
+  it('Worker Retry Lifecycle Regression: non-final attempt error keeps PREPROCESSING, final attempt error marks FAILED', async () => {
+    let skipNextEnqueue = true;
+    const origQueueAdd = Queue.prototype.add;
+    const queueAddSpy = jest
+      .spyOn(Queue.prototype, 'add')
+      .mockImplementation(async function (this: Queue, name: any, data: any, opts: any) {
+        if (skipNextEnqueue && this.name === 'translation' && data?.translationJobId) {
+          skipNextEnqueue = false;
+          return { id: 'synthetic-no-bg-worker' } as any;
+        }
+        return origQueueAdd.call(this, name, data, opts);
+      });
+
+    const origFetch = global.fetch;
+    let createdJobId: string | null = null;
+
+    try {
+      const jobRes = await service.createJob(
+        ownerUser,
+        { chapterVersionId: versionId, sourceLang: 'ja', targetLang: 'vi', provider: 'MOCK' },
+        `worker-retry-lifecycle-${Date.now()}`,
+      );
+      createdJobId = jobRes.id;
+      expect(jobRes.status).toBe(TranslationJobStatus.QUEUED);
+
+      global.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        if (url.includes('/internal/v1/jobs/process-')) {
+          return {
+            ok: false,
+            status: 503,
+            text: async () => 'AI Worker Unavailable',
+          } as Response;
+        }
+        return origFetch(input, init);
+      }) as typeof fetch;
+
+      // Attempt 1/3 thất bại: không được đánh FAILED sớm, giữ PREPROCESSING để BullMQ retry
+      await expect(
+        processor.process({
+          data: { translationJobId: createdJobId },
+          attemptsMade: 0,
+          opts: { attempts: 3 },
+        } as any),
+      ).rejects.toThrow('HTTP 503');
+
+      const afterAttempt1 = await dataSource.query(
+        `SELECT status, attempt_count, error_trace, started_at, completed_at
+         FROM translation_jobs WHERE id = $1`,
+        [createdJobId],
+      );
+      expect(afterAttempt1[0].status).toBe(TranslationJobStatus.PREPROCESSING);
+      expect(afterAttempt1[0].attempt_count).toBe(1);
+      expect(afterAttempt1[0].started_at).not.toBeNull();
+      expect(afterAttempt1[0].error_trace).toBeNull();
+      expect(afterAttempt1[0].completed_at).toBeNull();
+
+      // Attempt 2/3 thất bại: tiếp tục giữ PREPROCESSING
+      await expect(
+        processor.process({
+          data: { translationJobId: createdJobId },
+          attemptsMade: 1,
+          opts: { attempts: 3 },
+        } as any),
+      ).rejects.toThrow('HTTP 503');
+
+      const afterAttempt2 = await dataSource.query(
+        `SELECT status, attempt_count, error_trace, completed_at
+         FROM translation_jobs WHERE id = $1`,
+        [createdJobId],
+      );
+      expect(afterAttempt2[0].status).toBe(TranslationJobStatus.PREPROCESSING);
+      expect(afterAttempt2[0].attempt_count).toBe(2);
+      expect(afterAttempt2[0].error_trace).toBeNull();
+      expect(afterAttempt2[0].completed_at).toBeNull();
+
+      // Attempt 3/3 (cuối) thất bại: mới chuyển terminal FAILED kèm error_trace
+      await expect(
+        processor.process({
+          data: { translationJobId: createdJobId },
+          attemptsMade: 2,
+          opts: { attempts: 3 },
+        } as any),
+      ).rejects.toThrow('HTTP 503');
+
+      const afterAttempt3 = await dataSource.query(
+        `SELECT status, attempt_count, error_trace, completed_at
+         FROM translation_jobs WHERE id = $1`,
+        [createdJobId],
+      );
+      expect(afterAttempt3[0].status).toBe(TranslationJobStatus.FAILED);
+      expect(afterAttempt3[0].attempt_count).toBe(3);
+      expect(afterAttempt3[0].error_trace).toContain('HTTP 503');
+      expect(afterAttempt3[0].completed_at).not.toBeNull();
+    } finally {
+      global.fetch = origFetch;
+      queueAddSpy.mockRestore();
+    }
   });
 });

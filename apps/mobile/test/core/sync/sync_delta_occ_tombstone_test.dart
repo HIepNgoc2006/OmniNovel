@@ -687,6 +687,160 @@ void main() {
         exitPortB.close();
       }
     });
+
+    test('retries pre-entry SQLITE_BUSY (codes 5/517/fallback) until lock clears without re-executing action', () async {
+      const scope = 'account:busy-retry-ok';
+      final contendingDb = _ContendingDatabase(
+        offlineDb.database,
+        preEntryErrors: <DatabaseException>[
+          _FakeDatabaseException('SqliteException(5): database is locked', resultCode: 5),
+          _FakeDatabaseException('SQLITE_BUSY_SNAPSHOT (code 517)', resultCode: 517),
+          _FakeDatabaseException('database is locked', resultCode: null),
+        ],
+      );
+      final customDal = SyncStorageDal(customDb: contendingDb);
+
+      final persisted = await customDal.enqueuePendingMutation(
+        PendingMutationRecord.create(
+          ownerScope: scope,
+          mutationId: 'mut-busy-retry-1',
+          clientId: 'cli-1',
+          domain: SyncDomain.bookmark,
+          entityId: 'story-1',
+          operation: SyncOperation.upsert,
+          baseServerRevision: '0',
+          payload: const <String, Object?>{'storyId': 'story-1'},
+          createdAt: DateTime.utc(2026, 1, 1),
+        ),
+      );
+
+      expect(contendingDb.transactionAttempts, 4);
+      expect(persisted.sequenceNo, 1);
+      expect(await customDal.getPendingMutations(scope), hasLength(1));
+    });
+
+    test('never retries on post-entry SQLITE_BUSY, SQLITE_LOCKED (6), or non-BUSY database errors', () async {
+      const scope = 'account:no-retry-guard';
+
+      // 1. SQLITE_BUSY xảy ra sau khi đã bước vào thân action -> cấm retry (chỉ chạy đúng 1 lần)
+      final postEntryDb = _ContendingDatabase(
+        offlineDb.database,
+        throwBusyInsideAction: true,
+      );
+      final postEntryDal = SyncStorageDal(customDb: postEntryDb);
+      await expectLater(
+        () => postEntryDal.putSyncMeta(
+          const SyncMeta(
+            ownerScope: scope,
+            lastSyncedServerRevision: '10',
+            minActiveRevision: '0',
+            lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
+          ),
+        ),
+        throwsA(isA<DatabaseException>()),
+      );
+      expect(postEntryDb.transactionAttempts, 1);
+      expect(await dal.getSyncMeta(scope), isNull);
+
+      // 2. SQLITE_LOCKED (code 6) và fallback string "database table is locked" -> không retry
+      for (final err in <DatabaseException>[
+        _FakeDatabaseException('database table is locked', resultCode: 6),
+        _FakeDatabaseException('database table is locked', resultCode: null),
+        _FakeDatabaseException('UNIQUE constraint failed', resultCode: 2067),
+      ]) {
+        final nonBusyDb = _ContendingDatabase(
+          offlineDb.database,
+          preEntryErrors: <DatabaseException>[
+            err,
+            _FakeDatabaseException('should not reach second attempt', resultCode: 5),
+          ],
+        );
+        final nonBusyDal = SyncStorageDal(customDb: nonBusyDb);
+        await expectLater(
+          () => nonBusyDal.putSyncMeta(
+            const SyncMeta(
+              ownerScope: scope,
+              lastSyncedServerRevision: '10',
+              minActiveRevision: '0',
+              lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
+            ),
+          ),
+          throwsA(isA<DatabaseException>()),
+        );
+        expect(nonBusyDb.transactionAttempts, 1);
+      }
+    });
+
+    test('fails closed on busyRetryTimeout exhaustion and aborts cleanly if checkAdmission invalidates mid-wait', () async {
+      const scope = 'account:busy-budget-admission';
+
+      // 1. Ngân sách hết -> fail closed DatabaseException
+      final exhaustedDb = _ContendingDatabase(
+        offlineDb.database,
+        preEntryErrors: List<DatabaseException>.filled(
+          40,
+          _FakeDatabaseException('SqliteException(5): database is locked', resultCode: 5),
+        ),
+      );
+      final shortBudgetDal = SyncStorageDal(
+        customDb: exhaustedDb,
+        busyRetryTimeout: const Duration(milliseconds: 45),
+      );
+      await expectLater(
+        () => shortBudgetDal.putSyncMeta(
+          const SyncMeta(
+            ownerScope: scope,
+            lastSyncedServerRevision: '10',
+            minActiveRevision: '0',
+            lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
+          ),
+        ),
+        throwsA(isA<DatabaseException>()),
+      );
+      expect(exhaustedDb.transactionAttempts, lessThan(40));
+      expect(await dal.getSyncMeta(scope), isNull);
+
+      // 2. Mất hiệu lực checkAdmission trong lúc đang backoff giữa hai lần thử BUSY
+      var scopeValid = true;
+      final midWaitDb = _ContendingDatabase(
+        offlineDb.database,
+        preEntryErrors: <DatabaseException>[
+          _FakeDatabaseException('SqliteException(5): database is locked', resultCode: 5),
+          _FakeDatabaseException('SqliteException(5): database is locked', resultCode: 5),
+        ],
+        onAttempt: (attempt) {
+          if (attempt == 1) {
+            scopeValid = false;
+          }
+        },
+      );
+      final admissionDal = SyncStorageDal(
+        customDb: midWaitDb,
+        busyRetryTimeout: const Duration(milliseconds: 500),
+      );
+
+      await expectLater(
+        () => admissionDal.putSyncMeta(
+          const SyncMeta(
+            ownerScope: scope,
+            lastSyncedServerRevision: '20',
+            minActiveRevision: '0',
+            lastSyncTimestamp: '2026-01-01T00:00:00.000Z',
+          ),
+          checkAdmission: () {
+            if (!scopeValid) {
+              throw const SyncAdmissionRejectedError(
+                'Scope rotated while waiting on SQLITE_BUSY.',
+              );
+            }
+          },
+        ),
+        throwsA(isA<SyncAdmissionRejectedError>()),
+      );
+      // Lần thử thứ 2 phải bị chặn tại Barrier 1 trước khi gọi transaction thêm lần nào nữa
+      expect(midWaitDb.transactionAttempts, 1);
+      expect(await dal.getSyncMeta(scope), isNull);
+    });
   });
 
   group('HISTORY DELETE Tombstones, Epochs & SQL LIKE Wildcard Isolation', () {
@@ -1135,5 +1289,91 @@ Future<void> _interleavedWinnerWorkerEntry(
     if (resultPayload != null) {
       config.resultPort.send(resultPayload);
     }
+  }
+}
+
+class _FakeDatabaseException extends DatabaseException {
+  final int? _resultCode;
+  final String _detail;
+
+  _FakeDatabaseException(
+    this._detail, {
+    int? resultCode,
+  })  : _resultCode = resultCode,
+        super(_detail);
+
+  @override
+  int? getResultCode() => _resultCode;
+
+  @override
+  Object? get result => null;
+
+  @override
+  String toString() => 'DatabaseException($_detail)';
+}
+
+class _ContendingDatabase extends Fake implements Database {
+  final Database _inner;
+  final List<DatabaseException> _preEntryErrors;
+  final bool _throwBusyInsideAction;
+  final void Function(int attempt)? onAttempt;
+
+  int transactionAttempts = 0;
+
+  _ContendingDatabase(
+    this._inner, {
+    List<DatabaseException> preEntryErrors = const <DatabaseException>[],
+    bool throwBusyInsideAction = false,
+    this.onAttempt,
+  })  : _preEntryErrors = List<DatabaseException>.of(preEntryErrors),
+        _throwBusyInsideAction = throwBusyInsideAction;
+
+  @override
+  Future<T> transaction<T>(
+    Future<T> Function(Transaction txn) action, {
+    bool? exclusive,
+  }) async {
+    transactionAttempts++;
+    onAttempt?.call(transactionAttempts);
+    if (_preEntryErrors.isNotEmpty) {
+      throw _preEntryErrors.removeAt(0);
+    }
+    if (_throwBusyInsideAction) {
+      return _inner.transaction<T>((txn) async {
+        await action(txn);
+        throw _FakeDatabaseException(
+          'SqliteException(5): database is locked mid-txn',
+          resultCode: 5,
+        );
+      }, exclusive: exclusive);
+    }
+    return _inner.transaction<T>(action, exclusive: exclusive);
+  }
+
+  @override
+  Future<List<Map<String, Object?>>> query(
+    String table, {
+    bool? distinct,
+    List<String>? columns,
+    String? where,
+    List<Object?>? whereArgs,
+    String? groupBy,
+    String? having,
+    String? orderBy,
+    int? limit,
+    int? offset,
+  }) {
+    return _inner.query(
+      table,
+      distinct: distinct,
+      columns: columns,
+      where: where,
+      whereArgs: whereArgs,
+      groupBy: groupBy,
+      having: having,
+      orderBy: orderBy,
+      limit: limit,
+      offset: offset,
+    );
   }
 }

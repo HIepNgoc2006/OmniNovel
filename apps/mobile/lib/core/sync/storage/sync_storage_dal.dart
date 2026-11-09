@@ -23,40 +23,97 @@ import '../utils/revision_bigint.dart';
 /// Stage 1 boundary: KHÔNG gọi mạng `/sync/*`, KHÔNG chạy Background SyncWorker,
 /// và KHÔNG tự cấp trạng thái `READY`.
 class SyncStorageDal {
+  /// Ngân sách retry mặc định khi tranh chấp `BEGIN IMMEDIATE` gặp `SQLITE_BUSY` (khớp `PRAGMA busy_timeout = 5000`).
+  static const Duration defaultBusyRetryTimeout = Duration(milliseconds: 5000);
+
   final OfflineDatabase? _offlineDatabase;
   final Database? _customDb;
+  final Duration _busyRetryTimeout;
 
   SyncStorageDal({
     OfflineDatabase? offlineDatabase,
     Database? customDb,
+    Duration busyRetryTimeout = defaultBusyRetryTimeout,
   })  : _offlineDatabase = offlineDatabase,
-        _customDb = customDb {
+        _customDb = customDb,
+        _busyRetryTimeout = busyRetryTimeout {
     if (_offlineDatabase == null && _customDb == null) {
       throw ArgumentError(
         'Phải cung cấp ít nhất offlineDatabase hoặc customDb cho SyncStorageDal.',
+      );
+    }
+    if (_busyRetryTimeout.isNegative) {
+      throw ArgumentError.value(
+        busyRetryTimeout,
+        'busyRetryTimeout',
+        'busyRetryTimeout must be non-negative.',
       );
     }
   }
 
   Database get _db => _customDb ?? _offlineDatabase!.database;
 
-  /// Thực thi write operation trong native SQLite transaction với 3 hàng rào `checkAdmission`:
-  /// - Barrier 1: trước khi lấy handle DB và trước khi mở SQLite transaction.
-  /// - Barrier 2: ngay đầu thân SQLite transaction (sau khi giành khóa ghi).
-  /// - Barrier 3: ngay trước khi thoát callback để commit transaction (`P0-M02`).
+  static bool _isSqliteBusyException(DatabaseException error) {
+    final code = error.getResultCode();
+    if (code != null) {
+      // Primary SQLITE_BUSY = 5; các extended code (261, 517, 773) có 8 bit thấp == 5.
+      // Phân biệt rành mạch với SQLITE_LOCKED (6, intra-connection table lock) và lỗi constraint.
+      return (code & 0xFF) == 5;
+    }
+    final normalized = error.toString().toLowerCase();
+    if (normalized.contains('database table is locked')) {
+      return false;
+    }
+    return normalized.contains('database is locked') ||
+        normalized.contains('sqlite_busy');
+  }
+
+  /// Thực thi write operation trong native SQLite transaction với 3 hàng rào `checkAdmission`
+  /// và cơ chế async retry có giới hạn khi `BEGIN IMMEDIATE` gặp `SQLITE_BUSY` (`P0-M02`).
+  ///
+  /// Trên Linux (ví dụ chạy test với `--coverage` bật `SIGPROF` của Dart VM), signal POSIX
+  /// có thể ngắt `nanosleep` trong SQLite C `unixSleep` (`EINTR`), làm `PRAGMA busy_timeout`
+  /// trả `SQLITE_BUSY (5)` sớm trước thời hạn. Vòng retry chỉ áp dụng khi:
+  /// 1. Chưa bước vào callback `action(txn)` (`!enteredAction`) — không bao giờ chạy `action` lần thứ hai.
+  /// 2. Lỗi là `SQLITE_BUSY` (primary code 5) ở bước xin khóa transaction.
+  /// 3. Còn ngân sách [_busyRetryTimeout], đồng thời kiểm tra lại `checkAdmission` trước mỗi lần thử.
   Future<T> _runWriteTransaction<T>(
     Future<T> Function(Transaction txn) action, {
     void Function()? checkAdmission,
   }) async {
-    checkAdmission?.call();
-    final db = _db;
-    checkAdmission?.call();
-    return db.transaction<T>((txn) async {
+    final stopwatch = Stopwatch()..start();
+    var attempt = 0;
+
+    while (true) {
       checkAdmission?.call();
-      final result = await action(txn);
+      final db = _db;
       checkAdmission?.call();
-      return result;
-    });
+
+      var enteredAction = false;
+      try {
+        return await db.transaction<T>((txn) async {
+          enteredAction = true;
+          checkAdmission?.call();
+          final result = await action(txn);
+          checkAdmission?.call();
+          return result;
+        });
+      } on DatabaseException catch (e) {
+        if (enteredAction || !_isSqliteBusyException(e)) {
+          rethrow;
+        }
+        final remaining = _busyRetryTimeout - stopwatch.elapsed;
+        if (remaining <= Duration.zero) {
+          rethrow;
+        }
+        attempt++;
+        final baseMs = math.min(50, 10 * (1 << math.min(attempt - 1, 3)));
+        final delayMs = math.min(baseMs, remaining.inMilliseconds);
+        await Future<void>.delayed(
+          Duration(milliseconds: delayMs > 0 ? delayMs : 1),
+        );
+      }
+    }
   }
 
   Future<int> _allocateNextSequenceNo(

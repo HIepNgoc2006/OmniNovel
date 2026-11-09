@@ -274,14 +274,40 @@ jobs:
           fi
           echo "Git tracking hygiene: CLEAN (Zero sensitive files tracked)"
 
-      - name: TruffleHog OSS Secret Scan (Reachable Commits - Blocking Gate)
-        uses: trufflesecurity/trufflehog@c1f2e912239240108482d79ea01ab25d90b27ac7 # v3.88.16 verified pinned SHA
-        with:
-          path: ./
-          base: ""
-          head: ${{ github.ref_name }}
-          version: "3.88.16"
-          extra_args: --only-verified
+      - name: Run TruffleHog Regression & Secret Detection Fixture Gate (Dummy Canary)
+        run: |
+          python3 -u deploy/security/validate-secret-scan.py --test --e2e-docker
+
+      - name: TruffleHog OSS Secret Scan (Reachable Commits - Fail-Closed Gate)
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_EVENT_NAME" = "pull_request" ]; then
+            if [ -n "${PR_HEAD_SHA:-}" ] && ! git cat-file -e "${PR_HEAD_SHA}^{commit}" 2>/dev/null; then
+              if [ -n "${PR_NUMBER:-}" ]; then
+                git fetch --no-tags origin "refs/pull/${PR_NUMBER}/head"
+              fi
+            fi
+            python3 -u deploy/security/validate-secret-scan.py \
+              --event pull_request \
+              --base-ref "${PR_BASE_SHA:-}" \
+              --head-ref "${PR_HEAD_SHA:-}"
+          elif [ "$GITHUB_EVENT_NAME" = "push" ]; then
+            python3 -u deploy/security/validate-secret-scan.py \
+              --event push \
+              --base-ref "${PUSH_BEFORE_SHA:-}" \
+              --head-ref "${PUSH_AFTER_SHA:-}"
+          else
+            python3 -u deploy/security/validate-secret-scan.py \
+              --event "$GITHUB_EVENT_NAME" \
+              --head-ref "${PUSH_AFTER_SHA:-HEAD}"
+          fi
 
       - name: Validate Trivy Exception Lifecycle, Scope & Expiry Gate (P1 Governance)
         run: |

@@ -153,7 +153,10 @@ void main() {
       GuestProfileIdentityProvider.keyGuestProfileId: testGuestProfileId,
     });
     prefs = await SharedPreferences.getInstance();
-    guestProvider = GuestProfileIdentityProvider(prefs: prefs);
+    guestProvider = GuestProfileIdentityProvider(
+      prefs: prefs,
+      offlineDatabase: offlineDb,
+    );
 
     mockApiClient = MockApiClient();
     fakeBridge = FakeScopeCoordinatorClaimBridge();
@@ -488,9 +491,16 @@ void main() {
       // Verify modal closed
       expect(coordinator.isOpen, isFalse);
 
-      // Verify quarantine marker was stored
-      final quarantined = prefs.getStringList(GuestProfileIdentityProvider.keyQuarantinedProfiles) ?? [];
+      // Verify quarantine marker was stored in SQLite v6 SSoT (and NOT written to legacy SharedPreferences)
+      final quarantined = await guestProvider.listQuarantinedGuestScopes();
       expect(quarantined, contains(testGuestProfileId));
+      final dbQuarantined = await offlineDb.database.query(
+        'guest_quarantined_scopes',
+        where: 'guest_profile_id = ?',
+        whereArgs: [testGuestProfileId],
+      );
+      expect(dbQuarantined, hasLength(1));
+      expect(prefs.getStringList(GuestProfileIdentityProvider.keyQuarantinedProfiles), isNull);
 
       // Verify journal record deleted
       final remainingJournal = await offlineDb.database.query('guest_claim_recovery_journal');

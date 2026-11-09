@@ -392,14 +392,20 @@ void main() {
           guestScope: accountScope,
           reason: GuestLifecyclePurgeReason.userClearedGuestData,
           admission: guestAdmission,
-          guestProfileProvider: GuestProfileIdentityProvider(prefs: prefs),
+          guestProfileProvider: GuestProfileIdentityProvider(
+            prefs: prefs,
+            offlineDatabase: offlineDb,
+          ),
         ),
         throwsA(isA<InvalidSyncScopeException>()),
       );
     });
 
     test('purgeGuestLocalScope blocks quarantined & claim-journal guests (PurgeProhibitedError) and cleans unclaimed guests safely', () async {
-      final guestProvider = GuestProfileIdentityProvider(prefs: prefs);
+      final guestProvider = GuestProfileIdentityProvider(
+        prefs: prefs,
+        offlineDatabase: offlineDb,
+      );
       const safeGuestId = 'g-safe-unclaimed';
       const safeGuestScope = 'guest:$safeGuestId';
       const journalGuestId = 'g-in-claim-journal';
@@ -537,7 +543,10 @@ void main() {
     });
 
     test('P0-M05 RACE: purgeGuestLocalScope throws PurgeProhibitedError & rolls back 100% if quarantined inside onBeforeCommitHook', () async {
-      final guestProvider = GuestProfileIdentityProvider(prefs: prefs);
+      final guestProvider = GuestProfileIdentityProvider(
+        prefs: prefs,
+        offlineDatabase: offlineDb,
+      );
       const guestId = 'g-race-hook';
       const guestScope = 'guest:$guestId';
       final t = DateTime.utc(2026, 2, 1);
@@ -578,28 +587,71 @@ void main() {
         admission: testGuestAdmission(guestScope),
       );
 
+      // Case 1: Quarantine arrives after delete #4 before tombstone write -> PurgeProhibitedError & 100% rollback
       await expectLater(
         () => dal.purgeGuestLocalScope(
           guestScope: guestScope,
           reason: GuestLifecyclePurgeReason.userClearedGuestData,
           admission: testGuestAdmission(guestScope),
           guestProfileProvider: guestProvider,
-          onBeforeCommitHook: (_) async {
-            await guestProvider.quarantineGuestScope(guestId);
+          onAfterDeleteBeforeTombstoneHook: (txn) async {
+            await guestProvider.quarantineGuestScope(guestId, txn: txn);
           },
         ),
         throwsA(isA<PurgeProhibitedError>()),
       );
 
-      // SQLite rollback MUST preserve ALL 4 guest-local tables!
+      // SQLite rollback MUST preserve ALL 4 guest-local tables and leave zero tombstones/quarantines!
       expect(await localDao.isBookmarked(ownerScope: guestScope, storyId: 's-hook'), isTrue);
       expect((await localDao.getProgress(ownerScope: guestScope, storyId: 's-hook'))?.chapterId, 'c-hook');
       expect((await localDao.getHistoryItem(ownerScope: guestScope, storyId: 's-hook', chapterId: 'c-hook'))?.progressPercentage, 55.0);
       expect((await dal.getGuestLocalPreference(guestScope, 'theme'))?.value, 'dark');
+      expect(await guestProvider.isGuestScopePurged(guestId), isFalse);
+
+      // Case 2: quarantineGuestScope inside onBeforeCommitHook (after tombstone write in tx) throws GuestLifecycleStateError & rolls back all 4 tables too
+      await expectLater(
+        () => dal.purgeGuestLocalScope(
+          guestScope: guestScope,
+          reason: GuestLifecyclePurgeReason.userClearedGuestData,
+          admission: testGuestAdmission(guestScope),
+          guestProfileProvider: guestProvider,
+          onBeforeCommitHook: (txn) async {
+            await guestProvider.quarantineGuestScope(guestId, txn: txn);
+          },
+        ),
+        throwsA(isA<GuestLifecycleStateError>()),
+      );
+      expect(await localDao.isBookmarked(ownerScope: guestScope, storyId: 's-hook'), isTrue);
+      expect(await guestProvider.isGuestScopePurged(guestId), isFalse);
+      expect(await guestProvider.isGuestScopeQuarantined(guestId), isFalse);
+
+      // Case 3: Direct row in guest_quarantined_scopes inside onBeforeCommitHook is caught by pre-commit assertGuestPurgeAllowed -> PurgeProhibitedError & rollback
+      await expectLater(
+        () => dal.purgeGuestLocalScope(
+          guestScope: guestScope,
+          reason: GuestLifecyclePurgeReason.userClearedGuestData,
+          admission: testGuestAdmission(guestScope),
+          guestProfileProvider: guestProvider,
+          onBeforeCommitHook: (txn) async {
+            await txn.insert('guest_quarantined_scopes', <String, Object?>{
+              'guest_profile_id': guestId,
+              'quarantined_at_ms': 1000,
+              'reason': 'SKIP_CLAIM',
+            });
+          },
+        ),
+        throwsA(isA<PurgeProhibitedError>()),
+      );
+      expect(await localDao.isBookmarked(ownerScope: guestScope, storyId: 's-hook'), isTrue);
+      expect(await guestProvider.isGuestScopePurged(guestId), isFalse);
+      expect(await guestProvider.isGuestScopeQuarantined(guestId), isFalse);
     });
 
     test('P0-M05 RACE: purgeGuestLocalScope rolls back 100% if quarantine OR claim journal insert occurs between async txn.delete calls', () async {
-      final guestProvider = GuestProfileIdentityProvider(prefs: prefs);
+      final guestProvider = GuestProfileIdentityProvider(
+        prefs: prefs,
+        offlineDatabase: offlineDb,
+      );
       const guestId = 'g-race-between-deletes';
       const guestScope = 'guest:$guestId';
       final t = DateTime.utc(2026, 2, 1);
@@ -643,8 +695,8 @@ void main() {
       final interleavingDb = _InterleavingDeleteDatabase(
         offlineDb.database,
         triggerAfterDeleteCount: 2,
-        onDeleteThresholdReached: () async {
-          await guestProvider.quarantineGuestScope(guestId);
+        onDeleteThresholdReached: (txn) async {
+          await guestProvider.quarantineGuestScope(guestId, txn: txn);
         },
       );
       final racingDal = SyncStorageDal(customDb: interleavingDb);
@@ -725,7 +777,10 @@ void main() {
       });
 
       installProvider = InstallationIdentityProvider(secureStorage: mockSecureStorage, prefs: prefs);
-      guestProvider = GuestProfileIdentityProvider(prefs: prefs);
+      guestProvider = GuestProfileIdentityProvider(
+        prefs: prefs,
+        offlineDatabase: offlineDb,
+      );
       coordinator = ActiveScopeCoordinator(
         installProvider: installProvider,
         guestProfileProvider: guestProvider,
@@ -1187,7 +1242,10 @@ void main() {
       // Survives ActiveScopeCoordinator.onLogout(), PreferencesService.clearPreferences(), DB reopen, and fresh provider instances
       final coordinator = ActiveScopeCoordinator(
         installProvider: install1,
-        guestProfileProvider: GuestProfileIdentityProvider(prefs: prefs),
+        guestProfileProvider: GuestProfileIdentityProvider(
+          prefs: prefs,
+          offlineDatabase: offlineDb,
+        ),
       );
       await coordinator.onLogout();
       await PreferencesService(prefs).clearPreferences();
@@ -1338,7 +1396,10 @@ void main() {
       when(() => mockTokenStorage.clearTokens()).thenAnswer((_) async {});
 
       final installProvider = InstallationIdentityProvider(secureStorage: mockSecure, prefs: prefs);
-      final guestProvider = GuestProfileIdentityProvider(prefs: prefs);
+      final guestProvider = GuestProfileIdentityProvider(
+        prefs: prefs,
+        offlineDatabase: offlineDb,
+      );
       final clientIdProvider = SyncClientIdentityProvider(installationProvider: installProvider);
       final coordinator = ActiveScopeCoordinator(
         installProvider: installProvider,
@@ -1946,7 +2007,10 @@ void main() {
       when(() => mockTokenStorage.clearTokens()).thenAnswer((_) async {});
 
       final installProvider = InstallationIdentityProvider(secureStorage: mockSecureStorage, prefs: prefs);
-      final guestProvider = GuestProfileIdentityProvider(prefs: prefs);
+      final guestProvider = GuestProfileIdentityProvider(
+        prefs: prefs,
+        offlineDatabase: offlineDb,
+      );
       final coordinator = ActiveScopeCoordinator(
         installProvider: installProvider,
         guestProfileProvider: guestProvider,
@@ -2354,7 +2418,10 @@ void main() {
       when(() => mockTokenStorage.clearTokens()).thenAnswer((_) async {});
 
       final installProvider = InstallationIdentityProvider(secureStorage: mockSecureStorage, prefs: prefs);
-      final guestProvider = GuestProfileIdentityProvider(prefs: prefs);
+      final guestProvider = GuestProfileIdentityProvider(
+        prefs: prefs,
+        offlineDatabase: offlineDb,
+      );
       final coordinator = ActiveScopeCoordinator(
         installProvider: installProvider,
         guestProfileProvider: guestProvider,
@@ -2578,7 +2645,10 @@ void main() {
       when(() => mockTokenStorage.clearTokens()).thenAnswer((_) async {});
 
       final installProvider = InstallationIdentityProvider(secureStorage: mockSecureStorage, prefs: prefs);
-      final guestProvider = GuestProfileIdentityProvider(prefs: prefs);
+      final guestProvider = GuestProfileIdentityProvider(
+        prefs: prefs,
+        offlineDatabase: offlineDb,
+      );
       final coordinator = ActiveScopeCoordinator(
         installProvider: installProvider,
         guestProfileProvider: guestProvider,
@@ -3177,7 +3247,7 @@ class _TransactionSpyDatabase extends Fake implements Database {
 class _InterleavingDeleteDatabase extends Fake implements Database {
   final Database _inner;
   final int triggerAfterDeleteCount;
-  final Future<void> Function() onDeleteThresholdReached;
+  final Future<void> Function(Transaction txn) onDeleteThresholdReached;
 
   _InterleavingDeleteDatabase(
     this._inner, {
@@ -3204,7 +3274,7 @@ class _InterleavingDeleteDatabase extends Fake implements Database {
 class _InterleavingDeleteTransaction extends Fake implements Transaction {
   final Transaction _inner;
   final int triggerAfterDeleteCount;
-  final Future<void> Function() onDeleteThresholdReached;
+  final Future<void> Function(Transaction txn) onDeleteThresholdReached;
   int _deleteCount = 0;
 
   _InterleavingDeleteTransaction(
@@ -3222,9 +3292,17 @@ class _InterleavingDeleteTransaction extends Fake implements Transaction {
     final res = await _inner.delete(table, where: where, whereArgs: whereArgs);
     _deleteCount++;
     if (_deleteCount == triggerAfterDeleteCount) {
-      await onDeleteThresholdReached();
+      await onDeleteThresholdReached(_inner);
     }
     return res;
+  }
+
+  @override
+  Future<List<Map<String, Object?>>> rawQuery(
+    String sql, [
+    List<Object?>? arguments,
+  ]) {
+    return _inner.rawQuery(sql, arguments);
   }
 
   @override

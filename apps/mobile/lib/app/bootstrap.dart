@@ -77,25 +77,34 @@ class AppBootstrap {
     final rawPrefs = preferencesService.rawPrefs;
     final tokenStorage = customTokenStorage ?? SecureTokenStorage(storage: customSecureStorage);
 
-    // 2b. Identity Providers (Canonical rawPrefs injection - không gọi getInstance() phân tán)
-    final installProvider = InstallationIdentityProvider(
-      secureStorage: customSecureStorage,
-      prefs: rawPrefs,
-    );
-    final guestProfileProvider = GuestProfileIdentityProvider(prefs: rawPrefs);
-
-    // 2c. ActiveScopeCoordinator
-    final activeScopeCoordinator = ActiveScopeCoordinator(
-      installProvider: installProvider,
-      guestProfileProvider: guestProfileProvider,
-    );
-
-    // 2d. OfflineDatabase & LocalLibraryDao (SQLite v3 schema)
+    // 2b. OfflineDatabase & LocalLibraryDao (SQLite v6 SSoT khởi tạo TRƯỚC Identity/Auth)
     final offlineDatabase = customOfflineDatabase ?? OfflineDatabase();
     if (!offlineDatabase.isInitialized) {
       await offlineDatabase.initialize();
     }
     final localLibraryDao = LocalLibraryDao(offlineDatabase: offlineDatabase);
+
+    // 2c. Identity Providers (Canonical rawPrefs + OfflineDatabase v6 SSoT injection)
+    final installProvider = InstallationIdentityProvider(
+      secureStorage: customSecureStorage,
+      prefs: rawPrefs,
+    );
+    final guestProfileProvider = GuestProfileIdentityProvider(
+      prefs: rawPrefs,
+      offlineDatabase: offlineDatabase,
+    );
+
+    // Stage 1B SSoT Migration & Crash Recovery:
+    // 1. Di trú idempotent legacy SharedPreferences quarantines -> SQLite v6 (PURGED luôn thắng).
+    // 2. Phục hồi sau crash nếu guestProfileId đang lưu đã bị PURGED -> xoay sang UUIDv4 mới.
+    await guestProfileProvider.migrateLegacyQuarantinesToSqlite();
+    await guestProfileProvider.getOrCreateGuestProfileId();
+
+    // 2d. ActiveScopeCoordinator
+    final activeScopeCoordinator = ActiveScopeCoordinator(
+      installProvider: installProvider,
+      guestProfileProvider: guestProfileProvider,
+    );
 
     // 2e. Guest Repositories
     final guestLibraryRepository = GuestLibraryRepository(

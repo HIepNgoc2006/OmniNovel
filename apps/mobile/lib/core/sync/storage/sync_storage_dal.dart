@@ -256,6 +256,7 @@ class SyncStorageDal {
     String ownerScope,
     String clientId, {
     AccountWriteAdmission? admission,
+    Transaction? txn,
   }) async {
     _validateClientIdForAccountScope(
       ownerScope,
@@ -274,7 +275,9 @@ class SyncStorageDal {
       jwtSid = snap.jwtSessionId;
       guestId = snap.currentGuestProfileId;
     }
-    guestId ??= await _guestProfileProvider?.getOrCreateGuestProfileId();
+    guestId ??= await _guestProfileProvider?.getOrCreateGuestProfileId(
+      txn: txn,
+    );
 
     await provider.assertMatchesClientIdentity(
       clientId,
@@ -1222,6 +1225,7 @@ class SyncStorageDal {
           ownerScope,
           q.clientId,
           admission: admission,
+          txn: txn,
         );
 
         await txn.delete(
@@ -2564,16 +2568,19 @@ class SyncStorageDal {
   ///
   /// Ràng buộc đơn trị 1-1 theo [reason] (`P0-M05` / R-02):
   /// - [GuestLifecyclePurgeReason.userClearedGuestData]: **CHỈ** chấp nhận [GuestLocalWriteAdmission]
-  ///   (chỉ Guest đang active mới được chủ động xóa dữ liệu của chính mình).
+  ///   (chỉ Guest đang active mới được chủ động xóa dữ liệu của chính mình), ghi terminal `PURGED`
+  ///   tombstone nguyên tử rồi xoay sang `guestProfileId` mới sau commit (có auto-recovery nếu crash).
   /// - [GuestLifecyclePurgeReason.verifiedUnusedGuestEviction]: **CHỈ** chấp nhận [UnusedGuestEvictionAdmission]
   ///   (thu hồi Guest cũ đã tách khỏi active scope sau `onLogout()` xoay ID hoặc sau khi đã sang Account);
   ///   từ chối tuyệt đối [GuestLocalWriteAdmission] và cấm evict scope đang trùng Guest active/persisted.
   ///
-  /// Bảo vệ fail-closed kép (trước khi xóa & ngay trước khi commit):
+  /// Bảo vệ fail-closed đa lớp (SQLite v6 SSoT + pre/post delete checks):
   /// - Cấm tuyệt đối xóa nếu `guestProfileId` đang có bản ghi trong `guest_claim_recovery_journal`
   ///   (dù ở pha `prepared`, `committing`, hay `committedServer`).
-  /// - Cấm tuyệt đối xóa nếu `guestProfileId` nằm trong danh sách cách ly của [guestProfileProvider]
-  ///   (`listQuarantinedGuestScopes()`).
+  /// - Cấm tuyệt đối xóa nếu `guestProfileId` nằm trong `guest_quarantined_scopes` (SQLite SSoT)
+  ///   hoặc fallback của [guestProfileProvider] (`listQuarantinedGuestScopes(txn: txn)`).
+  /// - Ghi nhận `guest_purged_tombstones` bên trong **chính transaction xóa** để mọi
+  ///   `quarantineGuestScope`, `skipClaim`, hoặc `checkAndPrepareClaim` đến sau đều bị từ chối.
   /// - Chỉ xóa trong 4 bảng cục bộ (`local_preferences`, `local_library_bookmarks`,
   ///   `local_reading_progress`, `local_reading_history`); bảo toàn 100% `offline_*`,
   ///   `guest_claim_recovery_journal`, và mọi scope khác.
@@ -2582,7 +2589,9 @@ class SyncStorageDal {
     required GuestLifecyclePurgeReason reason,
     required GuestPurgeAdmission admission,
     required GuestProfileIdentityProvider guestProfileProvider,
+    Future<void> Function(Transaction txn)? onAfterDeleteBeforeTombstoneHook,
     Future<void> Function(Transaction txn)? onBeforeCommitHook,
+    Future<void> Function()? onAfterCommitBeforeRotateHook,
   }) async {
     assertGuestScope(guestScope);
 
@@ -2602,9 +2611,28 @@ class SyncStorageDal {
     admission.assertAdmitted(guestScope);
     final guestProfileId = guestScope.substring('guest:'.length);
 
+    if (guestProfileProvider.hasSqliteAuthority) {
+      await guestProfileProvider.migrateLegacyQuarantinesToSqlite();
+    }
+
     Future<void> assertGuestPurgeAllowed(Transaction? txn) async {
+      if (txn != null) {
+        final directSqliteQuarantined = await txn.query(
+          'guest_quarantined_scopes',
+          columns: const <String>['guest_profile_id'],
+          where: 'guest_profile_id = ?',
+          whereArgs: <Object?>[guestProfileId],
+          limit: 1,
+        );
+        if (directSqliteQuarantined.isNotEmpty) {
+          throw PurgeProhibitedError(
+            'PURGE_PROHIBITED: Guest scope "$guestScope" is quarantined in SQLite SSoT and cannot be purged.',
+          );
+        }
+      }
+
       final quarantined =
-          await guestProfileProvider.listQuarantinedGuestScopes();
+          await guestProfileProvider.listQuarantinedGuestScopes(txn: txn);
       if (quarantined.contains(guestProfileId)) {
         throw PurgeProhibitedError(
           'PURGE_PROHIBITED: Guest scope "$guestScope" is quarantined and cannot be purged.',
@@ -2620,7 +2648,7 @@ class SyncStorageDal {
         final snap = admission.readAuthoritySnapshot();
         if (!snap.isAuthenticated || snap.scopeState == ActiveScopeState.guest) {
           final currentGuestId =
-              await guestProfileProvider.getOrCreateGuestProfileId();
+              await guestProfileProvider.getOrCreateGuestProfileId(txn: txn);
           if (guestProfileId == currentGuestId ||
               (snap.currentGuestProfileId != null &&
                   guestProfileId == snap.currentGuestProfileId)) {
@@ -2664,23 +2692,57 @@ class SyncStorageDal {
         for (final table in guestLocalTables) {
           await txn.delete(
             table,
-            where: 'owner_scope = ?',
-            whereArgs: <Object?>[guestScope],
+            where:
+                'owner_scope = ? '
+                'AND NOT EXISTS (SELECT 1 FROM guest_quarantined_scopes q WHERE q.guest_profile_id = ?) '
+                'AND NOT EXISTS (SELECT 1 FROM guest_claim_recovery_journal j WHERE j.guest_profile_id = ?)',
+            whereArgs: <Object?>[guestScope, guestProfileId, guestProfileId],
           );
         }
+
+        if (onAfterDeleteBeforeTombstoneHook != null) {
+          await onAfterDeleteBeforeTombstoneHook(txn);
+        }
+
+        final String tombstoneReason = switch (reason) {
+          GuestLifecyclePurgeReason.userClearedGuestData =>
+            'USER_CLEARED_GUEST_DATA',
+          GuestLifecyclePurgeReason.verifiedUnusedGuestEviction =>
+            'VERIFIED_UNUSED_GUEST_EVICTION',
+        };
+        String? actorUserId;
+        if (admission is SyncAuthorityContextProvider) {
+          actorUserId = (admission as SyncAuthorityContextProvider)
+              .readAuthoritySnapshot()
+              .authenticatedUserId;
+        }
+        await guestProfileProvider.recordGuestPurgedTombstone(
+          txn: txn,
+          guestProfileId: guestProfileId,
+          purgeReason: tombstoneReason,
+          purgedByUserId: actorUserId,
+        );
 
         if (onBeforeCommitHook != null) {
           await onBeforeCommitHook(txn);
         }
 
         // Pre-commit quarantine + claim journal re-check:
-        // Đảm bảo nếu quarantine hoặc recovery journal xuất hiện xen kẽ giữa các
-        // `await txn.delete` hoặc trong `onBeforeCommitHook`, SQLite transaction sẽ
-        // abort & rollback 100%. (Lưu ý: không triệt tiêu tuyệt đối được cửa sổ sau
-        // callback return tới COMMIT vật lý do SharedPreferences nằm ngoài SQLite lock.)
+        // Giữ SQLite writer lock tới sau khi kiểm tra & COMMIT để triệt tiêu race với
+        // skipClaim / quarantineGuestScope / checkAndPrepareClaim trên mọi kết nối/isolate.
         await assertGuestPurgeAllowed(txn);
       },
     );
+
+    // Chỉ xoay active guestProfileId SAU KHI purge + terminal PURGED tombstone đã COMMIT.
+    // Nếu crash xảy ra ở đây trước khi xoay, GuestProfileIdentityProvider.getOrCreateGuestProfileId()
+    // sẽ phát hiện PURGED tombstone và tự động xoay sang UUIDv4 mới khi app khởi động lại.
+    if (reason == GuestLifecyclePurgeReason.userClearedGuestData) {
+      if (onAfterCommitBeforeRotateHook != null) {
+        await onAfterCommitBeforeRotateHook();
+      }
+      await guestProfileProvider.rotateGuestProfileIdIfMatching(guestProfileId);
+    }
   }
 
   // ==================== PRIVATE HELPERS ====================

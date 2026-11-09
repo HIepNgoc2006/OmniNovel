@@ -39,7 +39,7 @@ void main() {
       );
 
       expect(await db.getVersion(), OfflineDatabase.databaseVersion);
-      expect(OfflineDatabase.databaseVersion, 5);
+      expect(OfflineDatabase.databaseVersion, 6);
 
       // Verify pragmas on file-backed DB
       final fkRows = await db.rawQuery('PRAGMA foreign_keys;');
@@ -171,7 +171,7 @@ void main() {
         singleInstance: false,
       );
 
-      expect(await db.getVersion(), 5);
+      expect(await db.getVersion(), OfflineDatabase.databaseVersion);
       final rows = await db.rawQuery(
         "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'sync_meta';",
       );
@@ -394,7 +394,7 @@ void main() {
         databaseFactory: databaseFactoryFfi,
       );
 
-      expect(await db.getVersion(), 5);
+      expect(await db.getVersion(), OfflineDatabase.databaseVersion);
 
       // Assert 100% row-for-row preservation of all 7 prior tables
       final chapters = await db.query('offline_chapters');
@@ -563,7 +563,7 @@ void main() {
         databaseFactory: databaseFactoryFfi,
       );
 
-      expect(await db.getVersion(), 5);
+      expect(await db.getVersion(), OfflineDatabase.databaseVersion);
       final bm = await db.query('local_library_bookmarks');
       expect(bm, hasLength(1));
       expect(bm.first['story_id'], 'story-v3');

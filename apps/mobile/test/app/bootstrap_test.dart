@@ -152,11 +152,13 @@ void main() {
 
 
     testWidgets('OmniNovelApp exposes all DI providers through MultiProvider without error', (tester) async {
-      final result = await AppBootstrap.run(
-        customOfflineDatabase: offlineDb,
-        customSecureStorage: mockSecureStorage,
-        customTokenStorage: mockTokenStorage,
-      );
+      final result = (await tester.runAsync(
+        () => AppBootstrap.run(
+          customOfflineDatabase: offlineDb,
+          customSecureStorage: mockSecureStorage,
+          customTokenStorage: mockTokenStorage,
+        ),
+      ))!;
 
       await tester.pumpWidget(OmniNovelApp(bootstrapResult: result));
       await tester.pump();

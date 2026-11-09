@@ -74,10 +74,12 @@ void main() {
 
 
     testWidgets('1. Router redirect while modal is open does not destroy or dismiss claim modal', (tester) async {
-      final bootstrap = await AppBootstrap.run(
-        customOfflineDatabase: offlineDb,
-        customTokenStorage: mockTokenStorage,
-      );
+      final bootstrap = (await tester.runAsync(
+        () => AppBootstrap.run(
+          customOfflineDatabase: offlineDb,
+          customTokenStorage: mockTokenStorage,
+        ),
+      ))!;
 
       await tester.pumpWidget(OmniNovelApp(bootstrapResult: bootstrap));
       await tester.pump();
@@ -165,10 +167,12 @@ void main() {
     });
 
     testWidgets('3. User logout while modal is open automatically dismisses modal and resets session', (tester) async {
-      final bootstrap = await AppBootstrap.run(
-        customOfflineDatabase: offlineDb,
-        customTokenStorage: mockTokenStorage,
-      );
+      final bootstrap = (await tester.runAsync(
+        () => AppBootstrap.run(
+          customOfflineDatabase: offlineDb,
+          customTokenStorage: mockTokenStorage,
+        ),
+      ))!;
 
       await tester.pumpWidget(OmniNovelApp(bootstrapResult: bootstrap));
       await tester.pump();

@@ -587,6 +587,49 @@ class LocalLibraryDao {
         targetScope: targetScope,
       );
 
+      // 5b. Stage 1B (SQLite v6): Ghi terminal PURGED tombstone ('CLAIMED_AND_REBOUND')
+      // trong chính transaction rebind để chặn mọi quarantine/re-prepare/claim lại Guest cũ.
+      if (sourceScope.startsWith('guest:')) {
+        final expectedUserId = targetScope.startsWith('account:')
+            ? targetScope.substring('account:'.length)
+            : targetScope;
+        final expectedGuestProfileId = sourceScope.substring('guest:'.length);
+
+        final quarantineTable = await txn.rawQuery(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'guest_quarantined_scopes' LIMIT 1;",
+        );
+        if (quarantineTable.isNotEmpty) {
+          final quarantined = await txn.query(
+            'guest_quarantined_scopes',
+            columns: const <String>['guest_profile_id'],
+            where: 'guest_profile_id = ?',
+            whereArgs: <Object?>[expectedGuestProfileId],
+            limit: 1,
+          );
+          if (quarantined.isNotEmpty) {
+            throw StateError(
+              'Security guard: Cannot purge and finalize claim for quarantined guest profile $expectedGuestProfileId',
+            );
+          }
+        }
+
+        final tombstoneTable = await txn.rawQuery(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'guest_purged_tombstones' LIMIT 1;",
+        );
+        if (tombstoneTable.isNotEmpty) {
+          await txn.insert(
+            'guest_purged_tombstones',
+            <String, Object?>{
+              'guest_profile_id': expectedGuestProfileId,
+              'purged_at_ms': DateTime.now().toUtc().millisecondsSinceEpoch,
+              'purge_reason': 'CLAIMED_AND_REBOUND',
+              'purged_by_user_id': expectedUserId,
+            },
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+        }
+      }
+
       // 6. Hook kiểm thử rollback atomic
       if (onBeforeCommitHook != null) {
         await onBeforeCommitHook();

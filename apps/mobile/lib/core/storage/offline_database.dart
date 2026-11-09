@@ -2,10 +2,11 @@ import 'package:path/path.dart' as p;
 import 'package:sqflite/sqflite.dart';
 
 /// Database Manager cho hạ tầng lưu trữ ngoại tuyến và Sync Foundation của OmniNovel Mobile.
-/// Quản lý SQLite schema v1–v5 gồm các bảng offline, local library, guest claim journal và sync storage.
+/// Quản lý SQLite schema v1–v6 gồm các bảng offline, local library, guest claim journal,
+/// sync storage và Guest lifecycle SSoT (`guest_quarantined_scopes`, `guest_purged_tombstones`).
 class OfflineDatabase {
   static const String databaseName = 'omninovel_offline.db';
-  static const int databaseVersion = 5;
+  static const int databaseVersion = 6;
 
   Database? _db;
 
@@ -52,6 +53,7 @@ class OfflineDatabase {
           onConfigure: _onConfigure,
           onCreate: _onCreate,
           onUpgrade: _onUpgrade,
+          onDowngrade: _onDowngrade,
           singleInstance: singleInstance,
         ),
       );
@@ -62,6 +64,7 @@ class OfflineDatabase {
         onConfigure: _onConfigure,
         onCreate: _onCreate,
         onUpgrade: _onUpgrade,
+        onDowngrade: _onDowngrade,
         singleInstance: singleInstance,
       );
     }
@@ -90,6 +93,7 @@ class OfflineDatabase {
     await _createV3LocalLibraryTables(db);
     await _createV4RecoveryJournalTable(db);
     await _createV5SyncTables(db);
+    await _createV6LifecycleTables(db);
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -122,6 +126,48 @@ class OfflineDatabase {
       // Tạo thêm 7 bảng nền tảng Sync Storage Foundation & Local Preferences.
       await _createV5SyncTables(db);
     }
+    if (oldVersion < 6) {
+      // Migration v5 ➔ v6 (Stage 1B Controlled Unlock — ADR-07C4-001):
+      // Invariant: Toàn bộ 14 bảng cũ (v2 + v3 + v4 + v5) giữ nguyên 100% dữ liệu (additive).
+      // Chuyển Guest Quarantine SSoT sang SQLite và bổ sung terminal PURGED tombstones.
+      await _createV6LifecycleTables(db);
+    }
+  }
+
+  Future<void> _onDowngrade(Database db, int oldVersion, int newVersion) async {
+    // Fail-closed: Tuyệt đối cấm onDatabaseDowngradeDelete hoặc âm thầm hạ version DB.
+    throw StateError(
+      'DATABASE_DOWNGRADE_PROHIBITED: Cannot downgrade OfflineDatabase from v$oldVersion to v$newVersion without risking sync/lifecycle integrity.',
+    );
+  }
+
+  Future<void> _createV6LifecycleTables(Database db) async {
+    // 1. SSoT Cách ly Guest đã Skip Claim (chặn purge vĩnh viễn bên trong SQLite engine)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS guest_quarantined_scopes (
+        guest_profile_id TEXT PRIMARY KEY,
+        quarantined_at_ms INTEGER NOT NULL,
+        source_user_id TEXT,
+        reason TEXT NOT NULL DEFAULT 'SKIP_CLAIM',
+        CHECK (length(trim(guest_profile_id)) > 0)
+      );
+    ''');
+
+    // 2. SSoT Tombstone Hủy Guest (chặn Claim & Quarantine sau Purge — Terminal Absorbing State)
+    await db.execute('''
+      CREATE TABLE IF NOT EXISTS guest_purged_tombstones (
+        guest_profile_id TEXT PRIMARY KEY,
+        purged_at_ms INTEGER NOT NULL,
+        purge_reason TEXT NOT NULL
+          CHECK (purge_reason IN (
+            'USER_CLEARED_GUEST_DATA',
+            'VERIFIED_UNUSED_GUEST_EVICTION',
+            'CLAIMED_AND_REBOUND'
+          )),
+        purged_by_user_id TEXT,
+        CHECK (length(trim(guest_profile_id)) > 0)
+      );
+    ''');
   }
 
   Future<void> _createV5SyncTables(Database db) async {

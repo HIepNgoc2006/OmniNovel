@@ -31,6 +31,8 @@ export interface WireMutationBatchRequest {
 }
 
 export interface WireMutationBatchResponse {
+  processedCount?: number;
+  newServerRevision?: string;
   results: MutationResultItem[];
 }
 

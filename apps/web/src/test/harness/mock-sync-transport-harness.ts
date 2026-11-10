@@ -257,6 +257,7 @@ export interface PushPendingMutationsResult {
   quarantinedStaleCount: number;
   quarantinedLegacyCount: number;
   summary?: any;
+  correlation?: CorrelatedReceipts;
 }
 
 export const VALID_RECEIPT_STATUSES = new Set([
@@ -268,23 +269,66 @@ export const VALID_RECEIPT_STATUSES = new Set([
   'DOMAIN_NOT_SUPPORTED',
 ]);
 
+export const MAX_POSTGRES_BIGINT = 9223372036854775807n;
+
+/**
+ * Validates whether a value is a valid canonical 64-bit signed BIGINT decimal string in [0, 2^63 - 1].
+ * Rejects negatives, leading zeroes (except '0'), floats, non-numeric strings, and numbers exceeding PostgreSQL BIGINT max.
+ * Parity with Shared PR #213 isValidUnsignedBigIntRevision and Mobile revision_bigint.dart.
+ */
+export function isValidCanonicalRevisionString(val: unknown): val is string {
+  if (typeof val !== 'string' || !/^(0|[1-9]\d*)$/.test(val)) {
+    return false;
+  }
+  try {
+    const parsed = BigInt(val);
+    return parsed >= 0n && parsed <= MAX_POSTGRES_BIGINT;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Thrown in strict fail-closed batch validation mode when server returns an invalid envelope or corrupted receipts.
+ * Direct parity with Mobile Stage 2A.1 ReceiptValidationException.
+ */
+export class ReceiptValidationException extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ReceiptValidationException';
+  }
+}
+
+export interface EnvelopeValidationResult {
+  isValid: boolean;
+  receiptCountMatches: boolean;
+  processedCountMatches: boolean;
+  serverRevisionValid: boolean;
+  violations: string[];
+}
+
 export interface CorrelatedReceipts {
   validResults: MutationResultItem[];
   unknownReceipts: MutationResultItem[];
   duplicateReceipts: { mutationId: string; receipts: MutationResultItem[] }[];
   invalidReceipts: { receipt: MutationResultItem; reason: string }[];
   missingMutationIds: string[];
+  envelopeValidation: EnvelopeValidationResult;
 }
 
 /**
-  * Step 5.2e Canonical Wire Receipt Correlation and Causal Validation
-  * Filters and correlates wire receipts from server before passing to MutationQueue.
-  * Ensures unknown, duplicate, corrupt status, and contradictory revision receipts
-  * are rejected fail-closed without mutating or dropping offline pending mutations.
-  */
+ * Step 5.2f Canonical Wire Receipt Correlation and Causal Validation
+ * Filters and correlates wire receipts from server before passing to MutationQueue.
+ * Ensures unknown, duplicate, corrupt status, and contradictory revision receipts
+ * are rejected fail-closed without mutating or dropping offline pending mutations.
+ *
+ * Invariant: Preserves per-mutation tolerant settlement by default, while capturing
+ * batch envelope and receipt integrity violations in `envelopeValidation`.
+ */
 export function correlateAndValidateReceipts(
   dispatchedMutations: LocalPendingMutation[],
-  rawResults: MutationResultItem[]
+  rawResults: MutationResultItem[],
+  envelope?: { processedCount?: number; newServerRevision?: string }
 ): CorrelatedReceipts {
   const dispatchedMap = new Map<string, LocalPendingMutation>();
   for (const m of dispatchedMutations) {
@@ -293,23 +337,28 @@ export function correlateAndValidateReceipts(
 
   const receiptsByMutationId = new Map<string, MutationResultItem[]>();
   const unknownReceipts: MutationResultItem[] = [];
+  const invalidReceipts: { receipt: MutationResultItem; reason: string }[] = [];
 
   for (const r of rawResults || []) {
-    if (!r || typeof r.mutationId !== 'string') {
+    if (!r || typeof r.mutationId !== 'string' || r.mutationId.trim() === '') {
+      invalidReceipts.push({
+        receipt: r,
+        reason: 'EMPTY_MUTATION_ID: Receipt contains an empty or whitespace mutationId.',
+      });
       continue;
     }
-    if (!dispatchedMap.has(r.mutationId)) {
+    const trimmedId = r.mutationId.trim();
+    if (!dispatchedMap.has(trimmedId)) {
       unknownReceipts.push(r);
       continue;
     }
-    const list = receiptsByMutationId.get(r.mutationId) || [];
+    const list = receiptsByMutationId.get(trimmedId) || [];
     list.push(r);
-    receiptsByMutationId.set(r.mutationId, list);
+    receiptsByMutationId.set(trimmedId, list);
   }
 
   const validResults: MutationResultItem[] = [];
   const duplicateReceipts: { mutationId: string; receipts: MutationResultItem[] }[] = [];
-  const invalidReceipts: { receipt: MutationResultItem; reason: string }[] = [];
 
   for (const [mutationId, receipts] of receiptsByMutationId.entries()) {
     if (receipts.length > 1) {
@@ -330,12 +379,12 @@ export function correlateAndValidateReceipts(
       continue;
     }
 
-    // 2. Revision causal monotonicity & format checks
+    // 2. Revision causal monotonicity & canonical BIGINT format checks
     if (r.status === 'APPLIED') {
-      if (!isValidRevisionString(r.assignedRevision)) {
+      if (!isValidCanonicalRevisionString(r.assignedRevision)) {
         invalidReceipts.push({
           receipt: r,
-          reason: `APPLIED receipt missing or non-decimal assignedRevision: "${String(r.assignedRevision)}"`,
+          reason: `APPLIED receipt missing or non-canonical decimal assignedRevision: "${String(r.assignedRevision)}"`,
         });
         continue;
       }
@@ -351,10 +400,10 @@ export function correlateAndValidateReceipts(
       }
     } else if (r.status === 'DEDUPLICATED') {
       if (r.assignedRevision != null && r.assignedRevision !== '') {
-        if (!isValidRevisionString(r.assignedRevision)) {
+        if (!isValidCanonicalRevisionString(r.assignedRevision)) {
           invalidReceipts.push({
             receipt: r,
-            reason: `DEDUPLICATED receipt has non-decimal assignedRevision: "${String(r.assignedRevision)}"`,
+            reason: `DEDUPLICATED receipt has non-canonical decimal assignedRevision: "${String(r.assignedRevision)}"`,
           });
           continue;
         }
@@ -368,6 +417,36 @@ export function correlateAndValidateReceipts(
           }
         }
       }
+    } else if (r.status === 'CONFLICT_MERGED') {
+      if (r.assignedRevision != null && r.assignedRevision !== '') {
+        if (!isValidCanonicalRevisionString(r.assignedRevision)) {
+          invalidReceipts.push({
+            receipt: r,
+            reason: `CONFLICT_MERGED receipt has non-canonical decimal assignedRevision: "${String(r.assignedRevision)}"`,
+          });
+          continue;
+        }
+        if (isValidRevisionString(mutation.baseServerRevision)) {
+          if (BigInt(r.assignedRevision) < BigInt(mutation.baseServerRevision)) {
+            invalidReceipts.push({
+              receipt: r,
+              reason: `CONFLICT_MERGED receipt assignedRevision (${r.assignedRevision}) < baseServerRevision (${mutation.baseServerRevision})`,
+            });
+            continue;
+          }
+        }
+      }
+    } else {
+      // Rejection statuses (REJECTED_TOMBSTONE, REJECTED_STALE, DOMAIN_NOT_SUPPORTED)
+      if (r.assignedRevision != null && r.assignedRevision !== '') {
+        if (!isValidCanonicalRevisionString(r.assignedRevision)) {
+          invalidReceipts.push({
+            receipt: r,
+            reason: `${r.status} receipt has non-canonical decimal assignedRevision: "${String(r.assignedRevision)}"`,
+          });
+          continue;
+        }
+      }
     }
 
     validResults.push(r);
@@ -378,13 +457,149 @@ export function correlateAndValidateReceipts(
     .filter((m) => !validSet.has(m.mutationId))
     .map((m) => m.mutationId);
 
+  // 3. Envelope validation
+  const violations: string[] = [];
+  const receiptCountMatches = (rawResults || []).length === dispatchedMutations.length;
+  if (!receiptCountMatches) {
+    violations.push(
+      `RECEIPT_COUNT_MISMATCH: Sent ${dispatchedMutations.length} mutations, but server returned ${(rawResults || []).length} receipts.`
+    );
+  }
+
+  let processedCountMatches = true;
+  if (envelope?.processedCount !== undefined) {
+    processedCountMatches = envelope.processedCount === dispatchedMutations.length;
+    if (!processedCountMatches) {
+      violations.push(
+        `PROCESSED_COUNT_MISMATCH: Sent ${dispatchedMutations.length} mutations, but server processedCount is ${envelope.processedCount}.`
+      );
+    }
+  }
+
+  let serverRevisionValid = true;
+  if (envelope?.newServerRevision !== undefined) {
+    serverRevisionValid = isValidCanonicalRevisionString(envelope.newServerRevision);
+    if (!serverRevisionValid) {
+      violations.push(
+        `INVALID_SERVER_REVISION: newServerRevision "${envelope.newServerRevision}" is not a valid 64-bit canonical decimal string.`
+      );
+    }
+  }
+
+  if (unknownReceipts.length > 0) {
+    violations.push(
+      `UNEXPECTED_MUTATION_ID: Received ${unknownReceipts.length} unexpected receipts not in sent batch.`
+    );
+  }
+  if (duplicateReceipts.length > 0) {
+    violations.push(
+      `DUPLICATE_RECEIPT: Received duplicate receipts for ${duplicateReceipts.length} mutations.`
+    );
+  }
+  if (invalidReceipts.length > 0) {
+    violations.push(
+      `INVALID_RECEIPT: Encountered ${invalidReceipts.length} receipts failing validation.`
+    );
+  }
+  if (missingMutationIds.length > 0) {
+    violations.push(
+      `MISSING_RECEIPTS: Expected receipts for ${dispatchedMutations.length} mutations, but ${missingMutationIds.length} were missing or unvalidated.`
+    );
+  }
+
+  const envelopeValidation: EnvelopeValidationResult = {
+    isValid: violations.length === 0,
+    receiptCountMatches,
+    processedCountMatches,
+    serverRevisionValid,
+    violations,
+  };
+
   return {
     validResults,
     unknownReceipts,
     duplicateReceipts,
     invalidReceipts,
     missingMutationIds,
+    envelopeValidation,
   };
+}
+
+/**
+ * Strict whole-batch fail-closed validation function adhering to Mobile Stage 2A.1 SyncReceiptValidator.
+ * Throws ReceiptValidationException if ANY envelope or receipt integrity violation occurs.
+ */
+export function validateBatchReceiptsStrictFailClosed(
+  dispatchedMutations: LocalPendingMutation[],
+  wireResponse: WireMutationBatchResponse
+): void {
+  if (wireResponse.newServerRevision !== undefined && !isValidCanonicalRevisionString(wireResponse.newServerRevision)) {
+    throw new ReceiptValidationException(
+      `INVALID_SERVER_REVISION: newServerRevision "${wireResponse.newServerRevision}" is not a valid 64-bit canonical decimal string.`
+    );
+  }
+
+  if (wireResponse.results.length !== dispatchedMutations.length) {
+    throw new ReceiptValidationException(
+      `RECEIPT_COUNT_MISMATCH: Sent ${dispatchedMutations.length} mutations, but server returned ${wireResponse.results.length} receipts.`
+    );
+  }
+
+  if (wireResponse.processedCount !== undefined && wireResponse.processedCount !== dispatchedMutations.length) {
+    throw new ReceiptValidationException(
+      `PROCESSED_COUNT_MISMATCH: Sent ${dispatchedMutations.length} mutations, but server processedCount is ${wireResponse.processedCount}.`
+    );
+  }
+
+  const sentIds = new Set(dispatchedMutations.map((m) => m.mutationId));
+  const seenIds = new Set<string>();
+
+  for (const item of wireResponse.results) {
+    const mId = item.mutationId?.trim();
+    if (!mId) {
+      throw new ReceiptValidationException(
+        'EMPTY_MUTATION_ID: Receipt contains an empty or whitespace mutationId.'
+      );
+    }
+
+    if (!sentIds.has(mId)) {
+      throw new ReceiptValidationException(
+        `UNEXPECTED_MUTATION_ID: Receipt for mutationId "${mId}" was not part of the sent batch.`
+      );
+    }
+
+    if (seenIds.has(mId)) {
+      throw new ReceiptValidationException(
+        `DUPLICATE_RECEIPT: Duplicate receipt received for mutationId "${mId}".`
+      );
+    }
+    seenIds.add(mId);
+
+    const status = item.status?.trim().toUpperCase();
+    if (!VALID_RECEIPT_STATUSES.has(status)) {
+      throw new ReceiptValidationException(
+        `UNRECOGNIZED_RECEIPT_STATUS: Status "${status}" for mutationId "${mId}" is not recognized by the protocol.`
+      );
+    }
+
+    if (status === 'APPLIED' || status === 'DEDUPLICATED') {
+      if (item.assignedRevision == null || !isValidCanonicalRevisionString(item.assignedRevision)) {
+        throw new ReceiptValidationException(
+          `INVALID_ASSIGNED_REVISION: Status "${status}" for mutationId "${mId}" requires a valid canonical decimal assignedRevision, got "${item.assignedRevision}".`
+        );
+      }
+    } else if (item.assignedRevision != null && !isValidCanonicalRevisionString(item.assignedRevision)) {
+      throw new ReceiptValidationException(
+        `INVALID_ASSIGNED_REVISION: Optional assignedRevision "${item.assignedRevision}" for mutationId "${mId}" is not a valid canonical decimal string.`
+      );
+    }
+  }
+
+  if (seenIds.size !== sentIds.size) {
+    throw new ReceiptValidationException(
+      `MISSING_RECEIPTS: Expected receipts for ${sentIds.size} mutations, but only received ${seenIds.size}.`
+    );
+  }
 }
 
 /**
@@ -660,7 +875,11 @@ export class MockStep52dReconciler {
     }
 
     // 6. Correlate and validate wire receipts before passing to MutationQueue
-    const correlation = correlateAndValidateReceipts(admission.eligibleMutations, wireResponse.results);
+    const correlation = correlateAndValidateReceipts(
+      admission.eligibleMutations,
+      wireResponse.results,
+      wireResponse
+    );
 
     // Create an updated batch matching only the eligible mutations that were actually dispatched
     const dispatchedBatch: PreparedPushBatch = {
@@ -690,6 +909,7 @@ export class MockStep52dReconciler {
       quarantinedStaleCount: admission.quarantinedStaleMutations.length,
       quarantinedLegacyCount: admission.quarantinedLegacyMutations.length,
       summary,
+      correlation,
     };
   }
 }

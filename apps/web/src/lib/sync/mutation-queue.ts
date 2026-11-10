@@ -382,7 +382,11 @@ export class MutationQueue {
     }
   }
 
-  private releaseOwnedMutation(
+  /**
+   * Releases in-flight ownership for a specific mutation within a batch (P0-09).
+   * Used by atomic admission or caller-side reconciler when mutations are quarantined.
+   */
+  public releaseOwnedMutation(
     batch: { ownerScope: string; scopeGeneration: number; batchId: string },
     mutationId: string
   ): boolean {

@@ -27,6 +27,16 @@
   - Tuyệt đối **KHÔNG ĐƯỢC PHÉP** cài đặt bất kỳ công cụ, package, thư viện, CLI, Skill hay Plugin nào ra ngoài phạm vi dự án (toàn cục máy tính / Global PATH / User directory).
   - Mọi công cụ và thư viện chỉ được phép cài đặt cục bộ bên trong thư mục dự án `e:\Workspace2\Doctruyen_project` (ví dụ: `node_modules`, `.venv`, `.agents/skills/...`).
   - Luôn chỉ rõ đường dẫn cụ thể của bất kỳ file/thư mục nào được tạo ra hoặc cài đặt.
+- **Kỷ luật Ranh giới Sandbox & Ngăn chặn Tạo Thư mục Bừa bãi (Strict Sandbox Boundaries):**
+  - **Ranh giới Tuyệt đối (Absolute Sandbox Boundary):** Phạm vi hoạt động duy nhất của AI, Subagent, Background Worker và tất cả tiến trình phát triển là bên trong thư mục dự án `e:\Workspace2\Doctruyen_project`. Tuyệt đối **KHÔNG ĐƯỢC PHÉP** tự ý tạo file, thư mục, thư mục clone, hay workspace ngang cấp tại `e:\Workspace2\` hoặc bất kỳ đâu ngoài ranh giới dự án.
+  - **Quy chuẩn Quản lý Phân nhánh & Git Worktree (Git Worktree Discipline):**
+    - Nghiêm cấm chạy lệnh `git worktree add ../<path>` ra ngoài thư mục gốc của dự án.
+    - Trong trường hợp bắt buộc phải sử dụng Git Worktree để cô lập phân nhánh song song, vị trí DUY NHẤT được phép đặt là thư mục con ẩn trong dự án: `e:\Workspace2\Doctruyen_project\.worktrees/<tên-nhánh>` (đã được cấu hình trong `.gitignore`).
+    - **Nghĩa vụ Dọn dẹp Ngay lập tức (Immediate Lifecycle Cleanup):** Ngay sau khi tác vụ hoàn thành (tạo PR, chạy test xong hoặc merge), AI **BẮT BUỘC phải thực hiện dọn dẹp sạch sẽ**:
+      1. Chạy `git worktree remove --force` để gỡ bỏ liên kết worktree.
+      2. Chạy `git worktree prune` để làm sạch siêu dữ liệu git.
+      3. Xóa triệt để thư mục vật lý (đặc biệt là `node_modules` hay các file untracked/ignored mà git bỏ lại), không để bất kỳ tàn tích nào tồn tại trên đĩa.
+  - **Quy chế Dọn dẹp File & Thư mục Tạm (Temp & Artifact Hygiene):** Mọi file tạm phục vụ debug/script phải được lưu trong `<appDataDir>\brain\<conversation-id>/scratch/` hoặc tự động xóa sạch sau khi hoàn thành. Không được xả rác ra root dự án hay ổ đĩa máy tính.
 - **Đồng bộ Git Tự động & Liên tục (Continuous Commit & Push):**
   - Bất cứ khi nào có thay đổi (tạo mới, sửa đổi, xóa) các file không nằm trong danh sách loại trừ của `.gitignore`, phải lập tức thực hiện `git add`, `git commit` với thông điệp rõ ràng và `git push` lên repository từ xa ngay.
   - **Git Remote / Organization:** `https://github.com/HIepNgoc2006/OmniNovel` (Repository: `https://github.com/HIepNgoc2006/OmniNovel`).

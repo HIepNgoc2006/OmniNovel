@@ -12,7 +12,6 @@ ENV PYTHONUNBUFFERED=1 \
     TORCH_HOME=/home/appuser/.cache/torch
 
 RUN apt-get update && apt-get upgrade -y --no-install-recommends && apt-get install -y --no-install-recommends \
-    curl \
     libgl1 \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
@@ -32,7 +31,7 @@ RUN mkdir -p /home/appuser/.cache/huggingface /home/appuser/.cache/torch && \
 USER appuser
 
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=3 \
-  CMD curl -f http://127.0.0.1:8001/internal/v1/jobs/health || exit 1
+  CMD python3 -c "import urllib.request, sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8001/internal/v1/jobs/health', timeout=5).getcode() == 200 else 1)"
 
 EXPOSE 8001
 

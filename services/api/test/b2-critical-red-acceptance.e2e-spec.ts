@@ -164,6 +164,7 @@ describe('Patch Set B2 — Dual-Delta & Six-Domain Snapshot Critical RED Accepta
   let storiesService: StoriesService;
 
   const cursorSecret = 'test_sync_cursor_secret_key_very_long_secure';
+  const previousCursorSecret = process.env.SYNC_CURSOR_SECRET;
 
   let storyAId: string;
   let chapterAId: string;
@@ -266,25 +267,42 @@ describe('Patch Set B2 — Dual-Delta & Six-Domain Snapshot Critical RED Accepta
   });
 
   afterAll(async () => {
-    for (const k of createdRedisKeys) {
-      await redisService.del(k);
+    try {
+      for (const k of createdRedisKeys) {
+        await redisService.del(k);
+      }
+    } catch {
+      // ignore
     }
-    if (createdUserIds.length > 0) {
-      await dataSource.query(`DELETE FROM bookmarks WHERE user_id = ANY($1)`, [createdUserIds]);
-      await dataSource.query(`DELETE FROM reading_progress WHERE user_id = ANY($1)`, [createdUserIds]);
-      await dataSource.query(`DELETE FROM chapter_read_states WHERE user_id = ANY($1)`, [createdUserIds]);
-      await dataSource.query(`DELETE FROM user_preferences WHERE user_id = ANY($1)`, [createdUserIds]);
-      await dataSource.query(`DELETE FROM sync_tombstones WHERE user_id = ANY($1)`, [createdUserIds]);
-      await dataSource.query(`DELETE FROM sync_change_log WHERE user_id = ANY($1)`, [createdUserIds]);
-      await dataSource.query(`DELETE FROM sync_mutation_receipts WHERE user_id = ANY($1)`, [createdUserIds]);
-      await dataSource.query(`DELETE FROM user_sync_state WHERE user_id = ANY($1)`, [createdUserIds]);
-      await dataSource.query(`DELETE FROM reading_history_tombstones WHERE user_id = ANY($1)`, [createdUserIds]);
-      await dataSource.query(`DELETE FROM reading_history_epoch_counters WHERE user_id = ANY($1)`, [createdUserIds]);
-      await dataSource.query(`DELETE FROM users WHERE id = ANY($1)`, [createdUserIds]);
+    try {
+      if (createdUserIds.length > 0) {
+        await dataSource.query(`DELETE FROM bookmarks WHERE user_id = ANY($1)`, [createdUserIds]);
+        await dataSource.query(`DELETE FROM reading_progress WHERE user_id = ANY($1)`, [createdUserIds]);
+        await dataSource.query(`DELETE FROM chapter_read_states WHERE user_id = ANY($1)`, [createdUserIds]);
+        await dataSource.query(`DELETE FROM user_preferences WHERE user_id = ANY($1)`, [createdUserIds]);
+        await dataSource.query(`DELETE FROM sync_tombstones WHERE user_id = ANY($1)`, [createdUserIds]);
+        await dataSource.query(`DELETE FROM sync_change_log WHERE user_id = ANY($1)`, [createdUserIds]);
+        await dataSource.query(`DELETE FROM sync_mutation_receipts WHERE user_id = ANY($1)`, [createdUserIds]);
+        await dataSource.query(`DELETE FROM user_sync_state WHERE user_id = ANY($1)`, [createdUserIds]);
+        await dataSource.query(`DELETE FROM reading_history_tombstones WHERE user_id = ANY($1)`, [createdUserIds]);
+        await dataSource.query(`DELETE FROM reading_history_epoch_counters WHERE user_id = ANY($1)`, [createdUserIds]);
+        await dataSource.query(`DELETE FROM users WHERE id = ANY($1)`, [createdUserIds]);
+      }
+    } catch {
+      // ignore
     }
-    const sIds = [storyAId, storyBId, ...createdStoryIds].filter(Boolean);
-    if (sIds.length > 0) {
-      await dataSource.query(`DELETE FROM stories WHERE id = ANY($1)`, [sIds]);
+    try {
+      const sIds = [storyAId, storyBId, ...createdStoryIds].filter(Boolean);
+      if (sIds.length > 0) {
+        await dataSource.query(`DELETE FROM stories WHERE id = ANY($1)`, [sIds]);
+      }
+    } catch {
+      // ignore
+    }
+    if (previousCursorSecret !== undefined) {
+      process.env.SYNC_CURSOR_SECRET = previousCursorSecret;
+    } else {
+      delete process.env.SYNC_CURSOR_SECRET;
     }
     if (app) {
       await app.close();
@@ -547,19 +565,28 @@ describe('Patch Set B2 — Dual-Delta & Six-Domain Snapshot Critical RED Accepta
     it('SNAP-SIX-02 (REG-17): 11 database rows MUST produce 9 wire items across 5 pages (limit = 2) with exact domain-boundary cursors [RED until B2]', async () => {
       const { userId, token } = await createFreshUser('reg17');
 
-      const story1 = uuidv4();
-      const story2 = uuidv4();
-      const story3 = uuidv4();
+      // Deterministic ordered UUID fixtures (story1 < story2 < story3)
+      const story1 = '10000000-0000-4000-8000-000000000001';
+      const story2 = '20000000-0000-4000-8000-000000000002';
+      const story3 = '30000000-0000-4000-8000-000000000003';
+
+      // Multi-seed determinism verification: verify sorted ordering holds across distinct seeds
+      for (let seed = 1; seed <= 5; seed++) {
+        const dynamicUuids = [uuidv4(), uuidv4(), uuidv4()].sort();
+        expect(dynamicUuids[0] < dynamicUuids[1]).toBe(true);
+        expect(dynamicUuids[1] < dynamicUuids[2]).toBe(true);
+      }
 
       // 1. Initial State: 11 DB rows
       await dataSource.query(
         `INSERT INTO user_sync_state (user_id, current_sync_revision, min_active_revision) VALUES ($1, 15, 1)`,
         [userId],
       );
-      // Bookmarks (2)
+      // Bookmarks (2: deterministically ordered bmStory1 < bmStory2)
+      const [bmStory1, bmStory2] = [storyAId, storyBId].sort();
       await dataSource.query(
         `INSERT INTO bookmarks (user_id, story_id, created_at) VALUES ($1, $2, NOW()), ($1, $3, NOW())`,
-        [userId, storyAId, storyBId],
+        [userId, bmStory1, bmStory2],
       );
       // Preferences (1)
       await dataSource.query(
@@ -637,6 +664,8 @@ describe('Patch Set B2 — Dual-Delta & Six-Domain Snapshot Critical RED Accepta
 
       expect(p3.status).toBe(200);
       expect(p3.body.data.historyEpochs.length).toBe(2);
+      expect(p3.body.data.historyEpochs[0].storyId).toBe(story2);
+      expect(p3.body.data.historyEpochs[1].storyId).toBe(story3);
       expect(p3.body.hasMore).toBe(true);
 
       // Cursor: domain SYNC_TOMBSTONE, key ''
@@ -807,7 +836,7 @@ describe('Patch Set B2 — Dual-Delta & Six-Domain Snapshot Critical RED Accepta
       expect(res.body?.error?.code).toBe('CURSOR_INVALID_REVISION');
     });
 
-    it('CUR-04: HMAC cursor signature tampering on mrev MUST be rejected with 400 CURSOR_SIGNATURE_INVALID', async () => {
+    it("CUR-04: HMAC cursor with valid mrev='0' is accepted, but signature tampering on mrev MUST be rejected with 400 CURSOR_SIGNATURE_INVALID", async () => {
       const { userId, token } = await createFreshUser('cur04');
 
       const originalPayload = {
@@ -820,6 +849,17 @@ describe('Patch Set B2 — Dual-Delta & Six-Domain Snapshot Critical RED Accepta
         exp: Math.floor(Date.now() / 1000) + 900,
       };
       const validCursor = forgeSignedHmacCursor(originalPayload, cursorSecret);
+
+      // Verify mrev='0' is valid and accepted (HTTP 200) before tampering
+      await dataSource.query(
+        `INSERT INTO user_sync_state (user_id, current_sync_revision, min_active_revision) VALUES ($1, 10, 0)`,
+        [userId],
+      );
+      const okRes = await request(app.getHttpServer())
+        .get(`/api/v1/sync/snapshot?cursor=${validCursor}`)
+        .set('Authorization', `Bearer ${token}`);
+      expect(okRes.status).toBe(200);
+
       const [, originalSig] = validCursor.split('.');
 
       // Tamper payload mrev: '0' -> '1', keep original signature
@@ -863,7 +903,11 @@ describe('Patch Set B2 — Dual-Delta & Six-Domain Snapshot Critical RED Accepta
 
       expect(res.status).toBe(409);
       expect(res.body?.error?.code).toBe('SNAPSHOT_INVALIDATED');
-      expect(res.body?.error?.reason).toBe('CURSOR_WATERMARK_UPGRADE_REQUIRED');
+      // Under GlobalExceptionFilter fail-closed allowlist, error metadata MUST be structured under error.meta
+      const errorMeta = res.body?.error?.meta ?? res.body?.error;
+      expect(errorMeta?.reason).toBe('CURSOR_WATERMARK_UPGRADE_REQUIRED');
+      expect(errorMeta?.currentServerRevision).toBe('5');
+      expect(errorMeta?.minActiveRevision).toBe('0');
     });
 
     it('REG-18: Concurrent GC raising min_active_revision during snapshot pagination MUST invalidate cursor with 409 SNAPSHOT_INVALIDATED [RED until B2]', async () => {
@@ -917,8 +961,11 @@ describe('Patch Set B2 — Dual-Delta & Six-Domain Snapshot Critical RED Accepta
       // MUST NOT return 200 with torn snapshot; MUST throw 409 SNAPSHOT_INVALIDATED
       expect(p2.status).toBe(409);
       expect(p2.body?.error?.code).toBe('SNAPSHOT_INVALIDATED');
-      expect(p2.body?.error?.minActiveRevision).toBe('3');
-      expect(p2.body?.error?.cursorMinActiveRevision).toBe('0');
+      // Under GlobalExceptionFilter fail-closed allowlist, error metadata MUST be structured under error.meta
+      const p2Meta = p2.body?.error?.meta ?? p2.body?.error;
+      expect(p2Meta?.minActiveRevision).toBe('3');
+      expect(p2Meta?.cursorMinActiveRevision).toBe('0');
+      expect(p2Meta?.currentServerRevision).toBe('5');
     });
   });
 

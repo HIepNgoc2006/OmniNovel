@@ -16,9 +16,30 @@ import { ReadingMode, SyncDomain, SyncOperation } from '../src/modules/sync/inte
 
 /**
  * Six-Domain Snapshot Contract Validators & Invariants (matching ADR v2.2 & PR #213 Patch Set A)
+ *
+ * NOTE (Test Oracle Independence):
+ * isSixDomainSyncSnapshotResponse is an independent local test oracle designed for this
+ * acceptance test harness. It does NOT serve as proof that the @omninovel/shared package
+ * runtime guard already validates every item (as PR #213 is pending merge).
+ * Once PR #213 is integrated into main, a cross-validation step will link and compare
+ * this test oracle against the authoritative @omninovel/shared guard.
  */
 export const GLOBAL_HISTORY_EPOCH_SENTINEL = '00000000-0000-0000-0000-000000000000';
-export const SNAPSHOT_PARTITION_DOMAINS = [
+
+/**
+ * Specification-only SnapshotDomainName union.
+ * Strictly separated from mutation SyncDomain.
+ * Confirms FOLLOW is NOT a valid snapshot partition.
+ */
+export type SnapshotDomainName =
+  | 'BOOKMARK'
+  | 'PROGRESS'
+  | 'CHAPTER_READ_STATE'
+  | 'PREFERENCE'
+  | 'HISTORY_TOMBSTONE'
+  | 'SYNC_TOMBSTONE';
+
+export const SNAPSHOT_PARTITION_DOMAINS: readonly SnapshotDomainName[] = [
   'BOOKMARK',
   'PROGRESS',
   'CHAPTER_READ_STATE',

@@ -2,7 +2,7 @@
 
 > **Document Status:** PROPOSED CANONICAL ERRATA ADDENDUM (ISOLATED TEST BRANCH `test/b2-critical-red-acceptance-harness` — PENDING GATE REVIEW, NOT MERGED/FROZEN ON MAIN)  
 > **Target Subsystems:** `services/api` (Sync Engine, Claims, Stories), `packages/shared`  
-> **Baselines:** ADR-SYNC-07C-v2.2 (`b698ef7`), PR #213 (`6e440e2`), PR #212 (`c440396`), B1 RED Test Harness (`4c70cd8`), B2 RED Test Harness (`5b8ca1c`)  
+> **Baselines:** ADR-SYNC-07C-v2.2 (`b698ef7`), PR #213 (`6e440e2`), PR #212 (`c440396`), B1 RED Test Harness (`4c70cd8`), B2 RED Test Harness (`952bf10`)  
 > **Date:** 2026-11-10  
 > **Author:** OmniNovel Engineering Core  
 
@@ -110,33 +110,49 @@ Phụ lục này được lưu trữ độc quyền trên nhánh kiểm thử c�
 
 ---
 
-### 2.7 Erratum 7: Chuẩn Hóa Phiên Bản HMAC Cursor, Phân Loại Lỗi & Điều Kiện Tiên Quyết Response Serialization
+### 2.7 Erratum 7: Chuẩn Hóa Type Contract SnapshotDomainName, HMAC Cursor & Response Serialization
 
-1. **Duy Trì Phiên Bản Cursor `v: 1` Bất Biến (Không Giả Định `v: 'v2'`):**
-   - Theo chuẩn `ADR-SYNC-07C-v2.2`, `CURRENT_VERSION = 1` được duy trì nghiêm ngặt trong `HmacCursorHelper`.
-   - Cấu trúc cursor payload hợp thức:
+1. **Khai Sinh Specification-Only Type `SnapshotDomainName`:**
+   - Do enum `SyncDomain` (dành cho mutations) không chứa `HISTORY_TOMBSTONE` và `SYNC_TOMBSTONE`, hợp đồng phân vùng snapshot bắt buộc sử dụng một type union riêng biệt:
      ```ts
-     interface SnapshotCursorPayload {
-       v: 1;                 // Luôn là 1, tuyệt đối không dùng 'v2'
-       uid: string;          // User ID
-       srev: string;         // Snapshot Revision (decimal string)
-       mrev?: string;        // Watermark Revision (decimal string)
-       domain: SyncDomain;   // Domain đang phân trang
-       key: string;          // Cursor position key
-       exp: number;          // Epoch timestamp seconds
+     /**
+      * Tập hợp chính xác 6 phân vùng của Six-Domain Snapshot.
+      * Tách biệt hoàn toàn khỏi mutation SyncDomain enum.
+      * XÁC NHẬN: FOLLOW tuyệt đối KHÔNG phải phân vùng snapshot hợp lệ.
+      */
+     export type SnapshotDomainName =
+       | 'BOOKMARK'
+       | 'PROGRESS'
+       | 'CHAPTER_READ_STATE'
+       | 'PREFERENCE'
+       | 'HISTORY_TOMBSTONE'
+       | 'SYNC_TOMBSTONE';
+     ```
+   - **Tách biệt rõ ràng:** `SyncDomain` (cho mutation: `BOOKMARK`, `PROGRESS`, `HISTORY`, `PREFERENCE`, `FOLLOW`) và `SnapshotDomainName` (cho snapshot cursor & partitioning) có trách nhiệm kỹ thuật hoàn toàn độc lập.
+2. **Cấu Trúc Bất Biến Của HMAC Cursor Payload (`v: 1`):**
+   - Giữ nguyên `CURRENT_VERSION = 1` (`v: 1`) theo đúng `ADR-SYNC-07C-v2.2`. Tuyệt đối không đưa vào yêu cầu `v === 'v2'`.
+     ```ts
+     export interface SnapshotCursorPayload {
+       v: 1;                       // Luôn là 1 (CURRENT_VERSION = 1), không dùng 'v2'
+       uid: string;                // User ID (UUID)
+       srev: string;               // Snapshot Revision (unsigned decimal string <= 9223372036854775807)
+       mrev?: string;              // Watermark Revision ('0' là hợp lệ; unsigned decimal string)
+       domain: SnapshotDomainName; // Domain phân vùng snapshot (thuộc SnapshotDomainName)
+       key: string;                // Cursor position key (chuỗi rỗng hoặc ID/JSON-tuple)
+       exp: number;                // Epoch timestamp seconds
      }
      ```
-2. **Hợp Thức Hóa Watermark `mrev`:**
-   - `mrev = '0'` là giá trị watermark hoàn toàn **HỢP LỆ** (trạng thái ban đầu khi chưa từng chạy Garbage Collection).
+3. **Hợp Thức Hóa Watermark `mrev`:**
+   - `mrev = '0'` là giá trị watermark hoàn toàn **HỢP LỆ** (trạng thái khởi tạo khi chưa có Garbage Collection).
    - `mrev` âm (`'-1'`), sai định dạng (`'abc'`, `'1.5'`, `' 10 '`, số nguyên `10`) hoặc tràn số (`> 9223372036854775807n`) **BẮT BUỘC bị từ chối `HTTP 400 Bad Request`** (`code: 'CURSOR_INVALID_REVISION'`).
-3. **Xử Lý Signed Legacy `v1` Cursor Thiếu `mrev`:**
+4. **Xử Lý Signed Legacy `v1` Cursor Thiếu `mrev`:**
    - Cursor `v1` có chữ ký HMAC hợp lệ nhưng thiếu `mrev` (`payload.mrev === undefined`) đại diện cho client đang giữ cursor của hệ thống cũ.
    - `SyncService.getSnapshot` từ chối an toàn với **HTTP 409 Conflict** (`code: 'SNAPSHOT_INVALIDATED'`, `reason: 'CURSOR_WATERMARK_UPGRADE_REQUIRED'`), kèm metadata `minActiveRevision` và `currentServerRevision` để client dọn staging store và khởi động lại từ Page 1.
-4. **Hệ Thống Phân Loại Lỗi (Error Taxonomy):**
+5. **Hệ Thống Phân Loại Lỗi (Error Taxonomy):**
    - **Tầng Causal Resolver (Batch Item-Level Rejection):** Trả về **HTTP 200 OK** cho toàn batch, item mutation nhận trạng thái `REJECTED_TOMBSTONE` kèm `reason: 'TOMBSTONE_CONFLICT'` (hoặc `MISSING_HISTORY_EPOCH_PROOF`, `STALE_HISTORY_EPOCH`).
    - **Tầng Mutation Idempotency (Envelope Collision):** Trả về **HTTP 409 Conflict** với mã lỗi `code: 'IDEMPOTENCY_KEY_PAYLOAD_MISMATCH'`, kèm `error.meta.mutationId`.
    - **Tầng Snapshot Pagination Watermark (Cursor Shift / Pruned):** Trả về **HTTP 409 Conflict** với mã lỗi `code: 'SNAPSHOT_INVALIDATED'`, kèm `error.meta.reason`, `error.meta.minActiveRevision`, `error.meta.cursorMinActiveRevision`, `error.meta.currentServerRevision`.
-5. **Điều Kiện Tiên Quyết Triển Khai Cho Response Serialization (`GlobalExceptionFilter`):**
+6. **Điều Kiện Tiên Quyết Triển Khai Cho Response Serialization (`GlobalExceptionFilter`):**
    - `GlobalExceptionFilter` tại `services/api/src/common/filters/http-exception.filter.ts` lọc metadata công khai theo danh sách kiểm soát `PUBLIC_ERROR_META_FIELDS`.
    - Để các mã lỗi `409 Conflict` (cả Idempotency lẫn Snapshot) truyền tải đầy đủ ngữ cảnh cho Web và Mobile mà không bị filter triệt tiêu, mảng allowlist bắt buộc phải được mở rộng khi triển khai B1/B2:
      ```ts
@@ -183,3 +199,39 @@ Tổng cộng: **17 tests (5 baseline PASS / 12 expected RED)**.
 | `PROD-03` | Server Producer | **PASS** | `forceRewind` không ghi đè giảm `chapter_read_states.max_progress_percentage` |
 | `GUEST-BM-01` | GuestClaim Isolation | **PASS** | `HISTORY` tombstone không chặn import bookmark của guest |
 | `GUEST-BM-02` | GuestClaim Tombstone | **RED** | `BOOKMARK` tombstone trong cloud chặn auto-import bookmark của guest, chuyển sang conflict |
+
+---
+
+## 4. Độc Lập Test Oracle & Kế Hoạch Đối Soát Shared Patch A (Test Oracle Independence)
+
+1. **Bản Chất Của Local Test Oracle:**
+   - Hàm `isSixDomainSyncSnapshotResponse` trong `b2-critical-red-acceptance.e2e-spec.ts` được thiết kế thuần túy như một **Test Oracle độc lập cục bộ** phục vụ harness nghiệm thu.
+   - Hàm này **KHÔNG PHẢI là bằng chứng** cho thấy runtime guard trong `@omninovel/shared` hiện tại đã validate đầy đủ từng item (vì PR #213 đang ở trạng thái Draft / chờ tích hợp).
+2. **Kế Hoạch Cross-Validation Khi Merge PR #213:**
+   - Sau khi PR an toàn #211 được merge và PR #213 được tích hợp vào `main`, một bước kiểm tra chéo (Cross-Validation) sẽ được kích hoạt để đối soát trực tiếp giữa local test oracle `isSixDomainSyncSnapshotResponse` và type guard authoritative của `@omninovel/shared` (`isSixDomainSyncSnapshotResponse` / `isSyncSnapshotResponse`).
+3. **Bảo Toàn Tiêu Chí Nghiệm Thu RED:**
+   - Không làm mềm, nới lỏng hay suy yếu bất kỳ assertion nào để ép test chuyển sang GREEN giả tạo.
+   - Toàn bộ 12 ca kiểm thử RED được bảo lưu nguyên vẹn để làm thước đo khách quan cho Patch Set B2.
+
+---
+
+## 5. Bản Đồ Triển Khai Chi Tiết Cho Patch Set B2 (Implementation Handoff)
+
+Khi Gate được mở quyền triển khai mã nguồn production, việc sửa đổi sẽ tiến hành trên các file:
+1. `services/api/src/common/filters/http-exception.filter.ts`:
+   - Mở rộng `PUBLIC_ERROR_META_FIELDS` cho phép `'mutationId'`, `'reason'`, `'minActiveRevision'`, `'cursorMinActiveRevision'`, `'currentServerRevision'`.
+2. `services/api/src/modules/sync/interfaces/sync.types.ts`:
+   - Khai báo type `SnapshotDomainName = 'BOOKMARK' | 'PROGRESS' | 'CHAPTER_READ_STATE' | 'PREFERENCE' | 'HISTORY_TOMBSTONE' | 'SYNC_TOMBSTONE'`.
+   - Cập nhật `SnapshotCursorPayload.domain: SnapshotDomainName`.
+   - Bổ sung `SnapshotCursorPayload.mrev?: string`.
+3. `services/api/src/modules/sync/helpers/hmac-cursor.helper.ts`:
+   - Cập nhật `ALLOWED_SNAPSHOT_DOMAINS` thành `new Set<SnapshotDomainName>(['BOOKMARK', 'PROGRESS', 'CHAPTER_READ_STATE', 'PREFERENCE', 'HISTORY_TOMBSTONE', 'SYNC_TOMBSTONE'])`.
+   - Validate `mrev`: chấp nhận `'0'`, kiểm tra regex `^\d+$` và `<= 9223372036854775807n`, ném `400 CURSOR_INVALID_REVISION` nếu vi phạm (`CUR-01..03`).
+   - Kiểm tra `payload.v !== 1` ném `400 CURSOR_VERSION_MISMATCH`.
+   - Trả `payload.mrev` trong kết quả decode; ném `409 SNAPSHOT_INVALIDATED` nếu `payload.mrev === undefined` (`CUR-05`).
+4. `services/api/src/modules/sync/services/sync.service.ts`:
+   - Triển khai Dual-Delta commit (`PROGRESS` $r+1$, `HISTORY` $r+2$, receipt $r+2$) trong 1 transaction (`DUAL-DELTA-01..03`).
+   - Trong `getSnapshot`: so sánh `BigInt(cursor.mrev) < BigInt(userSyncState.minActiveRevision)` $\rightarrow$ throw `ConflictException({ code: 'SNAPSHOT_INVALIDATED', reason: 'GC_PRUNED', minActiveRevision, cursorMinActiveRevision: cursor.mrev, currentServerRevision })` (`REG-18`).
+   - Thu thập đủ 6 domain (`globalHistoryEpoch`, `historyEpochs`, `tombstones`), sửa lỗi ngắt sớm tại ranh giới domain `PREFERENCE` (`SNAP-SIX-01..03`).
+5. `services/api/src/modules/claims/guest-claim.service.ts`:
+   - Thêm kiểm tra `sync_tombstones(domain='BOOKMARK')` để chặn auto-import bookmark đã bị cloud tombstone, chuyển vào `bookmarkConflicts` (`GUEST-BM-02`).

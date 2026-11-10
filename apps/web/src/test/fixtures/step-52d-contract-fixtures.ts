@@ -35,15 +35,108 @@ export interface WireMutationBatchResponse {
 }
 
 /**
- * Task A2: GET /sync/changes 410 Error Payload
+ * Task A2 / Task E: GlobalExceptionFilter Canonical Error Envelopes
+ * In production NestJS GlobalExceptionFilter, responses are structured as:
+ * {
+ *   error: {
+ *     code: string;
+ *     message: string;
+ *     requestId: string;
+ *     timestamp: string;
+ *     meta?: Record<string, any>;
+ *     details?: Array<{ field: string; issue: string }>;
+ *   }
+ * }
+ * Note: GlobalExceptionFilter only allows allowlisted fields in error.meta.
+ * In present production, minActiveRevision and currentServerRevision are NOT yet allowlisted,
+ * so present production returns only code, message, requestId, timestamp.
+ * Proposed B1/B2 contracts introduce metadata under error.meta.
  */
-export interface WireSyncRevisionExpiredErrorResponse {
-  statusCode: 410;
+export interface ProductionGlobalErrorEnvelope<TMeta = Record<string, unknown>> {
+  error: {
+    code: string;
+    message: string;
+    requestId: string;
+    timestamp: string;
+    meta?: TMeta;
+    details?: Array<{ field: string; issue: string }>;
+  };
+}
+
+/**
+ * Present Production HTTP 410 Error (Filtered by GlobalExceptionFilter)
+ */
+export interface ProductionSyncRevisionExpiredBody {
   error: {
     code: 'SYNC_REVISION_EXPIRED';
     message: string;
-    currentServerRevision: string;
-    minActiveRevision: string;
+    requestId: string;
+    timestamp: string;
+  };
+}
+
+/**
+ * Proposed B1 HTTP 410 Error (Allowlisting minActiveRevision & currentServerRevision under error.meta)
+ */
+export interface ProposedB1SyncRevisionExpiredBody {
+  error: {
+    code: 'SYNC_REVISION_EXPIRED';
+    message: string;
+    requestId: string;
+    timestamp: string;
+    meta?: {
+      minActiveRevision?: string;
+      currentServerRevision?: string;
+    };
+  };
+}
+
+export interface WireHttpResponse<TBody> {
+  httpStatus: number;
+  body: TBody;
+}
+
+export type WireSyncRevisionExpiredResponse =
+  | WireHttpResponse<ProductionSyncRevisionExpiredBody>
+  | WireHttpResponse<ProposedB1SyncRevisionExpiredBody>;
+
+export function createProduction410Response(params?: {
+  message?: string;
+  requestId?: string;
+}): WireHttpResponse<ProductionSyncRevisionExpiredBody> {
+  return {
+    httpStatus: 410,
+    body: {
+      error: {
+        code: 'SYNC_REVISION_EXPIRED',
+        message: params?.message ?? 'Client revision is expired and has been pruned by GC; full snapshot resync required',
+        requestId: params?.requestId ?? `req-prod-410-${Math.random().toString(36).substring(2, 8)}`,
+        timestamp: new Date().toISOString(),
+      },
+    },
+  };
+}
+
+export function createProposedB1410Response(params: {
+  minActiveRevision: string;
+  currentServerRevision: string;
+  message?: string;
+  requestId?: string;
+}): WireHttpResponse<ProposedB1SyncRevisionExpiredBody> {
+  return {
+    httpStatus: 410,
+    body: {
+      error: {
+        code: 'SYNC_REVISION_EXPIRED',
+        message: params.message ?? `Client revision is expired (minActiveRevision: ${params.minActiveRevision}); full snapshot resync required`,
+        requestId: params.requestId ?? `req-b1-410-${Math.random().toString(36).substring(2, 8)}`,
+        timestamp: new Date().toISOString(),
+        meta: {
+          minActiveRevision: params.minActiveRevision,
+          currentServerRevision: params.currentServerRevision,
+        },
+      },
+    },
   };
 }
 
@@ -91,17 +184,77 @@ export interface SixDomainSyncSnapshotResponse {
 }
 
 /**
- * Task C: HTTP 409 Snapshot Invalidated Payload
+ * Task C / Task E: HTTP 409 Snapshot Invalidated Error Payloads
  */
-export interface WireSnapshotInvalidatedErrorResponse {
-  statusCode: 409;
+export interface ProductionSnapshotInvalidatedBody {
   error: {
     code: 'SNAPSHOT_INVALIDATED';
-    reason: 'CURSOR_WATERMARK_UPGRADE_REQUIRED' | 'CONCURRENT_GC_MIN_ACTIVE_ADVANCED';
     message: string;
-    currentServerRevision: string;
-    minActiveRevision: string;
-    cursorMinActiveRevision?: string;
+    requestId: string;
+    timestamp: string;
+  };
+}
+
+export interface ProposedB2SnapshotInvalidatedBody {
+  error: {
+    code: 'SNAPSHOT_INVALIDATED';
+    message: string;
+    requestId: string;
+    timestamp: string;
+    meta?: {
+      reason?: 'CURSOR_WATERMARK_UPGRADE_REQUIRED' | 'CONCURRENT_GC_MIN_ACTIVE_ADVANCED';
+      currentServerRevision?: string;
+      minActiveRevision?: string;
+      cursorRevision?: string;
+    };
+  };
+}
+
+export type WireSnapshotInvalidatedResponse =
+  | WireHttpResponse<ProductionSnapshotInvalidatedBody>
+  | WireHttpResponse<ProposedB2SnapshotInvalidatedBody>;
+
+export function createProduction409Response(params?: {
+  message?: string;
+  requestId?: string;
+}): WireHttpResponse<ProductionSnapshotInvalidatedBody> {
+  return {
+    httpStatus: 409,
+    body: {
+      error: {
+        code: 'SNAPSHOT_INVALIDATED',
+        message: params?.message ?? 'Snapshot invalidated; client must clear snapshot staging store and restart from page 1',
+        requestId: params?.requestId ?? `req-prod-409-${Math.random().toString(36).substring(2, 8)}`,
+        timestamp: new Date().toISOString(),
+      },
+    },
+  };
+}
+
+export function createProposedB2409Response(params: {
+  reason: 'CURSOR_WATERMARK_UPGRADE_REQUIRED' | 'CONCURRENT_GC_MIN_ACTIVE_ADVANCED';
+  currentServerRevision: string;
+  minActiveRevision: string;
+  cursorRevision: string;
+  message?: string;
+  requestId?: string;
+}): WireHttpResponse<ProposedB2SnapshotInvalidatedBody> {
+  return {
+    httpStatus: 409,
+    body: {
+      error: {
+        code: 'SNAPSHOT_INVALIDATED',
+        message: params.message ?? `Snapshot invalidated: current server revision (${params.currentServerRevision}) != cursor revision (${params.cursorRevision})`,
+        requestId: params.requestId ?? `req-b2-409-${Math.random().toString(36).substring(2, 8)}`,
+        timestamp: new Date().toISOString(),
+        meta: {
+          reason: params.reason,
+          currentServerRevision: params.currentServerRevision,
+          minActiveRevision: params.minActiveRevision,
+          cursorRevision: params.cursorRevision,
+        },
+      },
+    },
   };
 }
 

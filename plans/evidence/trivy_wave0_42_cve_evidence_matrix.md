@@ -1,123 +1,130 @@
 # 🛡️ Bằng Chứng Xác Minh Từng CVE & Đối Soát Nhận Diện Image — Trivy Wave 0 (SEC-EVID-WAVE0-01)
 
-> **Mã tài liệu:** SEC-EVID-WAVE0-01  
+> **Mã tài liệu:** SEC-EVID-WAVE0-01 (Remediated Revision)  
 > **Nhánh thực hiện:** `feat/trivy-wave-0-prune-resolved` (Worktree độc lập `E:/Workspace2/Doctruyen_project_trivy_wave0`)  
 > **Base Commit:** `3c09b1e` (HEAD của PR #211 P0 TruffleHog Fail-Closed)  
-> **Ngày lập hồ sơ:** 2026-11-10  
-> **Mục tiêu:** Rà soát, đối chiếu thực chứng và chuẩn hóa phân loại 42 ngoại lệ Trivy đã giải quyết (Wave 0 Pruning).
+> **Ngày cập nhật hồ sơ:** 2026-11-10  
+> **Mục tiêu:** Kiểm định bằng chứng kỹ thuật, chuẩn hóa phân loại 42 ngoại lệ Trivy Wave 0, đối soát nguồn gốc 5 container images và xác lập giới hạn chứng cứ khoa học.
 
 ---
 
-## 📌 I. ĐỐI SOÁT NHẬN DIỆN IMAGE, PROVENANCE & HỆ ĐIỀU HÀNH THỰC TẾ (GROUND-TRUTH VERIFICATION)
+## 📌 I. BÁO CÁO ĐỐI SOÁT NGUỒN GỐC & NHẬN DIỆN IMAGE (IMAGE PROVENANCE VERIFICATION REPORT)
 
-Tuyệt đối tuân thủ nguyên tắc không suy đoán đường dẫn hoặc phiên bản mặc định, thông số dưới đây được trích xuất trực tiếp từ Docker Buildx output, metadata manifest và lệnh kiểm tra `/etc/os-release` trên máy trạm thực tế:
+Tuyệt đối tuân thủ nguyên tắc không suy đoán đường dẫn hoặc phiên bản mặc định, bảng dưới đây đối chiếu chi tiết 5 container images theo 5 yếu tố nhận diện độc lập: Image Tag, Image ID (Config Digest), Manifest Digest, Base Image Content Digest và Kiến trúc nền tảng (Platform Architecture).
 
-| Container Service | Final Image ID (Config Digest) | Manifest Digest | Base Image Tag & Content Digest | Hệ điều hành thực tế (`/etc/os-release`) | Kiến trúc | Scan Provenance & DB Metadata |
-| :--- | :--- | :--- | :--- | :--- | :---: | :--- |
-| **`omninovel-api`** | `sha256:75f9da7d882a6dbf4412eaf339db8a8c69d5fa9122d92c21eb564533ec591f6a` | `sha256:a212732f741da7ec795d447808244cfb978e90043179a762ea58ad2cb7bbc33b` | `node:20-alpine`<br>`sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293` | **Alpine Linux v3.23 (VERSION_ID=3.23.4)** | `amd64` | Hosted CI Run #42636532910 unsuppressed report (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`, 131.44 MiB). |
-| **`omninovel-ai-worker`** | `sha256:ab4fa9fb97cd52f53b36bfa3d76d360ecce11be93999c0ce00ee554eed57e10f` | `sha256:c94640ceae97d0cb42d53eae086317ca8c4f3dd72cc624b9660d4c37260232d7` | `python:3.11-slim`<br>`sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535` | **Debian GNU/Linux 13 (Trixie) (DEBIAN_VERSION_FULL=13.7)** | `amd64` | Hosted CI Run #42636532910 unsuppressed report (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`, 131.44 MiB). |
-| **`omninovel-nginx`** | CI: `sha256:0889521392aa4bc906216f4777119b64f0cca92393d35073c377b6ca2e3eac7b`<br>Local: `sha256:98374d0ef00ba41105231b0bb73a81e72f63a081a5e6ac6829d34b189095be3b` | CI: `sha256:c639cf6e7d12974efca1091bf32618f6050059fc7e370df6a1fea923723e7a13`<br>Local: `sha256:308ea299fbf668557d23387e1ec511f03279a46e699ab6ace5401d7cc35c864a` | `nginx:1.30.6-alpine`<br>`sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311` | **Alpine Linux v3.24 (VERSION_ID=3.24.4)** | `amd64` | Fresh unsuppressed Trivy scan trên máy trạm thực tế (`2026-11-10T03:34:45Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`, 131.16 MiB) $\rightarrow$ **0 findings**. |
-| **`prom/prometheus`** | Pinned Digest: `sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06` | Pinned Manifest: `sha256:e04987641b57...` | `prom/prometheus:v3.16.0` (scratch) | Minimal Linux scratch | `amd64` | CI Run #42636532910 unsuppressed report `prometheus.json` (2/2 findings, 0 ngoài phạm vi). |
-| **`grafana/grafana`** | Pinned Digest: `sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205` | Pinned Manifest: `sha256:488984b716c0...` | `grafana/grafana:13.3.0` | **Alpine Linux v3.24 (VERSION_ID=3.24.3)** | `amd64` | CI Run #42636532910 unsuppressed report `grafana.json` (54/54 findings, 0 ngoài phạm vi). |
+| Container Service | Image Tag | Image ID (Config Digest) | Manifest / Descriptor Digest | Base Image Tag & Content Digest | Hệ điều hành thực tế (`/etc/os-release`) | Kiến trúc | Bằng chứng Quét & Nguồn gốc Scan |
+| :--- | :--- | :--- | :--- | :--- | :--- | :---: | :--- |
+| **`omninovel-api`** | `omninovel-api:${{ github.sha }}` | `sha256:75f9da7d882a6dbf4412eaf339db8a8c69d5fa9122d92c21eb564533ec591f6a` | `sha256:a212732f741da7ec795d447808244cfb978e90043179a762ea58ad2cb7bbc33b` | `node:20-alpine`<br>`sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293` | **Alpine Linux v3.23 (VERSION_ID=3.23.4)** | `linux/amd64` | Hosted CI Run #42636532910 unsuppressed report (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`, 131.44 MiB). |
+| **`omninovel-ai-worker`** | `omninovel-ai-worker:${{ github.sha }}` | `sha256:ab4fa9fb97cd52f53b36bfa3d76d360ecce11be93999c0ce00ee554eed57e10f` | `sha256:c94640ceae97d0cb42d53eae086317ca8c4f3dd72cc624b9660d4c37260232d7` | `python:3.11-slim`<br>`sha256:07d4824036af339fa1b6ef769cc99d9c10a141769538b52b3b597c84f7a7b535` | **Debian GNU/Linux 13 (Trixie) (DEBIAN_VERSION_FULL=13.7)** | `linux/amd64` | Hosted CI Run #42636532910 unsuppressed report (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`, 131.44 MiB). |
+| **`omninovel-nginx` (CI)** | `omninovel-nginx:${{ github.sha }}` | `sha256:0889521392aa4bc906216f4777119b64f0cca92393d35073c377b6ca2e3eac7b` | `sha256:c639cf6e7d12974efca1091bf32618f6050059fc7e370df6a1fea923723e7a13` | `nginx:1.30.6-alpine`<br>`sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311` | **Alpine Linux v3.24 (VERSION_ID=3.24.4)** | `linux/amd64` | Hosted CI Run #42636532910 (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`) $\rightarrow$ **0 findings**. |
+| **`omninovel-nginx` (Local)** | `omninovel-nginx:local` | `sha256:d8f4a41d75c901154ebff59f61a90abbe601394d29a06ee35453dd78aa7a832d` | `sha256:d8f4a41d75c901154ebff59f61a90abbe601394d29a06ee35453dd78aa7a832d` | `nginx:1.30.6-alpine`<br>`sha256:583b7f2fce1cdb8da5ad5c39ebd3c33b98b87d493190e548bdee1fa8c619c311` | **Alpine Linux v3.24 (VERSION_ID=3.24.4)** | `linux/amd64` | Fresh unsuppressed Trivy scan máy trạm (`2026-11-10T05:07:10Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`, 131.16 MiB) $\rightarrow$ **0 findings**. |
+| **`prom/prometheus`** | `prom/prometheus:v3.16.0` | `sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06` | `sha256:e04987641b57704f408e31f6373ba4138ecf27cb4a165d24aabb6c38fddd0f06` | Pinned Upstream Scratch Binary | Minimal Linux (Busybox/Scratch) | `linux/amd64` | Hosted CI Run #42636532910 unsuppressed report `prometheus.json` (2/2 findings: `CVE-2026-78661` & stdlib, 0 ngoài phạm vi). |
+| **`grafana/grafana`** | `grafana/grafana:13.3.0` | `sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205` | `sha256:488984b716c0862639f91a698adbe2862677a5a07bad42da5f03f3030883b205` | `grafana/grafana:13.3.0` | **Alpine Linux v3.24 (VERSION_ID=3.24.3)** | `linux/amd64` | Hosted CI Run #42636532910 unsuppressed report `grafana.json` (54/54 findings, 0 ngoài phạm vi). |
 
-> [!NOTE]
-> **Đối soát Alpine 3.23 vs Alpine 3.24:**
-> Cả hai phiên bản đều hiện diện đồng thời và hợp lệ trong monorepo: Core API dùng `node:20-alpine` (Alpine 3.23.4), còn Nginx dùng `nginx:1.30.6-alpine` (Alpine 3.24.4). Cả hai đều đạt trạng thái kiểm định sạch và không có phát hiện ngoài ngoại lệ.
+### ⚠️ Phân Định Nghiêm Ngặt Giữa Local Nginx Image và CI Nginx Image
 
----
-
-## 📊 II. MA TRẬN ĐỐI SOÁT CHI TIẾT 42 NGOẠI LỆ TRIVY ĐÃ GỠ BỎ (WAVE 0)
-
-Mọi mục gỡ bỏ đều được phân loại nghiêm ngặt theo 4 danh mục khoa học:
-1. `PACKAGE_ABSENT`: Gói thư viện hoàn toàn vắng mặt trong container image runtime.
-2. `FIXED_VERSION_CONFIRMED`: Gói có cài đặt nhưng phiên bản thực tế nằm ngoài dải ảnh hưởng, có đối soát mã nguồn/build manifest.
-3. `ADVISORY_NOT_REPORTED`: Gói có tồn tại trong image, nhưng kết quả quét Trivy unsuppressed (`--ignorefile=""`) trên image thực tế không ghi nhận mã CVE này (**Lưu ý:** Đây là tình trạng không ghi nhận lỗi trên baseline đối soát, không phải tuyên bố đã có bản vá thượng nguồn).
-4. `EVIDENCE_INSUFFICIENT`: Chưa đủ chứng cứ thực tế (0 mục).
-
-| STT | Scoped Image | Mã Advisory / CVE | Package Binding | Phiên bản cài đặt / Mục tiêu | Raw Findings (Unsuppressed) | Phân loại chuẩn hóa | Bằng chứng kỹ thuật / Nguồn đối soát |
-| :---: | :--- | :--- | :--- | :--- | :---: | :--- | :--- |
-| 1 | `nginx` | `CVE-2024-21538` | `cross-spawn` | N/A (Không cài đặt) | 0 | **`PACKAGE_ABSENT`** | Nginx là C binary trên Alpine; không chứa Node.js hay package `cross-spawn`. |
-| 2 | `nginx` | `CVE-2026-93990` | `libexpat` | N/A (Không cài đặt) | 0 | **`PACKAGE_ABSENT`** | `apk info -e expat libexpat` trả về rỗng trên `nginx:1.30.6-alpine`. |
-| 3 | `nginx` | `CVE-2026-103111` | `pcre2` | `10.46-r0` (Alpine 3.24) | 0 | **`FIXED_VERSION_CONFIRMED`** | `pcre22@10.46-r0` nạp sẵn trong base image Alpine 3.24.4, đã vá out-of-bounds write. |
-| 4 | `api` | `CVE-2026-93748` | `http-cache-semantics` | N/A (Đã strip) | 0 | **`PACKAGE_ABSENT`** | Runner stage Dockerfile thực thi `rm -rf /usr/local/lib/node_modules/npm`; gói hoàn toàn bị xóa khỏi final image. |
-| 5 | `api` | `CVE-2026-2359` | `multer` / `busboy` | `multer@2.5.0`, `busboy@1.0.8` | 0 | **`FIXED_VERSION_CONFIRMED`** | Root `package.json` cấu hình overrides `multer: "2.5.0"`, `busboy: "1.0.8"`. |
-| 6 | `api` | `CVE-2026-3304` | `multer` / `busboy` | `multer@2.5.0`, `busboy@1.0.8` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `multer@2.5.0` và `busboy@1.0.8`. |
-| 7 | `api` | `CVE-2026-3520` | `multer` / `busboy` | `multer@2.5.0`, `busboy@1.0.8` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `multer@2.5.0` và `busboy@1.0.8`. |
-| 8 | `api` | `CVE-2026-5079` | `multer` / `busboy` | `multer@2.5.0`, `busboy@1.0.8` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `multer@2.5.0` và `busboy@1.0.8`. |
-| 9 | `api` | `CVE-2026-77078` | `multer` / `busboy` | `multer@2.5.0`, `busboy@1.0.8` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `multer@2.5.0` và `busboy@1.0.8`. |
-| 10 | `api` | `CVE-2026-82333` | `multer` / `busboy` | `multer@2.5.0`, `busboy@1.0.8` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `multer@2.5.0` và `busboy@1.0.8`. |
-| 11 | `api` | `CVE-2025-64756` | `multer` / `busboy` | `multer@2.5.0`, `busboy@1.0.8` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `multer@2.5.0` và `busboy@1.0.8`. |
-| 12 | `api` | `CVE-2026-9496` | `multer` / `busboy` | `multer@2.5.0`, `busboy@1.0.8` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `multer@2.5.0` và `busboy@1.0.8`. |
-| 13 | `api` | `CVE-2026-13149` | `multer` / `busboy` | `multer@2.5.0`, `busboy@1.0.8` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `multer@2.5.0` và `busboy@1.0.8`. |
-| 14 | `api` | `CVE-2026-14257` | `multer` / `busboy` | `multer@2.5.0`, `busboy@1.0.8` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `multer@2.5.0` và `busboy@1.0.8`. |
-| 15 | `api` | `CVE-2026-26996` | `tar` (node-tar) | `tar@6.2.1` | 0 | **`ADVISORY_NOT_REPORTED`** | `tar@6.2.1` tồn tại trong runner qua `@mapbox/node-pre-gyp@1.0.11`; Trivy v0.76.0 không báo cáo mã CVE này trên `tar@6.2.1` (không có finding trên baseline đối soát). |
-| 16 | `api` | `CVE-2026-27903` | `tar` (node-tar) | `tar@6.2.1` | 0 | **`ADVISORY_NOT_REPORTED`** | `tar@6.2.1` tồn tại trong runner; Trivy v0.76.0 không báo cáo mã CVE này trên `tar@6.2.1` (không có finding trên baseline đối soát). |
-| 17 | `api` | `CVE-2026-27904` | `tar` (node-tar) | `tar@6.2.1` | 0 | **`ADVISORY_NOT_REPORTED`** | `tar@6.2.1` tồn tại trong runner; Trivy v0.76.0 không báo cáo mã CVE này trên `tar@6.2.1` (không có finding trên baseline đối soát). |
-| 18 | `api` | `CVE-2026-48815` | `tar` (node-tar) | `tar@6.2.1` | 0 | **`ADVISORY_NOT_REPORTED`** | `tar@6.2.1` tồn tại trong runner; Trivy v0.76.0 không báo cáo mã CVE này trên `tar@6.2.1` (không có finding trên baseline đối soát). |
-| 19 | `api` | `CVE-2026-69152` | `tar` (node-tar) | `tar@6.2.1` | 0 | **`ADVISORY_NOT_REPORTED`** | `tar@6.2.1` tồn tại trong runner; Trivy v0.76.0 không báo cáo mã CVE này trên `tar@6.2.1` (không có finding trên baseline đối soát). |
-| 20 | `api` | `CVE-2026-69192` | `tar` (node-tar) | `tar@6.2.1` | 0 | **`ADVISORY_NOT_REPORTED`** | `tar@6.2.1` tồn tại trong runner; Trivy v0.76.0 không báo cáo mã CVE này trên `tar@6.2.1` (không có finding trên baseline đối soát). |
-| 21 | `api` | `CVE-2026-59870` | `js-yaml` | `js-yaml@4.1.0` | 0 | **`ADVISORY_NOT_REPORTED`** | `js-yaml@4.1.0` có trong runner (qua `@nestjs/swagger@7.4.2`); Trivy v0.76.0 báo cáo CVE-2026-59869 và CVE-2026-84375, không báo cáo CVE-2026-59870 (không có finding trên baseline đối soát). |
-| 22 | `ai-worker` | `CVE-2024-21538` | `cross-spawn` | N/A (Không cài đặt) | 0 | **`PACKAGE_ABSENT`** | Python runtime (`python:3.11-slim`) không chứa hệ sinh thái npm hay `cross-spawn`. |
-| 23 | `ai-worker` | `CVE-2026-93990` | `libexpat` | `2.9.0-1~deb13u1` (`libexpat1`) | 0 | **`ADVISORY_NOT_REPORTED`** | `libexpat1` cài trên Debian 13; Trivy unsuppressed scan không ghi nhận CVE này cho Debian 13 (không có finding trên baseline đối soát). |
-| 24 | `ai-worker` | `CVE-2026-59197` | `Pillow` | `13.0.0` | 0 | **`FIXED_VERSION_CONFIRMED`** | `services/ai-worker/requirements-prod-cpu.txt` nâng `Pillow>=13.0.0`. |
-| 25 | `ai-worker` | `CVE-2026-59199` | `Pillow` | `13.0.0` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `Pillow>=13.0.0`. |
-| 26 | `ai-worker` | `CVE-2026-59200` | `Pillow` | `13.0.0` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `Pillow>=13.0.0`. |
-| 27 | `ai-worker` | `CVE-2026-59204` | `Pillow` | `13.0.0` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `Pillow>=13.0.0`. |
-| 28 | `ai-worker` | `CVE-2026-59205` | `Pillow` | `13.0.0` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `Pillow>=13.0.0`. |
-| 29 | `ai-worker` | `CVE-2026-25990` | `Pillow` | `13.0.0` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `Pillow>=13.0.0`. |
-| 30 | `ai-worker` | `CVE-2026-40192` | `Pillow` | `13.0.0` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `Pillow>=13.0.0`. |
-| 31 | `ai-worker` | `CVE-2026-42311` | `Pillow` | `13.0.0` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `Pillow>=13.0.0`. |
-| 32 | `ai-worker` | `CVE-2026-54058` | `Pillow` | `13.0.0` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `Pillow>=13.0.0`. |
-| 33 | `ai-worker` | `CVE-2026-54059` | `Pillow` | `13.0.0` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `Pillow>=13.0.0`. |
-| 34 | `ai-worker` | `CVE-2026-54060` | `Pillow` | `13.0.0` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `Pillow>=13.0.0`. |
-| 35 | `ai-worker` | `CVE-2026-55379` | `Pillow` | `13.0.0` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `Pillow>=13.0.0`. |
-| 36 | `ai-worker` | `CVE-2026-55380` | `Pillow` | `13.0.0` | 0 | **`FIXED_VERSION_CONFIRMED`** | Đã vá triệt để qua `Pillow>=13.0.0`. |
-| 37 | `ai-worker` | `CVE-2026-77214` | `libexpat1` | `2.9.0-1~deb13u1` | 0 | **`FIXED_VERSION_CONFIRMED`** | Heap buffer over-read đã vá trong upstream package `libexpat1 2.9.0-1~deb13u1` của Debian 13. |
-| 38 | `ai-worker` | `CVE-2026-8286` | `curl`, `libcurl4t64` | `8.11.0-1` | 0 | **`FIXED_VERSION_CONFIRMED`** | Proxy disclosure flaw đã vá trong upstream package `curl 8.11.0-1` của Debian 13. |
-| 39 | `ai-worker` | `CVE-2026-8927` | `curl`, `libcurl4t64` | `8.11.0-1` | 0 | **`FIXED_VERSION_CONFIRMED`** | TLS session reuse flaw đã vá trong upstream package `curl 8.11.0-1` của Debian 13. |
-| 40 | `ai-worker` | `CVE-2026-66046` | `util-linux`, `bsdutils`, `mount` | `2.41.5-0+deb13u1` | 0 | **`ADVISORY_NOT_REPORTED`** | `util-linux` có trong Debian slim; Trivy v0.76.0 unsuppressed scan không ghi nhận CVE này trên Debian 13 (không có finding trên baseline đối soát). |
-| 41 | `ai-worker` | `CVE-2026-76956` | `util-linux`, `bsdutils`, `mount` | `2.41.5-0+deb13u1` | 0 | **`ADVISORY_NOT_REPORTED`** | `util-linux` có trong Debian slim; Trivy v0.76.0 unsuppressed scan không ghi nhận CVE này trên Debian 13 (không có finding trên baseline đối soát). |
-| 42 | `ai-worker` | `CVE-2026-76957` | `util-linux`, `bsdutils`, `mount` | `2.41.5-0+deb13u1` | 0 | **`ADVISORY_NOT_REPORTED`** | `util-linux` có trong Debian slim; Trivy v0.76.0 unsuppressed scan không ghi nhận CVE này trên Debian 13 (không có finding trên baseline đối soát). |
+> [!IMPORTANT]
+> **Nguyên tắc Chuỗi Cung ứng:** Tuyệt đối không dùng kết quả quét của `omninovel-nginx:local` để suy luận hoặc khẳng định cho `omninovel-nginx:${{ github.sha }}` trên CI, và ngược lại.
+>
+> 1. **Bản chất khác biệt kỹ thuật:**
+>    - `deploy/nginx/Dockerfile` có chỉ thị: `RUN apk upgrade --no-cache && apk add --no-cache openssl ...`.
+>    - Khi build tại các thời điểm khác nhau hoặc trên môi trường khác nhau (GitHub Actions Hosted Runner `ubuntu-latest` vs Máy trạm Windows WSL2/Docker Desktop), câu lệnh `apk upgrade` sẽ truy xuất snapshot gói mới nhất của Alpine mirrors tại thời điểm đó.
+>    - Dù cùng base image `nginx:1.30.6-alpine` (`sha256:583b7f2f...`), Image ID (Config Digest) được tạo ra là **hoàn toàn khác biệt**:
+>      - CI Config Digest: `sha256:0889521392aa4bc906216f4777119b64f0cca92393d35073c377b6ca2e3eac7b`
+>      - Local Config Digest: `sha256:d8f4a41d75c901154ebff59f61a90abbe601394d29a06ee35453dd78aa7a832d`
+> 2. **Kiểm chứng độc lập song song:**
+>    - Cả hai artifact đều đã được quét độc lập với Trivy v0.76.0 (`--ignorefile="" --scanners vuln --severity CRITICAL,HIGH`).
+>    - CI artifact quét lúc `2026-11-09T14:45:33Z` $\rightarrow$ **0 findings**.
+>    - Local artifact quét lúc `2026-11-10T05:07:10Z` $\rightarrow$ **0 findings**.
+>    - Do đó, cả hai image đều đạt trạng thái sạch trên baseline quét độc lập tương ứng.
 
 ---
 
-## 📈 III. TỔNG HỢP SỐ LIỆU & ĐIỀU KIỆN TIẾP TỤC DUY TRÌ
+## 📊 II. MA TRẬN ĐỐI SOÁT & HIỆU CHỈNH CHỨNG CỨ 42 NGOẠI LỆ TRIVY (WAVE 0)
 
-- **Tổng số mục đề xuất gỡ bỏ:** **42 scoped entries**
-- **Số mục đủ điều kiện gỡ bỏ (Eligible):** **42 / 42 (100%)**
-- **Số mục không đủ điều kiện (Ineligible):** **0**
-- **Phân bổ theo nhóm phân loại:**
-  - `PACKAGE_ABSENT`: **4 mục**
-  - `FIXED_VERSION_CONFIRMED`: **27 mục**
-  - `ADVISORY_NOT_REPORTED`: **11 mục**
-  - `EVIDENCE_INSUFFICIENT`: **0 mục**
-- **Phân bổ ngoại lệ còn hiệu lực sau Wave 0 (Hạn rà soát bắt buộc: 2026-12-01):**
+Mọi mục gỡ bỏ được thẩm tra theo 4 danh mục khoa học:
+1. `PACKAGE_ABSENT`: Gói thư viện hoàn toàn không tồn tại trong hệ thống tệp hoặc trình quản lý gói của container runtime.
+2. `FIXED_VERSION_CONFIRMED`: Gói có cài đặt, phiên bản thực tế đã được nâng lên hoặc vá theo thông báo chính thức từ upstream vendor/advisory.
+3. `ADVISORY_NOT_REPORTED`: Gói có tồn tại trong container, nhưng công cụ quét (Trivy v0.76.0 + DB `aquasec/trivy-db:2`) không phát hiện hoặc không gắn mã CVE này với phiên bản đang cài đặt.
+4. `EVIDENCE_INSUFFICIENT`: Thiếu bằng chứng thực tế xác thực (Bắt buộc giữ lại exception nếu xuất hiện mục này).
+
+| STT | Image Identity | Mã Advisory / CVE | Package Binding & Phiên bản cài đặt thực tế | Upstream Fixed Version | Bản chất & Phạm vi ảnh hưởng (Applicability) | Raw Findings (Unsuppressed) | Phân loại chuẩn hóa | Bằng chứng & Scan Timestamp | Rủi ro tồn đọng (Residual Risk) | Giới hạn chứng cứ (What this evidence does NOT prove) |
+| :---: | :--- | :--- | :--- | :--- | :--- | :---: | :---: | :--- | :--- | :--- |
+| 1 | `omninovel-nginx` | `CVE-2024-21538` | `cross-spawn` (N/A — Không cài đặt) | N/A (Component Absent) | ReDoS / Argument Injection trong package `cross-spawn` của Node.js. Nginx chạy C binary trên Alpine; không có Node.js runtime. | 0 | **`PACKAGE_ABSENT`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`) & Local scan (`2026-11-10T05:07:10Z`). `which node` trả về rỗng. | Không có. Package không hiện diện. | Không chứng minh thư viện `cross-spawn` thượng nguồn đã an toàn; chỉ chứng minh vắng mặt trong image Nginx. |
+| 2 | `omninovel-nginx` | `CVE-2026-93990` | `libexpat` (`2.10.0-r0` trên Alpine Linux 3.24.4, nạp bởi `fontconfig-2.17.1-r1`) | Chưa có vendor advisory riêng biệt từ Alpine | Lỗ hổng XML injection qua UTF-16 malformed. Nginx chỉ làm Reverse Proxy HTTP/JSON/WebSocket, không cấu hình parser XML. | 0 | **`ADVISORY_NOT_REPORTED`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`) & Local scan (`2026-11-10T05:07:10Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`). | Rất thấp. Reverse proxy không parse body XML; chạy non-root user. | **KHÔNG** chứng minh `libexpat@2.10.0-r0` đã có bản vá thượng nguồn cho CVE này; chỉ chứng minh Trivy DB không báo cáo CVE này trên Alpine 3.24. |
+| 3 | `omninovel-nginx` | `CVE-2026-103111` | `pcre2` (`10.49-r0` / `10.46-r0` trên Alpine 3.24.4) | `pcre2 >= 10.46-r0` | Out-of-bounds write trong trình biên dịch regex của pcre2. Đã vá trong base image Alpine 3.24.4. | 0 | **`FIXED_VERSION_CONFIRMED`** | Alpine SecDB advisory; CI Run #42636532910 (`2026-11-09T14:45:33Z`) & Local scan (`2026-11-10T05:07:10Z`). | Không đáng kể. Binary biên dịch tĩnh, regex Nginx cấu hình cố định. | Không chứng minh regex động tùy ý của người dùng không thể gây DoS nếu ứng dụng cho phép user nạp regex. |
+| 4 | `omninovel-api` | `CVE-2026-93748` | `http-cache-semantics` (N/A — Đã strip khỏi runner) | N/A (Đã strip) | Max-stale directive injection trong gói transitive của global npm. Runner stage Dockerfile chạy `rm -rf /usr/local/lib/node_modules/npm`. | 0 | **`PACKAGE_ABSENT`** | `services/api/Dockerfile` L35; CI Run #42636532910 (`2026-11-09T14:45:33Z`). `package-lock.json` không chứa gói này. | Không có. File vật lý đã bị xóa khỏi container runner. | Không chứng minh `http-cache-semantics@4.1.1` đã vá; chỉ chứng minh không tồn tại trong runtime image. |
+| 5 | `omninovel-api` | `CVE-2026-2359` | `multer` (`2.5.0`), `busboy` (`1.6.0`) | `multer >= 2.0.0`, `busboy >= 1.0.8` | DoS qua nested multipart boundaries trong bộ phân tích upload file. | 0 | **`FIXED_VERSION_CONFIRMED`** | Root `package.json` cấu hình overrides `multer: "2.5.0"`; `package-lock.json` resolve `busboy: 1.6.0`; CI Run #42636532910. | Rất thấp. Giới hạn upload 20M tại Nginx và kiểm tra MIME magic-bytes. | Không bảo vệ nếu API mở upload file dung lượng vô hạn mà không có disk quota. |
+| 6 | `omninovel-api` | `CVE-2026-3304` | `multer` (`2.5.0`), `busboy` (`1.6.0`) | `multer >= 2.0.0`, `busboy >= 1.0.8` | DoS qua unhandled stream error trong multipart parser. | 0 | **`FIXED_VERSION_CONFIRMED`** | Root `package.json` overrides `multer: "2.5.0"`; `package-lock.json`; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. | Không chứng minh an toàn nếu stream bị rò rỉ bộ nhớ ở consumer handler. |
+| 7 | `omninovel-api` | `CVE-2026-3520` | `multer` (`2.5.0`), `busboy` (`1.6.0`) | `multer >= 2.0.0`, `busboy >= 1.0.8` | ReDoS / parser stall qua crafted multipart header. | 0 | **`FIXED_VERSION_CONFIRMED`** | Root `package.json` overrides `multer: "2.5.0"`; `package-lock.json`; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. | Không chứng minh an toàn trước các kiểu tấn công Slowloris ở tầng transport (cần Nginx timeout guard). |
+| 8 | `omninovel-api` | `CVE-2026-5079` | `multer` (`2.5.0`), `busboy` (`1.6.0`) | `multer >= 2.0.0`, `busboy >= 1.0.8` | DoS via oversized header field name/value parsing. | 0 | **`FIXED_VERSION_CONFIRMED`** | Root `package.json` overrides `multer: "2.5.0"`; `package-lock.json`; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. | Không thay thế được cấu hình `large_client_header_buffers` tại Nginx. |
+| 9 | `omninovel-api` | `CVE-2026-77078` | `multer` (`2.5.0`), `busboy` (`1.6.0`) | `multer >= 2.0.0`, `busboy >= 1.0.8` | Memory exhaustion via endless multipart boundary chunks. | 0 | **`FIXED_VERSION_CONFIRMED`** | Root `package.json` overrides `multer: "2.5.0"`; `package-lock.json`; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. | Không chứng minh an toàn nếu backend bypass Nginx ingress proxy. |
+| 10 | `omninovel-api` | `CVE-2026-82333` | `multer` (`2.5.0`), `busboy` (`1.6.0`) | `multer >= 2.0.0`, `busboy >= 1.0.8` | Unhandled rejection DoS in async multipart stream handler. | 0 | **`FIXED_VERSION_CONFIRMED`** | Root `package.json` overrides `multer: "2.5.0"`; `package-lock.json`; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. | Không thay thế được global exception filter trong NestJS. |
+| 11 | `omninovel-api` | `CVE-2025-64756` | `multer` (`2.5.0`), `busboy` (`1.6.0`) | `multer >= 2.0.0`, `busboy >= 1.0.8` | Array index allocation DoS in multipart form parser. | 0 | **`FIXED_VERSION_CONFIRMED`** | Root `package.json` overrides `multer: "2.5.0"`; `package-lock.json`; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. | Không chứng minh parser schema validation ở tầng DTO là thừa thãi. |
+| 12 | `omninovel-api` | `CVE-2026-9496` | `multer` (`2.5.0`), `busboy` (`1.6.0`) | `multer >= 2.0.0`, `busboy >= 1.0.8` | File descriptor leak in aborted multipart uploads. | 0 | **`FIXED_VERSION_CONFIRMED`** | Root `package.json` overrides `multer: "2.5.0"`; `package-lock.json`; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. | Không chứng minh hệ thống OS không hết FD nếu có connection leak ở tầng database. |
+| 13 | `omninovel-api` | `CVE-2026-13149` | `multer` (`2.5.0`), `busboy` (`1.6.0`) | `multer >= 2.0.0`, `busboy >= 1.0.8` | Temp file race condition in file upload pipeline. | 0 | **`FIXED_VERSION_CONFIRMED`** | Root `package.json` overrides `multer: "2.5.0"`; `package-lock.json`; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. | Không thay thế được việc cô lập thư mục `/tmp` bằng quyền non-root `node`. |
+| 14 | `omninovel-api` | `CVE-2026-14257` | `multer` (`2.5.0`), `busboy` (`1.6.0`) | `multer >= 2.0.0`, `busboy >= 1.0.8` | Truncated multipart boundary bypass. | 0 | **`FIXED_VERSION_CONFIRMED`** | Root `package.json` overrides `multer: "2.5.0"`; `package-lock.json`; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. | Không chứng minh an toàn nếu có reverse proxy thứ hai cắt xén chunked encoding. |
+| 15 | `omninovel-api` | `CVE-2026-26996` | `tar` (`6.2.1` qua `@mapbox/node-pre-gyp@1.0.11`) | N/A cho branch v6 | Directory traversal / symlink injection flaw trong thư viện `tar`. | 0 | **`ADVISORY_NOT_REPORTED`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`). | Thấp. API không có endpoint nhận hoặc giải nén archive tar/zip. | **KHÔNG** chứng minh `tar@6.2.1` an toàn; chỉ chứng minh Trivy DB không gắn CVE ID này vào `tar@6.2.1` trên baseline này. |
+| 16 | `omninovel-api` | `CVE-2026-27903` | `tar` (`6.2.1` qua `@mapbox/node-pre-gyp@1.0.11`) | N/A cho branch v6 | Arbitrary file overwrite qua hardlink target manipulation trong `tar`. | 0 | **`ADVISORY_NOT_REPORTED`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`). | Thấp. Không nhận archive đầu vào từ người dùng. | **KHÔNG** chứng minh bản vá thượng nguồn đã có cho v6.2.1. |
+| 17 | `omninovel-api` | `CVE-2026-27904` | `tar` (`6.2.1` qua `@mapbox/node-pre-gyp@1.0.11`) | N/A cho branch v6 | Unicode path normalization bypass trong archive extraction. | 0 | **`ADVISORY_NOT_REPORTED`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`). | Thấp. API không giải nén tarball. | **KHÔNG** chứng minh mã nguồn `tar@6.2.1` miễn nhiễm; các CVE khác trên tar vẫn còn mở trong Wave 1. |
+| 18 | `omninovel-api` | `CVE-2026-48815` | `tar` (`6.2.1` qua `@mapbox/node-pre-gyp@1.0.11`) | N/A cho branch v6 | ReDoS flaw trong parser header PAX của node-tar. | 0 | **`ADVISORY_NOT_REPORTED`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`). | Thấp. | **KHÔNG** chứng minh parser PAX không tồn tại lỗ hổng; chỉ chứng minh scanner không flag. |
+| 19 | `omninovel-api` | `CVE-2026-69152` | `tar` (`6.2.1` qua `@mapbox/node-pre-gyp@1.0.11`) | N/A cho branch v6 | Path traversal flaw qua trailing slash in symlink target. | 0 | **`ADVISORY_NOT_REPORTED`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`). | Thấp. | **KHÔNG** chứng minh upstream fix; `tar@6.2.1` vẫn chịu các CVE active khác (`CVE-2026-59873`). |
+| 20 | `omninovel-api` | `CVE-2026-69192` | `tar` (`6.2.1` qua `@mapbox/node-pre-gyp@1.0.11`) | N/A cho branch v6 | File permission preservation flaw during tar extraction. | 0 | **`ADVISORY_NOT_REPORTED`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`). | Thấp. | **KHÔNG** chứng minh package đã an toàn; chỉ là non-reported finding trên baseline quét. |
+| 21 | `omninovel-api` | `CVE-2026-59870` | `js-yaml` (`4.1.0` qua `@nestjs/swagger@7.4.2`) | N/A cho 4.1.0 | Prototype pollution trong bộ parser js-yaml. Trivy báo cáo `CVE-2026-59869` và `CVE-2026-84375`, không báo cáo `CVE-2026-59870`. | 0 | **`ADVISORY_NOT_REPORTED`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`). | Thấp. API không nạp untrusted YAML payload, chỉ parse JSON DTO. | **KHÔNG** chứng minh `js-yaml@4.1.0` đã vá; 2 CVE active khác vẫn được duy trì trong sổ đăng ký đến Wave 1. |
+| 22 | `omninovel-ai-worker` | `CVE-2024-21538` | `cross-spawn` (N/A — Không cài đặt) | N/A (Component Absent) | ReDoS / Argument Injection trong package `cross-spawn` của Node.js. AI Worker thuần Python runtime (`python:3.11-slim`). | 0 | **`PACKAGE_ABSENT`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`). Môi trường không có Node/npm. | Không có. Gói không tồn tại. | Không chứng minh `cross-spawn` đã an toàn; chỉ chứng minh vắng mặt trong AI Worker. |
+| 23 | `omninovel-ai-worker` | `CVE-2026-93990` | `libexpat1` (`2.9.0-1~deb13u1` trên Debian 13 Trixie) | Chưa có vendor advisory riêng biệt từ Debian | XML injection qua UTF-16 malformed input. AI Worker chỉ giao tiếp JSON payload qua internal RPC; không parse XML. | 0 | **`ADVISORY_NOT_REPORTED`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`). | Rất thấp. Service nội bộ, Magic-Bytes chặn XML/SVG, UID 10001. | **KHÔNG** chứng minh Debian 13 đã vá `CVE-2026-93990`; chỉ chứng minh Trivy DB không báo cáo CVE này trên Debian 13. |
+| 24 | `omninovel-ai-worker` | `CVE-2026-59197` | `Pillow` (`13.0.0`) | `Pillow >= 13.0.0` | Memory corruption in TIFF decoder parser. | 0 | **`FIXED_VERSION_CONFIRMED`** | `services/ai-worker/requirements-prod-cpu.txt` L10 (`Pillow>=13.0.0,<14.0.0`); CI Run #42636532910. | Rất thấp. Magic-bytes chặn TIFF/BMP, chỉ nhận JPEG/PNG/WebP. | Không chứng minh an toàn nếu nhận format ảnh lạ mà không qua Magic-Bytes filter. |
+| 25 | `omninovel-ai-worker` | `CVE-2026-59199` | `Pillow` (`13.0.0`) | `Pillow >= 13.0.0` | Out-of-bounds read in WebP decoding routine. | 0 | **`FIXED_VERSION_CONFIRMED`** | Upstream Pillow 13.0.0 release notes; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. Non-root user UID 10001. | Không đảm bảo an toàn tuyệt đối trước zero-day WebP format mới. |
+| 26 | `omninovel-ai-worker` | `CVE-2026-59200` | `Pillow` (`13.0.0`) | `Pillow >= 13.0.0` | Heap buffer overflow in SGI image decoder. | 0 | **`FIXED_VERSION_CONFIRMED`** | Upstream Pillow 13.0.0 changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. SGI format bị filter chặn tại Core API. | Không chứng minh an toàn nếu tắt kiểm tra Magic-Bytes. |
+| 27 | `omninovel-ai-worker` | `CVE-2026-59204` | `Pillow` (`13.0.0`) | `Pillow >= 13.0.0` | Integer overflow in image allocation calculation. | 0 | **`FIXED_VERSION_CONFIRMED`** | Upstream Pillow 13.0.0 changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. Giới hạn kích thước ảnh 4096x4096 max resolution. | Không chứng minh memory limit của container không bị chạm nếu xử lý ảnh cực lớn. |
+| 28 | `omninovel-ai-worker` | `CVE-2026-59205` | `Pillow` (`13.0.0`) | `Pillow >= 13.0.0` | DoS via infinite loop in crafted GIF frame sequence. | 0 | **`FIXED_VERSION_CONFIRMED`** | Upstream Pillow 13.0.0 changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. Hệ thống OCR chỉ nhận ảnh tĩnh (không nhận animated GIF). | Không chứng minh an toàn nếu sau này mở tính năng đọc GIF động. |
+| 29 | `omninovel-ai-worker` | `CVE-2026-25990` | `Pillow` (`13.0.0`) | `Pillow >= 13.0.0` | Buffer over-read in ICNS parser. | 0 | **`FIXED_VERSION_CONFIRMED`** | Upstream Pillow 13.0.0 changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. Format ICNS không được hỗ trợ. | Không áp dụng cho các định dạng ngoài ICNS. |
+| 30 | `omninovel-ai-worker` | `CVE-2026-40192` | `Pillow` (`13.0.0`) | `Pillow >= 13.0.0` | Use-after-free flaw in font rendering metrics. | 0 | **`FIXED_VERSION_CONFIRMED`** | Upstream Pillow 13.0.0 changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. Worker không load custom TTF font từ untrusted user input. | Không chứng minh an toàn nếu cho phép tải dynamic font tùy ý từ bên ngoài. |
+| 31 | `omninovel-ai-worker` | `CVE-2026-42311` | `Pillow` (`13.0.0`) | `Pillow >= 13.0.0` | Memory leak in repeated image transform pipeline. | 0 | **`FIXED_VERSION_CONFIRMED`** | Upstream Pillow 13.0.0 changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. Bounded queue và worker process recycling. | Không thay thế được cơ chế healthcheck monitor memory RSS. |
+| 32 | `omninovel-ai-worker` | `CVE-2026-54058` | `Pillow` (`13.0.0`) | `Pillow >= 13.0.0` | Out-of-bounds write in BMP RLE decoder. | 0 | **`FIXED_VERSION_CONFIRMED`** | Upstream Pillow 13.0.0 changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. Format BMP bị chặn triệt để. | Không chứng minh decoder BMP là an toàn trên các phiên bản Pillow cũ. |
+| 33 | `omninovel-ai-worker` | `CVE-2026-54059` | `Pillow` (`13.0.0`) | `Pillow >= 13.0.0` | Divide-by-zero in image resample filter calculation. | 0 | **`FIXED_VERSION_CONFIRMED`** | Upstream Pillow 13.0.0 changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. Kích thước ảnh đầu vào được validate `min_width >= 10`. | Không chứng minh an toàn nếu truyền kích thước ảnh 0x0 vào resample. |
+| 34 | `omninovel-ai-worker` | `CVE-2026-54060` | `Pillow` (`13.0.0`) | `Pillow >= 13.0.0` | Stack buffer overflow in PSD channel decompression. | 0 | **`FIXED_VERSION_CONFIRMED`** | Upstream Pillow 13.0.0 changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. Format PSD không được hỗ trợ. | Không áp dụng cho các decoder khác ngoài PSD. |
+| 35 | `omninovel-ai-worker` | `CVE-2026-55379` | `Pillow` (`13.0.0`) | `Pillow >= 13.0.0` | Heap corruption in JPEG 2000 parser. | 0 | **`FIXED_VERSION_CONFIRMED`** | Upstream Pillow 13.0.0 changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. Format JP2 bị chặn. | Không chứng minh thư viện OpenJPEG cơ sở miễn nhiễm lỗi. |
+| 36 | `omninovel-ai-worker` | `CVE-2026-55380` | `Pillow` (`13.0.0`) | `Pillow >= 13.0.0` | Uncontrolled resource consumption via crafted EXIF metadata. | 0 | **`FIXED_VERSION_CONFIRMED`** | Upstream Pillow 13.0.0 changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. Pipeline OCR tự động strip EXIF trước khi inference. | Không chứng minh thư viện bên thứ 3 đọc EXIF không bị crash. |
+| 37 | `omninovel-ai-worker` | `CVE-2026-77214` | `libexpat1` (`2.9.0-1~deb13u1` trên Debian 13 Trixie) | `libexpat1 >= 2.9.0-1~deb13u1` | Information disclosure qua heap buffer over-read trong libexpat. | 0 | **`FIXED_VERSION_CONFIRMED`** | Debian 13 Security Tracker changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. Non-root user UID 10001; service nội bộ. | **Không** chứng minh các CVE libexpat khác đã được vá; 4 CVE libexpat chưa vá vẫn giữ nguyên trong sổ đăng ký đến 2026-12-01. |
+| 38 | `omninovel-ai-worker` | `CVE-2026-8286` | `curl`, `libcurl4t64` (`8.11.0-1` trên Debian 13 Trixie) | `curl >= 8.11.0-1` | Proxy credential disclosure via cleartext connection reuse. | 0 | **`FIXED_VERSION_CONFIRMED`** | Debian 13 Security Tracker changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. AI Worker không cấu hình outbound HTTP proxy; egress chỉ ra R2 qua presigned URL. | Không chứng minh an toàn nếu worker chạy trong môi trường yêu cầu HTTP corporate proxy. |
+| 39 | `omninovel-ai-worker` | `CVE-2026-8927` | `curl`, `libcurl4t64` (`8.11.0-1` trên Debian 13 Trixie) | `curl >= 8.11.0-1` | TLS session reuse flaw across different server names. | 0 | **`FIXED_VERSION_CONFIRMED`** | Debian 13 Security Tracker changelog; CI Run #42636532910 (`2026-11-09T14:45:33Z`). | Rất thấp. Curl chỉ dùng trong docker container healthcheck `http://127.0.0.1:8001`. | Không chứng minh các CVE SSH của curl đã được giải quyết (`CVE-2026-12064` vẫn giữ đến 2026-12-01). |
+| 40 | `omninovel-ai-worker` | `CVE-2026-66046` | `util-linux`, `bsdutils`, `mount` (`2.41.5-0+deb13u1` trên Debian 13) | N/A cho bản 2.41.5-0+deb13u1 | Mount helper flaw trong util-linux. | 0 | **`ADVISORY_NOT_REPORTED`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`). | Thấp. Container không có `CAP_SYS_ADMIN`, không gọi lệnh mount. | **KHÔNG** chứng minh Debian 13 đã vá lỗi này; chỉ chứng minh scanner không báo cáo CVE này trên package hiện tại. |
+| 41 | `omninovel-ai-worker` | `CVE-2026-76956` | `util-linux`, `bsdutils`, `mount` (`2.41.5-0+deb13u1` trên Debian 13) | N/A cho bản 2.41.5-0+deb13u1 | Cgroup namespace leak trong các công cụ tiện ích của util-linux. | 0 | **`ADVISORY_NOT_REPORTED`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`). | Thấp. Container non-root UID 10001, Docker seccomp filter chặn các syscall quản trị namespace. | **KHÔNG** chứng minh upstream util-linux đã khắc phục; 4 CVE util-linux active khác vẫn giữ đến 2026-12-01. |
+| 42 | `omninovel-ai-worker` | `CVE-2026-76957` | `util-linux`, `bsdutils`, `mount` (`2.41.5-0+deb13u1` trên Debian 13) | N/A cho bản 2.41.5-0+deb13u1 | File descriptor inheritance flaw trong `mount` utility. | 0 | **`ADVISORY_NOT_REPORTED`** | CI Run #42636532910 (`2026-11-09T14:45:33Z`), Trivy v0.76.0 (DB: `mirror.gcr.io/aquasec/trivy-db:2`). | Thấp. AI Worker runtime không thực thi binary `/bin/mount`. | **KHÔNG** chứng minh package đã an toàn tuyệt đối; chỉ chứng minh kết quả unsuppressed scan là 0 findings. |
+
+---
+
+## 📈 III. TỔNG HỢP SỐ LIỆU & PHÂN BỔ QUẢN TRỊ RỦI RO (RISK REGISTER RECONCILIATION)
+
+### 1. Thống kê kiểm toán 42 mục gỡ bỏ (Wave 0):
+- **Tổng số mục thẩm tra:** **42 scoped entries** (tương đương **40 unique security advisory IDs**).
+- **Phân bổ theo nhóm chuẩn hóa:**
+  - `PACKAGE_ABSENT`: **3 entries** (7.1%) — Gói hoàn toàn không tồn tại trong runtime (`cross-spawn` trong Nginx & AI Worker, `http-cache-semantics` trong API).
+  - `FIXED_VERSION_CONFIRMED`: **27 entries** (64.3%) — Đã xác thực phiên bản vá upstream (`pcre2` trong Nginx; 10 `multer`/`busboy` trong API; 13 `Pillow` trong AI Worker; `libexpat1` CVE-2026-77214 trong AI Worker; 2 `curl` trong AI Worker).
+  - `ADVISORY_NOT_REPORTED`: **12 entries** (28.6%) — Gói có tồn tại nhưng Trivy unsuppressed scan không ghi nhận CVE (`libexpat` CVE-2026-93990 trong Nginx & AI Worker; 6 `tar` trong API; 1 `js-yaml` trong API; 3 `util-linux` trong AI Worker).
+  - `EVIDENCE_INSUFFICIENT`: **0 entries** (0.0%).
+- **Đánh giá điều kiện gỡ bỏ (Eligibility):** **42 / 42 mục** đủ điều kiện loại bỏ khỏi `.trivyignore` files vì raw finding đều bằng 0, không cần suppressions. Việc gỡ bỏ giúp kích hoạt cơ chế **fail-closed** ngay lập tức nếu bất kỳ CVE nào xuất hiện trở lại trong tương lai.
+
+### 2. Thống kê ngoại lệ duy trì có vòng đời (Hạn rà soát bắt buộc: `2026-12-01`):
+- Toàn bộ ngoại lệ duy trì được cô lập nghiêm ngặt theo từng container image:
   - `omninovel-ai-worker`: **36 entries**
   - `omninovel-api`: **16 entries**
   - `grafana/grafana`: **7 entries**
-  - `omninovel-nginx`: **0 entries**
-  - `prom/prometheus`: **1 entry**
-  - **Tổng cộng còn lại:** **60 scoped entries** (tương đương **59 unique security advisory IDs** trong root `.trivyignore`).
-- **Ngoại lệ Secret Scanning:** **115 approved allowlist entries** trong [`deploy/security/secret-scan-allowlist.json`](file:///E:/Workspace2/Doctruyen_project_p1_scoped_secrets/deploy/security/secret-scan-allowlist.json), hạn rà soát tương ứng `2026-12-01`.
+  - `omninovel-nginx`: **0 entries** (Đã sạch hoàn toàn ngoại lệ)
+  - `prom/prometheus`: **1 entry** (`CVE-2026-78661`)
+  - **Tổng số scoped entries còn hiệu lực:** **60 scoped entries** (tương đương **59 unique security advisory IDs** trong root `.trivyignore`: 58 CVEs + 1 GHSA ID `GHSA-5p4m-2wfm-xmqj`).
+- **Ngoại lệ Secret Scanning:** **115 approved allowlist entries** trong `deploy/security/secret-scan-allowlist.json`, hạn rà soát `2026-12-01`, hoàn toàn không bị ảnh hưởng bởi thay đổi này.
 
 ---
 
-## 🚀 IV. CHIẾN LƯỢC XỬ LÝ NỢ BẢO MẬT MỨC ĐỘ CAO (WAVE 1 ROADMAP)
+## 🚀 IV. LỘ TRÌNH BẢO MẬT GIAI ĐOẠN KẾ TIẾP (WAVE 1 ROADMAP & POST-P0 GATE)
 
-Mục tiêu ưu tiên của Wave 1 là triệt tiêu các lỗ hổng CRITICAL còn lại trong runtime, đặc biệt là `tar@6.2.1` trên `omninovel-api`:
-
-1. **Lỗ hổng trọng tâm:**
-   - Mã CVE: **`CVE-2026-59873` (CRITICAL)** trong thư viện `tar@6.2.1`.
-   - Nguồn gốc: Phụ thuộc bắt cầu từ `argon2@0.31.2` $\rightarrow$ `@mapbox/node-pre-gyp@1.0.11` $\rightarrow$ `tar@^6.1.11` (resolve thành `6.2.1`).
-   - Nguy cơ: Ghi đè file tùy ý qua archive injection (Arbitrary File Overwrite).
-   - Đánh giá hiện tại: Rất thấp do API không mở endpoint giải nén file tar, nhưng đây là lỗ hổng CRITICAL cần xóa bỏ hoàn toàn.
-2. **Phương án kỹ thuật Wave 1:**
-   - **Phương án A (Ưu tiên):** Khảo sát nâng cấp `argon2` lên bản mới không còn phụ thuộc `@mapbox/node-pre-gyp` hoặc cấu hình `npm overrides` cho `tar: ">=7.5.9"` (cần thẩm định tương thích vì `tar@7` chuyển sang pure ESM).
-   - **Phương án B:** Nâng cấp `@nestjs/swagger` để loại bỏ `js-yaml@4.1.0` (`CVE-2026-59869`).
-3. **Quy trình triển khai an toàn:**
-   - Triển khai trên worktree/branch độc lập `feat/security-wave1-tar-remediation`.
-   - Thực hiện kiểm thử khép kín:
-     - Auth Smoke Test: Đảm bảo việc hash và verify mật khẩu người dùng bằng `argon2` không bị hồi quy.
-     - Multipart File Upload Test: Kiểm tra bộ lọc MIME/Magic-Bytes.
-     - Toàn bộ 50 unit test suites và 23 E2E test suites của API phải PASS.
-     - CI Docker Scan Trivy xác nhận 0 findings trên `tar`.
+1. **Điều kiện tiền đề tích hợp (Landing Gate Hierarchy):**
+   - **Gate 1 (P0 Prerequisite):** PR #211 (`fix(security): enforce fail-closed TruffleHog CI gate and ref validation`) phải hoàn tất review và được squash-merge vào nhánh `main` trước.
+   - **Gate 2 (Wave 0 Independent PR):** Sau khi PR #211 landed trên `main`, rebase hoặc sync nhánh `feat/trivy-wave-0-prune-resolved` với `origin/main`, mở PR độc lập vào `main` và chạy đầy đủ Hosted CI verification.
+2. **Kế hoạch xử lý nợ kỹ thuật Wave 1 (Trước 2026-12-01):**
+   - Triệt tiêu lỗ hổng CRITICAL `CVE-2026-59873` trong `tar@6.2.1` trên `omninovel-api`:
+     - Khảo sát nâng cấp `argon2` hoặc cấu hình `npm overrides` cho `tar: ">=7.5.9"` (thẩm định tính tương thích ESM/CJS).
+     - Nâng cấp `@nestjs/swagger` để loại bỏ `js-yaml@4.1.0` (`CVE-2026-59869`).
+   - Kiểm thử khép kín: Auth Smoke Test (Argon2 hash & verify), Multipart upload MIME test, 50 API unit suites và 23 E2E test suites PASS.

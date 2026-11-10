@@ -150,3 +150,17 @@ class PurgeProhibitedError implements Exception {
   @override
   String toString() => 'PurgeProhibitedError: $message';
 }
+
+/// Ném khi receipt trả về từ Sync Server vi phạm tính toàn vẹn (sai số lượng, trùng ID,
+/// ID không thuộc batch đã gửi, status không hợp lệ, hoặc revision không đúng chuẩn).
+class ReceiptValidationException implements Exception {
+  final String message;
+  final Object? detail;
+
+  const ReceiptValidationException(this.message, [this.detail]);
+
+  @override
+  String toString() =>
+      'ReceiptValidationException: $message${detail != null ? ' ($detail)' : ''}';
+}
+

@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
+import 'package:sqflite/sqflite.dart';
 import '../authority/sync_write_admission.dart';
+import '../errors/sync_storage_exceptions.dart';
 import '../models/sync_models.dart';
 import '../storage/sync_storage_dal.dart';
 import '../utils/canonical_entity_key.dart';
@@ -38,11 +40,13 @@ class OfflineSyncReconciler {
   final SyncStorageDal _dal;
   final MockSyncTransport _transport;
   final OfflineReconcilerStateMachine _stateMachine;
+  final Future<void> Function(Transaction txn)? onBeforeSettlementCommitHook;
 
   OfflineSyncReconciler({
     required SyncStorageDal dal,
     required MockSyncTransport transport,
     required String ownerScope,
+    this.onBeforeSettlementCommitHook,
   })  : _dal = dal,
         _transport = transport,
         _stateMachine = OfflineReconcilerStateMachine(ownerScope: ownerScope);
@@ -102,27 +106,20 @@ class OfflineSyncReconciler {
           mutations: batchWires,
         );
 
-        // Xử lý receipts
-        for (final item in pushResponse.results) {
-          if (item.status == 'APPLIED' || item.status == 'DEDUPLICATED') {
-            await _dal.deletePendingMutation(
-              ownerScope,
-              item.mutationId,
-              admission: admission,
-            );
-            pushedCount++;
-          } else {
-            // Rejection vĩnh viễn (TOMBSTONE / STALE / DOMAIN_NOT_SUPPORTED) -> Cách ly
-            await _dal.quarantinePendingMutationByKey(
-              ownerScope: ownerScope,
-              mutationId: item.mutationId,
-              reason: item.reason ?? item.message ?? item.status,
-              status: item.status,
-              admission: admission,
-            );
-            quarantinedCount++;
-          }
-        }
+        // Hàng rào kiểm tra quyền sở hữu và phiên đăng nhập ngay sau await mạng (trước khi vào SQLite)
+        admission.assertAdmitted(ownerScope);
+
+        // Atomic settlement: xác thực toàn vẹn biên nhận + thực thi giao dịch SQLite đơn nhất
+        final settlement = await _dal.settleBatchReceiptsAtomic(
+          ownerScope: ownerScope,
+          sentMutations: batchWires,
+          response: pushResponse,
+          admission: admission,
+          onBeforeCommitHook: onBeforeSettlementCommitHook,
+        );
+
+        pushedCount = settlement.settledCount;
+        quarantinedCount = settlement.quarantinedCount;
 
         if (quarantinedCount > 0) {
           _stateMachine.transitionTo(
@@ -130,6 +127,32 @@ class OfflineSyncReconciler {
             reason: '$quarantinedCount mutations moved to quarantine store',
           );
         }
+      } on ReceiptValidationException catch (e) {
+        // Vi phạm tính toàn vẹn receipt -> Giữ nguyên pending mutations, lui về RETRY_BACKOFF
+        _stateMachine.transitionTo(
+          OfflineReconcilerState.retryBackoff,
+          reason: 'Receipt validation failed: ${e.message}',
+        );
+        return ReconcilerCycleResult(
+          ownerScope: ownerScope,
+          mutationsPushed: 0,
+          mutationsQuarantined: 0,
+          finalState: OfflineReconcilerState.retryBackoff,
+          errorMessage: 'Receipt validation failed: ${e.message}',
+        );
+      } on SyncAdmissionRejectedError catch (e) {
+        // Thu hồi quyền / logout / account switch mid-flight
+        _stateMachine.transitionTo(
+          OfflineReconcilerState.authorityRevoked,
+          reason: 'Authority revoked during reconciliation: ${e.message}',
+        );
+        return ReconcilerCycleResult(
+          ownerScope: ownerScope,
+          mutationsPushed: 0,
+          mutationsQuarantined: 0,
+          finalState: OfflineReconcilerState.authorityRevoked,
+          errorMessage: e.message,
+        );
       } on MockNetworkException catch (e) {
         // Lỗi mạng tạm thời -> Ghi nhận transient failure và chuyển sang RETRY_BACKOFF
         for (final m in pendingList) {
@@ -198,6 +221,19 @@ class OfflineSyncReconciler {
             errorMessage: e.message,
           );
         }
+      } on Exception catch (e) {
+        // Bất kỳ ngoại lệ nào khác (ví dụ: DB failure, injected exception trong transaction)
+        _stateMachine.transitionTo(
+          OfflineReconcilerState.retryBackoff,
+          reason: 'Settlement failure: $e',
+        );
+        return ReconcilerCycleResult(
+          ownerScope: ownerScope,
+          mutationsPushed: 0,
+          mutationsQuarantined: 0,
+          finalState: OfflineReconcilerState.retryBackoff,
+          errorMessage: e.toString(),
+        );
       }
     }
 
@@ -244,6 +280,19 @@ class OfflineSyncReconciler {
         mutationsQuarantined: quarantinedCount,
         deltasApplied: deltasApplied,
         finalState: OfflineReconcilerState.idle,
+      );
+    } on SyncAdmissionRejectedError catch (e) {
+      _stateMachine.transitionTo(
+        OfflineReconcilerState.authorityRevoked,
+        reason: 'Authority revoked during delta pull: ${e.message}',
+      );
+      return ReconcilerCycleResult(
+        ownerScope: ownerScope,
+        mutationsPushed: pushedCount,
+        mutationsQuarantined: quarantinedCount,
+        deltasApplied: 0,
+        finalState: OfflineReconcilerState.authorityRevoked,
+        errorMessage: e.message,
       );
     } on MockNetworkException catch (e) {
       _stateMachine.transitionTo(

@@ -131,6 +131,7 @@ class OfflineReconcilerStateMachine {
 
       case OfflineReconcilerState.quarantined:
         return to == OfflineReconcilerState.idle ||
+            to == OfflineReconcilerState.applyingMockDelta ||
             to == OfflineReconcilerState.admissionCheck;
 
       case OfflineReconcilerState.authorityRevoked:

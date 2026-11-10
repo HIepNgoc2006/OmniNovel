@@ -10,6 +10,8 @@ import '../authority/sync_client_identity_provider.dart';
 import '../authority/sync_write_admission.dart';
 import '../errors/sync_storage_exceptions.dart';
 import '../models/sync_models.dart';
+import '../reconciler/mock_sync_transport.dart';
+import '../reconciler/sync_receipt_validator.dart';
 import '../utils/canonical_entity_key.dart';
 import '../utils/revision_bigint.dart';
 
@@ -1015,6 +1017,159 @@ class SyncStorageDal {
             nextRetryAtMs: nextRetryAtMs,
           );
         }
+      },
+    );
+  }
+
+  // ==================== ATOMIC RECEIPT SETTLEMENT ====================
+
+  /// Giải quyết (settle) nguyên tử một batch receipt từ Core API Sync Hub.
+  ///
+  /// Thực thi toàn bộ kiểm định receipt toàn vẹn (receipt count, mutationIds, 
+  /// status allowlist, canonical decimal revision) trước khi ghi xuống SQLite.
+  ///
+  /// Toàn bộ thao tác xóa khỏi `pending_mutations` (với status settled: APPLIED,
+  /// DEDUPLICATED, CONFLICT_MERGED) và chuyển sang `quarantined_mutations`
+  /// (với status rejected: REJECTED_TOMBSTONE, REJECTED_STALE, DOMAIN_NOT_SUPPORTED)
+  /// ĐƯỢC THỰC THI TRONG MỘT GIAO DỊCH SQLITE NGUYÊN TỬ DUY NHẤT.
+  ///
+  /// Bất kỳ ngoại lệ nào xảy ra trong giao dịch (bao gồm [onBeforeCommitHook])
+  /// sẽ rollback 100%, bảo toàn nguyên vẹn hàng đợi pending mutations trong SQLite.
+  Future<BatchSettlementResult> settleBatchReceiptsAtomic({
+    required String ownerScope,
+    required List<ClientMutationWire> sentMutations,
+    required PushMutationsBatchResponseWire response,
+    required AccountWriteAdmission admission,
+    Future<void> Function(Transaction txn)? onBeforeCommitHook,
+  }) async {
+    assertAccountScope(ownerScope);
+
+    // 1. Kiểm định tính toàn vẹn biên nhận (Fail-closed in-memory validation)
+    SyncReceiptValidator.validate(
+      sentMutations: sentMutations,
+      response: response,
+    );
+
+    // 2. Thực thi giao dịch SQLite nguyên tử duy nhất với 4 hàng rào admission
+    return _runWriteTransaction<BatchSettlementResult>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        final settledIds = <String>[];
+        final quarantinedIds = <String>[];
+        final now = DateTime.now().toUtc();
+        final nowIso = now.toIso8601String();
+        final nowMs = now.millisecondsSinceEpoch;
+
+        for (final item in response.results) {
+          final mId = item.mutationId;
+          final status = item.status.trim().toUpperCase();
+
+          if (SyncReceiptValidator.isSettled(status)) {
+            // Settled mutation (APPLIED | DEDUPLICATED | CONFLICT_MERGED)
+            await txn.delete(
+              'pending_mutations',
+              where: 'owner_scope = ? AND mutation_id = ?',
+              whereArgs: <Object?>[ownerScope, mId],
+            );
+            settledIds.add(mId);
+          } else if (SyncReceiptValidator.isQuarantined(status)) {
+            // Rejected mutation (REJECTED_TOMBSTONE | REJECTED_STALE | DOMAIN_NOT_SUPPORTED)
+            // Lấy dữ liệu pending hiện có để giữ nguyên 100% full-fidelity original payload & metadata
+            final pendingRows = await txn.query(
+              'pending_mutations',
+              where: 'owner_scope = ? AND mutation_id = ?',
+              whereArgs: <Object?>[ownerScope, mId],
+              limit: 1,
+            );
+
+            PendingMutationRecord? original;
+            if (pendingRows.isNotEmpty) {
+              original = PendingMutationRecord.fromMap(pendingRows.first);
+            } else {
+              // Fallback từ sentMutations nếu không tìm thấy trong pending_mutations
+              final match =
+                  sentMutations.firstWhere((m) => m.mutationId == mId);
+              original = PendingMutationRecord(
+                ownerScope: ownerScope,
+                mutationId: match.mutationId,
+                clientId: match.clientId,
+                domain: SyncDomain.fromWire(match.domain),
+                entityId: match.entityId,
+                operation: SyncOperation.fromWire(match.operation),
+                baseServerRevision: match.baseServerRevision,
+                payload: match.payload,
+                createdAtIso: match.clientCreatedAt ?? nowIso,
+                createdAtMs: nowMs,
+              );
+            }
+
+            // Xóa khỏi pending_mutations
+            await txn.delete(
+              'pending_mutations',
+              where: 'owner_scope = ? AND mutation_id = ?',
+              whereArgs: <Object?>[ownerScope, mId],
+            );
+
+            // Bằng chứng nhân quả cho TOMBSTONE
+            final causalEvidence = status == 'REJECTED_TOMBSTONE'
+                ? CausalTriageProof(
+                    validatedRevision: item.assignedRevision,
+                    triageApproved: false,
+                    triageReason:
+                        item.reason ?? item.message ?? 'REJECTED_TOMBSTONE',
+                    evidence: <String, Object?>{
+                      'status': item.status,
+                      if (item.reason != null) 'reason': item.reason,
+                      if (item.message != null) 'message': item.message,
+                      if (item.assignedRevision != null)
+                        'assignedRevision': item.assignedRevision,
+                    },
+                  )
+                : null;
+
+            final quarantined = QuarantinedMutationRecord(
+              ownerScope: original.ownerScope,
+              mutationId: original.mutationId,
+              clientId: original.clientId,
+              domain: original.domain,
+              entityId: original.entityId,
+              operation: original.operation,
+              baseServerRevision: original.baseServerRevision,
+              observedHistoryEpoch: original.observedHistoryEpoch,
+              payload: original.payload,
+              originalSequenceNo: original.sequenceNo,
+              originalRetryCount: original.retryCount,
+              originalCreatedAtIso: original.createdAtIso,
+              originalCreatedAtMs: original.createdAtMs,
+              rejectionReason: item.reason ?? item.message ?? item.status,
+              rejectionStatus: item.status,
+              rejectedAtIso: nowIso,
+              rejectedAtMs: nowMs,
+              triageStatus: QuarantineTriageStatus.pending,
+              causalEvidence: causalEvidence,
+            );
+
+            await txn.insert(
+              'quarantined_mutations',
+              quarantined.toMap(),
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
+            quarantinedIds.add(mId);
+          }
+        }
+
+        // Failure injection hook (nếu có) trước khi SQLite commit
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+
+        return BatchSettlementResult(
+          settledCount: settledIds.length,
+          quarantinedCount: quarantinedIds.length,
+          settledMutationIds: settledIds,
+          quarantinedMutationIds: quarantinedIds,
+        );
       },
     );
   }

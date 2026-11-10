@@ -777,3 +777,20 @@ class TransientFailureResult {
     this.quarantinedMutation,
   });
 }
+
+/// Kết quả sau khi giải quyết (settle) nguyên tử một batch receipt vào SQLite.
+@immutable
+class BatchSettlementResult {
+  final int settledCount;
+  final int quarantinedCount;
+  final List<String> settledMutationIds;
+  final List<String> quarantinedMutationIds;
+
+  const BatchSettlementResult({
+    required this.settledCount,
+    required this.quarantinedCount,
+    required this.settledMutationIds,
+    required this.quarantinedMutationIds,
+  });
+}
+

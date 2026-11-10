@@ -247,6 +247,146 @@ export async function admitPreparedBatchPreDispatchAtomic(
   });
 }
 
+export interface PushPendingMutationsResult {
+  pushedCount: number;
+  dispatchedCount: number;
+  appliedCount: number;
+  deduplicatedCount: number;
+  rejectedCount: number;
+  transientRetryCount: number;
+  quarantinedStaleCount: number;
+  quarantinedLegacyCount: number;
+  summary?: any;
+}
+
+export const VALID_RECEIPT_STATUSES = new Set([
+  'APPLIED',
+  'DEDUPLICATED',
+  'REJECTED_TOMBSTONE',
+  'REJECTED_STALE',
+  'CONFLICT_MERGED',
+  'DOMAIN_NOT_SUPPORTED',
+]);
+
+export interface CorrelatedReceipts {
+  validResults: MutationResultItem[];
+  unknownReceipts: MutationResultItem[];
+  duplicateReceipts: { mutationId: string; receipts: MutationResultItem[] }[];
+  invalidReceipts: { receipt: MutationResultItem; reason: string }[];
+  missingMutationIds: string[];
+}
+
+/**
+  * Step 5.2e Canonical Wire Receipt Correlation and Causal Validation
+  * Filters and correlates wire receipts from server before passing to MutationQueue.
+  * Ensures unknown, duplicate, corrupt status, and contradictory revision receipts
+  * are rejected fail-closed without mutating or dropping offline pending mutations.
+  */
+export function correlateAndValidateReceipts(
+  dispatchedMutations: LocalPendingMutation[],
+  rawResults: MutationResultItem[]
+): CorrelatedReceipts {
+  const dispatchedMap = new Map<string, LocalPendingMutation>();
+  for (const m of dispatchedMutations) {
+    dispatchedMap.set(m.mutationId, m);
+  }
+
+  const receiptsByMutationId = new Map<string, MutationResultItem[]>();
+  const unknownReceipts: MutationResultItem[] = [];
+
+  for (const r of rawResults || []) {
+    if (!r || typeof r.mutationId !== 'string') {
+      continue;
+    }
+    if (!dispatchedMap.has(r.mutationId)) {
+      unknownReceipts.push(r);
+      continue;
+    }
+    const list = receiptsByMutationId.get(r.mutationId) || [];
+    list.push(r);
+    receiptsByMutationId.set(r.mutationId, list);
+  }
+
+  const validResults: MutationResultItem[] = [];
+  const duplicateReceipts: { mutationId: string; receipts: MutationResultItem[] }[] = [];
+  const invalidReceipts: { receipt: MutationResultItem; reason: string }[] = [];
+
+  for (const [mutationId, receipts] of receiptsByMutationId.entries()) {
+    if (receipts.length > 1) {
+      // Duplicate receipts detected for single mutation in single response -> ambiguous, untrusted!
+      duplicateReceipts.push({ mutationId, receipts });
+      continue;
+    }
+
+    const r = receipts[0];
+    const mutation = dispatchedMap.get(mutationId)!;
+
+    // 1. Status validity
+    if (!VALID_RECEIPT_STATUSES.has(r.status)) {
+      invalidReceipts.push({
+        receipt: r,
+        reason: `Unrecognized or invalid receipt status: "${(r as any).status}"`,
+      });
+      continue;
+    }
+
+    // 2. Revision causal monotonicity & format checks
+    if (r.status === 'APPLIED') {
+      if (!isValidRevisionString(r.assignedRevision)) {
+        invalidReceipts.push({
+          receipt: r,
+          reason: `APPLIED receipt missing or non-decimal assignedRevision: "${String(r.assignedRevision)}"`,
+        });
+        continue;
+      }
+
+      if (isValidRevisionString(mutation.baseServerRevision)) {
+        if (BigInt(r.assignedRevision) < BigInt(mutation.baseServerRevision)) {
+          invalidReceipts.push({
+            receipt: r,
+            reason: `APPLIED receipt assignedRevision (${r.assignedRevision}) < baseServerRevision (${mutation.baseServerRevision})`,
+          });
+          continue;
+        }
+      }
+    } else if (r.status === 'DEDUPLICATED') {
+      if (r.assignedRevision != null && r.assignedRevision !== '') {
+        if (!isValidRevisionString(r.assignedRevision)) {
+          invalidReceipts.push({
+            receipt: r,
+            reason: `DEDUPLICATED receipt has non-decimal assignedRevision: "${String(r.assignedRevision)}"`,
+          });
+          continue;
+        }
+        if (isValidRevisionString(mutation.baseServerRevision)) {
+          if (BigInt(r.assignedRevision) < BigInt(mutation.baseServerRevision)) {
+            invalidReceipts.push({
+              receipt: r,
+              reason: `DEDUPLICATED receipt assignedRevision (${r.assignedRevision}) < baseServerRevision (${mutation.baseServerRevision})`,
+            });
+            continue;
+          }
+        }
+      }
+    }
+
+    validResults.push(r);
+  }
+
+  const validSet = new Set(validResults.map((r) => r.mutationId));
+  const missingMutationIds = dispatchedMutations
+    .filter((m) => !validSet.has(m.mutationId))
+    .map((m) => m.mutationId);
+
+  return {
+    validResults,
+    unknownReceipts,
+    duplicateReceipts,
+    invalidReceipts,
+    missingMutationIds,
+  };
+}
+
 /**
  * Step 5.2d Mock Protocol Adapter & Reconciler Harness
  * Implements the corrected transport contracts in Task A-D.
@@ -394,7 +534,8 @@ export class MockStep52dReconciler {
     leaderSignal?: AbortSignal;
     _testHookAfterPrepareBatch?: () => Promise<void>;
     _testHookPreDispatchBeforeCommit?: (tx: IDBTransaction) => void;
-  }): Promise<{ pushedCount: number; quarantinedStaleCount: number; quarantinedLegacyCount: number }> {
+    _testHookBeforeProcessResults?: () => Promise<void>;
+  }): Promise<PushPendingMutationsResult> {
     assertValidAccountScope(this.ownerScope);
     const scopeAtStart = this.ownerScope;
     const genAtStart = this.scopeGeneration;
@@ -411,7 +552,16 @@ export class MockStep52dReconciler {
     }
 
     if (batch.mutations.length === 0) {
-      return { pushedCount: 0, quarantinedStaleCount: 0, quarantinedLegacyCount: 0 };
+      return {
+        pushedCount: 0,
+        dispatchedCount: 0,
+        appliedCount: 0,
+        deduplicatedCount: 0,
+        rejectedCount: 0,
+        transientRetryCount: 0,
+        quarantinedStaleCount: 0,
+        quarantinedLegacyCount: 0,
+      };
     }
 
     // 2. Task A: Atomic Pre-Dispatch Admission Check
@@ -446,6 +596,11 @@ export class MockStep52dReconciler {
       this.config.mutationQueue.releaseInFlight(batch);
       return {
         pushedCount: 0,
+        dispatchedCount: 0,
+        appliedCount: 0,
+        deduplicatedCount: 0,
+        rejectedCount: 0,
+        transientRetryCount: 0,
         quarantinedStaleCount: admission.quarantinedStaleMutations.length,
         quarantinedLegacyCount: admission.quarantinedLegacyMutations.length,
       };
@@ -481,6 +636,10 @@ export class MockStep52dReconciler {
       throw networkOrLeaderError;
     }
 
+    if (options?._testHookBeforeProcessResults) {
+      await options._testHookBeforeProcessResults();
+    }
+
     // 5. Post-response authority check: Verify tab is STILL authoritative leader for the SAME scope
     try {
       this.assertCrossScopeAuthority(scopeAtStart, genAtStart, options?.leaderSignal);
@@ -490,27 +649,47 @@ export class MockStep52dReconciler {
       this.config.mutationQueue.releaseInFlight(batch);
       return {
         pushedCount: 0,
+        dispatchedCount: wireMutations.length,
+        appliedCount: 0,
+        deduplicatedCount: 0,
+        rejectedCount: 0,
+        transientRetryCount: wireMutations.length,
         quarantinedStaleCount: admission.quarantinedStaleMutations.length,
         quarantinedLegacyCount: admission.quarantinedLegacyMutations.length,
       };
     }
 
-    // 6. Commit batch results atomically via MutationQueue.processServerBatchResults
+    // 6. Correlate and validate wire receipts before passing to MutationQueue
+    const correlation = correlateAndValidateReceipts(admission.eligibleMutations, wireResponse.results);
+
     // Create an updated batch matching only the eligible mutations that were actually dispatched
     const dispatchedBatch: PreparedPushBatch = {
       ...batch,
       mutations: admission.eligibleMutations,
     };
 
-    await this.config.mutationQueue.processServerBatchResults({
+    const summary = await this.config.mutationQueue.processServerBatchResults({
       batch: dispatchedBatch,
-      results: wireResponse.results,
+      results: correlation.validResults,
+      leaderSignal: options?.leaderSignal,
     });
+
+    const rejectedCount =
+      summary.tombstoneEvictedCount +
+      summary.staleQuarantinedCount +
+      summary.unsupportedCount +
+      summary.conflictMergedCount;
 
     return {
       pushedCount: wireMutations.length,
+      dispatchedCount: wireMutations.length,
+      appliedCount: summary.appliedCount,
+      deduplicatedCount: summary.deduplicatedCount,
+      rejectedCount,
+      transientRetryCount: summary.transientRetryCount,
       quarantinedStaleCount: admission.quarantinedStaleMutations.length,
       quarantinedLegacyCount: admission.quarantinedLegacyMutations.length,
+      summary,
     };
   }
 }

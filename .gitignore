@@ -75,6 +75,9 @@ test-results/
 /temp/
 /storage/
 
+# Git Worktrees (Strict local-only isolation)
+.worktrees/
+
 # Local isolated tools (e.g. pinned JDK)
 .tools/
 

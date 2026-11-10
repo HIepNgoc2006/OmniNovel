@@ -82,8 +82,10 @@ _SCRUB_PATTERNS = (
     re.compile(r'("SecretParts"\s*:\s*)\{[^}]*\}', re.IGNORECASE),
     re.compile(r"-----BEGIN [A-Z0-9 ]+-----[\s\S]*?-----END [A-Z0-9 ]+-----"),
     re.compile(r"pbkdf2_sha256\$\d+\$[0-9a-fA-F]+\$[0-9a-fA-F]+"),
-    re.compile(r"\b(?:postgres(?:ql)?|rediss?)://[^:\s\"'`<>\]\[]+:[^@\s\"'`<>\]\[]+@[^\s\"'`<>\r\n]+", re.IGNORECASE),
+    re.compile(r"\b(?:postgres(?:ql)?|rediss?|mysql|mongodb(?:\+srv)?)://[^:\s\"'`<>\]\[]+:[^@\s\"'`<>\]\[]+@[^\s\"'`<>\r\n]+", re.IGNORECASE),
     re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b"),
+    re.compile(r'(?i)\b(?:jwt_secret|jwt_refresh_secret|ai_worker_secret|redis_password|password|passwd|secret_key|secret_access_key|api_token|api_key|access_token|refresh_token|private_key|token)\b[ \t]*[:=][ \t]*["\']?[^\s"\'`,;()<>\r\n]{3,}["\']?'),
+    re.compile(r'(?i)\b(?:sha256|sha1|md5|sha512)[$:][0-9a-fA-F]{32,128}\b'),
 )
 
 
@@ -649,10 +651,32 @@ def evaluate_trufflehog_output(
     }
 
     lines = (raw_output or "").splitlines()
+    in_pem_block = False
     for line_num, raw_line in enumerate(lines, 1):
         line = raw_line.strip()
-        if not line or not line.startswith("{"):
+        if not line:
             continue
+
+        if in_pem_block:
+            if "-----END " in line:
+                in_pem_block = False
+            continue
+
+        if "-----BEGIN " in line and "-----END " not in line:
+            in_pem_block = True
+            if not line.startswith("{"):
+                scanner_errors.append(f"SCANNER_RAW_ERROR line {line_num}: [REDACTED_PEM_BLOCK]")
+                continue
+
+        if not line.startswith("{"):
+            # Plain-text line from scanner, container runtime, git, or os
+            lower_line = line.lower()
+            if any(term in lower_line for term in ("error", "fatal", "panic", "failed", "failure", "cannot", "denied", "exception", "level=error", "level=fatal")):
+                scanner_errors.append(f"SCANNER_RAW_ERROR line {line_num}: {line}")
+            else:
+                scanner_errors.append(f"SCANNER_NON_JSON_OUTPUT line {line_num}: {line}")
+            continue
+
         try:
             obj = json.loads(line)
         except json.JSONDecodeError:
@@ -669,7 +693,11 @@ def evaluate_trufflehog_output(
 
         level = str(obj.get("level", "")).lower()
         msg = str(obj.get("msg", ""))
-        if level == "error" or "encountered errors" in msg.lower():
+        has_error_key = bool(obj.get("error") or obj.get("errors"))
+        is_error_level = level in {"error", "fatal", "panic"}
+        has_error_msg = "encountered errors" in msg.lower() or "error" in msg.lower()
+
+        if is_error_level or has_error_msg or (has_error_key and msg != "finished scanning"):
             detail = obj.get("errors") or obj.get("error") or msg
             scanner_errors.append(f"{msg}: {detail}")
         elif "DetectorName" in obj or "SourceMetadata" in obj:
@@ -700,7 +728,21 @@ def evaluate_trufflehog_output(
                 _redact_finding(obj, classification=classification, allowlist_entry=matched_entry)
             )
         elif msg == "finished scanning":
-            summary = obj
+            if summary is not None:
+                first_sig = (summary.get("chunks"), summary.get("bytes"), summary.get("verified_secrets"), summary.get("unverified_secrets"))
+                second_sig = (obj.get("chunks"), obj.get("bytes"), obj.get("verified_secrets"), obj.get("unverified_secrets"))
+                if first_sig == second_sig:
+                    errors.append(
+                        f"DUPLICATE_SCAN_SUMMARY: Duplicate 'finished scanning' telemetry record at line {line_num}."
+                    )
+                else:
+                    errors.append(
+                        f"CONFLICTING_SCAN_SUMMARY: Conflicting 'finished scanning' telemetry record at line {line_num} "
+                        f"(first: chunks={summary.get('chunks')}, bytes={summary.get('bytes')}; "
+                        f"second: chunks={obj.get('chunks')}, bytes={obj.get('bytes')})."
+                    )
+            else:
+                summary = obj
 
     for err_detail in scanner_errors:
         errors.append(f"SCANNER_ERROR: {_scrub_sensitive_text(err_detail, observed_secrets)}")
@@ -761,6 +803,15 @@ def evaluate_trufflehog_output(
             f"but TruffleHog scanned chunks={chunks}, bytes={bytes_scanned}."
         )
 
+    # Reconcile structured finding count with summary metrics
+    total_expected_findings = verified_secrets + unverified_secrets
+    if len(findings_redacted) != total_expected_findings:
+        errors.append(
+            f"UNACCOUNTED_SCAN_FINDINGS: Scanner summary reported {verified_secrets} verified and "
+            f"{unverified_secrets} unverified secret(s) (total {total_expected_findings}), "
+            f"but emitted {len(findings_redacted)} structured finding record(s)."
+        )
+
     if verified_secrets > 0 or counts["verified"] > 0:
         errors.append(
             f"SECRETS_DETECTED: TruffleHog detected {max(verified_secrets, counts['verified'])} verified secret(s)."
@@ -768,19 +819,13 @@ def evaluate_trufflehog_output(
 
     if fail_on_unverified:
         if allowlist is not None:
-            # Every raw TruffleHog finding must be accounted for and explicitly allowlisted.
             accounted_exempt = counts["approved_false_positive"] + counts["dummy"]
             if counts["unverified"] > 0:
                 errors.append(
                     f"SECRETS_DETECTED: Detected {counts['unverified']} unapproved unverified/custom secret(s) "
                     "with no matching allowlist entry."
                 )
-            elif len(findings_redacted) < (verified_secrets + unverified_secrets):
-                errors.append(
-                    "UNACCOUNTED_SCAN_FINDINGS: Scanner reported unverified_secrets="
-                    f"{unverified_secrets} but only emitted {len(findings_redacted)} structured finding record(s)."
-                )
-            elif exit_code == 183 and accounted_exempt == 0:
+            elif exit_code == 183 and accounted_exempt == 0 and len(findings_redacted) == 0:
                 errors.append(
                     "UNACCOUNTED_SCAN_FINDINGS: Scanner exited with code 183 without accountable allowlisted findings."
                 )
@@ -791,9 +836,17 @@ def evaluate_trufflehog_output(
                 )
 
     if exit_code == 183:
-        if allowlist is None or not fail_on_unverified:
+        if len(findings_redacted) == 0 and total_expected_findings == 0:
+            errors.append("UNACCOUNTED_SCAN_FINDINGS: Scanner exited with code 183 without any detected secrets or findings.")
+        elif allowlist is None or not fail_on_unverified:
             if not any(e.startswith("SECRETS_DETECTED:") for e in errors):
                 errors.append("SECRETS_DETECTED: TruffleHog exited with finding exit code 183.")
+
+    if exit_code == 0 and (verified_secrets > 0 or unverified_secrets > 0 or len(findings_redacted) > 0):
+        errors.append(
+            f"INVALID_EXIT_CODE: Scanner detected {max(total_expected_findings, len(findings_redacted))} secret(s) "
+            "but exited with code 0 instead of 183."
+        )
 
     scrubbed_errors = [_scrub_sensitive_text(e, observed_secrets) for e in errors]
     return ScanEvaluation(
@@ -1471,6 +1524,126 @@ def run_unit_tests() -> int:
         assert len(repo_al.entries) > 0
         print(f"  [PASS] SEC-21 & SEC-22: Repo Pass 2 YAML ({det_count} single-regex detectors: {det_names}) & allowlist ({len(repo_al.entries)} salted entries) verified")
         passed += 2
+
+        # SEC-23: Plain-text scanner errors mixed with valid summary (chunks>0, bytes>0, exit 0) rejected fail-closed
+        pt_err_log = "\n".join([
+            "fatal: unable to read tree deadbeef",
+            json.dumps({"level": "info-0", "msg": "finished scanning", "chunks": 5, "bytes": 500, "verified_secrets": 0, "unverified_secrets": 0}),
+        ])
+        ev_pt1 = evaluate_trufflehog_output(pt_err_log, 0, pr_range)
+        assert not ev_pt1.passed
+        assert any("SCANNER_RAW_ERROR" in e for e in ev_pt1.errors)
+
+        pt_non_json = "\n".join([
+            "unexpected plain text banner from daemon",
+            json.dumps({"level": "info-0", "msg": "finished scanning", "chunks": 5, "bytes": 500, "verified_secrets": 0, "unverified_secrets": 0}),
+        ])
+        ev_pt2 = evaluate_trufflehog_output(pt_non_json, 0, pr_range)
+        assert not ev_pt2.passed
+        assert any("SCANNER_NON_JSON_OUTPUT" in e for e in ev_pt2.errors)
+        print("  [PASS] SEC-23: Plain-text scanner errors mixed with valid summary rejected fail-closed (SCANNER_RAW_ERROR / SCANNER_NON_JSON_OUTPUT)")
+        passed += 1
+
+        # SEC-24: Missing, duplicate, and conflicting scan summaries rejected fail-closed
+        ev_miss = evaluate_trufflehog_output('{"level":"info-0","msg":"running source"}', 0, pr_range)
+        assert not ev_miss.passed
+        assert any("MISSING_SCAN_SUMMARY" in e for e in ev_miss.errors)
+
+        sum_rec1 = json.dumps({"level": "info-0", "msg": "finished scanning", "chunks": 3, "bytes": 300, "verified_secrets": 0, "unverified_secrets": 0})
+        dup_log = f"{sum_rec1}\n{sum_rec1}"
+        ev_dup = evaluate_trufflehog_output(dup_log, 0, pr_range)
+        assert not ev_dup.passed
+        assert any("DUPLICATE_SCAN_SUMMARY" in e for e in ev_dup.errors)
+
+        sum_rec2 = json.dumps({"level": "info-0", "msg": "finished scanning", "chunks": 4, "bytes": 450, "verified_secrets": 0, "unverified_secrets": 0})
+        conf_log = f"{sum_rec1}\n{sum_rec2}"
+        ev_conf = evaluate_trufflehog_output(conf_log, 0, pr_range)
+        assert not ev_conf.passed
+        assert any("CONFLICTING_SCAN_SUMMARY" in e for e in ev_conf.errors)
+        print("  [PASS] SEC-24: Missing, duplicate, and conflicting scan summaries rejected (MISSING/DUPLICATE/CONFLICTING_SCAN_SUMMARY)")
+        passed += 1
+
+        # SEC-25: Malformed NDJSON, truncated JSON, and unknown exit codes rejected fail-closed
+        bad_ndjson = "\n".join([
+            '{"level": "info-0", "msg": "running source", invalid_syntax',
+            clean_log,
+        ])
+        ev_bad_nd = evaluate_trufflehog_output(bad_ndjson, 0, pr_range)
+        assert not ev_bad_nd.passed
+        assert any("SCANNER_PARSE_ERROR" in e for e in ev_bad_nd.errors)
+
+        trunc_ndjson = "\n".join([
+            '{"SourceMetadata": {"Data": {"Git": {"commit": "abc',
+            clean_log,
+        ])
+        ev_trunc = evaluate_trufflehog_output(trunc_ndjson, 0, pr_range)
+        assert not ev_trunc.passed
+        assert any("SCANNER_PARSE_ERROR" in e for e in ev_trunc.errors)
+
+        for bad_code in (1, 2, 125, 255):
+            ev_code = evaluate_trufflehog_output(clean_log, bad_code, pr_range)
+            assert not ev_code.passed
+            assert any("SCANNER_CRASH" in e for e in ev_code.errors)
+        print("  [PASS] SEC-25: Malformed NDJSON, truncated JSON, and unknown exit codes rejected fail-closed")
+        passed += 1
+
+        # SEC-26: Summary finding count inconsistency (under/over-reporting) & exit 0 with findings rejected
+        under_log = json.dumps({
+            "level": "info-0", "msg": "finished scanning", "chunks": 2, "bytes": 200, "verified_secrets": 0, "unverified_secrets": 1,
+        })
+        ev_under = evaluate_trufflehog_output(under_log, 183, pr_range)
+        assert not ev_under.passed
+        assert any("UNACCOUNTED_SCAN_FINDINGS" in e for e in ev_under.errors)
+
+        finding_rec = json.dumps({
+            "SourceMetadata": {"Data": {"Git": {"commit": feat_sha, "file": "src/a.ts", "line": 1}}},
+            "DetectorName": "CustomRegex",
+            "Verified": False,
+            "Raw": "dummy_secret_value_123",
+            "ExtraData": {"name": "OmniNovelJwtSecret"},
+        })
+        over_log = "\n".join([
+            finding_rec,
+            clean_log,
+        ])
+        ev_over = evaluate_trufflehog_output(over_log, 183, pr_range)
+        assert not ev_over.passed
+        assert any("UNACCOUNTED_SCAN_FINDINGS" in e for e in ev_over.errors)
+
+        exit0_with_findings = "\n".join([
+            finding_rec,
+            json.dumps({"level": "info-0", "msg": "finished scanning", "chunks": 2, "bytes": 200, "verified_secrets": 0, "unverified_secrets": 1}),
+        ])
+        ev_exit0 = evaluate_trufflehog_output(exit0_with_findings, 0, pr_range)
+        assert not ev_exit0.passed
+        assert any("INVALID_EXIT_CODE" in e for e in ev_exit0.errors)
+        print("  [PASS] SEC-26: Finding count mismatch (under/over) and exit 0 with findings rejected fail-closed")
+        passed += 1
+
+        # SEC-27: Error sanitization blocks leakage across plain-text errors, JSON errors, malformed lines, exceptions
+        raw_db_uri = "post" + "gresql://admin:super_secret_db_pass@postgres-host:5432/omninovel"
+        raw_jwt_asgn = "JWT_SECRET=super_secret_jwt_token_value_xyz"
+        raw_redis_asgn = 'REDIS_PASSWORD: "redis_super_pass_secret"'
+        raw_weak_hash = "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        dummy_pem_block = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0\n-----END RSA PRIVATE KEY-----"
+
+        sanitize_stream = "\n".join([
+            f"fatal: database connection failed: {raw_db_uri}",
+            json.dumps({"level": "error", "msg": "encountered errors", "errors": [f"failed to parse config {raw_jwt_asgn} and {raw_redis_asgn}"]}),
+            f'{{"bad_json": "{raw_weak_hash}", "key": "{dummy_pem_block}"',
+            clean_log,
+        ])
+        ev_san = evaluate_trufflehog_output(sanitize_stream, 0, pr_range)
+        assert not ev_san.passed
+        san_serialized = json.dumps({"errors": ev_san.errors})
+        assert "super_secret_db_pass" not in san_serialized
+        assert "super_secret_jwt_token_value_xyz" not in san_serialized
+        assert "redis_super_pass_secret" not in san_serialized
+        assert "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" not in san_serialized
+        assert "MIIEowIBAAKCAQEA0" not in san_serialized
+        assert "[REDACTED_SECRET]" in san_serialized
+        print("  [PASS] SEC-27: Error sanitization blocks leakage of URIs, assignments, hashes, PEM blocks across all error paths")
+        passed += 1
 
         print("--------------------------------------------------------------------------------")
         print(f"[TEST RESULT] {passed}/{passed} P0+P1 Secret Scan Unit & Governance Tests PASSED")

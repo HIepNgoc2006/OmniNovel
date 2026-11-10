@@ -108,6 +108,31 @@ export interface SelectEligiblePendingBatchResult {
   selectedMutations: LocalPendingMutation[];
 }
 
+export interface CandidateMutationVerification {
+  ownerScope?: string;
+  mutationId: string;
+  clientId: string;
+  domain: SyncDomain;
+  entityId: string;
+  operation: SyncOperation;
+  baseServerRevision: string;
+  payload: Record<string, unknown> | unknown;
+  createdAt?: string;
+}
+
+export interface AdmitPreparedBatchPreDispatchOptions {
+  candidates: CandidateMutationVerification[];
+  checkAdmission?: () => void;
+  _testHookBeforeComplete?: (tx: IDBTransaction) => void;
+}
+
+export interface AdmitPreparedBatchPreDispatchResult {
+  minActiveRevision: string;
+  eligibleMutations: LocalPendingMutation[];
+  quarantinedStaleMutations: LocalQuarantinedMutation[];
+  quarantinedLegacyMutations: LocalQuarantinedMutation[];
+}
+
 export const RETRYABLE_QUARANTINE_REJECTION_STATUSES: ReadonlySet<string> = new Set([
   'EXCEEDED_MAX_RETRIES',
   'MANUAL',
@@ -658,6 +683,13 @@ export class InvalidDeltaPayloadError extends Error {
   constructor(message: string = 'Authoritative delta page payload is invalid or malformed.') {
     super(message);
     this.name = 'InvalidDeltaPayloadError';
+  }
+}
+
+export class PreDispatchAdmissionVerificationError extends Error {
+  constructor(message: string = 'Pre-dispatch admission verification failed.') {
+    super(message);
+    this.name = 'PreDispatchAdmissionVerificationError';
   }
 }
 
@@ -4433,6 +4465,290 @@ export class IndexedDbClient {
           fail(tx.error || new Error('Transaction error in selectEligiblePendingBatchAtomic.'));
         tx.onabort = () =>
           fail(tx.error || new Error('Transaction aborted in selectEligiblePendingBatchAtomic.'));
+      } catch (err) {
+        reject(err);
+      }
+    });
+  }
+
+  /**
+   * Step 5.2d Atomic Pre-Dispatch Admission Primitive:
+   * Evaluates a prepared candidate batch immediately before network dispatch
+   * in a SINGLE IndexedDB readwrite transaction over [STORE_SYNC_META, STORE_PENDING_MUTATIONS, STORE_QUARANTINED_MUTATIONS].
+   *
+   * Invariants:
+   * 1. Reads current sync_meta.minActiveRevision within the transaction.
+   * 2. Compares 64-bit revisions using BigInt (never JS Number).
+   * 3. Verifies candidate identity: ownerScope, mutationId, clientId, domain, operation, baseServerRevision, entityId, and payload.
+   * 4. Stale pending mutations (baseServerRevision < minActiveRevision) move atomically to quarantine with PENDING triage.
+   * 5. Legacy HISTORY DELETE entityId='all' mutations move atomically to quarantine (rejectionStatus: 'MANUAL',
+   *    rejectionReason: 'LEGACY_ENTITY_ID_REWRITE_PROHIBITED') without mutating the entityId or canonical payload hash on the wire.
+   * 6. Fails-closed (aborts transaction) on missing candidate in storage, field mismatches, duplicate mutationIds,
+   *    invalid revision strings, or admission authority revocation.
+   * 7. Resolves ONLY on tx.oncomplete; on abort/error, rolls back 100% of mutations to original pending state.
+   */
+  async admitPreparedBatchPreDispatchAtomic(
+    ownerScope: string,
+    options: AdmitPreparedBatchPreDispatchOptions
+  ): Promise<AdmitPreparedBatchPreDispatchResult> {
+    assertValidScope(ownerScope);
+    const db = await this.getDatabase();
+    if (options.checkAdmission) {
+      options.checkAdmission();
+    }
+
+    const candidates = options.candidates;
+    const seenIds = new Set<string>();
+    for (const c of candidates) {
+      if (!c.mutationId || typeof c.mutationId !== 'string') {
+        throw new PreDispatchAdmissionVerificationError('Candidate mutationId must be a non-empty string.');
+      }
+      if (seenIds.has(c.mutationId)) {
+        throw new PreDispatchAdmissionVerificationError(
+          `Duplicate candidate mutationId "${c.mutationId}" in admission batch for scope "${ownerScope}".`
+        );
+      }
+      seenIds.add(c.mutationId);
+      if (c.ownerScope && c.ownerScope !== ownerScope) {
+        throw new PreDispatchAdmissionVerificationError(
+          `Candidate mutation "${c.mutationId}" ownerScope mismatch: expected "${ownerScope}", got "${c.ownerScope}".`
+        );
+      }
+    }
+
+    return new Promise<AdmitPreparedBatchPreDispatchResult>((resolve, reject) => {
+      let settled = false;
+      let tx: IDBTransaction;
+      let result: AdmitPreparedBatchPreDispatchResult = {
+        minActiveRevision: '0',
+        eligibleMutations: [],
+        quarantinedStaleMutations: [],
+        quarantinedLegacyMutations: [],
+      };
+
+      const fail = (err: unknown) => {
+        if (!settled) {
+          settled = true;
+          try {
+            tx.abort();
+          } catch {
+            // ignore if already aborted
+          }
+          reject(err);
+        }
+      };
+
+      try {
+        tx = db.transaction(
+          [STORE_SYNC_META, STORE_PENDING_MUTATIONS, STORE_QUARANTINED_MUTATIONS],
+          'readwrite'
+        );
+        const metaStore = tx.objectStore(STORE_SYNC_META);
+        const pStore = tx.objectStore(STORE_PENDING_MUTATIONS);
+        const qStore = tx.objectStore(STORE_QUARANTINED_MUTATIONS);
+
+        let syncMeta: LocalSyncMeta | undefined;
+        const dbPendingMap = new Map<string, LocalPendingMutation>();
+        let remaining = candidates.length + 1; // +1 for sync_meta
+
+        const onAllLoaded = () => {
+          if (settled) return;
+          try {
+            if (options.checkAdmission) {
+              options.checkAdmission();
+            }
+
+            let minActiveRevisionStr = '0';
+            if (syncMeta?.minActiveRevision !== undefined && syncMeta?.minActiveRevision !== null) {
+              if (!isValidRevisionString(syncMeta.minActiveRevision)) {
+                fail(
+                  new InvalidDeltaPayloadError(
+                    `Invalid minActiveRevision during pre-dispatch admission: "${syncMeta.minActiveRevision}".`
+                  )
+                );
+                return;
+              }
+              minActiveRevisionStr = syncMeta.minActiveRevision;
+            }
+
+            const minActiveRev = BigInt(minActiveRevisionStr);
+            const eligibleMutations: LocalPendingMutation[] = [];
+            const quarantinedStaleMutations: LocalQuarantinedMutation[] = [];
+            const quarantinedLegacyMutations: LocalQuarantinedMutation[] = [];
+            const rejectedAtIso = new Date().toISOString();
+
+            for (const candidate of candidates) {
+              const livePending = dbPendingMap.get(candidate.mutationId);
+              if (!livePending) {
+                fail(
+                  new PreDispatchAdmissionVerificationError(
+                    `Candidate pending mutation "${candidate.mutationId}" not found in storage for scope "${ownerScope}".`
+                  )
+                );
+                return;
+              }
+
+              // Verify scope ownership
+              if (livePending.ownerScope !== ownerScope) {
+                fail(
+                  new PreDispatchAdmissionVerificationError(
+                    `Storage ownerScope mismatch for mutation "${candidate.mutationId}": expected "${ownerScope}", found "${livePending.ownerScope}".`
+                  )
+                );
+                return;
+              }
+
+              // Verify field integrity
+              if (
+                livePending.clientId !== candidate.clientId ||
+                livePending.domain !== candidate.domain ||
+                livePending.entityId !== candidate.entityId ||
+                livePending.operation !== candidate.operation ||
+                livePending.baseServerRevision !== candidate.baseServerRevision
+              ) {
+                fail(
+                  new PreDispatchAdmissionVerificationError(
+                    `Candidate mutation "${candidate.mutationId}" field mismatch between preparation and live storage.`
+                  )
+                );
+                return;
+              }
+
+              // Verify immutable payload identity
+              try {
+                if (JSON.stringify(livePending.payload) !== JSON.stringify(candidate.payload)) {
+                  fail(
+                    new PreDispatchAdmissionVerificationError(
+                      `Candidate mutation "${candidate.mutationId}" payload altered between preparation and pre-dispatch.`
+                    )
+                  );
+                  return;
+                }
+              } catch (payloadErr) {
+                fail(
+                  new PreDispatchAdmissionVerificationError(
+                    `Failed serializing payload for mutation "${candidate.mutationId}": ${String(payloadErr)}`
+                  )
+                );
+                return;
+              }
+
+              // Validate baseServerRevision string format
+              if (!isValidRevisionString(livePending.baseServerRevision)) {
+                fail(
+                  new InvalidDeltaPayloadError(
+                    `Invalid baseServerRevision "${livePending.baseServerRevision}" on pending mutation "${livePending.mutationId}".`
+                  )
+                );
+                return;
+              }
+
+              // Check 1: Legacy HISTORY DELETE with entityId='all' (Task A Requirement 6)
+              if (
+                livePending.domain === SyncDomain.HISTORY &&
+                livePending.entityId === 'all'
+              ) {
+                pStore.delete([ownerScope, livePending.mutationId]);
+                const quarantined: LocalQuarantinedMutation = {
+                  ownerScope: livePending.ownerScope,
+                  mutationId: livePending.mutationId,
+                  clientId: livePending.clientId,
+                  domain: livePending.domain,
+                  entityId: livePending.entityId,
+                  operation: livePending.operation,
+                  baseServerRevision: livePending.baseServerRevision,
+                  payload: livePending.payload,
+                  rejectionReason: 'LEGACY_ENTITY_ID_REWRITE_PROHIBITED',
+                  rejectionStatus: 'MANUAL',
+                  rejectedAt: rejectedAtIso,
+                  triageStatus: 'PENDING',
+                  originalCreatedAt: livePending.createdAt,
+                };
+                qStore.put(quarantined);
+                quarantinedLegacyMutations.push(quarantined);
+                continue;
+              }
+
+              // Check 2: Watermark stale check (Task A Requirement 4 & 5)
+              if (minActiveRev > 0n && BigInt(livePending.baseServerRevision) < minActiveRev) {
+                pStore.delete([ownerScope, livePending.mutationId]);
+                const quarantined: LocalQuarantinedMutation = {
+                  ownerScope: livePending.ownerScope,
+                  mutationId: livePending.mutationId,
+                  clientId: livePending.clientId,
+                  domain: livePending.domain,
+                  entityId: livePending.entityId,
+                  operation: livePending.operation,
+                  baseServerRevision: livePending.baseServerRevision,
+                  payload: livePending.payload,
+                  rejectionReason: `BASE_REVISION_EXPIRED: baseServerRevision (${livePending.baseServerRevision}) is older than minActiveRevision (${minActiveRevisionStr}).`,
+                  rejectionStatus: 'REJECTED_STALE',
+                  rejectedAt: rejectedAtIso,
+                  triageStatus: 'PENDING',
+                  originalCreatedAt: livePending.createdAt,
+                };
+                qStore.put(quarantined);
+                quarantinedStaleMutations.push(quarantined);
+                continue;
+              }
+
+              // Check 3: Eligible for dispatch
+              eligibleMutations.push(livePending);
+            }
+
+            result = {
+              minActiveRevision: minActiveRevisionStr,
+              eligibleMutations,
+              quarantinedStaleMutations,
+              quarantinedLegacyMutations,
+            };
+
+            if (options._testHookBeforeComplete) {
+              options._testHookBeforeComplete(tx);
+            }
+          } catch (err) {
+            fail(err);
+          }
+        };
+
+        // 1. Read sync_meta
+        const metaReq = metaStore.get(ownerScope);
+        metaReq.onerror = () =>
+          fail(metaReq.error || new Error(`Failed reading sync_meta for scope "${ownerScope}".`));
+        metaReq.onsuccess = () => {
+          syncMeta = metaReq.result as LocalSyncMeta | undefined;
+          remaining -= 1;
+          if (remaining === 0) onAllLoaded();
+        };
+
+        // 2. Read each candidate from pendingStore
+        if (candidates.length === 0) {
+          // No candidates; remaining is already 1, metaReq will trigger onAllLoaded
+        } else {
+          for (const c of candidates) {
+            const pReq = pStore.get([ownerScope, c.mutationId]);
+            pReq.onerror = () =>
+              fail(pReq.error || new Error(`Failed reading pending mutation "${c.mutationId}".`));
+            pReq.onsuccess = () => {
+              if (pReq.result) {
+                dbPendingMap.set(c.mutationId, pReq.result as LocalPendingMutation);
+              }
+              remaining -= 1;
+              if (remaining === 0) onAllLoaded();
+            };
+          }
+        }
+
+        tx.oncomplete = () => {
+          if (!settled) {
+            settled = true;
+            resolve(result);
+          }
+        };
+        tx.onerror = () =>
+          fail(tx.error || new Error('Transaction error in admitPreparedBatchPreDispatchAtomic.'));
+        tx.onabort = () =>
+          fail(tx.error || new Error('Transaction aborted in admitPreparedBatchPreDispatchAtomic.'));
       } catch (err) {
         reject(err);
       }

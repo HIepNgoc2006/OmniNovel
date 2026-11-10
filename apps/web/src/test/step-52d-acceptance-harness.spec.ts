@@ -621,6 +621,125 @@ describe('Web Step 5.2d Mock-Only Acceptance Harness & Contract Corrections', ()
       expect(quarantined?.triageStatus).toBe('PENDING');
       expect(quarantined?.payload).toEqual(originalPayload);
     });
+
+    it('pushPendingMutations end-to-end: admission failure rolls back IDB, releases in-flight batch ownership, and allows second attempt to succeed without reload', async () => {
+      const scope = 'account:usr-inflight-cleanup';
+      await seedReadySyncMeta(scope, '10', '0');
+
+      const queue = new MutationQueue({
+        ownerScope: scope,
+        identityStateProvider: createStaticIdentityProvider(scope),
+        dbClient,
+      });
+
+      const originalPayload = { storyId: 'story-claim-release', title: 'Must Not Be Stuck' };
+      await queue.enqueue({
+        ownerScope: scope,
+        mutationId: 'mut-claim-release-1',
+        clientId: 'client-1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-claim-release',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '10',
+        payload: originalPayload,
+        createdAt: '2026-11-10T08:00:00.000Z',
+        retryCount: 0,
+      });
+
+      const tab = new TabLeaderElection({
+        ownerScope: scope,
+        tabId: 'tab-claim',
+        lockManager,
+      });
+      tab.start();
+      await new Promise((r) => setTimeout(r, 10));
+
+      const reconciler = new MockStep52dReconciler({
+        ownerScope: scope,
+        dbClient,
+        mutationQueue: queue,
+        tabLeader: tab,
+        server: transportServer,
+      });
+
+      // Attempt 1: Pre-dispatch admission fails via transaction abort
+      await expect(
+        reconciler.pushPendingMutations({
+          _testHookPreDispatchBeforeCommit: (tx) => {
+            tx.abort();
+          },
+        })
+      ).rejects.toThrow();
+
+      // Invariant 1: IDB rolled back, mutation is still pending with exact original payload & mutationId
+      const pendingAfterAbort = await dbClient.getPendingMutation(scope, 'mut-claim-release-1');
+      expect(pendingAfterAbort).not.toBeNull();
+      expect(pendingAfterAbort?.mutationId).toBe('mut-claim-release-1');
+      expect(pendingAfterAbort?.payload).toEqual(originalPayload);
+
+      // Invariant 2: In-flight batch ownership was released!
+      const statusAfterAbort = await queue.getStatus();
+      expect(statusAfterAbort.inFlightCount).toBe(0);
+
+      // Attempt 2: Second push attempt without failure injection succeeds end-to-end without needing reload!
+      transportServer.queueBatchResponse({
+        results: [{ mutationId: 'mut-claim-release-1', status: 'APPLIED', assignedRevision: '11' }],
+      });
+
+      const res2 = await reconciler.pushPendingMutations();
+      expect(res2.pushedCount).toBe(1);
+
+      // Invariant 3: Mutation is settled cleanly
+      expect(await dbClient.getPendingMutation(scope, 'mut-claim-release-1')).toBeNull();
+      const receipt = await dbClient.getMutationTerminalReceipt(scope, 'mut-claim-release-1');
+      expect(receipt?.status).toBe('APPLIED');
+
+      tab.destroy();
+    });
+
+    it('preserves generation ownership so cleanup from an old batch cannot release a newer batch', async () => {
+      const scope = 'account:usr-gen-ownership';
+      await seedReadySyncMeta(scope, '10', '0');
+
+      const queue = new MutationQueue({
+        ownerScope: scope,
+        identityStateProvider: createStaticIdentityProvider(scope),
+        dbClient,
+      });
+
+      await queue.enqueue({
+        ownerScope: scope,
+        mutationId: 'mut-gen-1',
+        clientId: 'client-1',
+        domain: SyncDomain.BOOKMARK,
+        entityId: 'bm-gen-1',
+        operation: SyncOperation.UPSERT,
+        baseServerRevision: '10',
+        payload: { storyId: 'story-gen-1' },
+        createdAt: '2026-11-10T08:00:00.000Z',
+        retryCount: 0,
+      });
+
+      // Prepare batch 1 in gen 0
+      const batch1 = await queue.preparePushBatch();
+      expect(batch1.scopeGeneration).toBe(0);
+      expect((await queue.getStatus()).inFlightCount).toBe(1);
+
+      // Simulate an old / mismatched generation batch attempt to release
+      const staleBatch = {
+        ...batch1,
+        scopeGeneration: 999, // Mismatched generation
+      };
+
+      queue.releaseInFlight(staleBatch);
+
+      // Invariant: Live in-flight lock for mut-gen-1 was NOT released by stale generation batch!
+      expect((await queue.getStatus()).inFlightCount).toBe(1);
+
+      // Only releasing with matching batch releases it
+      queue.releaseInFlight(batch1);
+      expect((await queue.getStatus()).inFlightCount).toBe(0);
+    });
   });
 
   // ==========================================
@@ -847,6 +966,107 @@ describe('Web Step 5.2d Mock-Only Acceptance Harness & Contract Corrections', ()
 
       expect(itemA?.payload).toEqual({ storyId: 'bm-a', user: 'Alice' });
       expect(itemB?.payload).toEqual({ storyId: 'bm-b', user: 'Bob' });
+    });
+
+    it('GET /sync/changes begun in account A; scope switched to B while HTTP 410 is in-flight: stale 410 cannot mutate B bootstrap state or invoke callback', async () => {
+      const scopeA = 'account:usr-cross-410-a';
+      const scopeB = 'account:usr-cross-410-b';
+      await seedReadySyncMeta(scopeA, '10', '0');
+      await seedReadySyncMeta(scopeB, '20', '0');
+
+      const queueA = new MutationQueue({
+        ownerScope: scopeA,
+        identityStateProvider: createStaticIdentityProvider(scopeA),
+        dbClient,
+      });
+
+      const tabA = new TabLeaderElection({
+        ownerScope: scopeA,
+        tabId: 'tab-cross-410',
+        lockManager,
+      });
+      tabA.start();
+      await new Promise((r) => setTimeout(r, 10));
+
+      let bBootstrapCallbackInvoked = false;
+      const reconciler = new MockStep52dReconciler({
+        ownerScope: scopeA,
+        dbClient,
+        mutationQueue: queueA,
+        tabLeader: tabA,
+        server: transportServer,
+        onBootstrapRequired: () => {
+          bBootstrapCallbackInvoked = true;
+        },
+      });
+
+      // Hook during in-flight GET: switch reconciler to account B before 410 returns
+      transportServer.interceptInFlight = async () => {
+        reconciler.setScope(scopeB);
+      };
+
+      // Server returns HTTP 410 SYNC_REVISION_EXPIRED for account A
+      transportServer.queueChangesResponse(createProduction410Response());
+
+      // Attempting to finish pullDeltaChanges throws ScopeAuthorityError fail-closed
+      await expect(reconciler.pullDeltaChanges()).rejects.toThrow(ScopeAuthorityError);
+
+      // Invariant 1: Stale 410 for A did NOT mutate reconciler's bootstrap state (now for B)
+      expect(reconciler.needsBootstrap).toBe(false);
+
+      // Invariant 2: Bootstrap callback was NOT fired
+      expect(bBootstrapCallbackInvoked).toBe(false);
+
+      // Invariant 3: Checkpoints for both A and B are preserved
+      expect((await dbClient.getSyncMeta(scopeA))?.lastSyncedServerRevision).toBe('10');
+      expect((await dbClient.getSyncMeta(scopeB))?.lastSyncedServerRevision).toBe('20');
+
+      tabA.destroy();
+    });
+
+    it('leader revocation while HTTP 410 is in-flight drops 410 and does not set bootstrapRequired', async () => {
+      const scope = 'account:usr-lead-rev-410';
+      await seedReadySyncMeta(scope, '10', '0');
+
+      const queue = new MutationQueue({
+        ownerScope: scope,
+        identityStateProvider: createStaticIdentityProvider(scope),
+        dbClient,
+      });
+
+      const tab = new TabLeaderElection({
+        ownerScope: scope,
+        tabId: 'tab-rev-410',
+        lockManager,
+      });
+      tab.start();
+      await new Promise((r) => setTimeout(r, 10));
+
+      let callbackFired = false;
+      const reconciler = new MockStep52dReconciler({
+        ownerScope: scope,
+        dbClient,
+        mutationQueue: queue,
+        tabLeader: tab,
+        server: transportServer,
+        onBootstrapRequired: () => {
+          callbackFired = true;
+        },
+      });
+
+      // Revoke leader lease while 410 is in-flight
+      transportServer.interceptInFlight = async () => {
+        tab.destroy();
+      };
+
+      transportServer.queueChangesResponse(createProduction410Response());
+
+      await expect(reconciler.pullDeltaChanges()).rejects.toThrow(ScopeAuthorityError);
+
+      // Invariant: Non-leader tab cannot transition to bootstrap
+      expect(reconciler.needsBootstrap).toBe(false);
+      expect(callbackFired).toBe(false);
+      expect((await dbClient.getSyncMeta(scope))?.lastSyncedServerRevision).toBe('10');
     });
   });
 
@@ -1293,22 +1513,40 @@ describe('Web Step 5.2d Mock-Only Acceptance Harness & Contract Corrections', ()
       tab.destroy();
     });
 
-    it('validates present production vs proposed B2 409 SNAPSHOT_INVALIDATED fixtures', () => {
+    it('validates present production vs proposed B2 409 SNAPSHOT_INVALIDATED fixtures and prevents silent dropping or renaming of error.meta', () => {
+      // 1. Present production: No meta property allowed
       const prod409 = createProduction409Response();
       expect(prod409.httpStatus).toBe(409);
       expect(prod409.body.error.code).toBe('SNAPSHOT_INVALIDATED');
       expect((prod409.body.error as any).meta).toBeUndefined();
 
-      const b2409 = createProposedB2409Response({
+      // 2. Proposed B2 with REG-18 reason GC_PRUNED: Uses cursorMinActiveRevision (NOT cursorRevision)
+      const b2409Pruned = createProposedB2409Response({
+        reason: 'GC_PRUNED',
+        currentServerRevision: '25',
+        minActiveRevision: '5',
+        cursorMinActiveRevision: '1',
+      });
+      expect(b2409Pruned.httpStatus).toBe(409);
+      expect(b2409Pruned.body.error.code).toBe('SNAPSHOT_INVALIDATED');
+      expect(b2409Pruned.body.error.meta?.reason).toBe('GC_PRUNED');
+      expect(b2409Pruned.body.error.meta?.currentServerRevision).toBe('25');
+      expect(b2409Pruned.body.error.meta?.minActiveRevision).toBe('5');
+      expect(b2409Pruned.body.error.meta?.cursorMinActiveRevision).toBe('1');
+      // Assert cursorRevision was NOT used or retained
+      expect((b2409Pruned.body.error.meta as any)?.cursorRevision).toBeUndefined();
+
+      // 3. Proposed B2 with reason CURSOR_WATERMARK_UPGRADE_REQUIRED (legacy signed cursor upgrade)
+      const b2409Upgrade = createProposedB2409Response({
         reason: 'CURSOR_WATERMARK_UPGRADE_REQUIRED',
         currentServerRevision: '25',
         minActiveRevision: '5',
-        cursorRevision: '15',
+        cursorMinActiveRevision: '0',
       });
-      expect(b2409.httpStatus).toBe(409);
-      expect(b2409.body.error.code).toBe('SNAPSHOT_INVALIDATED');
-      expect(b2409.body.error.meta?.reason).toBe('CURSOR_WATERMARK_UPGRADE_REQUIRED');
-      expect(b2409.body.error.meta?.currentServerRevision).toBe('25');
+      expect(b2409Upgrade.body.error.meta?.reason).toBe('CURSOR_WATERMARK_UPGRADE_REQUIRED');
+      expect(b2409Upgrade.body.error.meta?.cursorMinActiveRevision).toBe('0');
+      expect(b2409Upgrade.body.error.meta?.currentServerRevision).toBe('25');
+      expect(b2409Upgrade.body.error.meta?.minActiveRevision).toBe('5');
     });
 
     it('confirms READY-last invariant: Step 5.2d NEVER transitions baseline to READY; locked in DAL', async () => {

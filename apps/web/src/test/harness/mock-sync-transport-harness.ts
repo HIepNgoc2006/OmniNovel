@@ -503,7 +503,21 @@ export class MockStep52dReconciler {
       const checkpoint = meta?.lastSyncedServerRevision ?? '0';
 
       const url = `/api/v1/sync/changes?after=${encodeURIComponent(checkpoint)}&limit=${limit}`;
-      const response = await this.config.server.simulateFetchChanges(url);
+      let response:
+        | SyncChangesResponse
+        | WireSyncRevisionExpiredResponse
+        | { statusCode: 410; error: { code: string; message: string; minActiveRevision?: string; currentServerRevision?: string } };
+
+      try {
+        response = await this.config.server.simulateFetchChanges(url);
+      } catch (fetchErr) {
+        this.assertCrossScopeAuthority(scopeAtStart, genAtStart, options?.leaderSignal);
+        throw fetchErr;
+      }
+
+      // Task B: Recheck leader, account scope and generation immediately after every HTTP response,
+      // including HTTP 410, BEFORE mutating reconciler state or firing callbacks.
+      this.assertCrossScopeAuthority(scopeAtStart, genAtStart, options?.leaderSignal);
 
       // Check if server returned 410 SYNC_REVISION_EXPIRED (Production envelope or proposed B1 envelope)
       if (
@@ -575,15 +589,24 @@ export class MockStep52dReconciler {
     }
 
     // 2. Task A: Atomic Pre-Dispatch Admission Check
-    const admission = await admitPreparedBatchPreDispatchAtomic({
-      ownerScope: scopeAtStart,
-      batchMutations: batch.mutations,
-      dbClient: this.config.dbClient,
-      checkAdmission: () => {
-        this.assertCrossScopeAuthority(scopeAtStart, genAtStart, options?.leaderSignal);
-      },
-      _testHookBeforeCommit: options?._testHookPreDispatchBeforeCommit,
-    });
+    let admission: PreDispatchAdmissionResult;
+    try {
+      admission = await admitPreparedBatchPreDispatchAtomic({
+        ownerScope: scopeAtStart,
+        batchMutations: batch.mutations,
+        dbClient: this.config.dbClient,
+        checkAdmission: () => {
+          this.assertCrossScopeAuthority(scopeAtStart, genAtStart, options?.leaderSignal);
+        },
+        _testHookBeforeCommit: options?._testHookPreDispatchBeforeCommit,
+      });
+    } catch (admissionErr) {
+      // Task A: When pre-dispatch admission fails (e.g. IDB abort/rollback),
+      // MUST release in-flight batch ownership so mutations are not permanently stuck!
+      // Generational check inside releaseInFlight ensures an old batch cleanup cannot release a newer batch.
+      this.config.mutationQueue.releaseInFlight(batch);
+      throw admissionErr;
+    }
 
     // Release in-flight lock on any mutations quarantined during atomic pre-dispatch check
     for (const m of admission.quarantinedStaleMutations) {

@@ -202,10 +202,10 @@ export interface ProposedB2SnapshotInvalidatedBody {
     requestId: string;
     timestamp: string;
     meta?: {
-      reason?: 'CURSOR_WATERMARK_UPGRADE_REQUIRED' | 'CONCURRENT_GC_MIN_ACTIVE_ADVANCED';
+      reason?: 'GC_PRUNED' | 'CURSOR_WATERMARK_UPGRADE_REQUIRED';
       currentServerRevision?: string;
       minActiveRevision?: string;
-      cursorRevision?: string;
+      cursorMinActiveRevision?: string;
     };
   };
 }
@@ -232,10 +232,10 @@ export function createProduction409Response(params?: {
 }
 
 export function createProposedB2409Response(params: {
-  reason: 'CURSOR_WATERMARK_UPGRADE_REQUIRED' | 'CONCURRENT_GC_MIN_ACTIVE_ADVANCED';
+  reason: 'GC_PRUNED' | 'CURSOR_WATERMARK_UPGRADE_REQUIRED';
   currentServerRevision: string;
   minActiveRevision: string;
-  cursorRevision: string;
+  cursorMinActiveRevision: string;
   message?: string;
   requestId?: string;
 }): WireHttpResponse<ProposedB2SnapshotInvalidatedBody> {
@@ -244,14 +244,16 @@ export function createProposedB2409Response(params: {
     body: {
       error: {
         code: 'SNAPSHOT_INVALIDATED',
-        message: params.message ?? `Snapshot invalidated: current server revision (${params.currentServerRevision}) != cursor revision (${params.cursorRevision})`,
+        message:
+          params.message ??
+          `Snapshot invalidated: cursor minActiveRevision (${params.cursorMinActiveRevision}) < server minActiveRevision (${params.minActiveRevision}) due to ${params.reason}`,
         requestId: params.requestId ?? `req-b2-409-${Math.random().toString(36).substring(2, 8)}`,
         timestamp: new Date().toISOString(),
         meta: {
           reason: params.reason,
           currentServerRevision: params.currentServerRevision,
           minActiveRevision: params.minActiveRevision,
-          cursorRevision: params.cursorRevision,
+          cursorMinActiveRevision: params.cursorMinActiveRevision,
         },
       },
     },

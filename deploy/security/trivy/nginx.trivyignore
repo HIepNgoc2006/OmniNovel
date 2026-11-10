@@ -1,8 +1,5 @@
 # OmniNovel Scoped Trivy Ignore: nginx
 # Target Image: nginx
-# Count: 3 CVEs
+# Count: 0 CVEs (Wave 0 Pruned)
 # Standard: Fail-Closed Gate with Governed Exception Policy (SEC-REG-6.4.4A)
 
-CVE-2024-21538
-CVE-2026-103111
-CVE-2026-93990

@@ -2404,6 +2404,7 @@ class SyncStorageDal {
     if (items.isEmpty) return;
 
     final sessionRevisions = <String, String>{};
+    final sessionMinRevisions = <String, String>{};
     for (final item in items) {
       assertAccountScope(item.ownerScope);
       if (item.ownerScope != ownerScope) {
@@ -2426,11 +2427,62 @@ class SyncStorageDal {
           'Invalid minActiveRevision "${item.minActiveRevision}".',
         );
       }
-      if (item.domain == SyncDomain.progress &&
+
+      final snapRevBigInt = parseRevisionBigInt(item.snapshotRevision);
+      final minRevBigInt = parseRevisionBigInt(item.minActiveRevision);
+      if (minRevBigInt > snapRevBigInt) {
+        throw SnapshotStagingConflictError(
+          'REGRESSIVE_SNAPSHOT_WINDOW: minActiveRevision (${item.minActiveRevision}) exceeds snapshotRevision (${item.snapshotRevision}).',
+        );
+      }
+
+      // Validate Six-Partition contracts
+      if (item.partitionDomain == SnapshotPartitionDomain.progress &&
           item.payload.containsKey('readingMode')) {
         final rawMode = item.payload['readingMode'];
         normalizeSyncReadingMode(rawMode is String ? rawMode : null);
       }
+
+      if (item.partitionDomain == SnapshotPartitionDomain.historyTombstone) {
+        final storyId = _nonEmptyString(item.payload['storyId']) ?? item.entityKey;
+        if (storyId.trim().isEmpty) {
+          throw const SnapshotContractViolationException(
+            'Invalid empty historyEpoch storyId.',
+          );
+        }
+        final epoch = _extractInt(item.payload['epoch']) ?? 0;
+        if (epoch < 0) {
+          throw SnapshotContractViolationException('Invalid negative historyEpoch "$epoch".');
+        }
+      }
+
+      if (item.partitionDomain == SnapshotPartitionDomain.syncTombstone) {
+        final tombDomain = _nonEmptyString(item.payload['domain']) ?? item.domain.wireValue;
+        final entityId = _nonEmptyString(item.payload['entityId']) ?? item.entityKey;
+        if (tombDomain == 'FOLLOW') {
+          throw const SnapshotContractViolationException(
+            'FOLLOW domain does not support sync tombstones.',
+          );
+        }
+        if (tombDomain == 'HISTORY' && (entityId == 'all' || item.entityKey == 'all')) {
+          throw const SnapshotContractViolationException(
+            'Wildcard tombstone HISTORY:all forbidden in snapshot tombstones.',
+          );
+        }
+        final delRevStr = _nonEmptyString(item.payload['deletedAtRevision']) ?? item.snapshotRevision;
+        if (!isValidRevisionString(delRevStr)) {
+          throw SnapshotContractViolationException(
+            'Invalid deletedAtRevision "$delRevStr" in sync tombstone.',
+          );
+        }
+        final delRevBigInt = parseRevisionBigInt(delRevStr);
+        if (delRevBigInt < minRevBigInt || delRevBigInt > snapRevBigInt) {
+          throw SnapshotContractViolationException(
+            'Tombstone deletedAtRevision ($delRevStr) out of snapshot window [${item.minActiveRevision}, ${item.snapshotRevision}].',
+          );
+        }
+      }
+
       final compositeSession = '${item.ownerScope}\u0000${item.sessionId}';
       final expectedRev = sessionRevisions[compositeSession];
       if (expectedRev == null) {
@@ -2438,6 +2490,15 @@ class SyncStorageDal {
       } else if (expectedRev != item.snapshotRevision) {
         throw SnapshotStagingConflictError(
           'SNAPSHOT_REVISION_MISMATCH: Batch contains conflicting snapshotRevision values ("$expectedRev" vs "${item.snapshotRevision}") for session "${item.sessionId}".',
+        );
+      }
+
+      final expectedMinRev = sessionMinRevisions[compositeSession];
+      if (expectedMinRev == null) {
+        sessionMinRevisions[compositeSession] = item.minActiveRevision;
+      } else if (expectedMinRev != item.minActiveRevision) {
+        throw SnapshotStagingConflictError(
+          'SNAPSHOT_REVISION_MISMATCH: Batch contains conflicting minActiveRevision values ("$expectedMinRev" vs "${item.minActiveRevision}") for session "${item.sessionId}".',
         );
       }
     }
@@ -2451,7 +2512,7 @@ class SyncStorageDal {
           final scope = entry.key.substring(0, sep);
           final sessionId = entry.key.substring(sep + 1);
           final existingRows = await txn.rawQuery(
-            'SELECT DISTINCT snapshot_revision FROM snapshot_staging_store WHERE owner_scope = ? AND session_id = ? LIMIT 1',
+            'SELECT DISTINCT snapshot_revision, min_active_revision FROM snapshot_staging_store WHERE owner_scope = ? AND session_id = ? LIMIT 1',
             <Object?>[scope, sessionId],
           );
           if (existingRows.isNotEmpty) {
@@ -2459,6 +2520,13 @@ class SyncStorageDal {
             if (existingRev != entry.value) {
               throw SnapshotStagingConflictError(
                 'SNAPSHOT_REVISION_MISMATCH: Existing session "$sessionId" is pinned to snapshotRevision "$existingRev", cannot stage items at "${entry.value}". Clear staging session before restarting.',
+              );
+            }
+            final existingMinRev = existingRows.first['min_active_revision'] as String?;
+            final expectedMin = sessionMinRevisions[entry.key];
+            if (existingMinRev != null && expectedMin != null && existingMinRev != expectedMin) {
+              throw SnapshotStagingConflictError(
+                'SNAPSHOT_REVISION_MISMATCH: Existing session "$sessionId" is pinned to minActiveRevision "$existingMinRev", cannot stage items at "$expectedMin". Clear staging session before restarting.',
               );
             }
           }
@@ -2529,9 +2597,12 @@ class SyncStorageDal {
   ///    - Xóa trắng shadow cũ của `ownerScope` trong `sync_authoritative_replicas` và `local_preferences`.
   ///    - Ghi nhận 6 domains vào `sync_authoritative_replicas` (và `local_preferences` cho PREFERENCE).
   ///    - Ghi nhận tombstones với `is_deleted = 1` và cập nhật `effective_history_epochs` cho global và story.
-  /// 3. Bước 3 — Preserve & Rebase Offline Pending Mutations (Data Safety Guarantee):
-  ///    - Bảo toàn 100% `pending_mutations`, TUYỆT ĐỐI KHÔNG XÓA HOẶC GHI ĐÈ BẰNG SNAPSHOT.
-  ///    - Nâng `base_server_revision = snapshotRevision` cho các mutation có `baseServerRevision < snapshotRevision`.
+  /// 3. Bước 3 — Safe Pending Triage (ADR-SYNC-07C-v2.2 §2.1 Step 3 — Data Safety Guarantee):
+  ///    - Duyệt `pending_mutations` theo thứ tự `sequence_no ASC`.
+  ///    - Giữ `ACTIVE_PENDING` nếu: `minActive <= baseServerRevision <= snapshotRevision`, không có tombstone
+  ///      conflict và thỏa mãn epoch guard. BẤT BIẾN: KHÔNG SỬA baseServerRevision, mutationId, payload!
+  ///    - Chuyển mutation không hợp lệ sang `quarantined_mutations` với full original payload, originalCreatedAt,
+  ///      và `CausalTriageProof` (phân biệt HTTP_410_GONE, TOMBSTONE_CONFLICT, MISSING/STALE/INVALID_EPOCH).
   /// 4. Bước 4 — Finalize Sync Meta & Transition State:
   ///    - Cập nhật `sync_meta`: `last_synced_server_revision = snapshotRevision`, `min_active_revision = minActiveRevision`,
   ///      `authoritative_baseline_status = BOOTSTRAPPING` (CẤM TỰ NÂNG SANG READY Ở STAGE 2A!),
@@ -2621,16 +2692,18 @@ class SyncStorageDal {
         final nowIso = now.toIso8601String();
         final nowMs = now.millisecondsSinceEpoch;
         final effectiveEpochs = <String, int>{};
+        final authoritativeTombstones = <String, String>{};
 
         for (final item in stagedItems) {
-          final isTombstone = item.payload['isDeleted'] == true ||
+          final isTombstone = item.partitionDomain == SnapshotPartitionDomain.syncTombstone ||
+              item.partitionDomain == SnapshotPartitionDomain.historyTombstone ||
+              item.payload['isDeleted'] == true ||
               item.payload['deletedAtRevision'] != null;
 
-          switch (item.domain) {
-            case SyncDomain.bookmark:
-              final entityKey = canonicalBookmarkEntityKey(
-                _nonEmptyString(item.payload['storyId']) ?? item.entityKey,
-              );
+          switch (item.partitionDomain) {
+            case SnapshotPartitionDomain.bookmark:
+              final storyId = _nonEmptyString(item.payload['storyId']) ?? item.entityKey;
+              final entityKey = canonicalBookmarkEntityKey(storyId);
               await _upsertShadow(
                 txn,
                 AuthoritativeShadowRecord(
@@ -2646,10 +2719,9 @@ class SyncStorageDal {
               );
               break;
 
-            case SyncDomain.progress:
-              final entityKey = canonicalProgressEntityKey(
-                _nonEmptyString(item.payload['storyId']) ?? item.entityKey,
-              );
+            case SnapshotPartitionDomain.progress:
+              final storyId = _nonEmptyString(item.payload['storyId']) ?? item.entityKey;
+              final entityKey = canonicalProgressEntityKey(storyId);
               if (item.payload.containsKey('readingMode')) {
                 final rawMode = item.payload['readingMode'];
                 normalizeSyncReadingMode(rawMode is String ? rawMode : null);
@@ -2672,7 +2744,7 @@ class SyncStorageDal {
               );
               break;
 
-            case SyncDomain.history:
+            case SnapshotPartitionDomain.chapterReadState:
               final colonIdx = item.entityKey.indexOf(':');
               final fallbackStoryId = colonIdx >= 0
                   ? item.entityKey.substring(0, colonIdx)
@@ -2716,7 +2788,7 @@ class SyncStorageDal {
               );
               break;
 
-            case SyncDomain.preference:
+            case SnapshotPartitionDomain.preference:
               final prefKey = canonicalPreferenceEntityKey(
                 _nonEmptyString(item.payload['key']) ?? item.entityKey,
               );
@@ -2748,25 +2820,96 @@ class SyncStorageDal {
               }
               break;
 
-            case SyncDomain.follow:
+            case SnapshotPartitionDomain.historyTombstone:
+              final storyId = _nonEmptyString(item.payload['storyId']) ?? item.entityKey;
+              if (storyId.trim().isEmpty) {
+                throw const SnapshotContractViolationException(
+                  'Invalid empty historyEpoch storyId.',
+                );
+              }
+              final epoch = _extractInt(item.payload['epoch']) ?? 0;
+              if (epoch < 0) {
+                throw SnapshotContractViolationException('Invalid negative historyEpoch "$epoch".');
+              }
+              if (isGlobalHistoryTarget(storyId) || isGlobalHistoryTarget(item.entityKey)) {
+                if (epoch > 0) {
+                  effectiveEpochs[kGlobalHistorySentinelUuid] = epoch;
+                }
+              } else {
+                if (epoch > 0) {
+                  final cur = effectiveEpochs[storyId] ?? 0;
+                  if (epoch > cur) {
+                    effectiveEpochs[storyId] = epoch;
+                  }
+                }
+                authoritativeTombstones['HISTORY:$storyId'] = snapshotRevision;
+              }
               await _upsertShadow(
                 txn,
                 AuthoritativeShadowRecord(
                   ownerScope: ownerScope,
-                  domain: SyncDomain.follow,
-                  entityKey: item.entityKey,
+                  domain: SyncDomain.history,
+                  entityKey: storyId,
                   serverRevision: snapshotRevision,
+                  epoch: epoch,
+                  payload: item.payload,
+                  isDeleted: true,
+                  updatedAtMs: nowMs,
+                ),
+              );
+              break;
+
+            case SnapshotPartitionDomain.syncTombstone:
+              final tombDomainStr = _nonEmptyString(item.payload['domain']) ?? item.domain.wireValue;
+              if (tombDomainStr == 'FOLLOW') {
+                throw const SnapshotContractViolationException(
+                  'FOLLOW domain does not support sync tombstones.',
+                );
+              }
+              final tombDomain = SyncDomain.fromWire(tombDomainStr);
+              final entityId = _nonEmptyString(item.payload['entityId']) ?? item.entityKey;
+              if (tombDomain == SyncDomain.history && entityId == 'all') {
+                throw const SnapshotContractViolationException(
+                  'Wildcard tombstone HISTORY:all forbidden in snapshot tombstones.',
+                );
+              }
+              final delRevStr = _nonEmptyString(item.payload['deletedAtRevision']) ?? snapshotRevision;
+              if (!isValidRevisionString(delRevStr)) {
+                throw SnapshotContractViolationException(
+                  'Invalid deletedAtRevision "$delRevStr" in sync tombstone.',
+                );
+              }
+              final delRevBigInt = parseRevisionBigInt(delRevStr);
+              if (delRevBigInt < minActiveRevBigInt || delRevBigInt > snapshotRevBigInt) {
+                throw SnapshotContractViolationException(
+                  'Tombstone deletedAtRevision ($delRevStr) out of snapshot window [$minActiveRevision, $snapshotRevision].',
+                );
+              }
+              authoritativeTombstones['${tombDomain.wireValue}:$entityId'] = delRevStr;
+              await _upsertShadow(
+                txn,
+                AuthoritativeShadowRecord(
+                  ownerScope: ownerScope,
+                  domain: tombDomain,
+                  entityKey: entityId,
+                  serverRevision: delRevStr,
                   epoch: 0,
                   payload: item.payload,
-                  isDeleted: isTombstone,
+                  isDeleted: true,
                   updatedAtMs: nowMs,
                 ),
               );
               break;
           }
+
+          // Legacy payload support: if raw payload indicates tombstone
+          if (item.payload['isDeleted'] == true || item.payload['deletedAtRevision'] != null) {
+            final delRev = item.payload['deletedAtRevision'] as String? ?? snapshotRevision;
+            authoritativeTombstones['${item.domain.wireValue}:${item.entityKey}'] = delRev;
+          }
         }
 
-        // 3. Bước 3: Preserve & Rebase Offline Pending Mutations (Data Safety Guarantee)
+        // 3. Bước 3: ADR-SYNC-07C-v2.2 §2.1 Step 3 Safe Pending Triage
         final pendingRows = await txn.query(
           'pending_mutations',
           where: 'owner_scope = ?',
@@ -2774,21 +2917,184 @@ class SyncStorageDal {
           orderBy: 'sequence_no ASC',
         );
 
-        var rebasedCount = 0;
+        var activeCount = 0;
+        var quarantinedCount = 0;
+
         for (final row in pendingRows) {
-          final mId = row['mutation_id'] as String;
-          final baseRev = row['base_server_revision'] as String;
-          if (isValidRevisionString(baseRev)) {
+          final m = PendingMutationRecord.fromMap(row);
+          bool shouldQuarantine = false;
+          String rejectionStatus = 'HTTP_410_GONE';
+          String rejectionReason = 'BASE_REVISION_EXPIRED';
+          final causalEvidence = <String, Object?>{};
+          int? observedEpoch;
+
+          final baseRev = m.baseServerRevision;
+          if (!isValidRevisionString(baseRev)) {
+            shouldQuarantine = true;
+            rejectionStatus = 'HTTP_410_GONE';
+            rejectionReason = 'BASE_REVISION_EXPIRED';
+            causalEvidence['baseServerRevision'] = baseRev;
+            causalEvidence['minActiveRevision'] = minActiveRevision;
+            causalEvidence['snapshotRevision'] = snapshotRevision;
+          } else {
             final baseRevBigInt = parseRevisionBigInt(baseRev);
-            if (baseRevBigInt < snapshotRevBigInt) {
-              await txn.update(
-                'pending_mutations',
-                <String, Object?>{'base_server_revision': snapshotRevision},
-                where: 'owner_scope = ? AND mutation_id = ?',
-                whereArgs: <Object?>[ownerScope, mId],
-              );
-              rebasedCount++;
+
+            // Condition 1: minActiveRevision <= baseServerRevision <= snapshotRevision
+            if (baseRevBigInt < minActiveRevBigInt) {
+              shouldQuarantine = true;
+              rejectionStatus = 'HTTP_410_GONE';
+              rejectionReason = 'BASE_REVISION_EXPIRED';
+              causalEvidence['baseServerRevision'] = baseRev;
+              causalEvidence['minActiveRevision'] = minActiveRevision;
+              causalEvidence['snapshotRevision'] = snapshotRevision;
+            } else if (baseRevBigInt > snapshotRevBigInt) {
+              shouldQuarantine = true;
+              rejectionStatus = 'HTTP_410_GONE';
+              rejectionReason = 'BASE_REVISION_EXPIRED';
+              causalEvidence['baseServerRevision'] = baseRev;
+              causalEvidence['snapshotRevision'] = snapshotRevision;
+            } else {
+              // Condition 2: History & Progress epoch checks (primary causal proof)
+              if (m.domain == SyncDomain.history && m.operation == SyncOperation.upsert) {
+                final storyId = m.payload['storyId'] as String? ??
+                    (m.entityId.contains(':') ? m.entityId.split(':').first : m.entityId);
+                final effectiveEpoch = effectiveEpochs[storyId] ??
+                    effectiveEpochs[kGlobalHistorySentinelUuid] ??
+                    0;
+                final rawObserved = m.observedHistoryEpoch ??
+                    _extractInt(m.payload['observedHistoryEpoch']);
+                observedEpoch = rawObserved;
+
+                if (rawObserved == null) {
+                  shouldQuarantine = true;
+                  rejectionStatus = 'REJECTED_TOMBSTONE';
+                  rejectionReason = 'MISSING_HISTORY_EPOCH_PROOF';
+                  causalEvidence['effectiveEpoch'] = effectiveEpoch;
+                  causalEvidence['storyId'] = storyId;
+                } else if (rawObserved < effectiveEpoch) {
+                  shouldQuarantine = true;
+                  rejectionStatus = 'REJECTED_TOMBSTONE';
+                  rejectionReason = 'STALE_HISTORY_EPOCH';
+                  causalEvidence['effectiveEpoch'] = effectiveEpoch;
+                  causalEvidence['observedEpoch'] = rawObserved;
+                  causalEvidence['storyId'] = storyId;
+                } else if (rawObserved > effectiveEpoch) {
+                  shouldQuarantine = true;
+                  rejectionStatus = 'REJECTED_TOMBSTONE';
+                  rejectionReason = 'INVALID_HISTORY_EPOCH';
+                  causalEvidence['effectiveEpoch'] = effectiveEpoch;
+                  causalEvidence['observedEpoch'] = rawObserved;
+                  causalEvidence['storyId'] = storyId;
+                }
+              } else if (m.domain == SyncDomain.progress && m.operation == SyncOperation.upsert) {
+                final storyId = m.payload['storyId'] as String? ?? m.entityId;
+                final effectiveEpoch = effectiveEpochs[storyId] ??
+                    effectiveEpochs[kGlobalHistorySentinelUuid] ??
+                    0;
+                final rawObserved = m.observedHistoryEpoch ??
+                    _extractInt(m.payload['observedHistoryEpoch']);
+                observedEpoch = rawObserved;
+
+                if (effectiveEpoch > 0) {
+                  if (rawObserved == null) {
+                    shouldQuarantine = true;
+                    rejectionStatus = 'REJECTED_TOMBSTONE';
+                    rejectionReason = 'MISSING_HISTORY_EPOCH_PROOF';
+                    causalEvidence['effectiveEpoch'] = effectiveEpoch;
+                    causalEvidence['storyId'] = storyId;
+                  } else if (rawObserved < effectiveEpoch) {
+                    shouldQuarantine = true;
+                    rejectionStatus = 'REJECTED_TOMBSTONE';
+                    rejectionReason = 'STALE_HISTORY_EPOCH';
+                    causalEvidence['effectiveEpoch'] = effectiveEpoch;
+                    causalEvidence['observedEpoch'] = rawObserved;
+                    causalEvidence['storyId'] = storyId;
+                  } else if (rawObserved > effectiveEpoch) {
+                    shouldQuarantine = true;
+                    rejectionStatus = 'REJECTED_TOMBSTONE';
+                    rejectionReason = 'INVALID_HISTORY_EPOCH';
+                    causalEvidence['effectiveEpoch'] = effectiveEpoch;
+                    causalEvidence['observedEpoch'] = rawObserved;
+                    causalEvidence['storyId'] = storyId;
+                  }
+                } else {
+                  // effectiveEpoch == 0
+                  if (rawObserved != null && rawObserved > 0) {
+                    shouldQuarantine = true;
+                    rejectionStatus = 'REJECTED_TOMBSTONE';
+                    rejectionReason = 'INVALID_HISTORY_EPOCH';
+                    causalEvidence['effectiveEpoch'] = effectiveEpoch;
+                    causalEvidence['observedEpoch'] = rawObserved;
+                    causalEvidence['storyId'] = storyId;
+                  }
+                }
+              }
+
+              // Condition 3: Tombstone conflict (deletedAtRevision > baseServerRevision)
+              if (!shouldQuarantine) {
+                String? tombstoneRev;
+                tombstoneRev = authoritativeTombstones['${m.domain.wireValue}:${m.entityId}'];
+                if (tombstoneRev == null && m.domain == SyncDomain.history) {
+                  final storyId = m.payload['storyId'] as String? ??
+                      (m.entityId.contains(':') ? m.entityId.split(':').first : m.entityId);
+                  tombstoneRev = authoritativeTombstones['HISTORY:$storyId'];
+                }
+
+                if (tombstoneRev != null && parseRevisionBigInt(tombstoneRev) > baseRevBigInt) {
+                  shouldQuarantine = true;
+                  rejectionStatus = 'REJECTED_TOMBSTONE';
+                  rejectionReason = 'TOMBSTONE_CONFLICT';
+                  causalEvidence['tombstoneRevision'] = tombstoneRev;
+                  causalEvidence['baseServerRevision'] = baseRev;
+                  causalEvidence['domain'] = m.domain.wireValue;
+                  causalEvidence['entityId'] = m.entityId;
+                }
+              }
             }
+          }
+
+          if (shouldQuarantine) {
+            quarantinedCount++;
+            await txn.delete(
+              'pending_mutations',
+              where: 'owner_scope = ? AND mutation_id = ?',
+              whereArgs: <Object?>[ownerScope, m.mutationId],
+            );
+            final qRecord = QuarantinedMutationRecord(
+              ownerScope: m.ownerScope,
+              mutationId: m.mutationId,
+              clientId: m.clientId,
+              domain: m.domain,
+              entityId: m.entityId,
+              operation: m.operation,
+              baseServerRevision: m.baseServerRevision,
+              observedHistoryEpoch: observedEpoch ?? m.observedHistoryEpoch,
+              payload: m.payload,
+              originalSequenceNo: m.sequenceNo,
+              originalRetryCount: m.retryCount,
+              originalCreatedAtIso: m.createdAtIso,
+              originalCreatedAtMs: m.createdAtMs,
+              rejectionReason: rejectionReason,
+              rejectionStatus: rejectionStatus,
+              rejectedAtIso: nowIso,
+              rejectedAtMs: nowMs,
+              triageStatus: QuarantineTriageStatus.pending,
+              causalEvidence: CausalTriageProof(
+                triageApproved: false,
+                triageReason: rejectionReason,
+                observedEpoch: observedEpoch,
+                validatedRevision: snapshotRevision,
+                evidence: causalEvidence,
+              ),
+            );
+            await txn.insert(
+              'quarantined_mutations',
+              qRecord.toMap(),
+              conflictAlgorithm: ConflictAlgorithm.replace,
+            );
+          } else {
+            activeCount++;
+            // BẤT BIẾN ADR §2.1: KHÔNG SỬA base_server_revision, mutationId hay payload!
           }
         }
 
@@ -2847,7 +3153,9 @@ class SyncStorageDal {
           snapshotRevision: snapshotRevision,
           minActiveRevision: minActiveRevision,
           materializedCount: stagedItems.length,
-          rebasedPendingCount: rebasedCount,
+          activePendingCount: activeCount,
+          quarantinedPendingCount: quarantinedCount,
+          rebasedPendingCount: 0,
           effectiveEpochs: Map<String, int>.unmodifiable(mergedEpochs),
         );
       },

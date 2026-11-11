@@ -164,3 +164,43 @@ class ReceiptValidationException implements Exception {
       'ReceiptValidationException: $message${detail != null ? ' ($detail)' : ''}';
 }
 
+/// Ném khi cấu trúc hoặc sequence phân trang snapshot vi phạm tính toàn vẹn
+/// (thiếu trang, trùng trang, sai thứ tự sequence, truncated snapshot, hoặc hasMore/nextCursor không nhất quán).
+class SnapshotPaginationError extends SnapshotStagingConflictError {
+  const SnapshotPaginationError(super.message);
+
+  @override
+  String toString() => 'SnapshotPaginationError: $message';
+}
+
+/// Ném khi snapshot vi phạm hợp đồng 6 phân vùng (ADR-SYNC-07C-v2.2):
+/// chứa sentinel trong historyEpochs, chứa FOLLOW hoặc HISTORY:all trong tombstones,
+/// hoặc deletedAtRevision nằm ngoài cửa sổ [minActiveRevision, snapshotRevision].
+class SnapshotContractViolationException extends SnapshotStagingConflictError {
+  const SnapshotContractViolationException(super.message);
+
+  @override
+  String toString() => 'SnapshotContractViolationException: $message';
+}
+
+/// Ném khi snapshot bị Core API từ chối với HTTP 409 Conflict (SNAPSHOT_INVALIDATED),
+/// yêu cầu client xóa staging và khởi động lại an toàn từ page 0.
+class SnapshotInvalidatedException implements Exception {
+  final String message;
+  final String? reason;
+  final String? currentServerRevision;
+  final String? minActiveRevision;
+
+  const SnapshotInvalidatedException(
+    this.message, {
+    this.reason,
+    this.currentServerRevision,
+    this.minActiveRevision,
+  });
+
+  @override
+  String toString() =>
+      'SnapshotInvalidatedException: $message${reason != null ? ' (reason: $reason)' : ''}';
+}
+
+

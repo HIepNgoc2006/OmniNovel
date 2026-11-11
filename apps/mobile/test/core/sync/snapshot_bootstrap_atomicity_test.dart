@@ -26,8 +26,13 @@ void main() {
   late OfflineDatabase offlineDb;
   late SyncStorageDal dal;
   late ConfigurableMockSyncTransport transport;
+  late String nowIso;
+  late int nowMs;
 
   setUp(() async {
+    final now = DateTime.now().toUtc();
+    nowIso = now.toIso8601String();
+    nowMs = now.millisecondsSinceEpoch;
     tempDir = await Directory.systemTemp.createTemp('snapshot_bootstrap_');
     dbPath = p.join(tempDir.path, 'snapshot_bootstrap.db');
     offlineDb = OfflineDatabase();
@@ -963,22 +968,30 @@ void main() {
     final nowIso = now.toIso8601String();
     final nowMs = now.millisecondsSinceEpoch;
 
-    test('20. Offline pending mutations preserved and rebased monotonically to snapshot revision', () async {
+    test('20. ADR-SYNC-07C-v2.2 §2.1 Safe Pending Triage: Active pending kept immutable, stale quarantined without loss', () async {
       final admission = testAccountAdmission(scopeA);
 
-      // Create 3 offline pending mutations with older base revisions
-      final p1 = createSampleMutation(ownerScope: scopeA, mutationId: 'mut-rebase-1', storyId: 's1', baseServerRevision: '100');
-      final p2 = createSampleMutation(ownerScope: scopeA, mutationId: 'mut-rebase-2', storyId: 's2', baseServerRevision: '150');
-      final p3 = createSampleMutation(ownerScope: scopeA, mutationId: 'mut-rebase-3', storyId: 's3', baseServerRevision: '800'); // Higher than snapshot!
+      // Create 2 offline pending mutations: 1 valid active (within window), 1 stale (below minActive)
+      final pActive = createSampleMutation(
+        ownerScope: scopeA,
+        mutationId: 'mut-active-1',
+        storyId: 's1',
+        baseServerRevision: '350', // 250 <= 350 <= 500 -> ACTIVE_PENDING
+      );
+      final pStale = createSampleMutation(
+        ownerScope: scopeA,
+        mutationId: 'mut-stale-1',
+        storyId: 's2',
+        baseServerRevision: '100', // 100 < 250 -> HTTP_410_GONE (quarantined)
+      );
 
-      await dal.enqueuePendingMutation(p1, admission: admission);
-      await dal.enqueuePendingMutation(p2, admission: admission);
-      await dal.enqueuePendingMutation(p3, admission: admission);
+      await dal.enqueuePendingMutation(pActive, admission: admission);
+      await dal.enqueuePendingMutation(pStale, admission: admission);
 
-      // Snapshot at revision 500
+      // Snapshot at revision 500, minActive 250
       final item = SnapshotStagingItem(
         ownerScope: scopeA,
-        sessionId: 'rebase-session',
+        sessionId: 'triage-session',
         snapshotRevision: '500',
         minActiveRevision: '250',
         pageIndex: 0,
@@ -993,38 +1006,45 @@ void main() {
 
       final commitResult = await dal.commitAuthoritativeSnapshot(
         ownerScope: scopeA,
-        sessionId: 'rebase-session',
+        sessionId: 'triage-session',
         admission: admission,
       );
 
-      // 2 mutations rebased (p1 and p2), p3 was already 800 > 500
-      expect(commitResult.rebasedPendingCount, 2);
+      // Invariants: 0 rebased (auto-rebase eliminated!), 1 active pending, 1 quarantined
+      expect(commitResult.rebasedPendingCount, 0);
+      expect(commitResult.activePendingCount, 1);
+      expect(commitResult.quarantinedPendingCount, 1);
 
+      // Active pending preserves IMMUTABLE baseServerRevision = 350 (NOT rebased to 500)
       final pendingAfter = await dal.getPendingMutations(scopeA);
-      expect(pendingAfter, hasLength(3));
+      expect(pendingAfter, hasLength(1));
+      final activeP = pendingAfter.first;
+      expect(activeP.mutationId, 'mut-active-1');
+      expect(activeP.baseServerRevision, '350');
+      expect(activeP.sequenceNo, 1);
 
-      // Invariant: FIFO sequence_no, client_id, and payloads 100% preserved
-      final rebasedP1 = pendingAfter.firstWhere((m) => m.mutationId == 'mut-rebase-1');
-      expect(rebasedP1.baseServerRevision, '500');
-      expect(rebasedP1.sequenceNo, 1);
-
-      final rebasedP2 = pendingAfter.firstWhere((m) => m.mutationId == 'mut-rebase-2');
-      expect(rebasedP2.baseServerRevision, '500');
-      expect(rebasedP2.sequenceNo, 2);
-
-      final rebasedP3 = pendingAfter.firstWhere((m) => m.mutationId == 'mut-rebase-3');
-      expect(rebasedP3.baseServerRevision, '800'); // Untouched because 800 > 500
-      expect(rebasedP3.sequenceNo, 3);
+      // Stale pending quarantined safely with full fidelity
+      final quarantinedList = await dal.getQuarantinedMutations(scopeA);
+      expect(quarantinedList, hasLength(1));
+      final q = quarantinedList.first;
+      expect(q.mutationId, 'mut-stale-1');
+      expect(q.baseServerRevision, '100');
+      expect(q.rejectionStatus, 'HTTP_410_GONE');
+      expect(q.rejectionReason, 'BASE_REVISION_EXPIRED');
+      expect(q.triageStatus, QuarantineTriageStatus.pending);
+      expect(q.causalEvidence, isNotNull);
+      expect(q.causalEvidence!.triageApproved, isFalse);
     });
 
     test('21. Snapshot items with conflicting keys do NOT overwrite or discard offline pending mutations', () async {
       final admission = testAccountAdmission(scopeA);
 
-      // User modified reading progress offline
+      // User modified reading progress offline within valid window [600, 1200]
       final offlinePending = createSampleMutation(
         ownerScope: scopeA,
         mutationId: 'mut-conflict-progress',
         storyId: 'story-clash',
+        baseServerRevision: '800',
         domain: SyncDomain.progress,
         payload: const {
           'storyId': 'story-clash',
@@ -1055,12 +1075,12 @@ void main() {
       await dal.stageSnapshotItems(ownerScope: scopeA, items: [snapshotItem], admission: admission);
       await dal.commitAuthoritativeSnapshot(ownerScope: scopeA, sessionId: 'conflict-session', admission: admission);
 
-      // Offline pending mutation is completely intact
+      // Offline pending mutation is completely intact with immutable baseServerRevision = '800'
       final pendingList = await dal.getPendingMutations(scopeA);
       expect(pendingList, hasLength(1));
       expect(pendingList.first.mutationId, 'mut-conflict-progress');
       expect(pendingList.first.payload['pageIndex'], 42);
-      expect(pendingList.first.baseServerRevision, '1200'); // Rebased safely
+      expect(pendingList.first.baseServerRevision, '800'); // Immutable under ADR §2.1!
     });
 
     test('22. Guest scope rejected immediately from snapshot staging and bootstrap (assertAccountScope)', () async {
@@ -1226,6 +1246,585 @@ void main() {
       expect(meta!.authoritativeBaselineStatus, AuthoritativeBaselineStatus.bootstrapping);
 
       // Attempting to transition baseline to READY throws ReadyStatusTransitionForbiddenError
+      expect(
+        () => reconciler.stateMachine.assertBaselineReadyTransitionForbidden(AuthoritativeBaselineStatus.ready),
+        throwsA(isA<ReadyStatusTransitionForbiddenError>()),
+      );
+    });
+  });
+
+  // =========================================================================
+  // TASK F: Stage 2A.3 Safe Snapshot Triage & Six-Partition Regressions
+  // =========================================================================
+  group('Task F — Safe Snapshot Triage & Six-Partition Contract Regressions', () {
+    test('IDP-01 old mutation ID retains immutable base revision', () async {
+      final admission = testAccountAdmission(scopeA);
+
+      // Create an active pending mutation within snapshot window [300, 600]
+      final mOld = createSampleMutation(
+        ownerScope: scopeA,
+        mutationId: 'mut-idp-01',
+        storyId: 'story-idp-1',
+        baseServerRevision: '400',
+        domain: SyncDomain.bookmark,
+      );
+      await dal.enqueuePendingMutation(mOld, admission: admission);
+
+      final item = SnapshotStagingItem(
+        ownerScope: scopeA,
+        sessionId: 'idp01-session',
+        snapshotRevision: '600',
+        minActiveRevision: '300',
+        pageIndex: 0,
+        partitionDomain: SnapshotPartitionDomain.bookmark,
+        entityKey: 'story-other',
+        payload: const {'storyId': 'story-other'},
+        stagedAtIso: nowIso,
+        stagedAtMs: nowMs,
+      );
+      await dal.stageSnapshotItems(ownerScope: scopeA, items: [item], admission: admission);
+
+      final commitResult = await dal.commitAuthoritativeSnapshot(
+        ownerScope: scopeA,
+        sessionId: 'idp01-session',
+        admission: admission,
+      );
+
+      // Invariants: 0 rebased, 1 active pending, 0 quarantined
+      expect(commitResult.rebasedPendingCount, 0);
+      expect(commitResult.activePendingCount, 1);
+      expect(commitResult.quarantinedPendingCount, 0);
+
+      final pendingList = await dal.getPendingMutations(scopeA);
+      expect(pendingList, hasLength(1));
+      final preserved = pendingList.first;
+      expect(preserved.mutationId, 'mut-idp-01');
+      expect(preserved.baseServerRevision, '400'); // IMMUTABLE: never modified to 600!
+      expect(preserved.sequenceNo, 1);
+      expect(preserved.entityId, 'story-idp-1');
+    });
+
+    test('IDP-02 stale pending quarantined without loss', () async {
+      final admission = testAccountAdmission(scopeA);
+
+      // Create a stale pending mutation below minActiveRevision (150 < 300)
+      final mStale = PendingMutationRecord.create(
+        ownerScope: scopeA,
+        mutationId: 'mut-idp-02',
+        clientId: kTestClientId,
+        domain: SyncDomain.bookmark,
+        entityId: 'story-idp-2',
+        operation: SyncOperation.upsert,
+        baseServerRevision: '150',
+        payload: const {'storyId': 'story-idp-2', 'customNote': 'PreserveMe'},
+      );
+      await dal.enqueuePendingMutation(mStale, admission: admission);
+
+      final item = SnapshotStagingItem(
+        ownerScope: scopeA,
+        sessionId: 'idp02-session',
+        snapshotRevision: '600',
+        minActiveRevision: '300',
+        pageIndex: 0,
+        partitionDomain: SnapshotPartitionDomain.bookmark,
+        entityKey: 'story-other-2',
+        payload: const {'storyId': 'story-other-2'},
+        stagedAtIso: nowIso,
+        stagedAtMs: nowMs,
+      );
+      await dal.stageSnapshotItems(ownerScope: scopeA, items: [item], admission: admission);
+
+      final commitResult = await dal.commitAuthoritativeSnapshot(
+        ownerScope: scopeA,
+        sessionId: 'idp02-session',
+        admission: admission,
+      );
+
+      expect(commitResult.rebasedPendingCount, 0);
+      expect(commitResult.activePendingCount, 0);
+      expect(commitResult.quarantinedPendingCount, 1);
+
+      // Pending queue emptied safely
+      final pendingList = await dal.getPendingMutations(scopeA);
+      expect(pendingList, isEmpty);
+
+      // Quarantine store contains 100% full-fidelity original mutation
+      final quarantinedList = await dal.getQuarantinedMutations(scopeA);
+      expect(quarantinedList, hasLength(1));
+      final q = quarantinedList.first;
+      expect(q.mutationId, 'mut-idp-02');
+      expect(q.clientId, kTestClientId);
+      expect(q.baseServerRevision, '150'); // Immutable original revision
+      expect(q.rejectionStatus, 'HTTP_410_GONE');
+      expect(q.rejectionReason, 'BASE_REVISION_EXPIRED');
+      expect(q.triageStatus, QuarantineTriageStatus.pending);
+      expect(q.payload['customNote'], 'PreserveMe');
+      expect(q.causalEvidence!.evidence!['minActiveRevision'], '300');
+    });
+
+    test('IDP-03 tombstone resurrection blocked', () async {
+      final admission = testAccountAdmission(scopeA);
+
+      // Pending mutation with baseServerRevision = 350
+      final mPending = createSampleMutation(
+        ownerScope: scopeA,
+        mutationId: 'mut-idp-03',
+        storyId: 'story-tomb-resurrect',
+        baseServerRevision: '350',
+        domain: SyncDomain.bookmark,
+      );
+      await dal.enqueuePendingMutation(mPending, admission: admission);
+
+      // Snapshot contains SYNC_TOMBSTONE with deletedAtRevision = 450 (> 350)
+      final tombstoneItem = SnapshotStagingItem(
+        ownerScope: scopeA,
+        sessionId: 'idp03-session',
+        snapshotRevision: '600',
+        minActiveRevision: '300',
+        pageIndex: 0,
+        partitionDomain: SnapshotPartitionDomain.syncTombstone,
+        entityKey: 'BOOKMARK:story-tomb-resurrect',
+        payload: const {
+          'domain': 'BOOKMARK',
+          'entityId': 'story-tomb-resurrect',
+          'deletedAtRevision': '450',
+          'isDeleted': true,
+        },
+        stagedAtIso: nowIso,
+        stagedAtMs: nowMs,
+      );
+      await dal.stageSnapshotItems(ownerScope: scopeA, items: [tombstoneItem], admission: admission);
+
+      final commitResult = await dal.commitAuthoritativeSnapshot(
+        ownerScope: scopeA,
+        sessionId: 'idp03-session',
+        admission: admission,
+      );
+
+      expect(commitResult.activePendingCount, 0);
+      expect(commitResult.quarantinedPendingCount, 1);
+
+      // Tombstone conflict quarantined
+      final quarantinedList = await dal.getQuarantinedMutations(scopeA);
+      expect(quarantinedList, hasLength(1));
+      final q = quarantinedList.first;
+      expect(q.mutationId, 'mut-idp-03');
+      expect(q.rejectionStatus, 'REJECTED_TOMBSTONE');
+      expect(q.rejectionReason, 'TOMBSTONE_CONFLICT');
+      expect(q.causalEvidence!.evidence!['tombstoneRevision'], '450');
+      expect(q.causalEvidence!.evidence!['baseServerRevision'], '350');
+    });
+
+    test('IDP-04 history epoch mismatch quarantined', () async {
+      final admission = testAccountAdmission(scopeA);
+
+      // 1. Missing epoch proof: Progress mutation without observedHistoryEpoch when effectiveEpoch > 0
+      final mMissingEpoch = PendingMutationRecord.create(
+        ownerScope: scopeA,
+        mutationId: 'mut-idp-04a',
+        clientId: kTestClientId,
+        domain: SyncDomain.progress,
+        entityId: 'story-epoch-target',
+        operation: SyncOperation.upsert,
+        baseServerRevision: '350',
+        payload: const {
+          'storyId': 'story-epoch-target',
+          'chapterId': 'chap-1',
+          'pageIndex': 10,
+          'readingMode': 'PAGED',
+          'scrollPosition': 0,
+          'progressPercentage': 50,
+        },
+      );
+
+      // 2. Stale epoch: History mutation with observedHistoryEpoch = 1 when effectiveEpoch = 3
+      final mStaleEpoch = PendingMutationRecord.create(
+        ownerScope: scopeA,
+        mutationId: 'mut-idp-04b',
+        clientId: kTestClientId,
+        domain: SyncDomain.history,
+        entityId: 'story-epoch-target:chap-2',
+        operation: SyncOperation.upsert,
+        baseServerRevision: '350',
+        observedHistoryEpoch: 1,
+        payload: const {
+          'storyId': 'story-epoch-target',
+          'chapterId': 'chap-2',
+          'progressPercentage': 100,
+          'observedHistoryEpoch': 1,
+        },
+      );
+
+      // 3. Invalid epoch: History mutation with observedHistoryEpoch = 5 when effectiveEpoch = 3
+      final mInvalidEpoch = PendingMutationRecord.create(
+        ownerScope: scopeA,
+        mutationId: 'mut-idp-04c',
+        clientId: kTestClientId,
+        domain: SyncDomain.history,
+        entityId: 'story-epoch-target:chap-3',
+        operation: SyncOperation.upsert,
+        baseServerRevision: '350',
+        observedHistoryEpoch: 5,
+        payload: const {
+          'storyId': 'story-epoch-target',
+          'chapterId': 'chap-3',
+          'progressPercentage': 100,
+          'observedHistoryEpoch': 5,
+        },
+      );
+
+      await dal.enqueuePendingMutation(mMissingEpoch, admission: admission);
+      await dal.enqueuePendingMutation(mStaleEpoch, admission: admission);
+      await dal.enqueuePendingMutation(mInvalidEpoch, admission: admission);
+
+      // Snapshot with effectiveEpoch = 3 for story-epoch-target
+      final epochItem = SnapshotStagingItem(
+        ownerScope: scopeA,
+        sessionId: 'idp04-session',
+        snapshotRevision: '600',
+        minActiveRevision: '300',
+        pageIndex: 0,
+        partitionDomain: SnapshotPartitionDomain.historyTombstone,
+        entityKey: 'story-epoch-target',
+        payload: const {
+          'storyId': 'story-epoch-target',
+          'epoch': 3,
+        },
+        stagedAtIso: nowIso,
+        stagedAtMs: nowMs,
+      );
+      await dal.stageSnapshotItems(ownerScope: scopeA, items: [epochItem], admission: admission);
+
+      final commitResult = await dal.commitAuthoritativeSnapshot(
+        ownerScope: scopeA,
+        sessionId: 'idp04-session',
+        admission: admission,
+      );
+
+      expect(commitResult.activePendingCount, 0);
+      expect(commitResult.quarantinedPendingCount, 3);
+
+      final quarantinedList = await dal.getQuarantinedMutations(scopeA);
+      expect(quarantinedList, hasLength(3));
+
+      final qMissing = quarantinedList.firstWhere((q) => q.mutationId == 'mut-idp-04a');
+      expect(qMissing.rejectionReason, 'MISSING_HISTORY_EPOCH_PROOF');
+      expect(qMissing.rejectionStatus, 'REJECTED_TOMBSTONE');
+
+      final qStale = quarantinedList.firstWhere((q) => q.mutationId == 'mut-idp-04b');
+      expect(qStale.rejectionReason, 'STALE_HISTORY_EPOCH');
+      expect(qStale.rejectionStatus, 'REJECTED_TOMBSTONE');
+
+      final qInvalid = quarantinedList.firstWhere((q) => q.mutationId == 'mut-idp-04c');
+      expect(qInvalid.rejectionReason, 'INVALID_HISTORY_EPOCH');
+      expect(qInvalid.rejectionStatus, 'REJECTED_TOMBSTONE');
+    });
+
+    test('SNP-01 complete six partitions', () async {
+      final admission = testAccountAdmission(scopeA);
+      final reconciler = OfflineSyncReconciler(
+        dal: dal,
+        transport: transport,
+        ownerScope: scopeA,
+      );
+
+      final sixDomainData = SixDomainSnapshotData(
+        bookmarks: const [
+          SnapshotBookmarkItem(storyId: 'story-six-bm', createdAt: '2026-11-10T10:00:00.000Z'),
+        ],
+        readingProgress: const [
+          SnapshotProgressItem(
+            storyId: 'story-six-prog',
+            chapterId: 'chap-1',
+            readingMode: 'WEBTOON',
+            pageIndex: 5,
+            scrollPosition: 120.0,
+            progressPercentage: 50.0,
+          ),
+        ],
+        chapterReadStates: const [
+          SnapshotChapterReadStateItem(
+            chapterId: 'chap-1',
+            storyId: 'story-six-crs',
+            maxProgressPercentage: 100.0,
+            completedAt: '2026-11-10T10:05:00.000Z',
+            lastReadAt: '2026-11-10T10:05:00.000Z',
+            storyHistoryEpoch: 2,
+          ),
+        ],
+        preferences: const [
+          SnapshotPreferenceItem(key: 'font_size', value: 16, updatedAt: '2026-11-10T10:00:00.000Z'),
+        ],
+        historyEpochs: const [
+          SnapshotHistoryEpochItem(storyId: 'story-six-crs', epoch: 2),
+        ],
+        tombstones: const [
+          SnapshotTombstoneItem(
+            domain: SyncDomain.bookmark,
+            entityId: 'story-six-tomb',
+            deletedAtRevision: '550',
+          ),
+        ],
+      );
+
+      final page = SyncSnapshotResponseWire.fromSixDomains(
+        ownerScope: scopeA,
+        sessionId: 'snp01-session',
+        snapshotRevision: '800',
+        minActiveRevision: '400',
+        globalHistoryEpoch: 1,
+        pageIndex: 0,
+        hasMore: false,
+        data: sixDomainData,
+        stagedAtIso: nowIso,
+        stagedAtMs: nowMs,
+      );
+
+      final result = await reconciler.bootstrapFromSnapshot(
+        ownerScope: scopeA,
+        sessionId: 'snp01-session',
+        pages: [page],
+        admission: admission,
+      );
+
+      expect(result.materializedCount, 7);
+      expect(result.snapshotRevision, '800');
+      expect(result.minActiveRevision, '400');
+      expect(result.effectiveEpochs['story-six-crs'], 2);
+      expect(result.effectiveEpochs[kGlobalHistorySentinelUuid], 1);
+
+      // Verify SQLite local preferences updated
+      final pref = await dal.getAccountLocalPreference(scopeA, 'font_size');
+      expect(pref?.value, 16);
+    });
+
+    test('SNP-02 truncated snapshot rejected', () async {
+      final admission = testAccountAdmission(scopeA);
+      final reconciler = OfflineSyncReconciler(
+        dal: dal,
+        transport: transport,
+        ownerScope: scopeA,
+      );
+
+      // Final page in batch has hasMore = true (truncated snapshot)
+      final truncatedPage = SyncSnapshotResponseWire(
+        snapshotRevision: '800',
+        minActiveRevision: '400',
+        hasMore: true, // Error: final page cannot have hasMore = true!
+        nextCursor: 'cursor-nonexistent',
+        pageIndex: 0,
+        items: const [],
+      );
+
+      expect(
+        () => reconciler.bootstrapFromSnapshot(
+          ownerScope: scopeA,
+          sessionId: 'snp02-session',
+          pages: [truncatedPage],
+          admission: admission,
+        ),
+        throwsA(isA<SnapshotPaginationError>().having(
+          (e) => e.message,
+          'message',
+          contains('TRUNCATED_SNAPSHOT'),
+        )),
+      );
+    });
+
+    test('SNP-03 cross-page revision mismatch rejected', () async {
+      final admission = testAccountAdmission(scopeA);
+      final reconciler = OfflineSyncReconciler(
+        dal: dal,
+        transport: transport,
+        ownerScope: scopeA,
+      );
+
+      final page1 = SyncSnapshotResponseWire(
+        snapshotRevision: '1000',
+        minActiveRevision: '500',
+        pageIndex: 0,
+        hasMore: true,
+        nextCursor: 'cur-2',
+        items: const [],
+      );
+
+      final page2Mismatched = SyncSnapshotResponseWire(
+        snapshotRevision: '1001', // Mismatched snapshotRevision!
+        minActiveRevision: '500',
+        pageIndex: 1,
+        hasMore: false,
+        nextCursor: null,
+        items: const [],
+      );
+
+      expect(
+        () => reconciler.bootstrapFromSnapshot(
+          ownerScope: scopeA,
+          sessionId: 'snp03-session',
+          pages: [page1, page2Mismatched],
+          admission: admission,
+        ),
+        throwsA(isA<SnapshotStagingConflictError>().having(
+          (e) => e.message,
+          'message',
+          contains('SNAPSHOT_REVISION_MISMATCH'),
+        )),
+      );
+    });
+
+    test('SNP-04 crash rollback preserves pending/quarantine', () async {
+      final admission = testAccountAdmission(scopeA);
+
+      // Seed 1 pending mutation and 1 quarantined mutation
+      final mPending = createSampleMutation(
+        ownerScope: scopeA,
+        mutationId: 'mut-crash-keep',
+        storyId: 'story-crash',
+        baseServerRevision: '450',
+      );
+      await dal.enqueuePendingMutation(mPending, admission: admission);
+
+      final item = SnapshotStagingItem(
+        ownerScope: scopeA,
+        sessionId: 'snp04-session',
+        snapshotRevision: '800',
+        minActiveRevision: '400',
+        pageIndex: 0,
+        partitionDomain: SnapshotPartitionDomain.bookmark,
+        entityKey: 'story-replica-test',
+        payload: const {'storyId': 'story-replica-test'},
+        stagedAtIso: nowIso,
+        stagedAtMs: nowMs,
+      );
+      await dal.stageSnapshotItems(ownerScope: scopeA, items: [item], admission: admission);
+
+      // Simulate crash mid-commit via onBeforeCommitHook
+      expect(
+        () => dal.commitAuthoritativeSnapshot(
+          ownerScope: scopeA,
+          sessionId: 'snp04-session',
+          admission: admission,
+          onBeforeCommitHook: (_) async {
+            throw Exception('SIMULATED_CRASH_MID_COMMIT');
+          },
+        ),
+        throwsA(isA<Exception>().having((e) => e.toString(), 'error', contains('SIMULATED_CRASH'))),
+      );
+
+      // Invariants: 100% rollback, pending preserved, 0 replicas committed
+      final pendingAfter = await dal.getPendingMutations(scopeA);
+      expect(pendingAfter, hasLength(1));
+      expect(pendingAfter.first.mutationId, 'mut-crash-keep');
+
+      final db = offlineDb.database;
+      final replicas = await db.query('sync_authoritative_replicas', where: 'owner_scope = ?', whereArgs: [scopeA]);
+      expect(replicas, isEmpty); // Zero dirty partial replicas!
+    });
+
+    test('SNP-05 scope revocation abort', () async {
+      final mutableSource = MutableSyncAuthoritySource.activeAccount('user-snp05');
+      const testScope = 'account:user-snp05';
+      final admission = AccountWriteAdmission(
+        authoritySource: mutableSource,
+        expectedUserId: 'user-snp05',
+        expectedGeneration: 1,
+      );
+
+      final reconciler = OfflineSyncReconciler(
+        dal: dal,
+        transport: transport,
+        ownerScope: testScope,
+      );
+
+      final item = SnapshotStagingItem(
+        ownerScope: testScope,
+        sessionId: 'snp05-session',
+        snapshotRevision: '900',
+        minActiveRevision: '450',
+        pageIndex: 0,
+        partitionDomain: SnapshotPartitionDomain.bookmark,
+        entityKey: 'story-revoked',
+        payload: const {'storyId': 'story-revoked'},
+        stagedAtIso: nowIso,
+        stagedAtMs: nowMs,
+      );
+
+      final page = SyncSnapshotResponseWire(
+        snapshotRevision: '900',
+        minActiveRevision: '450',
+        pageIndex: 0,
+        hasMore: false,
+        nextCursor: null,
+        items: [item],
+      );
+
+      // Staging succeeds
+      await reconciler.stageSnapshotSession(
+        ownerScope: testScope,
+        sessionId: 'snp05-session',
+        pages: [page],
+        admission: admission,
+      );
+
+      // Revoke admission in async gap before commit
+      mutableSource.isAuthenticated = false;
+      mutableSource.authenticatedUserId = null;
+      mutableSource.scopeState = ActiveScopeState.guest;
+
+      expect(
+        () => reconciler.commitSnapshotSession(
+          ownerScope: testScope,
+          sessionId: 'snp05-session',
+          admission: admission,
+        ),
+        throwsA(isA<SyncAdmissionRejectedError>()),
+      );
+    });
+
+    test('SNP-06 READY cannot be promoted automatically', () async {
+      final admission = testAccountAdmission(scopeA);
+      final reconciler = OfflineSyncReconciler(
+        dal: dal,
+        transport: transport,
+        ownerScope: scopeA,
+      );
+
+      final item = SnapshotStagingItem(
+        ownerScope: scopeA,
+        sessionId: 'snp06-session',
+        snapshotRevision: '1500',
+        minActiveRevision: '750',
+        pageIndex: 0,
+        partitionDomain: SnapshotPartitionDomain.bookmark,
+        entityKey: 'story-stage2a-lock',
+        payload: const {'storyId': 'story-stage2a-lock'},
+        stagedAtIso: nowIso,
+        stagedAtMs: nowMs,
+      );
+
+      final page = SyncSnapshotResponseWire(
+        snapshotRevision: '1500',
+        minActiveRevision: '750',
+        pageIndex: 0,
+        hasMore: false,
+        nextCursor: null,
+        items: [item],
+      );
+
+      final result = await reconciler.bootstrapFromSnapshot(
+        ownerScope: scopeA,
+        sessionId: 'snp06-session',
+        pages: [page],
+        admission: admission,
+      );
+
+      expect(result.snapshotRevision, '1500');
+
+      // Authoritative baseline MUST stay BOOTSTRAPPING in Stage 2A
+      final meta = await dal.getSyncMeta(scopeA);
+      expect(meta!.authoritativeBaselineStatus, AuthoritativeBaselineStatus.bootstrapping);
+
+      // Direct promotion to READY is strictly blocked by state machine gate
       expect(
         () => reconciler.stateMachine.assertBaselineReadyTransitionForbidden(AuthoritativeBaselineStatus.ready),
         throwsA(isA<ReadyStatusTransitionForbiddenError>()),

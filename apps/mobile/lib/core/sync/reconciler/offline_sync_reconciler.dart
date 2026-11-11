@@ -5,6 +5,7 @@ import '../errors/sync_storage_exceptions.dart';
 import '../models/sync_models.dart';
 import '../storage/sync_storage_dal.dart';
 import '../utils/canonical_entity_key.dart';
+import '../utils/revision_bigint.dart';
 import 'mock_sync_transport.dart';
 import 'offline_reconciler_state.dart';
 
@@ -313,7 +314,11 @@ class OfflineSyncReconciler {
     }
   }
 
-  /// Staging snapshot các phân vùng 6 domains với kiểm định tính toàn vẹn (Task D).
+  /// Staging snapshot các phân vùng 6 domains với kiểm định tính toàn vẹn (Task D):
+  /// - Kiểm tra toàn bộ page sequence (0..N-1), chặn missing/duplicate/conflicting/reordered pages.
+  /// - Kiểm tra hasMore và nextCursor nhất quán (chặn truncated snapshot & intermediate hasMore=false).
+  /// - Chặn srev/mrev mismatch trên mọi trang.
+  /// - Kiểm tra session và account scope liên tục sau mỗi asynchronous boundary.
   Future<int> stageSnapshotSession({
     required String ownerScope,
     required String sessionId,
@@ -322,6 +327,83 @@ class OfflineSyncReconciler {
   }) async {
     assertAccountScope(ownerScope);
     admission.assertAdmitted(ownerScope);
+
+    if (pages.isEmpty) {
+      throw const SnapshotPaginationError('Snapshot pages list cannot be empty.');
+    }
+
+    final firstPage = pages.first;
+    final expectedSnapRev = firstPage.snapshotRevision;
+    final expectedMinRev = firstPage.minActiveRevision;
+
+    if (!isValidRevisionString(expectedSnapRev)) {
+      throw SnapshotStagingConflictError('Invalid snapshotRevision "$expectedSnapRev".');
+    }
+    if (!isValidRevisionString(expectedMinRev)) {
+      throw SnapshotStagingConflictError('Invalid minActiveRevision "$expectedMinRev".');
+    }
+
+    final snapBigInt = parseRevisionBigInt(expectedSnapRev);
+    final minBigInt = parseRevisionBigInt(expectedMinRev);
+    if (minBigInt > snapBigInt) {
+      throw SnapshotStagingConflictError(
+        'REGRESSIVE_SNAPSHOT_WINDOW: minActiveRevision ($expectedMinRev) exceeds snapshotRevision ($expectedSnapRev).',
+      );
+    }
+
+    final totalPages = pages.length;
+    for (var i = 0; i < totalPages; i++) {
+      final page = pages[i];
+      final effectivePageIndex =
+          page.items.isNotEmpty ? page.items.first.pageIndex : page.pageIndex;
+
+      // 1. Kiểm tra page sequence (0..N-1)
+      if (effectivePageIndex != i) {
+        if (effectivePageIndex < i) {
+          throw SnapshotPaginationError(
+            'DUPLICATE_OR_REORDERED_PAGE: Expected page index $i, got $effectivePageIndex.',
+          );
+        } else {
+          throw SnapshotPaginationError(
+            'MISSING_PAGE: Expected page index $i, got $effectivePageIndex. Missing intermediate page.',
+          );
+        }
+      }
+
+      // 2. Chặn srev/mrev mismatch
+      if (page.snapshotRevision != expectedSnapRev ||
+          page.minActiveRevision != expectedMinRev) {
+        throw SnapshotStagingConflictError(
+          'SNAPSHOT_REVISION_MISMATCH: Page $i has revision ("${page.snapshotRevision}", "${page.minActiveRevision}") mismatching initial ("$expectedSnapRev", "$expectedMinRev").',
+        );
+      }
+
+      // 3. Kiểm tra hasMore và nextCursor
+      final isFinalPage = i == totalPages - 1;
+      if (isFinalPage) {
+        if (page.hasMore) {
+          throw const SnapshotPaginationError(
+            'TRUNCATED_SNAPSHOT: Final page in batch has hasMore = true, snapshot is truncated.',
+          );
+        }
+        if (page.nextCursor != null) {
+          throw const SnapshotPaginationError(
+            'INVALID_CURSOR: Final page has hasMore = false but non-null nextCursor.',
+          );
+        }
+      } else {
+        if (!page.hasMore) {
+          throw SnapshotPaginationError(
+            'PREMATURE_TERMINATION: Intermediate page $i has hasMore = false before final page.',
+          );
+        }
+        if (page.nextCursor == null || page.nextCursor!.isEmpty) {
+          throw SnapshotPaginationError(
+            'MISSING_CURSOR: Intermediate page $i has hasMore = true but missing nextCursor.',
+          );
+        }
+      }
+    }
 
     var totalItemsStaged = 0;
 
@@ -338,6 +420,17 @@ class OfflineSyncReconciler {
     }
 
     return totalItemsStaged;
+  }
+
+  /// Dọn dẹp an toàn khi nhận HTTP 409 SNAPSHOT_INVALIDATED, sẵn sàng restart từ page 0 (Task D).
+  Future<void> handleSnapshotInvalidated({
+    required String ownerScope,
+    required String sessionId,
+    required AccountWriteAdmission admission,
+  }) async {
+    assertAccountScope(ownerScope);
+    admission.assertAdmitted(ownerScope);
+    await _dal.clearSnapshotStaging(ownerScope, sessionId: sessionId, admission: admission);
   }
 
   /// Cam kết phiên snapshot dở dang vào SQLite một cách nguyên tử và an toàn (ADR-SYNC-07C-v2.2).

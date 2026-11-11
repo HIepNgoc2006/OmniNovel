@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'package:flutter/foundation.dart';
+import '../errors/sync_storage_exceptions.dart';
 import '../models/sync_models.dart';
+import '../utils/canonical_entity_key.dart';
 
 /// Các ngoại lệ mô phỏng mạng và HTTP trong Mock Transport Harness.
 abstract class MockTransportException implements Exception {
@@ -118,6 +120,7 @@ class SyncSnapshotResponseWire {
   final String snapshotRevision;
   final String minActiveRevision;
   final int globalHistoryEpoch;
+  final int pageIndex;
   final bool hasMore;
   final String? nextCursor;
   final List<SnapshotStagingItem> items;
@@ -126,10 +129,189 @@ class SyncSnapshotResponseWire {
     required this.snapshotRevision,
     required this.minActiveRevision,
     this.globalHistoryEpoch = 0,
+    this.pageIndex = 0,
     required this.hasMore,
     this.nextCursor,
     required this.items,
   });
+
+  /// Khởi tạo SyncSnapshotResponseWire từ dữ liệu cấu trúc 6 phân vùng (ADR-SYNC-07C-v2.2 / PR #213).
+  factory SyncSnapshotResponseWire.fromSixDomains({
+    required String ownerScope,
+    required String sessionId,
+    required String snapshotRevision,
+    required String minActiveRevision,
+    int globalHistoryEpoch = 0,
+    int pageIndex = 0,
+    required bool hasMore,
+    String? nextCursor,
+    required SixDomainSnapshotData data,
+    required String stagedAtIso,
+    required int stagedAtMs,
+  }) {
+    final items = <SnapshotStagingItem>[];
+
+    for (final b in data.bookmarks) {
+      items.add(
+        SnapshotStagingItem(
+          ownerScope: ownerScope,
+          sessionId: sessionId,
+          snapshotRevision: snapshotRevision,
+          minActiveRevision: minActiveRevision,
+          pageIndex: pageIndex,
+          cursorToken: nextCursor,
+          partitionDomain: SnapshotPartitionDomain.bookmark,
+          entityKey: b.storyId,
+          payload: b.toJson(),
+          stagedAtIso: stagedAtIso,
+          stagedAtMs: stagedAtMs,
+        ),
+      );
+    }
+
+    for (final p in data.readingProgress) {
+      items.add(
+        SnapshotStagingItem(
+          ownerScope: ownerScope,
+          sessionId: sessionId,
+          snapshotRevision: snapshotRevision,
+          minActiveRevision: minActiveRevision,
+          pageIndex: pageIndex,
+          cursorToken: nextCursor,
+          partitionDomain: SnapshotPartitionDomain.progress,
+          entityKey: p.storyId,
+          payload: p.toJson(),
+          stagedAtIso: stagedAtIso,
+          stagedAtMs: stagedAtMs,
+        ),
+      );
+    }
+
+    for (final c in data.chapterReadStates) {
+      items.add(
+        SnapshotStagingItem(
+          ownerScope: ownerScope,
+          sessionId: sessionId,
+          snapshotRevision: snapshotRevision,
+          minActiveRevision: minActiveRevision,
+          pageIndex: pageIndex,
+          cursorToken: nextCursor,
+          partitionDomain: SnapshotPartitionDomain.chapterReadState,
+          entityKey: '${c.storyId}:${c.chapterId}',
+          payload: c.toJson(),
+          stagedAtIso: stagedAtIso,
+          stagedAtMs: stagedAtMs,
+        ),
+      );
+    }
+
+    for (final pref in data.preferences) {
+      items.add(
+        SnapshotStagingItem(
+          ownerScope: ownerScope,
+          sessionId: sessionId,
+          snapshotRevision: snapshotRevision,
+          minActiveRevision: minActiveRevision,
+          pageIndex: pageIndex,
+          cursorToken: nextCursor,
+          partitionDomain: SnapshotPartitionDomain.preference,
+          entityKey: pref.key,
+          payload: pref.toJson(),
+          stagedAtIso: stagedAtIso,
+          stagedAtMs: stagedAtMs,
+        ),
+      );
+    }
+
+    if (globalHistoryEpoch < 0) {
+      throw SnapshotContractViolationException(
+        'Invalid negative globalHistoryEpoch "$globalHistoryEpoch".',
+      );
+    }
+
+    if (globalHistoryEpoch > 0) {
+      items.add(
+        SnapshotStagingItem(
+          ownerScope: ownerScope,
+          sessionId: sessionId,
+          snapshotRevision: snapshotRevision,
+          minActiveRevision: minActiveRevision,
+          pageIndex: pageIndex,
+          cursorToken: nextCursor,
+          partitionDomain: SnapshotPartitionDomain.historyTombstone,
+          entityKey: '00000000-0000-0000-0000-000000000000',
+          payload: <String, Object?>{
+            'storyId': '00000000-0000-0000-0000-000000000000',
+            'epoch': globalHistoryEpoch,
+          },
+          stagedAtIso: stagedAtIso,
+          stagedAtMs: stagedAtMs,
+        ),
+      );
+    }
+
+    for (final h in data.historyEpochs) {
+      if (h.storyId == kGlobalHistorySentinelUuid || isGlobalHistoryTarget(h.storyId)) {
+        throw const SnapshotContractViolationException(
+          'Sentinel storyId forbidden in wire historyEpochs.',
+        );
+      }
+      items.add(
+        SnapshotStagingItem(
+          ownerScope: ownerScope,
+          sessionId: sessionId,
+          snapshotRevision: snapshotRevision,
+          minActiveRevision: minActiveRevision,
+          pageIndex: pageIndex,
+          cursorToken: nextCursor,
+          partitionDomain: SnapshotPartitionDomain.historyTombstone,
+          entityKey: h.storyId,
+          payload: h.toJson(),
+          stagedAtIso: stagedAtIso,
+          stagedAtMs: stagedAtMs,
+        ),
+      );
+    }
+
+    for (final t in data.tombstones) {
+      if (t.domain == SyncDomain.follow) {
+        throw const SnapshotContractViolationException(
+          'FOLLOW domain does not support sync tombstones.',
+        );
+      }
+      if (t.domain == SyncDomain.history &&
+          (t.entityId == 'all' || isGlobalHistoryTarget(t.entityId))) {
+        throw const SnapshotContractViolationException(
+          'Wildcard tombstone HISTORY:all forbidden in snapshot tombstones.',
+        );
+      }
+      items.add(
+        SnapshotStagingItem(
+          ownerScope: ownerScope,
+          sessionId: sessionId,
+          snapshotRevision: snapshotRevision,
+          minActiveRevision: minActiveRevision,
+          pageIndex: pageIndex,
+          cursorToken: nextCursor,
+          partitionDomain: SnapshotPartitionDomain.syncTombstone,
+          entityKey: '${t.domain.wireValue}:${t.entityId}',
+          payload: t.toJson(),
+          stagedAtIso: stagedAtIso,
+          stagedAtMs: stagedAtMs,
+        ),
+      );
+    }
+
+    return SyncSnapshotResponseWire(
+      snapshotRevision: snapshotRevision,
+      minActiveRevision: minActiveRevision,
+      globalHistoryEpoch: globalHistoryEpoch,
+      pageIndex: pageIndex,
+      hasMore: hasMore,
+      nextCursor: nextCursor,
+      items: items,
+    );
+  }
 }
 
 /// Interface trừu tượng cho Mock Sync Transport (chặn hoàn toàn network calls thật).

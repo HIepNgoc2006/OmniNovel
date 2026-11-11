@@ -30,6 +30,36 @@ enum SyncDomain {
   }
 }
 
+/// Canonical ordered partition domains traversed by six-partition snapshot (ADR-SYNC-07C-v2.2 / PR #213).
+enum SnapshotPartitionDomain {
+  bookmark('BOOKMARK'),
+  progress('PROGRESS'),
+  chapterReadState('CHAPTER_READ_STATE'),
+  preference('PREFERENCE'),
+  historyTombstone('HISTORY_TOMBSTONE'),
+  syncTombstone('SYNC_TOMBSTONE');
+
+  final String wireValue;
+  const SnapshotPartitionDomain(this.wireValue);
+
+  static SnapshotPartitionDomain? tryFromWire(String? value) {
+    if (value == null) return null;
+    for (final domain in SnapshotPartitionDomain.values) {
+      if (domain.wireValue == value) return domain;
+    }
+    return null;
+  }
+
+  static SnapshotPartitionDomain fromWire(String value) {
+    final parsed = tryFromWire(value);
+    if (parsed == null) {
+      throw ArgumentError('Unsupported SnapshotPartitionDomain wire value: "$value".');
+    }
+    return parsed;
+  }
+}
+
+
 /// Các thao tác mutation được hỗ trợ trong giao thức đồng bộ.
 enum SyncOperation {
   upsert('UPSERT'),
@@ -564,7 +594,7 @@ class SnapshotStagingItem {
   final String minActiveRevision;
   final String? cursorToken;
   final int pageIndex;
-  final SyncDomain domain;
+  final SnapshotPartitionDomain partitionDomain;
   final String entityKey;
   final Map<String, Object?> payload;
   final String stagedAtIso;
@@ -577,12 +607,44 @@ class SnapshotStagingItem {
     required this.minActiveRevision,
     this.cursorToken,
     this.pageIndex = 0,
-    required this.domain,
+    SnapshotPartitionDomain? partitionDomain,
+    SyncDomain? domain,
     required this.entityKey,
     required this.payload,
     required this.stagedAtIso,
     required this.stagedAtMs,
-  });
+  }) : partitionDomain = partitionDomain ??
+            (domain == SyncDomain.bookmark
+                ? SnapshotPartitionDomain.bookmark
+                : domain == SyncDomain.progress
+                    ? SnapshotPartitionDomain.progress
+                    : domain == SyncDomain.history
+                        ? SnapshotPartitionDomain.chapterReadState
+                        : domain == SyncDomain.preference
+                            ? SnapshotPartitionDomain.preference
+                            : SnapshotPartitionDomain.bookmark);
+
+  /// Thuộc tính tương thích ngược cho các nơi truy cập `item.domain`.
+  SyncDomain get domain {
+    switch (partitionDomain) {
+      case SnapshotPartitionDomain.bookmark:
+        return SyncDomain.bookmark;
+      case SnapshotPartitionDomain.progress:
+        return SyncDomain.progress;
+      case SnapshotPartitionDomain.chapterReadState:
+      case SnapshotPartitionDomain.historyTombstone:
+        return SyncDomain.history;
+      case SnapshotPartitionDomain.preference:
+        return SyncDomain.preference;
+      case SnapshotPartitionDomain.syncTombstone:
+        final raw = payload['domain'];
+        if (raw is String) {
+          final parsed = SyncDomain.tryFromWire(raw);
+          if (parsed != null) return parsed;
+        }
+        return SyncDomain.bookmark;
+    }
+  }
 
   Map<String, Object?> toMap() => <String, Object?>{
         'owner_scope': ownerScope,
@@ -591,7 +653,7 @@ class SnapshotStagingItem {
         'min_active_revision': minActiveRevision,
         'cursor_token': cursorToken,
         'page_index': pageIndex,
-        'domain': domain.wireValue,
+        'domain': partitionDomain.wireValue,
         'entity_key': entityKey,
         'payload_json': jsonEncode(payload),
         'staged_at_iso': stagedAtIso,
@@ -599,6 +661,12 @@ class SnapshotStagingItem {
       };
 
   factory SnapshotStagingItem.fromMap(Map<String, Object?> map) {
+    final rawDomain = map['domain'] as String;
+    final parsedPartition = SnapshotPartitionDomain.tryFromWire(rawDomain) ??
+        (rawDomain == 'HISTORY'
+            ? SnapshotPartitionDomain.chapterReadState
+            : SnapshotPartitionDomain.fromWire(rawDomain));
+
     return SnapshotStagingItem(
       ownerScope: map['owner_scope'] as String,
       sessionId: map['session_id'] as String,
@@ -606,7 +674,7 @@ class SnapshotStagingItem {
       minActiveRevision: map['min_active_revision'] as String,
       cursorToken: map['cursor_token'] as String?,
       pageIndex: (map['page_index'] as num?)?.toInt() ?? 0,
-      domain: SyncDomain.fromWire(map['domain'] as String),
+      partitionDomain: parsedPartition,
       entityKey: map['entity_key'] as String,
       payload: _decodeJsonObject(map['payload_json'] as String?),
       stagedAtIso: map['staged_at_iso'] as String,
@@ -614,6 +682,238 @@ class SnapshotStagingItem {
     );
   }
 }
+
+/// Phần tử bookmark trong phân vùng BOOKMARK của snapshot.
+@immutable
+class SnapshotBookmarkItem {
+  final String storyId;
+  final String createdAt;
+
+  const SnapshotBookmarkItem({
+    required this.storyId,
+    required this.createdAt,
+  });
+
+  Map<String, Object?> toJson() => <String, Object?>{
+        'storyId': storyId,
+        'createdAt': createdAt,
+      };
+
+  factory SnapshotBookmarkItem.fromJson(Map<String, Object?> json) {
+    return SnapshotBookmarkItem(
+      storyId: json['storyId'] as String,
+      createdAt: json['createdAt'] as String,
+    );
+  }
+}
+
+/// Phần tử tiến độ đọc trong phân vùng PROGRESS của snapshot.
+@immutable
+class SnapshotProgressItem {
+  final String storyId;
+  final String chapterId;
+  final String? chapterVersionId;
+  final String readingMode;
+  final int pageIndex;
+  final double scrollPosition;
+  final double progressPercentage;
+  final String? anchorBlockId;
+  final int? textOffset;
+  final bool? forceRewind;
+  final int? observedHistoryEpoch;
+
+  const SnapshotProgressItem({
+    required this.storyId,
+    required this.chapterId,
+    this.chapterVersionId,
+    required this.readingMode,
+    required this.pageIndex,
+    required this.scrollPosition,
+    required this.progressPercentage,
+    this.anchorBlockId,
+    this.textOffset,
+    this.forceRewind,
+    this.observedHistoryEpoch,
+  });
+
+  Map<String, Object?> toJson() => <String, Object?>{
+        'storyId': storyId,
+        'chapterId': chapterId,
+        if (chapterVersionId != null) 'chapterVersionId': chapterVersionId,
+        'readingMode': readingMode,
+        'pageIndex': pageIndex,
+        'scrollPosition': scrollPosition,
+        'progressPercentage': progressPercentage,
+        if (anchorBlockId != null) 'anchorBlockId': anchorBlockId,
+        if (textOffset != null) 'textOffset': textOffset,
+        if (forceRewind != null) 'forceRewind': forceRewind,
+        if (observedHistoryEpoch != null)
+          'observedHistoryEpoch': observedHistoryEpoch,
+      };
+
+  factory SnapshotProgressItem.fromJson(Map<String, Object?> json) {
+    return SnapshotProgressItem(
+      storyId: json['storyId'] as String,
+      chapterId: json['chapterId'] as String,
+      chapterVersionId: json['chapterVersionId'] as String?,
+      readingMode: json['readingMode'] as String,
+      pageIndex: (json['pageIndex'] as num).toInt(),
+      scrollPosition: (json['scrollPosition'] as num).toDouble(),
+      progressPercentage: (json['progressPercentage'] as num).toDouble(),
+      anchorBlockId: json['anchorBlockId'] as String?,
+      textOffset: (json['textOffset'] as num?)?.toInt(),
+      forceRewind: json['forceRewind'] as bool?,
+      observedHistoryEpoch: (json['observedHistoryEpoch'] as num?)?.toInt(),
+    );
+  }
+}
+
+/// Phần tử trạng thái đọc chương trong phân vùng CHAPTER_READ_STATE của snapshot.
+@immutable
+class SnapshotChapterReadStateItem {
+  final String chapterId;
+  final String storyId;
+  final String? chapterVersionId;
+  final double maxProgressPercentage;
+  final String? completedAt;
+  final String lastReadAt;
+  final int storyHistoryEpoch;
+
+  const SnapshotChapterReadStateItem({
+    required this.chapterId,
+    required this.storyId,
+    this.chapterVersionId,
+    required this.maxProgressPercentage,
+    this.completedAt,
+    required this.lastReadAt,
+    required this.storyHistoryEpoch,
+  });
+
+  Map<String, Object?> toJson() => <String, Object?>{
+        'chapterId': chapterId,
+        'storyId': storyId,
+        if (chapterVersionId != null) 'chapterVersionId': chapterVersionId,
+        'maxProgressPercentage': maxProgressPercentage,
+        'completedAt': completedAt,
+        'lastReadAt': lastReadAt,
+        'storyHistoryEpoch': storyHistoryEpoch,
+      };
+
+  factory SnapshotChapterReadStateItem.fromJson(Map<String, Object?> json) {
+    return SnapshotChapterReadStateItem(
+      chapterId: json['chapterId'] as String,
+      storyId: json['storyId'] as String,
+      chapterVersionId: json['chapterVersionId'] as String?,
+      maxProgressPercentage: (json['maxProgressPercentage'] as num).toDouble(),
+      completedAt: json['completedAt'] as String?,
+      lastReadAt: json['lastReadAt'] as String,
+      storyHistoryEpoch: (json['storyHistoryEpoch'] as num?)?.toInt() ?? 0,
+    );
+  }
+}
+
+/// Phần tử tùy chọn trong phân vùng PREFERENCE của snapshot.
+@immutable
+class SnapshotPreferenceItem {
+  final String key;
+  final Object? value;
+  final String updatedAt;
+
+  const SnapshotPreferenceItem({
+    required this.key,
+    required this.value,
+    required this.updatedAt,
+  });
+
+  Map<String, Object?> toJson() => <String, Object?>{
+        'key': key,
+        'value': value,
+        'updatedAt': updatedAt,
+      };
+
+  factory SnapshotPreferenceItem.fromJson(Map<String, Object?> json) {
+    return SnapshotPreferenceItem(
+      key: json['key'] as String,
+      value: json['value'],
+      updatedAt: json['updatedAt'] as String,
+    );
+  }
+}
+
+/// Phần tử epoch lịch sử theo truyện trong phân vùng HISTORY_TOMBSTONE của snapshot.
+@immutable
+class SnapshotHistoryEpochItem {
+  final String storyId;
+  final int epoch;
+
+  const SnapshotHistoryEpochItem({
+    required this.storyId,
+    required this.epoch,
+  });
+
+  Map<String, Object?> toJson() => <String, Object?>{
+        'storyId': storyId,
+        'epoch': epoch,
+      };
+
+  factory SnapshotHistoryEpochItem.fromJson(Map<String, Object?> json) {
+    return SnapshotHistoryEpochItem(
+      storyId: json['storyId'] as String,
+      epoch: (json['epoch'] as num).toInt(),
+    );
+  }
+}
+
+/// Phần tử tombstone trong phân vùng SYNC_TOMBSTONE của snapshot.
+@immutable
+class SnapshotTombstoneItem {
+  final SyncDomain domain;
+  final String entityId;
+  final String deletedAtRevision;
+
+  const SnapshotTombstoneItem({
+    required this.domain,
+    required this.entityId,
+    required this.deletedAtRevision,
+  });
+
+  Map<String, Object?> toJson() => <String, Object?>{
+        'domain': domain.wireValue,
+        'entityId': entityId,
+        'deletedAtRevision': deletedAtRevision,
+      };
+
+  factory SnapshotTombstoneItem.fromJson(Map<String, Object?> json) {
+    final rawDomain = json['domain'] as String;
+    final domain = SyncDomain.fromWire(rawDomain);
+    return SnapshotTombstoneItem(
+      domain: domain,
+      entityId: json['entityId'] as String,
+      deletedAtRevision: json['deletedAtRevision'] as String,
+    );
+  }
+}
+
+/// Toàn bộ dữ liệu 6 phân vùng trong snapshot (ADR-SYNC-07C-v2.2 / PR #213).
+@immutable
+class SixDomainSnapshotData {
+  final List<SnapshotBookmarkItem> bookmarks;
+  final List<SnapshotProgressItem> readingProgress;
+  final List<SnapshotChapterReadStateItem> chapterReadStates;
+  final List<SnapshotPreferenceItem> preferences;
+  final List<SnapshotHistoryEpochItem> historyEpochs;
+  final List<SnapshotTombstoneItem> tombstones;
+
+  const SixDomainSnapshotData({
+    this.bookmarks = const <SnapshotBookmarkItem>[],
+    this.readingProgress = const <SnapshotProgressItem>[],
+    this.chapterReadStates = const <SnapshotChapterReadStateItem>[],
+    this.preferences = const <SnapshotPreferenceItem>[],
+    this.historyEpochs = const <SnapshotHistoryEpochItem>[],
+    this.tombstones = const <SnapshotTombstoneItem>[],
+  });
+}
+
 
 /// Bản ghi tùy chọn người dùng cục bộ theo scope trong bảng `local_preferences`.
 @immutable
@@ -801,15 +1101,21 @@ class CommitSnapshotResult {
   final String snapshotRevision;
   final String minActiveRevision;
   final int materializedCount;
-  final int rebasedPendingCount;
+  final int activePendingCount;
+  final int quarantinedPendingCount;
   final Map<String, int> effectiveEpochs;
+
+  /// Tương thích ngược: auto-rebase đã bị loại bỏ theo ADR-SYNC-07C-v2.2, giá trị luôn là 0.
+  int get rebasedPendingCount => 0;
 
   const CommitSnapshotResult({
     required this.ownerScope,
     required this.snapshotRevision,
     required this.minActiveRevision,
     required this.materializedCount,
-    required this.rebasedPendingCount,
+    this.activePendingCount = 0,
+    this.quarantinedPendingCount = 0,
+    int? rebasedPendingCount,
     required this.effectiveEpochs,
   });
 }

@@ -27,6 +27,7 @@ import {
   WIRE_GLOBAL_HISTORY_ENTITY_ID,
   WireMutationBatchRequest,
   WireMutationBatchResponse,
+  CanonicalWireMutationBatchResponse,
   WireSyncRevisionExpiredResponse,
   WireHttpResponse,
   ProductionSyncRevisionExpiredBody,
@@ -252,12 +253,15 @@ export interface PushPendingMutationsResult {
   dispatchedCount: number;
   appliedCount: number;
   deduplicatedCount: number;
+  conflictMergedCount: number;
   rejectedCount: number;
   transientRetryCount: number;
+  quarantinedCount: number;
   quarantinedStaleCount: number;
   quarantinedLegacyCount: number;
   summary?: any;
   correlation?: CorrelatedReceipts;
+  validationError?: Error;
 }
 
 export const VALID_RECEIPT_STATUSES = new Set([
@@ -347,14 +351,21 @@ export function correlateAndValidateReceipts(
       });
       continue;
     }
-    const trimmedId = r.mutationId.trim();
-    if (!dispatchedMap.has(trimmedId)) {
+    if (r.mutationId !== r.mutationId.trim()) {
+      invalidReceipts.push({
+        receipt: r,
+        reason: `UNTRIMMED_MUTATION_ID: Receipt contains untrimmed mutationId: "${r.mutationId}".`,
+      });
+      continue;
+    }
+    const mId = r.mutationId;
+    if (!dispatchedMap.has(mId)) {
       unknownReceipts.push(r);
       continue;
     }
-    const list = receiptsByMutationId.get(trimmedId) || [];
+    const list = receiptsByMutationId.get(mId) || [];
     list.push(r);
-    receiptsByMutationId.set(trimmedId, list);
+    receiptsByMutationId.set(mId, list);
   }
 
   const validResults: MutationResultItem[] = [];
@@ -370,8 +381,8 @@ export function correlateAndValidateReceipts(
     const r = receipts[0];
     const mutation = dispatchedMap.get(mutationId)!;
 
-    // 1. Status validity
-    if (!VALID_RECEIPT_STATUSES.has(r.status)) {
+    // 1. Status validity (strict case-sensitive)
+    if (typeof r.status !== 'string' || !VALID_RECEIPT_STATUSES.has(r.status)) {
       invalidReceipts.push({
         receipt: r,
         reason: `Unrecognized or invalid receipt status: "${(r as any).status}"`,
@@ -379,7 +390,7 @@ export function correlateAndValidateReceipts(
       continue;
     }
 
-    // 2. Revision causal monotonicity & canonical BIGINT format checks
+    // 2. Revision causal monotonicity, causal ceiling & canonical BIGINT format checks
     if (r.status === 'APPLIED') {
       if (!isValidCanonicalRevisionString(r.assignedRevision)) {
         invalidReceipts.push({
@@ -394,6 +405,16 @@ export function correlateAndValidateReceipts(
           invalidReceipts.push({
             receipt: r,
             reason: `APPLIED receipt assignedRevision (${r.assignedRevision}) < baseServerRevision (${mutation.baseServerRevision})`,
+          });
+          continue;
+        }
+      }
+
+      if (envelope?.newServerRevision && isValidCanonicalRevisionString(envelope.newServerRevision)) {
+        if (BigInt(r.assignedRevision) > BigInt(envelope.newServerRevision)) {
+          invalidReceipts.push({
+            receipt: r,
+            reason: `SERVER_REVISION_BEHIND_ASSIGNED: APPLIED assignedRevision (${r.assignedRevision}) > newServerRevision (${envelope.newServerRevision})`,
           });
           continue;
         }
@@ -416,6 +437,15 @@ export function correlateAndValidateReceipts(
             continue;
           }
         }
+        if (envelope?.newServerRevision && isValidCanonicalRevisionString(envelope.newServerRevision)) {
+          if (BigInt(r.assignedRevision) > BigInt(envelope.newServerRevision)) {
+            invalidReceipts.push({
+              receipt: r,
+              reason: `SERVER_REVISION_BEHIND_ASSIGNED: DEDUPLICATED assignedRevision (${r.assignedRevision}) > newServerRevision (${envelope.newServerRevision})`,
+            });
+            continue;
+          }
+        }
       }
     } else if (r.status === 'CONFLICT_MERGED') {
       if (r.assignedRevision != null && r.assignedRevision !== '') {
@@ -431,6 +461,15 @@ export function correlateAndValidateReceipts(
             invalidReceipts.push({
               receipt: r,
               reason: `CONFLICT_MERGED receipt assignedRevision (${r.assignedRevision}) < baseServerRevision (${mutation.baseServerRevision})`,
+            });
+            continue;
+          }
+        }
+        if (envelope?.newServerRevision && isValidCanonicalRevisionString(envelope.newServerRevision)) {
+          if (BigInt(r.assignedRevision) > BigInt(envelope.newServerRevision)) {
+            invalidReceipts.push({
+              receipt: r,
+              reason: `SERVER_REVISION_BEHIND_ASSIGNED: CONFLICT_MERGED assignedRevision (${r.assignedRevision}) > newServerRevision (${envelope.newServerRevision})`,
             });
             continue;
           }
@@ -468,7 +507,11 @@ export function correlateAndValidateReceipts(
 
   let processedCountMatches = true;
   if (envelope?.processedCount !== undefined) {
-    processedCountMatches = envelope.processedCount === dispatchedMutations.length;
+    processedCountMatches =
+      typeof envelope.processedCount === 'number' &&
+      Number.isInteger(envelope.processedCount) &&
+      envelope.processedCount >= 0 &&
+      envelope.processedCount === dispatchedMutations.length;
     if (!processedCountMatches) {
       violations.push(
         `PROCESSED_COUNT_MISMATCH: Sent ${dispatchedMutations.length} mutations, but server processedCount is ${envelope.processedCount}.`
@@ -531,36 +574,108 @@ export function correlateAndValidateReceipts(
  */
 export function validateBatchReceiptsStrictFailClosed(
   dispatchedMutations: LocalPendingMutation[],
-  wireResponse: WireMutationBatchResponse
+  wireResponse: WireMutationBatchResponse | CanonicalWireMutationBatchResponse
 ): void {
-  if (wireResponse.newServerRevision !== undefined && !isValidCanonicalRevisionString(wireResponse.newServerRevision)) {
+  if (!wireResponse || typeof wireResponse !== 'object') {
+    throw new ReceiptValidationException('INVALID_ENVELOPE: Wire response is not a valid object.');
+  }
+
+  // 1. Mandatory Canonical Results Array
+  if (!Array.isArray(wireResponse.results)) {
     throw new ReceiptValidationException(
-      `INVALID_SERVER_REVISION: newServerRevision "${wireResponse.newServerRevision}" is not a valid 64-bit canonical decimal string.`
+      'MISSING_ENVELOPE_FIELD: results array is required in canonical wire response envelope.'
     );
   }
 
+  // 2. Receipt count matches dispatched count
   if (wireResponse.results.length !== dispatchedMutations.length) {
     throw new ReceiptValidationException(
       `RECEIPT_COUNT_MISMATCH: Sent ${dispatchedMutations.length} mutations, but server returned ${wireResponse.results.length} receipts.`
     );
   }
 
-  if (wireResponse.processedCount !== undefined && wireResponse.processedCount !== dispatchedMutations.length) {
+  // 3. Mandatory Canonical processedCount
+  if (wireResponse.processedCount === undefined || wireResponse.processedCount === null) {
+    throw new ReceiptValidationException(
+      'MISSING_ENVELOPE_FIELD: processedCount is required in canonical wire response envelope.'
+    );
+  }
+
+  if (
+    typeof wireResponse.processedCount !== 'number' ||
+    !Number.isInteger(wireResponse.processedCount) ||
+    wireResponse.processedCount < 0
+  ) {
+    throw new ReceiptValidationException(
+      `INVALID_PROCESSED_COUNT: processedCount must be a non-negative integer, got "${String(wireResponse.processedCount)}".`
+    );
+  }
+
+  if (wireResponse.processedCount !== dispatchedMutations.length) {
     throw new ReceiptValidationException(
       `PROCESSED_COUNT_MISMATCH: Sent ${dispatchedMutations.length} mutations, but server processedCount is ${wireResponse.processedCount}.`
     );
   }
 
-  const sentIds = new Set(dispatchedMutations.map((m) => m.mutationId));
-  const seenIds = new Set<string>();
+  // 4. Mandatory Canonical newServerRevision
+  if (wireResponse.newServerRevision === undefined || wireResponse.newServerRevision === null) {
+    throw new ReceiptValidationException(
+      'MISSING_ENVELOPE_FIELD: newServerRevision is required in canonical wire response envelope.'
+    );
+  }
 
-  for (const item of wireResponse.results) {
-    const mId = item.mutationId?.trim();
-    if (!mId) {
+  if (!isValidCanonicalRevisionString(wireResponse.newServerRevision)) {
+    throw new ReceiptValidationException(
+      `INVALID_SERVER_REVISION: newServerRevision "${wireResponse.newServerRevision}" is not a valid 64-bit canonical decimal string.`
+    );
+  }
+
+  // 5. Sent Batch Invariants: Unique non-empty trimmed mutation IDs
+  const sentIds = new Set<string>();
+  const sentMutationMap = new Map<string, LocalPendingMutation>();
+
+  for (const m of dispatchedMutations) {
+    if (!m || typeof m.mutationId !== 'string' || m.mutationId.length === 0) {
       throw new ReceiptValidationException(
-        'EMPTY_MUTATION_ID: Receipt contains an empty or whitespace mutationId.'
+        'EMPTY_MUTATION_ID: Sent mutation contains an empty or non-string mutationId.'
       );
     }
+    if (m.mutationId !== m.mutationId.trim()) {
+      throw new ReceiptValidationException(
+        `UNTRIMMED_MUTATION_ID: Sent mutation contains untrimmed mutationId: "${m.mutationId}".`
+      );
+    }
+    if (sentIds.has(m.mutationId)) {
+      throw new ReceiptValidationException(
+        `DUPLICATE_SENT_MUTATION: Sent batch contains duplicate mutationId "${m.mutationId}".`
+      );
+    }
+    sentIds.add(m.mutationId);
+    sentMutationMap.set(m.mutationId, m);
+  }
+
+  // 6. Receipt Items Validation
+  const seenIds = new Set<string>();
+  const serverRevBigInt = BigInt(wireResponse.newServerRevision);
+
+  for (const item of wireResponse.results) {
+    if (!item || typeof item !== 'object') {
+      throw new ReceiptValidationException('INVALID_RECEIPT: Receipt item is not an object.');
+    }
+
+    if (typeof item.mutationId !== 'string' || item.mutationId.length === 0) {
+      throw new ReceiptValidationException(
+        'EMPTY_MUTATION_ID: Receipt contains an empty or non-string mutationId.'
+      );
+    }
+
+    if (item.mutationId !== item.mutationId.trim()) {
+      throw new ReceiptValidationException(
+        `UNTRIMMED_MUTATION_ID: Receipt contains untrimmed mutationId: "${item.mutationId}".`
+      );
+    }
+
+    const mId = item.mutationId;
 
     if (!sentIds.has(mId)) {
       throw new ReceiptValidationException(
@@ -575,23 +690,64 @@ export function validateBatchReceiptsStrictFailClosed(
     }
     seenIds.add(mId);
 
-    const status = item.status?.trim().toUpperCase();
-    if (!VALID_RECEIPT_STATUSES.has(status)) {
+    // Exact case-sensitive match against protocol specification
+    if (typeof item.status !== 'string' || !VALID_RECEIPT_STATUSES.has(item.status)) {
       throw new ReceiptValidationException(
-        `UNRECOGNIZED_RECEIPT_STATUS: Status "${status}" for mutationId "${mId}" is not recognized by the protocol.`
+        `UNRECOGNIZED_RECEIPT_STATUS: Status "${(item as any).status}" for mutationId "${mId}" is not recognized by the protocol.`
       );
     }
 
-    if (status === 'APPLIED' || status === 'DEDUPLICATED') {
+    const mutation = sentMutationMap.get(mId)!;
+
+    if (item.status === 'APPLIED') {
       if (item.assignedRevision == null || !isValidCanonicalRevisionString(item.assignedRevision)) {
         throw new ReceiptValidationException(
-          `INVALID_ASSIGNED_REVISION: Status "${status}" for mutationId "${mId}" requires a valid canonical decimal assignedRevision, got "${item.assignedRevision}".`
+          `INVALID_ASSIGNED_REVISION: Status "APPLIED" for mutationId "${mId}" requires a valid canonical decimal assignedRevision, got "${item.assignedRevision}".`
         );
       }
-    } else if (item.assignedRevision != null && !isValidCanonicalRevisionString(item.assignedRevision)) {
-      throw new ReceiptValidationException(
-        `INVALID_ASSIGNED_REVISION: Optional assignedRevision "${item.assignedRevision}" for mutationId "${mId}" is not a valid canonical decimal string.`
-      );
+      const assignedBigInt = BigInt(item.assignedRevision);
+      if (isValidCanonicalRevisionString(mutation.baseServerRevision)) {
+        if (assignedBigInt < BigInt(mutation.baseServerRevision)) {
+          throw new ReceiptValidationException(
+            `ASSIGNED_REVISION_BEHIND_BASE: Status "APPLIED" for mutationId "${mId}" assignedRevision (${item.assignedRevision}) < baseServerRevision (${mutation.baseServerRevision}).`
+          );
+        }
+      }
+      if (assignedBigInt > serverRevBigInt) {
+        throw new ReceiptValidationException(
+          `SERVER_REVISION_BEHIND_ASSIGNED: Status "APPLIED" for mutationId "${mId}" assignedRevision (${item.assignedRevision}) > newServerRevision (${wireResponse.newServerRevision}).`
+        );
+      }
+    } else if (item.status === 'DEDUPLICATED' || item.status === 'CONFLICT_MERGED') {
+      if (item.assignedRevision != null && item.assignedRevision !== '') {
+        if (!isValidCanonicalRevisionString(item.assignedRevision)) {
+          throw new ReceiptValidationException(
+            `INVALID_ASSIGNED_REVISION: Status "${item.status}" for mutationId "${mId}" has non-canonical decimal assignedRevision, got "${item.assignedRevision}".`
+          );
+        }
+        const assignedBigInt = BigInt(item.assignedRevision);
+        if (isValidCanonicalRevisionString(mutation.baseServerRevision)) {
+          if (assignedBigInt < BigInt(mutation.baseServerRevision)) {
+            throw new ReceiptValidationException(
+              `ASSIGNED_REVISION_BEHIND_BASE: Status "${item.status}" for mutationId "${mId}" assignedRevision (${item.assignedRevision}) < baseServerRevision (${mutation.baseServerRevision}).`
+            );
+          }
+        }
+        if (assignedBigInt > serverRevBigInt) {
+          throw new ReceiptValidationException(
+            `SERVER_REVISION_BEHIND_ASSIGNED: Status "${item.status}" for mutationId "${mId}" assignedRevision (${item.assignedRevision}) > newServerRevision (${wireResponse.newServerRevision}).`
+          );
+        }
+      }
+    } else {
+      // REJECTED_TOMBSTONE, REJECTED_STALE, DOMAIN_NOT_SUPPORTED
+      if (item.assignedRevision != null && item.assignedRevision !== '') {
+        if (!isValidCanonicalRevisionString(item.assignedRevision)) {
+          throw new ReceiptValidationException(
+            `INVALID_ASSIGNED_REVISION: Status "${item.status}" for mutationId "${mId}" has non-canonical decimal assignedRevision, got "${item.assignedRevision}".`
+          );
+        }
+      }
     }
   }
 
@@ -611,19 +767,22 @@ export class MockStep52dReconciler {
   public scopeGeneration: number;
   public needsBootstrap = false;
   public bootstrapReason?: string;
+  public policy: 'strict' | 'tolerant';
 
   constructor(
-    private readonly config: {
+    protected readonly config: {
       ownerScope: string;
       dbClient: IndexedDbClient;
       mutationQueue: MutationQueue;
       tabLeader: TabLeaderElection;
       server: MockSyncTransportServer;
+      policy?: 'strict' | 'tolerant';
       onBootstrapRequired?: (reason: string) => void;
     }
   ) {
     this.ownerScope = config.ownerScope;
     this.scopeGeneration = 1;
+    this.policy = config.policy ?? 'tolerant';
   }
 
   setScope(newScope: string): void {
@@ -747,6 +906,7 @@ export class MockStep52dReconciler {
   async pushPendingMutations(options?: {
     limit?: number;
     leaderSignal?: AbortSignal;
+    policy?: 'strict' | 'tolerant';
     _testHookAfterPrepareBatch?: () => Promise<void>;
     _testHookPreDispatchBeforeCommit?: (tx: IDBTransaction) => void;
     _testHookBeforeProcessResults?: () => Promise<void>;
@@ -754,6 +914,7 @@ export class MockStep52dReconciler {
     assertValidAccountScope(this.ownerScope);
     const scopeAtStart = this.ownerScope;
     const genAtStart = this.scopeGeneration;
+    const activePolicy = options?.policy ?? this.policy;
     this.assertCrossScopeAuthority(scopeAtStart, genAtStart, options?.leaderSignal);
 
     // 1. Prepare batch via MutationQueue
@@ -772,8 +933,10 @@ export class MockStep52dReconciler {
         dispatchedCount: 0,
         appliedCount: 0,
         deduplicatedCount: 0,
+        conflictMergedCount: 0,
         rejectedCount: 0,
         transientRetryCount: 0,
+        quarantinedCount: 0,
         quarantinedStaleCount: 0,
         quarantinedLegacyCount: 0,
       };
@@ -807,6 +970,9 @@ export class MockStep52dReconciler {
       this.config.mutationQueue.releaseOwnedMutation(batch, m.mutationId);
     }
 
+    const preDispatchQuarantinedCount =
+      admission.quarantinedStaleMutations.length + admission.quarantinedLegacyMutations.length;
+
     if (admission.eligibleMutations.length === 0) {
       this.config.mutationQueue.releaseInFlight(batch);
       return {
@@ -814,11 +980,30 @@ export class MockStep52dReconciler {
         dispatchedCount: 0,
         appliedCount: 0,
         deduplicatedCount: 0,
+        conflictMergedCount: 0,
         rejectedCount: 0,
         transientRetryCount: 0,
+        quarantinedCount: preDispatchQuarantinedCount,
         quarantinedStaleCount: admission.quarantinedStaleMutations.length,
         quarantinedLegacyCount: admission.quarantinedLegacyMutations.length,
       };
+    }
+
+    // Pre-dispatch Sent Batch Duplicate Check (Task D4)
+    const seenSentIds = new Set<string>();
+    let duplicateSentId: string | null = null;
+    for (const m of admission.eligibleMutations) {
+      if (seenSentIds.has(m.mutationId)) {
+        duplicateSentId = m.mutationId;
+        break;
+      }
+      seenSentIds.add(m.mutationId);
+    }
+    if (duplicateSentId && activePolicy === 'strict') {
+      this.config.mutationQueue.releaseInFlight(batch);
+      throw new ReceiptValidationException(
+        `DUPLICATE_SENT_MUTATION: Eligible mutations contain duplicate mutationId "${duplicateSentId}".`
+      );
     }
 
     // 3. Task C: Immutable Wire Payload Construction
@@ -867,14 +1052,40 @@ export class MockStep52dReconciler {
         dispatchedCount: wireMutations.length,
         appliedCount: 0,
         deduplicatedCount: 0,
+        conflictMergedCount: 0,
         rejectedCount: 0,
         transientRetryCount: wireMutations.length,
+        quarantinedCount: preDispatchQuarantinedCount,
         quarantinedStaleCount: admission.quarantinedStaleMutations.length,
         quarantinedLegacyCount: admission.quarantinedLegacyMutations.length,
       };
     }
 
-    // 6. Correlate and validate wire receipts before passing to MutationQueue
+    // 6. Task A & B: Strict Fail-Closed Validation or Tolerant Correlation
+    if (activePolicy === 'strict') {
+      try {
+        validateBatchReceiptsStrictFailClosed(admission.eligibleMutations, wireResponse);
+      } catch (validationErr: any) {
+        // Task A & B: Strict Fail-Closed Batch Rejection
+        // Entire batch is rejected without settling ANY mutation in IDB!
+        // Release in-flight lock so mutations remain in pending for safe retry.
+        this.config.mutationQueue.releaseInFlight(batch);
+        return {
+          pushedCount: 0,
+          dispatchedCount: wireMutations.length,
+          appliedCount: 0,
+          deduplicatedCount: 0,
+          conflictMergedCount: 0,
+          rejectedCount: 0,
+          transientRetryCount: wireMutations.length,
+          quarantinedCount: preDispatchQuarantinedCount,
+          quarantinedStaleCount: admission.quarantinedStaleMutations.length,
+          quarantinedLegacyCount: admission.quarantinedLegacyMutations.length,
+          validationError: validationErr,
+        };
+      }
+    }
+
     const correlation = correlateAndValidateReceipts(
       admission.eligibleMutations,
       wireResponse.results,
@@ -893,23 +1104,46 @@ export class MockStep52dReconciler {
       leaderSignal: options?.leaderSignal,
     });
 
+    // Task C: Disambiguate conflictMergedCount and terminal rejectedCount
+    const conflictMergedCount = summary.conflictMergedCount;
     const rejectedCount =
       summary.tombstoneEvictedCount +
       summary.staleQuarantinedCount +
-      summary.unsupportedCount +
-      summary.conflictMergedCount;
+      summary.unsupportedCount;
+    const quarantinedCount = preDispatchQuarantinedCount + summary.staleQuarantinedCount;
 
     return {
       pushedCount: wireMutations.length,
       dispatchedCount: wireMutations.length,
       appliedCount: summary.appliedCount,
       deduplicatedCount: summary.deduplicatedCount,
+      conflictMergedCount,
       rejectedCount,
       transientRetryCount: summary.transientRetryCount,
+      quarantinedCount,
       quarantinedStaleCount: admission.quarantinedStaleMutations.length,
       quarantinedLegacyCount: admission.quarantinedLegacyMutations.length,
       summary,
       correlation,
     };
+  }
+}
+
+/**
+ * Step 5.2g Strict Protocol Adapter & Reconciler Harness
+ * Default fail-closed policy: any receipt, revision, or envelope violation aborts the entire batch.
+ */
+export class StrictStep52gReconciler extends MockStep52dReconciler {
+  constructor(
+    config: {
+      ownerScope: string;
+      dbClient: IndexedDbClient;
+      mutationQueue: MutationQueue;
+      tabLeader: TabLeaderElection;
+      server: MockSyncTransportServer;
+      onBootstrapRequired?: (reason: string) => void;
+    }
+  ) {
+    super({ ...config, policy: 'strict' });
   }
 }

@@ -535,6 +535,8 @@ describe('Web Step 5.2f Receipt Contract Parity & Fail-Closed Integration', () =
       });
 
       const wireResponse: WireMutationBatchResponse = {
+        processedCount: 1,
+        newServerRevision: '11',
         results: [
           { mutationId: 'mut-alien-status', status: 'UNKNOWN_BOGUS_STATUS' as any, assignedRevision: '11' },
         ],
@@ -628,8 +630,9 @@ describe('Web Step 5.2f Receipt Contract Parity & Fail-Closed Integration', () =
 
       const res = await reconciler.pushPendingMutations();
 
-      // Settled, removed from pending
-      expect(res.rejectedCount).toBe(1); // classified under summary.conflictMergedCount
+      // Settled, removed from pending (Task C: conflictMerged is separated from terminal rejection)
+      expect(res.conflictMergedCount).toBe(1);
+      expect(res.rejectedCount).toBe(0);
       expect(res.summary.conflictMergedCount).toBe(1);
       expect(await dbClient.getPendingMutation(scope, 'mut-conflict-1')).toBeNull();
 

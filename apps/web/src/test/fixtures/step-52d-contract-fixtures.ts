@@ -37,6 +37,16 @@ export interface WireMutationBatchResponse {
 }
 
 /**
+ * Task A: Mandatory Canonical Wire Response Envelope
+ * In strict production mode, all 3 fields are non-optional and strictly validated.
+ */
+export interface CanonicalWireMutationBatchResponse {
+  processedCount: number;
+  newServerRevision: string;
+  results: MutationResultItem[];
+}
+
+/**
  * Task A2 / Task E: GlobalExceptionFilter Canonical Error Envelopes
  * In production NestJS GlobalExceptionFilter, responses are structured as:
  * {

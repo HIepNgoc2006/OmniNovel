@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:sqflite/sqflite.dart';
@@ -2512,6 +2513,343 @@ class SyncStorageDal {
             whereArgs: <Object?>[ownerScope],
           );
         }
+      },
+    );
+  }
+
+  /// Cam kết phân vùng snapshot 6 domains từ `snapshot_staging_store` vào CSDL SQLite
+  /// trong MỘT giao dịch SQLite nguyên tử duy nhất tuân thủ 4 bước bất biến ADR-SYNC-07C-v2.2 Section 2.1:
+  ///
+  /// 1. Bước 1 — Validate Snapshot / Session / Scope (Fail-Closed Pre-Write Gate):
+  ///    - Kiểm tra `ownerScope` thuộc `account:<userId>` và quyền admission hợp lệ.
+  ///    - Kiểm tra session có bản ghi staged trong `snapshot_staging_store`.
+  ///    - Kiểm tra decimal BIGINT `snapshotRevision` và `minActiveRevision`, `minActiveRevision <= snapshotRevision`.
+  ///    - Xác minh tính nhất quán của revision trên mọi item staged trong session.
+  /// 2. Bước 2 — Materialize Shadow Stores & Overwrite Authoritative Baseline:
+  ///    - Xóa trắng shadow cũ của `ownerScope` trong `sync_authoritative_replicas` và `local_preferences`.
+  ///    - Ghi nhận 6 domains vào `sync_authoritative_replicas` (và `local_preferences` cho PREFERENCE).
+  ///    - Ghi nhận tombstones với `is_deleted = 1` và cập nhật `effective_history_epochs` cho global và story.
+  /// 3. Bước 3 — Preserve & Rebase Offline Pending Mutations (Data Safety Guarantee):
+  ///    - Bảo toàn 100% `pending_mutations`, TUYỆT ĐỐI KHÔNG XÓA HOẶC GHI ĐÈ BẰNG SNAPSHOT.
+  ///    - Nâng `base_server_revision = snapshotRevision` cho các mutation có `baseServerRevision < snapshotRevision`.
+  /// 4. Bước 4 — Finalize Sync Meta & Transition State:
+  ///    - Cập nhật `sync_meta`: `last_synced_server_revision = snapshotRevision`, `min_active_revision = minActiveRevision`,
+  ///      `authoritative_baseline_status = BOOTSTRAPPING` (CẤM TỰ NÂNG SANG READY Ở STAGE 2A!),
+  ///      `sync_state = IDLE`, `effective_history_epochs_json = mergedEpochs`.
+  ///    - Xóa sạch `snapshot_staging_store` của `(ownerScope, sessionId)`.
+  ///    - Hỗ trợ `onBeforeCommitHook` phục vụ kiểm thử fault injection / crash rollback.
+  Future<CommitSnapshotResult> commitAuthoritativeSnapshot({
+    required String ownerScope,
+    required String sessionId,
+    required AccountWriteAdmission admission,
+    Future<void> Function(Transaction txn)? onBeforeCommitHook,
+  }) async {
+    assertAccountScope(ownerScope);
+    admission.assertAdmitted(ownerScope);
+    if (sessionId.trim().isEmpty) {
+      throw const SnapshotStagingConflictError(
+        'Snapshot staging sessionId must be non-empty.',
+      );
+    }
+
+    return _runWriteTransaction<CommitSnapshotResult>(
+      targetScope: ownerScope,
+      admission: admission,
+      action: (txn) async {
+        // 1. Bước 1: Validate Staging Items, Session, Scope & Revisions
+        final stagingRows = await txn.query(
+          'snapshot_staging_store',
+          where: 'owner_scope = ? AND session_id = ?',
+          whereArgs: <Object?>[ownerScope, sessionId],
+          orderBy: 'page_index ASC, domain ASC, entity_key ASC',
+        );
+
+        if (stagingRows.isEmpty) {
+          throw SnapshotStagingConflictError(
+            'NO_STAGED_SNAPSHOT: No staged snapshot items found for session "$sessionId" in scope "$ownerScope".',
+          );
+        }
+
+        final stagedItems = stagingRows.map(SnapshotStagingItem.fromMap).toList();
+        final firstItem = stagedItems.first;
+        final snapshotRevision = firstItem.snapshotRevision;
+        final minActiveRevision = firstItem.minActiveRevision;
+
+        if (!isValidRevisionString(snapshotRevision)) {
+          throw SnapshotStagingConflictError(
+            'INVALID_SNAPSHOT_REVISION: snapshotRevision "$snapshotRevision" is not a valid 64-bit canonical decimal string.',
+          );
+        }
+        if (!isValidRevisionString(minActiveRevision)) {
+          throw SnapshotStagingConflictError(
+            'INVALID_MIN_ACTIVE_REVISION: minActiveRevision "$minActiveRevision" is not a valid 64-bit canonical decimal string.',
+          );
+        }
+
+        final snapshotRevBigInt = parseRevisionBigInt(snapshotRevision);
+        final minActiveRevBigInt = parseRevisionBigInt(minActiveRevision);
+
+        if (minActiveRevBigInt > snapshotRevBigInt) {
+          throw SnapshotStagingConflictError(
+            'REGRESSIVE_SNAPSHOT_WINDOW: minActiveRevision ($minActiveRevision) exceeds snapshotRevision ($snapshotRevision).',
+          );
+        }
+
+        for (final item in stagedItems) {
+          if (item.snapshotRevision != snapshotRevision ||
+              item.minActiveRevision != minActiveRevision) {
+            throw SnapshotStagingConflictError(
+              'SNAPSHOT_REVISION_MISMATCH: Inconsistent snapshotRevision ("${item.snapshotRevision}" vs "$snapshotRevision") or minActiveRevision ("${item.minActiveRevision}" vs "$minActiveRevision") found in session "$sessionId".',
+            );
+          }
+        }
+
+        // 2. Bước 2: Materialize Shadow Stores & Overwrite Authoritative Baseline
+        await txn.delete(
+          'sync_authoritative_replicas',
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[ownerScope],
+        );
+
+        await txn.delete(
+          'local_preferences',
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[ownerScope],
+        );
+
+        final now = DateTime.now().toUtc();
+        final nowIso = now.toIso8601String();
+        final nowMs = now.millisecondsSinceEpoch;
+        final effectiveEpochs = <String, int>{};
+
+        for (final item in stagedItems) {
+          final isTombstone = item.payload['isDeleted'] == true ||
+              item.payload['deletedAtRevision'] != null;
+
+          switch (item.domain) {
+            case SyncDomain.bookmark:
+              final entityKey = canonicalBookmarkEntityKey(
+                _nonEmptyString(item.payload['storyId']) ?? item.entityKey,
+              );
+              await _upsertShadow(
+                txn,
+                AuthoritativeShadowRecord(
+                  ownerScope: ownerScope,
+                  domain: SyncDomain.bookmark,
+                  entityKey: entityKey,
+                  serverRevision: snapshotRevision,
+                  epoch: 0,
+                  payload: item.payload,
+                  isDeleted: isTombstone,
+                  updatedAtMs: nowMs,
+                ),
+              );
+              break;
+
+            case SyncDomain.progress:
+              final entityKey = canonicalProgressEntityKey(
+                _nonEmptyString(item.payload['storyId']) ?? item.entityKey,
+              );
+              if (item.payload.containsKey('readingMode')) {
+                final rawMode = item.payload['readingMode'];
+                normalizeSyncReadingMode(rawMode is String ? rawMode : null);
+              }
+              final epoch = _extractInt(item.payload['observedHistoryEpoch']) ??
+                  _extractInt(item.payload['epoch']) ??
+                  0;
+              await _upsertShadow(
+                txn,
+                AuthoritativeShadowRecord(
+                  ownerScope: ownerScope,
+                  domain: SyncDomain.progress,
+                  entityKey: entityKey,
+                  serverRevision: snapshotRevision,
+                  epoch: epoch,
+                  payload: item.payload,
+                  isDeleted: isTombstone,
+                  updatedAtMs: nowMs,
+                ),
+              );
+              break;
+
+            case SyncDomain.history:
+              final colonIdx = item.entityKey.indexOf(':');
+              final fallbackStoryId = colonIdx >= 0
+                  ? item.entityKey.substring(0, colonIdx)
+                  : item.entityKey;
+              final fallbackChapterId = colonIdx >= 0
+                  ? item.entityKey.substring(colonIdx + 1)
+                  : '';
+              final storyId =
+                  _nonEmptyString(item.payload['storyId']) ?? fallbackStoryId;
+              final chapterId =
+                  _nonEmptyString(item.payload['chapterId']) ?? fallbackChapterId;
+              final entityKey = canonicalHistoryEntityKey(storyId, chapterId);
+              final epoch = _extractInt(item.payload['observedHistoryEpoch']) ??
+                  _extractInt(item.payload['epoch']) ??
+                  _extractInt(item.payload['storyHistoryEpoch']) ??
+                  0;
+
+              if (isGlobalHistoryTarget(item.entityKey) || isGlobalHistoryTarget(storyId)) {
+                if (epoch > 0) {
+                  effectiveEpochs[kGlobalHistorySentinelUuid] = epoch;
+                }
+              } else if (epoch > 0) {
+                final cur = effectiveEpochs[storyId] ?? 0;
+                if (epoch > cur) {
+                  effectiveEpochs[storyId] = epoch;
+                }
+              }
+
+              await _upsertShadow(
+                txn,
+                AuthoritativeShadowRecord(
+                  ownerScope: ownerScope,
+                  domain: SyncDomain.history,
+                  entityKey: entityKey,
+                  serverRevision: snapshotRevision,
+                  epoch: epoch,
+                  payload: item.payload,
+                  isDeleted: isTombstone,
+                  updatedAtMs: nowMs,
+                ),
+              );
+              break;
+
+            case SyncDomain.preference:
+              final prefKey = canonicalPreferenceEntityKey(
+                _nonEmptyString(item.payload['key']) ?? item.entityKey,
+              );
+              final val = item.payload['value'];
+              await _upsertShadow(
+                txn,
+                AuthoritativeShadowRecord(
+                  ownerScope: ownerScope,
+                  domain: SyncDomain.preference,
+                  entityKey: prefKey,
+                  serverRevision: snapshotRevision,
+                  epoch: 0,
+                  payload: item.payload,
+                  isDeleted: isTombstone,
+                  updatedAtMs: nowMs,
+                ),
+              );
+              if (!isTombstone) {
+                await txn.insert(
+                  'local_preferences',
+                  <String, Object?>{
+                    'owner_scope': ownerScope,
+                    'pref_key': prefKey,
+                    'value_json': jsonEncode(val),
+                    'updated_at': nowIso,
+                  },
+                  conflictAlgorithm: ConflictAlgorithm.replace,
+                );
+              }
+              break;
+
+            case SyncDomain.follow:
+              await _upsertShadow(
+                txn,
+                AuthoritativeShadowRecord(
+                  ownerScope: ownerScope,
+                  domain: SyncDomain.follow,
+                  entityKey: item.entityKey,
+                  serverRevision: snapshotRevision,
+                  epoch: 0,
+                  payload: item.payload,
+                  isDeleted: isTombstone,
+                  updatedAtMs: nowMs,
+                ),
+              );
+              break;
+          }
+        }
+
+        // 3. Bước 3: Preserve & Rebase Offline Pending Mutations (Data Safety Guarantee)
+        final pendingRows = await txn.query(
+          'pending_mutations',
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[ownerScope],
+          orderBy: 'sequence_no ASC',
+        );
+
+        var rebasedCount = 0;
+        for (final row in pendingRows) {
+          final mId = row['mutation_id'] as String;
+          final baseRev = row['base_server_revision'] as String;
+          if (isValidRevisionString(baseRev)) {
+            final baseRevBigInt = parseRevisionBigInt(baseRev);
+            if (baseRevBigInt < snapshotRevBigInt) {
+              await txn.update(
+                'pending_mutations',
+                <String, Object?>{'base_server_revision': snapshotRevision},
+                where: 'owner_scope = ? AND mutation_id = ?',
+                whereArgs: <Object?>[ownerScope, mId],
+              );
+              rebasedCount++;
+            }
+          }
+        }
+
+        // 4. Bước 4: Finalize Sync Meta & Transition State
+        final existingMetaRows = await txn.query(
+          'sync_meta',
+          where: 'owner_scope = ?',
+          whereArgs: <Object?>[ownerScope],
+          limit: 1,
+        );
+        final existingMeta = existingMetaRows.isEmpty
+            ? null
+            : SyncMeta.fromMap(existingMetaRows.first);
+
+        final mergedEpochs = Map<String, int>.from(
+          existingMeta?.effectiveHistoryEpochs ?? const <String, int>{},
+        );
+        effectiveEpochs.forEach((k, v) {
+          final cur = mergedEpochs[k] ?? 0;
+          if (v > cur) mergedEpochs[k] = v;
+        });
+
+        // BẤT BIẾN STAGE 2A: KHÔNG BAO GIỜ TỰ Ý THĂNG CẤP BASELINE SANG READY!
+        const newBaselineStatus = AuthoritativeBaselineStatus.bootstrapping;
+
+        final updatedMeta = SyncMeta(
+          ownerScope: ownerScope,
+          lastSyncedServerRevision: snapshotRevision,
+          minActiveRevision: minActiveRevision,
+          lastSyncTimestamp: nowIso,
+          effectiveHistoryEpochs: Map<String, int>.unmodifiable(mergedEpochs),
+          syncState: SyncExecutionState.idle,
+          authoritativeBaselineStatus: newBaselineStatus,
+          lastErrorMessage: null,
+        );
+
+        await txn.insert(
+          'sync_meta',
+          updatedMeta.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+
+        // Xóa sạch snapshot_staging_store của phiên hoàn tất
+        await txn.delete(
+          'snapshot_staging_store',
+          where: 'owner_scope = ? AND session_id = ?',
+          whereArgs: <Object?>[ownerScope, sessionId],
+        );
+
+        if (onBeforeCommitHook != null) {
+          await onBeforeCommitHook(txn);
+        }
+
+        return CommitSnapshotResult(
+          ownerScope: ownerScope,
+          snapshotRevision: snapshotRevision,
+          minActiveRevision: minActiveRevision,
+          materializedCount: stagedItems.length,
+          rebasedPendingCount: rebasedCount,
+          effectiveEpochs: Map<String, int>.unmodifiable(mergedEpochs),
+        );
       },
     );
   }

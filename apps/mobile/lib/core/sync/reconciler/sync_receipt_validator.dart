@@ -59,7 +59,10 @@ class SyncReceiptValidator {
       );
     }
 
-    final sentIds = sentMutations.map((m) => m.mutationId).toSet();
+    final sentMap = <String, ClientMutationWire>{
+      for (final m in sentMutations) m.mutationId: m,
+    };
+    final sentIds = sentMap.keys.toSet();
     final seenIds = <String>{};
 
     for (final item in response.results) {
@@ -82,6 +85,7 @@ class SyncReceiptValidator {
         );
       }
 
+      final sentMutation = sentMap[mId]!;
       final status = item.status.trim().toUpperCase();
       final isSettled = settledStatuses.contains(status);
       final isQuarantined = quarantinedStatuses.contains(status);
@@ -92,12 +96,32 @@ class SyncReceiptValidator {
         );
       }
 
+      if (isValidRevisionString(sentMutation.baseServerRevision)) {
+        final serverRevBigInt = parseRevisionBigInt(response.newServerRevision);
+        final baseBigInt = parseRevisionBigInt(sentMutation.baseServerRevision);
+        if (serverRevBigInt < baseBigInt) {
+          throw ReceiptValidationException(
+            'STALE_SERVER_REVISION: newServerRevision (${response.newServerRevision}) < baseServerRevision (${sentMutation.baseServerRevision}) for mutationId "$mId".',
+          );
+        }
+      }
+
       if (status == 'APPLIED' || status == 'DEDUPLICATED') {
         if (item.assignedRevision == null ||
             !isValidRevisionString(item.assignedRevision)) {
           throw ReceiptValidationException(
             'INVALID_ASSIGNED_REVISION: Status "$status" for mutationId "$mId" requires a valid canonical decimal assignedRevision, got "${item.assignedRevision}".',
           );
+        }
+
+        if (isValidRevisionString(sentMutation.baseServerRevision)) {
+          final assignedBigInt = parseRevisionBigInt(item.assignedRevision!);
+          final baseBigInt = parseRevisionBigInt(sentMutation.baseServerRevision);
+          if (assignedBigInt < baseBigInt) {
+            throw ReceiptValidationException(
+              'STALE_ASSIGNED_REVISION: Status "$status" for mutationId "$mId" has assignedRevision (${item.assignedRevision}) < baseServerRevision (${sentMutation.baseServerRevision}).',
+            );
+          }
         }
       } else if (item.assignedRevision != null &&
           !isValidRevisionString(item.assignedRevision)) {

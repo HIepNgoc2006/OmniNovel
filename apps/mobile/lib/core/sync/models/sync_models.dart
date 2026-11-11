@@ -794,3 +794,23 @@ class BatchSettlementResult {
   });
 }
 
+/// Kết quả sau khi hoàn tất cam kết snapshot nguyên tử vào SQLite (`commitAuthoritativeSnapshot`).
+@immutable
+class CommitSnapshotResult {
+  final String ownerScope;
+  final String snapshotRevision;
+  final String minActiveRevision;
+  final int materializedCount;
+  final int rebasedPendingCount;
+  final Map<String, int> effectiveEpochs;
+
+  const CommitSnapshotResult({
+    required this.ownerScope,
+    required this.snapshotRevision,
+    required this.minActiveRevision,
+    required this.materializedCount,
+    required this.rebasedPendingCount,
+    required this.effectiveEpochs,
+  });
+}
+

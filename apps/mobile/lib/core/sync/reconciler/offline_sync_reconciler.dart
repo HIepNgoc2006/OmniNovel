@@ -253,6 +253,9 @@ class OfflineSyncReconciler {
         afterRevision: currentRev,
       );
 
+      // Hàng rào kiểm tra quyền sở hữu ngay sau await mạng (trước khi vào SQLite)
+      admission.assertAdmitted(ownerScope);
+
       if (changesPage.changes.isNotEmpty) {
         final result = await _dal.applyAuthoritativeDeltaPage(
           ownerScope: ownerScope,
@@ -323,6 +326,7 @@ class OfflineSyncReconciler {
     var totalItemsStaged = 0;
 
     for (final page in pages) {
+      admission.assertAdmitted(ownerScope);
       if (page.items.isNotEmpty) {
         await _dal.stageSnapshotItems(
           ownerScope: ownerScope,
@@ -334,5 +338,74 @@ class OfflineSyncReconciler {
     }
 
     return totalItemsStaged;
+  }
+
+  /// Cam kết phiên snapshot dở dang vào SQLite một cách nguyên tử và an toàn (ADR-SYNC-07C-v2.2).
+  Future<CommitSnapshotResult> commitSnapshotSession({
+    required String ownerScope,
+    required String sessionId,
+    required AccountWriteAdmission admission,
+    Future<void> Function(Transaction txn)? onBeforeCommitHook,
+  }) async {
+    assertAccountScope(ownerScope);
+    admission.assertAdmitted(ownerScope);
+
+    final result = await _dal.commitAuthoritativeSnapshot(
+      ownerScope: ownerScope,
+      sessionId: sessionId,
+      admission: admission,
+      onBeforeCommitHook: onBeforeCommitHook,
+    );
+
+    // Khóa bất biến Stage 2A: cấm tuyệt đối tự ý chuyển baseline sang READY
+    final meta = await _dal.getSyncMeta(ownerScope);
+    _stateMachine.assertBaselineReadyTransitionForbidden(
+      meta?.authoritativeBaselineStatus ??
+          AuthoritativeBaselineStatus.uninitialized,
+    );
+
+    return result;
+  }
+
+  /// Chu trình Snapshot Bootstrap toàn diện 6 domains (ADR-SYNC-07C-v2.2):
+  /// Staging phân trang + Cam kết SQLite nguyên tử + Bảo toàn pending mutations.
+  Future<CommitSnapshotResult> bootstrapFromSnapshot({
+    required String ownerScope,
+    required String sessionId,
+    required List<SyncSnapshotResponseWire> pages,
+    required AccountWriteAdmission admission,
+    Future<void> Function(Transaction txn)? onBeforeCommitHook,
+  }) async {
+    assertAccountScope(ownerScope);
+    admission.assertAdmitted(ownerScope);
+
+    _stateMachine.transitionTo(
+      OfflineReconcilerState.admissionCheck,
+      reason: 'Validating admission for snapshot bootstrap',
+    );
+
+    await stageSnapshotSession(
+      ownerScope: ownerScope,
+      sessionId: sessionId,
+      pages: pages,
+      admission: admission,
+    );
+
+    // Kiểm tra admission sau khi staging hoàn tất (ngay trước khi commit)
+    admission.assertAdmitted(ownerScope);
+
+    final result = await commitSnapshotSession(
+      ownerScope: ownerScope,
+      sessionId: sessionId,
+      admission: admission,
+      onBeforeCommitHook: onBeforeCommitHook,
+    );
+
+    _stateMachine.transitionTo(
+      OfflineReconcilerState.idle,
+      reason: 'Snapshot bootstrap completed successfully',
+    );
+
+    return result;
   }
 }
